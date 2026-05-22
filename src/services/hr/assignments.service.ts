@@ -1,10 +1,13 @@
-import { and, eq } from 'drizzle-orm';
-import { db } from '../../config/db';
-import { assignments } from '../../db/schema/assignments';
-import { contractors } from '../../db/schema/contractors';
-import { AssignCaseBody, FilingType } from '../../types/hr.types';
+import { and, eq } from "drizzle-orm";
+import { db } from "../../db/client";
+import { assignments } from "../../db/schema/assignments";
+import { contractors } from "../../db/schema/contractors";
+import { AssignCaseBody, FilingType } from "../../types/hr.types";
 
-export const getAvailableContractors = async (filingType: FilingType, firmId: string) => {
+export const getAvailableContractors = async (
+  filingType: FilingType,
+  firmId: string,
+) => {
   return db
     .select()
     .from(contractors)
@@ -12,34 +15,45 @@ export const getAvailableContractors = async (filingType: FilingType, firmId: st
       and(
         eq(contractors.firmId, firmId),
         eq(contractors.specialization, filingType),
-        eq(contractors.status, 'active'),
+        eq(contractors.status, "active"),
       ),
     );
 };
 
 export const assignCase = async (body: AssignCaseBody & { firmId: string }) => {
-  const { assignmentType, filingType, urgencyLevel, teamId, contractorId, firmId } = body;
+  const {
+    assignmentType,
+    filingType,
+    urgencyLevel,
+    teamId,
+    contractorId,
+    firmId,
+  } = body;
 
-  if (assignmentType === 'internal_team' && !teamId) {
-    throw new Error('teamId is required for internal team assignments');
+  if (assignmentType === "internal_team" && !teamId) {
+    throw new Error("teamId is required for internal team assignments");
   }
 
-  if (assignmentType === 'external_contractor' && !contractorId) {
-    throw new Error('contractorId is required for external contractor assignments');
+  if (assignmentType === "external_contractor" && !contractorId) {
+    throw new Error(
+      "contractorId is required for external contractor assignments",
+    );
   }
 
-  if (assignmentType === 'external_contractor' && contractorId) {
+  if (assignmentType === "external_contractor" && contractorId) {
     const contractor = await db
       .select()
       .from(contractors)
-      .where(and(eq(contractors.id, contractorId), eq(contractors.firmId, firmId)));
+      .where(
+        and(eq(contractors.id, contractorId), eq(contractors.firmId, firmId)),
+      );
 
     if (!contractor[0]) {
-      throw new Error('Contractor not found');
+      throw new Error("Contractor not found");
     }
 
-    if (contractor[0].status !== 'active') {
-      throw new Error('Contractor is not available');
+    if (contractor[0].status !== "active") {
+      throw new Error("Contractor is not available");
     }
   }
 
@@ -50,9 +64,10 @@ export const assignCase = async (body: AssignCaseBody & { firmId: string }) => {
       assignmentType,
       filingType,
       urgencyLevel,
-      teamId: assignmentType === 'internal_team' ? teamId : null,
-      contractorId: assignmentType === 'external_contractor' ? contractorId : null,
-      status: 'pending',
+      teamId: assignmentType === "internal_team" ? teamId : null,
+      contractorId:
+        assignmentType === "external_contractor" ? contractorId : null,
+      status: "pending",
     })
     .returning();
 
@@ -74,7 +89,7 @@ export const getAssignmentById = async (id: string, firmId: string) => {
 export const updateAssignmentStatus = async (
   id: string,
   firmId: string,
-  status: 'pending' | 'active' | 'completed' | 'cancelled',
+  status: "pending" | "active" | "completed" | "cancelled",
 ) => {
   const [updated] = await db
     .update(assignments)

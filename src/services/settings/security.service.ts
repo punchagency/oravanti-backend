@@ -1,24 +1,37 @@
-import { and, desc, eq } from 'drizzle-orm';
-import { db } from '../../config/db';
-import { supabase, supabaseAdmin, createUserClient } from '../../config/supabase';
-import { admins } from '../../db/schema/admins';
-import { adminSessions } from '../../db/schema/admin-sessions';
+import { and, desc, eq } from "drizzle-orm";
+import {
+  createUserClient,
+  supabase,
+  supabaseAdmin,
+} from "../../config/supabase";
+import { db } from "../../db/client";
+import { adminSessions } from "../../db/schema/admin-sessions";
+import { admins } from "../../db/schema/admins";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function parseDeviceInfo(userAgent: string): string {
-  const browser = /Edg/.test(userAgent)     ? 'Edge'
-    : /Chrome/.test(userAgent)              ? 'Chrome'
-    : /Firefox/.test(userAgent)             ? 'Firefox'
-    : /Safari/.test(userAgent)              ? 'Safari'
-    : 'Unknown Browser';
+  const browser = /Edg/.test(userAgent)
+    ? "Edge"
+    : /Chrome/.test(userAgent)
+      ? "Chrome"
+      : /Firefox/.test(userAgent)
+        ? "Firefox"
+        : /Safari/.test(userAgent)
+          ? "Safari"
+          : "Unknown Browser";
 
-  const os = /Windows/.test(userAgent)      ? 'Windows'
-    : /iPhone|iPad/.test(userAgent)         ? 'iOS'
-    : /Android/.test(userAgent)             ? 'Android'
-    : /Mac/.test(userAgent)                 ? 'macOS'
-    : /Linux/.test(userAgent)               ? 'Linux'
-    : 'Unknown OS';
+  const os = /Windows/.test(userAgent)
+    ? "Windows"
+    : /iPhone|iPad/.test(userAgent)
+      ? "iOS"
+      : /Android/.test(userAgent)
+        ? "Android"
+        : /Mac/.test(userAgent)
+          ? "macOS"
+          : /Linux/.test(userAgent)
+            ? "Linux"
+            : "Unknown OS";
 
   return `${browser} on ${os}`;
 }
@@ -28,7 +41,7 @@ function parseDeviceInfo(userAgent: string): string {
 export const changePassword = async (
   userId: string,
   currentPassword: string,
-  newPassword: string
+  newPassword: string,
 ) => {
   const adminRecord = await db
     .select({ email: admins.email })
@@ -36,17 +49,20 @@ export const changePassword = async (
     .where(eq(admins.userId, userId))
     .limit(1);
 
-  if (!adminRecord.length) throw new Error('Admin not found');
+  if (!adminRecord.length) throw new Error("Admin not found");
 
   const { error: verifyError } = await supabase.auth.signInWithPassword({
-    email:    adminRecord[0].email,
+    email: adminRecord[0].email,
     password: currentPassword,
   });
-  if (verifyError) throw new Error('Current password is incorrect');
+  if (verifyError) throw new Error("Current password is incorrect");
 
-  const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(userId, {
-    password: newPassword,
-  });
+  const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
+    userId,
+    {
+      password: newPassword,
+    },
+  );
   if (updateError) throw new Error(updateError.message);
 };
 
@@ -57,7 +73,9 @@ export const get2FAStatus = async (userId: string) => {
   if (error) throw new Error(error.message);
 
   const factors = data.user?.factors ?? [];
-  const totp    = factors.find((f) => f.factor_type === 'totp' && f.status === 'verified');
+  const totp = factors.find(
+    (f) => f.factor_type === "totp" && f.status === "verified",
+  );
 
   return { enabled: !!totp, factorId: totp?.id ?? null };
 };
@@ -65,17 +83,22 @@ export const get2FAStatus = async (userId: string) => {
 export const enroll2FA = async (accessToken: string) => {
   const userClient = createUserClient(accessToken);
   const { data, error } = await userClient.auth.mfa.enroll({
-    factorType: 'totp',
-    issuer:     'Oravanti',
+    factorType: "totp",
+    issuer: "Oravanti",
   });
   if (error) throw new Error(error.message);
   return data;
 };
 
-export const verify2FA = async (accessToken: string, factorId: string, code: string) => {
+export const verify2FA = async (
+  accessToken: string,
+  factorId: string,
+  code: string,
+) => {
   const userClient = createUserClient(accessToken);
 
-  const { data: challenge, error: challengeError } = await userClient.auth.mfa.challenge({ factorId });
+  const { data: challenge, error: challengeError } =
+    await userClient.auth.mfa.challenge({ factorId });
   if (challengeError) throw new Error(challengeError.message);
 
   const { error: verifyError } = await userClient.auth.mfa.verify({
@@ -108,7 +131,11 @@ export const deleteSession = async (id: string, userId: string) => {
     .where(and(eq(adminSessions.id, id), eq(adminSessions.userId, userId)));
 };
 
-export const logSession = async (userId: string, userAgent: string, ipAddress: string) => {
+export const logSession = async (
+  userId: string,
+  userAgent: string,
+  ipAddress: string,
+) => {
   const isAdmin = await db
     .select({ id: admins.id, firmId: admins.firmId })
     .from(admins)

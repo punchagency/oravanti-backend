@@ -1,6 +1,6 @@
-import { and, eq } from 'drizzle-orm';
-import { db } from '../../config/db';
-import { dataAccessControls } from '../../db/schema/data-access-controls';
+import { and, eq } from "drizzle-orm";
+import { db } from "../../db/client";
+import { dataAccessControls } from "../../db/schema/data-access-controls";
 
 export const getDataAccessControls = async (firmId: string) => {
   const rows = await db
@@ -8,11 +8,14 @@ export const getDataAccessControls = async (firmId: string) => {
     .from(dataAccessControls)
     .where(eq(dataAccessControls.firmId, firmId));
 
-  return rows.reduce((acc, row) => {
-    if (!acc[row.dataType]) acc[row.dataType] = {};
-    acc[row.dataType][row.role] = row.permission;
-    return acc;
-  }, {} as Record<string, Record<string, string>>);
+  return rows.reduce(
+    (acc, row) => {
+      if (!acc[row.dataType]) acc[row.dataType] = {};
+      acc[row.dataType][row.role] = row.permission;
+      return acc;
+    },
+    {} as Record<string, Record<string, string>>,
+  );
 };
 
 export const updateDataAccessControls = async (
@@ -26,9 +29,9 @@ export const updateDataAccessControls = async (
         .set({ permission: c.permission as any, updatedAt: new Date() })
         .where(
           and(
-            eq(dataAccessControls.firmId,    firmId),
-            eq(dataAccessControls.dataType,  c.dataType as any),
-            eq(dataAccessControls.role,      c.role as any),
+            eq(dataAccessControls.firmId, firmId),
+            eq(dataAccessControls.dataType, c.dataType as any),
+            eq(dataAccessControls.role, c.role as any),
           ),
         ),
     ),

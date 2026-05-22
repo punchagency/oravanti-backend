@@ -1,9 +1,9 @@
-import { eq, and } from 'drizzle-orm';
-import { db } from '../../config/db';
-import { paralegalCertificationGates } from '../../db/schema/paralegal-certification-gates';
-import { paralegalActivationRequirements } from '../../db/schema/paralegal-activation-requirements';
-import { paralegalProfiles } from '../../db/schema/paralegal-profiles';
-import { staffCertifications } from '../../db/schema/staff-certifications';
+import { and, eq } from "drizzle-orm";
+import { db } from "../../db/client";
+import { paralegalActivationRequirements } from "../../db/schema/paralegal-activation-requirements";
+import { paralegalCertificationGates } from "../../db/schema/paralegal-certification-gates";
+import { paralegalProfiles } from "../../db/schema/paralegal-profiles";
+import { staffCertifications } from "../../db/schema/staff-certifications";
 
 export const getCertificationGates = async (firmId: string) => {
   return db
@@ -20,11 +20,14 @@ export const updateCertificationGates = async (
     gates.map((g) =>
       db
         .update(paralegalCertificationGates)
-        .set({ requiredCertifications: g.requiredCertifications, updatedAt: new Date() })
+        .set({
+          requiredCertifications: g.requiredCertifications,
+          updatedAt: new Date(),
+        })
         .where(
           and(
-            eq(paralegalCertificationGates.firmId,  firmId),
-            eq(paralegalCertificationGates.action,  g.action as any),
+            eq(paralegalCertificationGates.firmId, firmId),
+            eq(paralegalCertificationGates.action, g.action as any),
           ),
         ),
     ),
@@ -49,7 +52,9 @@ export const updateActivationRequirements = async (
   if (certificationCodes.length > 0) {
     await db
       .insert(paralegalActivationRequirements)
-      .values(certificationCodes.map((code) => ({ firmId, certificationCode: code })));
+      .values(
+        certificationCodes.map((code) => ({ firmId, certificationCode: code })),
+      );
   }
 
   const allParalegals = await db
@@ -65,7 +70,9 @@ export const updateActivationRequirements = async (
         .where(eq(staffCertifications.staffId, paralegal.staffId));
 
       const heldCodes = held.map((c) => c.certificationCode);
-      const meetsAll  = certificationCodes.every((req) => heldCodes.includes(req));
+      const meetsAll = certificationCodes.every((req) =>
+        heldCodes.includes(req),
+      );
 
       await db
         .update(paralegalProfiles)
