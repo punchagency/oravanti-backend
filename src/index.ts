@@ -2,6 +2,7 @@ import { toNodeHandler } from "better-auth/node";
 import cors from "cors";
 import "dotenv/config";
 import express from "express";
+import morgan from "morgan";
 import { auth } from "./auth";
 import authRoutes from "./routes/auth.routes";
 import casesRoutes from "./routes/cases/cases.routes";
@@ -56,10 +57,10 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+app.use(morgan("dev"));
+app.use(express.json());
 
 app.all("/api/auth/*splat", toNodeHandler(auth));
-
-app.use(express.json());
 
 app.use("/api/auth", authRoutes);
 app.use("/api/hr/staff", staffRoutes);
