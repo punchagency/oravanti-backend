@@ -185,11 +185,11 @@ export const auth = betterAuth({
   },
   user: {
     additionalFields: {
-      firstName: { type: "string", required: false },
-      lastName: { type: "string", required: false },
-      phoneNumber: { type: "string", required: false },
-      jobTitle: { type: "string", required: false },
-      barNumber: { type: "string", required: false },
+      firstName: { type: "string", required: false, input: true },
+      lastName: { type: "string", required: false, input: true },
+      phoneNumber: { type: "string", required: false, input: true },
+      jobTitle: { type: "string", required: false, input: true },
+      barNumber: { type: "string", required: false, input: true },
     },
   },
   plugins: [
