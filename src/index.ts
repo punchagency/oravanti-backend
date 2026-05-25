@@ -17,6 +17,9 @@ import casesRoutes from './routes/cases/cases.routes';
 import tasksRoutes from './routes/tasks/tasks.routes';
 import clientResponsivenessRoutes from './routes/client-responsiveness/client-responsiveness.routes';
 import revenueAnalyticsRoutes from './routes/revenue-analytics/revenue-analytics.routes';
+import documentsRoutes from './routes/documents/documents.routes';
+import aiErrorDetectionRoutes from './routes/ai-error-detection/ai-error-detection.routes';
+import calendarRoutes from './routes/calendar/calendar.routes';
 
 const app = express();
 const PORT = process.env.PORT || 8001;
@@ -40,6 +43,9 @@ app.use('/api/cases', casesRoutes);
 app.use('/api/tasks', tasksRoutes);
 app.use('/api/client-responsiveness', clientResponsivenessRoutes);
 app.use('/api/revenue-analytics', revenueAnalyticsRoutes);
+app.use('/api/documents', documentsRoutes);
+app.use('/api/ai-error-detection', aiErrorDetectionRoutes);
+app.use('/api/calendar', calendarRoutes);
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);

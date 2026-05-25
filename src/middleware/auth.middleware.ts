@@ -5,6 +5,7 @@ export interface AuthRequest extends Request {
   userId?: string;
   accessToken?: string;
   adminId?: string;
+  staffId?: string;
   firmId?: string;
 }
 

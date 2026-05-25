@@ -1,6 +1,7 @@
 import { eq, and, gte, lte, sum, inArray } from 'drizzle-orm';
 import { db } from '../../config/db';
 import { staff } from '../../db/schema/staff';
+import { teamMembers } from '../../db/schema/team-members';
 import { timeEntries } from '../../db/schema/time-entries';
 import { staffCertifications } from '../../db/schema/staff-certifications';
 import { certifications } from '../../db/schema/certifications';
@@ -151,16 +152,16 @@ export const getRevenueAnalytics = async (
   const { startStr, endStr, label, months } = getPeriodRange(period);
   const prevRange = getPreviousPeriodRange(period);
 
-  const staffList = await db
-    .select()
-    .from(staff)
-    .where(
-      and(
-        eq(staff.firmId, firmId),
-        eq(staff.status, 'active'),
-        teamId ? eq(staff.teamId, teamId) : undefined,
-      ),
-    );
+  const baseConditions = and(eq(staff.firmId, firmId), eq(staff.status, 'active'));
+
+  const staffList = teamId
+    ? await db
+        .select({ staff })
+        .from(staff)
+        .innerJoin(teamMembers, eq(teamMembers.staffId, staff.id))
+        .where(and(baseConditions, eq(teamMembers.teamId, teamId)))
+        .then((rows) => rows.map((r) => r.staff))
+    : await db.select().from(staff).where(baseConditions);
 
   if (staffList.length === 0) {
     return {

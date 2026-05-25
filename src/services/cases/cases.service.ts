@@ -135,6 +135,7 @@ export const createCase = async (
     notes?: string;
     currentEmployer?: string;
   },
+  creator?: { adminId?: string; staffId?: string },
 ) => {
   const caseNumber = data.caseNumber || await generateCaseNumber(data.caseType, firmId);
 
@@ -155,6 +156,8 @@ export const createCase = async (
       description:             data.description,
       notes:                   data.notes,
       currentEmployer:         data.currentEmployer,
+      createdByAdminId:        creator?.adminId,
+      createdByStaffId:        creator?.staffId,
     })
     .returning();
 
