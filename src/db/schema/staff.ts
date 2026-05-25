@@ -1,6 +1,5 @@
 import { pgTable, uuid, text, integer, date, timestamp, pgEnum, numeric } from 'drizzle-orm/pg-core';
 import { firms } from './firm-info';
-import { teams } from './teams';
 
 export const staffRoleEnum = pgEnum('staff_role', [
   'admin',
@@ -28,7 +27,6 @@ export const staff = pgTable('staff', {
   certificationsCount: integer('certifications_count').default(0),
   activeCases: integer('active_cases').default(0),
   totalCases: integer('total_cases').default(0),
-  teamId:        uuid('team_id').references(() => teams.id),
   monthlySalary: numeric('monthly_salary', { precision: 10, scale: 2 }).default('0'),
   hourlyRate:    numeric('hourly_rate', { precision: 8, scale: 2 }).default('0'),
   avatarUrl:     text('avatar_url'),

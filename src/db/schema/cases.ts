@@ -2,6 +2,7 @@ import { pgTable, uuid, text, integer, date, boolean, timestamp, pgEnum } from '
 import { clients } from './clients';
 import { teams } from './teams';
 import { staff } from './staff';
+import { admins } from './admins';
 import { firms } from './firm-info';
 
 export const caseTypeEnum = pgEnum('case_type', [
@@ -52,6 +53,8 @@ export const cases = pgTable('cases', {
   description:             text('description').notNull(),
   notes:                   text('notes'),
   currentEmployer:         text('current_employer'),
+  createdByAdminId:        uuid('created_by_admin_id').references(() => admins.id),
+  createdByStaffId:        uuid('created_by_staff_id').references(() => staff.id),
   createdAt:               timestamp('created_at').notNull().defaultNow(),
   updatedAt:               timestamp('updated_at').notNull().defaultNow(),
 });

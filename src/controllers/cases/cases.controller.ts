@@ -48,7 +48,11 @@ export const createCase = async (req: AuthRequest, res: Response) => {
   }
 
   try {
-    const result = await casesService.createCase(req.firmId!, req.body);
+    const result = await casesService.createCase(
+      req.firmId!,
+      req.body,
+      { adminId: req.adminId, staffId: req.staffId },
+    );
     res.status(201).json(result);
   } catch (error) {
     res.status(400).json({ message: (error as Error).message });
