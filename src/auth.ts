@@ -1,6 +1,6 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { openAPI, organization } from "better-auth/plugins";
+import { openAPI, organization, twoFactor } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
 import nodemailer from "nodemailer";
 import { db } from "./db/client";
@@ -10,6 +10,7 @@ import {
   member,
   organization as organizationSchema,
   session,
+  twoFactor as twoFactorSchema,
   user,
   verification,
 } from "./db/schema/auth-schema";
@@ -165,6 +166,7 @@ export const auth = betterAuth({
       member,
       organization: organizationSchema,
       invitation,
+      twoFactor: twoFactorSchema,
     },
   }),
   emailAndPassword: {
@@ -242,6 +244,7 @@ export const auth = betterAuth({
         },
       },
     }),
+    twoFactor(),
     openAPI(),
   ],
   databaseHooks: {
