@@ -1,7 +1,7 @@
-import { desc, eq, and } from 'drizzle-orm';
-import { db } from '../../config/db';
-import { permissionAuditLog } from '../../db/schema/permission-audit-log';
-import { admins } from '../../db/schema/admins';
+import { and, desc, eq } from "drizzle-orm";
+import { db } from "../../db/client";
+import { admins } from "../../db/schema/admins";
+import { permissionAuditLog } from "../../db/schema/permission-audit-log";
 
 export const getPermissionAuditLog = async (firmId: string, limit = 20) => {
   return db
@@ -12,7 +12,11 @@ export const getPermissionAuditLog = async (firmId: string, limit = 20) => {
     .limit(limit);
 };
 
-export const logPermissionChange = async (action: string, userId: string, firmId: string) => {
+export const logPermissionChange = async (
+  action: string,
+  userId: string,
+  firmId: string,
+) => {
   const adminRecord = await db
     .select({ firstName: admins.firstName, lastName: admins.lastName })
     .from(admins)
@@ -21,13 +25,13 @@ export const logPermissionChange = async (action: string, userId: string, firmId
 
   const changedByName = adminRecord.length
     ? `${adminRecord[0].firstName} ${adminRecord[0].lastName}`
-    : 'Unknown Admin';
+    : "Unknown Admin";
 
   await db.insert(permissionAuditLog).values({
     firmId,
     action,
-    changedBy:     userId,
+    changedBy: userId,
     changedByName,
-    changedByRole: 'admin',
+    changedByRole: "admin",
   });
 };

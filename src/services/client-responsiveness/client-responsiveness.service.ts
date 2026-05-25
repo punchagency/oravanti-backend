@@ -1,8 +1,8 @@
-import { eq, and, inArray } from 'drizzle-orm';
-import { db } from '../../config/db';
-import { clientRequests } from '../../db/schema/client-requests';
-import { clients } from '../../db/schema/clients';
-import { cases } from '../../db/schema/cases';
+import { and, eq } from "drizzle-orm";
+import { db } from "../../db/client";
+import { cases } from "../../db/schema/cases";
+import { clientRequests } from "../../db/schema/client-requests";
+import { clients } from "../../db/schema/clients";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -16,22 +16,26 @@ const daysSince = (dateStr: string): number => {
 };
 
 const computeStatus = (days: number) => {
-  if (days <= 29)  return 'responsive';
-  if (days <= 59)  return 'at_risk';
-  if (days <= 90)  return 'unresponsive';
-  return 'critical';
+  if (days <= 29) return "responsive";
+  if (days <= 59) return "at_risk";
+  if (days <= 90) return "unresponsive";
+  return "critical";
 };
 
 const computeRecommendedAction = (status: string, days: number): string => {
   switch (status) {
-    case 'responsive':   return 'None - client is responsive';
-    case 'at_risk':      return 'Send a follow-up email to the client';
-    case 'unresponsive': return 'Contact client immediately by phone';
-    case 'critical':
+    case "responsive":
+      return "None - client is responsive";
+    case "at_risk":
+      return "Send a follow-up email to the client";
+    case "unresponsive":
+      return "Contact client immediately by phone";
+    case "critical":
       return days >= TERMINATION_DAYS
         ? `IMMEDIATE: Prepare termination letter (${days} days elapsed)`
         : `URGENT: Client approaching termination — ${TERMINATION_DAYS - days} days remaining`;
-    default: return 'None';
+    default:
+      return "None";
   }
 };
 
@@ -39,44 +43,79 @@ const computeRecommendedAction = (status: string, days: number): string => {
 
 const buildClientRecord = (
   client: typeof clients.$inferSelect,
-  pendingRequests: { id: string; clientId: string; caseId: string; description: string; requestedAt: string; status: 'pending' | 'fulfilled'; caseNumber: string | null }[],
+  pendingRequests: {
+    id: string;
+    clientId: string;
+    caseId: string;
+    description: string;
+    requestedAt: string;
+    status: "pending" | "fulfilled";
+    caseNumber: string | null;
+  }[],
 ) => {
   if (pendingRequests.length === 0) {
     return {
-      client:            { id: client.id, firstName: client.firstName, lastName: client.lastName, email: client.email, phone: client.phone },
-      lastContactDate:   null,
-      daysSinceContact:  null,
+      client: {
+        id: client.id,
+        firstName: client.firstName,
+        lastName: client.lastName,
+        email: client.email,
+        phone: client.phone,
+      },
+      lastContactDate: null,
+      daysSinceContact: null,
       daysToTermination: null,
-      status:            'responsive' as const,
-      pendingRequests:   [],
-      recommendedAction: 'None - client is responsive',
+      status: "responsive" as const,
+      pendingRequests: [],
+      recommendedAction: "None - client is responsive",
     };
   }
 
-  const sorted     = [...pendingRequests].sort((a, b) => new Date(a.requestedAt).getTime() - new Date(b.requestedAt).getTime());
-  const oldest     = sorted[0];
-  const days       = daysSince(oldest.requestedAt);
-  const status     = computeStatus(days);
+  const sorted = [...pendingRequests].sort(
+    (a, b) =>
+      new Date(a.requestedAt).getTime() - new Date(b.requestedAt).getTime(),
+  );
+  const oldest = sorted[0];
+  const days = daysSince(oldest.requestedAt);
+  const status = computeStatus(days);
   const daysToTerm = days >= TERMINATION_DAYS ? null : TERMINATION_DAYS - days;
 
-  const grouped = sorted.reduce<Record<string, { requestedAt: string; caseId: string; caseNumber: string | null; items: { id: string; description: string }[] }>>(
-    (acc, r) => {
-      if (!acc[r.requestedAt]) {
-        acc[r.requestedAt] = { requestedAt: r.requestedAt, caseId: r.caseId, caseNumber: r.caseNumber, items: [] };
+  const grouped = sorted.reduce<
+    Record<
+      string,
+      {
+        requestedAt: string;
+        caseId: string;
+        caseNumber: string | null;
+        items: { id: string; description: string }[];
       }
-      acc[r.requestedAt].items.push({ id: r.id, description: r.description });
-      return acc;
-    },
-    {},
-  );
+    >
+  >((acc, r) => {
+    if (!acc[r.requestedAt]) {
+      acc[r.requestedAt] = {
+        requestedAt: r.requestedAt,
+        caseId: r.caseId,
+        caseNumber: r.caseNumber,
+        items: [],
+      };
+    }
+    acc[r.requestedAt].items.push({ id: r.id, description: r.description });
+    return acc;
+  }, {});
 
   return {
-    client:            { id: client.id, firstName: client.firstName, lastName: client.lastName, email: client.email, phone: client.phone },
-    lastContactDate:   oldest.requestedAt,
-    daysSinceContact:  days,
+    client: {
+      id: client.id,
+      firstName: client.firstName,
+      lastName: client.lastName,
+      email: client.email,
+      phone: client.phone,
+    },
+    lastContactDate: oldest.requestedAt,
+    daysSinceContact: days,
     daysToTermination: daysToTerm,
     status,
-    pendingRequests:   Object.values(grouped),
+    pendingRequests: Object.values(grouped),
     recommendedAction: computeRecommendedAction(status, days),
   };
 };
@@ -84,22 +123,35 @@ const buildClientRecord = (
 // ─── Stats ────────────────────────────────────────────────────────────────────
 
 export const getStats = async (firmId: string) => {
-  const allClients = await db.select().from(clients).where(eq(clients.firmId, firmId));
-  const pending    = await db
+  const allClients = await db
+    .select()
+    .from(clients)
+    .where(eq(clients.firmId, firmId));
+  const pending = await db
     .select()
     .from(clientRequests)
-    .where(and(eq(clientRequests.firmId, firmId), eq(clientRequests.status, 'pending')));
+    .where(
+      and(
+        eq(clientRequests.firmId, firmId),
+        eq(clientRequests.status, "pending"),
+      ),
+    );
 
   const counts = { responsive: 0, at_risk: 0, unresponsive: 0, critical: 0 };
 
   for (const client of allClients) {
     const clientPending = pending.filter((r) => r.clientId === client.id);
-    if (clientPending.length === 0) { counts.responsive++; continue; }
+    if (clientPending.length === 0) {
+      counts.responsive++;
+      continue;
+    }
 
     const oldest = clientPending.reduce((min, r) =>
       new Date(r.requestedAt) < new Date(min.requestedAt) ? r : min,
     );
-    const status = computeStatus(daysSince(oldest.requestedAt)) as keyof typeof counts;
+    const status = computeStatus(
+      daysSince(oldest.requestedAt),
+    ) as keyof typeof counts;
     counts[status]++;
   }
 
@@ -112,21 +164,29 @@ export const getAllClientResponsiveness = async (
   firmId: string,
   filters?: { filter?: string; search?: string },
 ) => {
-  const allClients = await db.select().from(clients).where(eq(clients.firmId, firmId));
+  const allClients = await db
+    .select()
+    .from(clients)
+    .where(eq(clients.firmId, firmId));
 
   const pendingRows = await db
     .select({
-      id:          clientRequests.id,
-      clientId:    clientRequests.clientId,
-      caseId:      clientRequests.caseId,
+      id: clientRequests.id,
+      clientId: clientRequests.clientId,
+      caseId: clientRequests.caseId,
       description: clientRequests.description,
       requestedAt: clientRequests.requestedAt,
-      status:      clientRequests.status,
-      caseNumber:  cases.caseNumber,
+      status: clientRequests.status,
+      caseNumber: cases.caseNumber,
     })
     .from(clientRequests)
     .leftJoin(cases, eq(cases.id, clientRequests.caseId))
-    .where(and(eq(clientRequests.firmId, firmId), eq(clientRequests.status, 'pending')));
+    .where(
+      and(
+        eq(clientRequests.firmId, firmId),
+        eq(clientRequests.status, "pending"),
+      ),
+    );
 
   const records = allClients.map((client) => {
     const clientPending = pendingRows.filter((r) => r.clientId === client.id);
@@ -134,11 +194,16 @@ export const getAllClientResponsiveness = async (
   });
 
   return records.filter((r) => {
-    if (filters?.filter && filters.filter !== 'all' && r.status !== filters.filter) return false;
+    if (
+      filters?.filter &&
+      filters.filter !== "all" &&
+      r.status !== filters.filter
+    )
+      return false;
     if (filters?.search) {
-      const q       = filters.search.toLowerCase();
-      const name    = `${r.client.firstName} ${r.client.lastName}`.toLowerCase();
-      const caseNum = r.pendingRequests[0]?.caseNumber?.toLowerCase() ?? '';
+      const q = filters.search.toLowerCase();
+      const name = `${r.client.firstName} ${r.client.lastName}`.toLowerCase();
+      const caseNum = r.pendingRequests[0]?.caseNumber?.toLowerCase() ?? "";
       if (!name.includes(q) && !caseNum.includes(q)) return false;
     }
     return true;
@@ -152,12 +217,13 @@ export const addRequests = async (
   firmId: string,
   data: { caseId: string; items: string[]; requestedAt?: string },
 ) => {
-  const requestedAt = data.requestedAt ?? new Date().toISOString().split('T')[0];
+  const requestedAt =
+    data.requestedAt ?? new Date().toISOString().split("T")[0];
 
   const rows = data.items.map((description) => ({
     firmId,
     clientId,
-    caseId:      data.caseId,
+    caseId: data.caseId,
     description,
     requestedAt,
   }));
@@ -170,8 +236,10 @@ export const addRequests = async (
 export const fulfillRequest = async (requestId: string, firmId: string) => {
   const [updated] = await db
     .update(clientRequests)
-    .set({ status: 'fulfilled', updatedAt: new Date() })
-    .where(and(eq(clientRequests.id, requestId), eq(clientRequests.firmId, firmId)))
+    .set({ status: "fulfilled", updatedAt: new Date() })
+    .where(
+      and(eq(clientRequests.id, requestId), eq(clientRequests.firmId, firmId)),
+    )
     .returning();
 
   return updated ?? null;
@@ -179,7 +247,10 @@ export const fulfillRequest = async (requestId: string, firmId: string) => {
 
 // ─── Generate termination letter data ────────────────────────────────────────
 
-export const getTerminationLetterData = async (clientId: string, firmId: string) => {
+export const getTerminationLetterData = async (
+  clientId: string,
+  firmId: string,
+) => {
   const [client] = await db
     .select()
     .from(clients)
@@ -188,11 +259,11 @@ export const getTerminationLetterData = async (clientId: string, firmId: string)
 
   const pending = await db
     .select({
-      id:          clientRequests.id,
+      id: clientRequests.id,
       description: clientRequests.description,
       requestedAt: clientRequests.requestedAt,
-      caseNumber:  cases.caseNumber,
-      caseType:    cases.caseType,
+      caseNumber: cases.caseNumber,
+      caseType: cases.caseType,
     })
     .from(clientRequests)
     .leftJoin(cases, eq(cases.id, clientRequests.caseId))
@@ -200,20 +271,29 @@ export const getTerminationLetterData = async (clientId: string, firmId: string)
       and(
         eq(clientRequests.firmId, firmId),
         eq(clientRequests.clientId, clientId),
-        eq(clientRequests.status, 'pending'),
+        eq(clientRequests.status, "pending"),
       ),
     );
 
-  const oldest = pending.length > 0
-    ? pending.reduce((min, r) => new Date(r.requestedAt) < new Date(min.requestedAt) ? r : min)
-    : null;
-  const days   = oldest ? daysSince(oldest.requestedAt) : 0;
+  const oldest =
+    pending.length > 0
+      ? pending.reduce((min, r) =>
+          new Date(r.requestedAt) < new Date(min.requestedAt) ? r : min,
+        )
+      : null;
+  const days = oldest ? daysSince(oldest.requestedAt) : 0;
 
   return {
-    generatedAt:      new Date().toISOString(),
-    client:           { id: client.id, firstName: client.firstName, lastName: client.lastName, email: client.email, phone: client.phone },
+    generatedAt: new Date().toISOString(),
+    client: {
+      id: client.id,
+      firstName: client.firstName,
+      lastName: client.lastName,
+      email: client.email,
+      phone: client.phone,
+    },
     daysSinceContact: days,
-    pendingRequests:  pending,
+    pendingRequests: pending,
   };
 };
 
@@ -228,30 +308,45 @@ export const exportClientReport = async (clientId: string, firmId: string) => {
 
   const allRequests = await db
     .select({
-      id:          clientRequests.id,
+      id: clientRequests.id,
       description: clientRequests.description,
       requestedAt: clientRequests.requestedAt,
-      status:      clientRequests.status,
-      caseNumber:  cases.caseNumber,
-      caseType:    cases.caseType,
+      status: clientRequests.status,
+      caseNumber: cases.caseNumber,
+      caseType: cases.caseType,
     })
     .from(clientRequests)
     .leftJoin(cases, eq(cases.id, clientRequests.caseId))
-    .where(and(eq(clientRequests.firmId, firmId), eq(clientRequests.clientId, clientId)));
+    .where(
+      and(
+        eq(clientRequests.firmId, firmId),
+        eq(clientRequests.clientId, clientId),
+      ),
+    );
 
-  const pending    = allRequests.filter((r) => r.status === 'pending');
-  const oldest     = pending.length > 0
-    ? pending.reduce((min, r) => new Date(r.requestedAt) < new Date(min.requestedAt) ? r : min)
-    : null;
-  const days       = oldest ? daysSince(oldest.requestedAt) : 0;
-  const status     = pending.length > 0 ? computeStatus(days) : 'responsive';
+  const pending = allRequests.filter((r) => r.status === "pending");
+  const oldest =
+    pending.length > 0
+      ? pending.reduce((min, r) =>
+          new Date(r.requestedAt) < new Date(min.requestedAt) ? r : min,
+        )
+      : null;
+  const days = oldest ? daysSince(oldest.requestedAt) : 0;
+  const status = pending.length > 0 ? computeStatus(days) : "responsive";
 
   return {
-    exportedAt:        new Date().toISOString(),
-    client:            { id: client.id, firstName: client.firstName, lastName: client.lastName, email: client.email, phone: client.phone },
+    exportedAt: new Date().toISOString(),
+    client: {
+      id: client.id,
+      firstName: client.firstName,
+      lastName: client.lastName,
+      email: client.email,
+      phone: client.phone,
+    },
     status,
-    daysSinceContact:  oldest ? days : null,
-    daysToTermination: oldest && days < TERMINATION_DAYS ? TERMINATION_DAYS - days : null,
+    daysSinceContact: oldest ? days : null,
+    daysToTermination:
+      oldest && days < TERMINATION_DAYS ? TERMINATION_DAYS - days : null,
     recommendedAction: computeRecommendedAction(status, days),
     allRequests,
   };

@@ -1,8 +1,8 @@
-import { eq, and } from 'drizzle-orm';
-import { db } from '../../config/db';
-import { staff } from '../../db/schema/staff';
-import { teamMembers } from '../../db/schema/team-members';
-import { AddStaffBody, UpdateStaffBody } from '../../types/hr.types';
+import { and, eq } from "drizzle-orm";
+import { db } from "../../db/client";
+import { staff } from "../../db/schema/staff";
+import { teamMembers } from "../../db/schema/team-members";
+import { AddStaffBody, UpdateStaffBody } from "../../types/hr.types";
 
 export const getAllStaff = async (firmId: string) => {
   return db.select().from(staff).where(eq(staff.firmId, firmId));
@@ -31,13 +31,20 @@ export const addStaff = async (body: AddStaffBody & { firmId: string }) => {
   const [newStaff] = await db.insert(staff).values(staffData).returning();
 
   if (teamId) {
-    await db.insert(teamMembers).values({ teamId, staffId: newStaff.id }).onConflictDoNothing();
+    await db
+      .insert(teamMembers)
+      .values({ teamId, staffId: newStaff.id })
+      .onConflictDoNothing();
   }
 
   return newStaff;
 };
 
-export const updateStaff = async (id: string, firmId: string, body: UpdateStaffBody) => {
+export const updateStaff = async (
+  id: string,
+  firmId: string,
+  body: UpdateStaffBody,
+) => {
   const [updated] = await db
     .update(staff)
     .set({ ...body, updatedAt: new Date() })
@@ -69,7 +76,9 @@ export const addToTeam = async (staffId: string, teamId: string) => {
 export const removeFromTeam = async (staffId: string, teamId: string) => {
   const [row] = await db
     .delete(teamMembers)
-    .where(and(eq(teamMembers.staffId, staffId), eq(teamMembers.teamId, teamId)))
+    .where(
+      and(eq(teamMembers.staffId, staffId), eq(teamMembers.teamId, teamId)),
+    )
     .returning();
   return row ?? null;
 };

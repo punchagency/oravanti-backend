@@ -1,3 +1,12 @@
+<<<<<<< HEAD
+import { and, desc, eq, ilike, or } from "drizzle-orm";
+import { db } from "../../db/client";
+import { cases } from "../../db/schema/cases";
+import { certifications } from "../../db/schema/certifications";
+import { clients } from "../../db/schema/clients";
+import { staff } from "../../db/schema/staff";
+import { generateCaseNumber } from "../cases/cases.service";
+=======
 import { eq, desc, ilike, or, and } from 'drizzle-orm';
 import { db } from '../../config/db';
 import { clients } from '../../db/schema/clients';
@@ -7,6 +16,7 @@ import { certifications } from '../../db/schema/certifications';
 import { staff } from '../../db/schema/staff';
 import { teamMembers } from '../../db/schema/team-members';
 import { generateCaseNumber } from '../cases/cases.service';
+>>>>>>> 38037588bc0177ce0bc2d671c52a8f4e5c3670e3
 
 // ─── Companies ───────────────────────────────────────────────────────────────
 
@@ -352,11 +362,14 @@ const checkForDuplicate = async (
 
 export const getCertifications = async () => {
   const rows = await db.select().from(certifications);
-  return rows.reduce((acc, row) => {
-    if (!acc[row.level]) acc[row.level] = [];
-    acc[row.level].push({ code: row.code, name: row.name });
-    return acc;
-  }, {} as Record<string, { code: string; name: string }[]>);
+  return rows.reduce(
+    (acc, row) => {
+      if (!acc[row.level]) acc[row.level] = [];
+      acc[row.level].push({ code: row.code, name: row.name });
+      return acc;
+    },
+    {} as Record<string, { code: string; name: string }[]>,
+  );
 };
 
 // ─── Clients ──────────────────────────────────────────────────────────────────
@@ -364,20 +377,20 @@ export const getCertifications = async () => {
 export const getAllClients = async (firmId: string, search?: string) => {
   const rows = await db
     .select({
-      id:              clients.id,
-      firstName:       clients.firstName,
-      lastName:        clients.lastName,
-      email:           clients.email,
-      phone:           clients.phone,
+      id: clients.id,
+      firstName: clients.firstName,
+      lastName: clients.lastName,
+      email: clients.email,
+      phone: clients.phone,
       countryOfOrigin: clients.countryOfOrigin,
-      status:          clients.status,
-      caseId:          cases.id,
-      caseType:        cases.caseType,
-      caseStatus:      cases.status,
-      caseProgress:    cases.caseProgress,
+      status: clients.status,
+      caseId: cases.id,
+      caseType: cases.caseType,
+      caseStatus: cases.status,
+      caseProgress: cases.caseProgress,
       nextAppointment: cases.nextAppointment,
       assignedStaffFirstName: staff.firstName,
-      assignedStaffLastName:  staff.lastName,
+      assignedStaffLastName: staff.lastName,
     })
     .from(clients)
     .leftJoin(cases, eq(cases.clientId, clients.id))
@@ -388,9 +401,9 @@ export const getAllClients = async (firmId: string, search?: string) => {
             eq(clients.firmId, firmId),
             or(
               ilike(clients.firstName, `%${search}%`),
-              ilike(clients.lastName,  `%${search}%`),
-              ilike(clients.email,     `%${search}%`),
-              ilike(cases.caseType,    `%${search}%`),
+              ilike(clients.lastName, `%${search}%`),
+              ilike(clients.email, `%${search}%`),
+              ilike(cases.caseType, `%${search}%`),
             ),
           )
         : eq(clients.firmId, firmId),
@@ -398,19 +411,19 @@ export const getAllClients = async (firmId: string, search?: string) => {
     .orderBy(desc(clients.createdAt));
 
   return rows.map((r) => ({
-    id:              r.id,
-    firstName:       r.firstName,
-    lastName:        r.lastName,
-    email:           r.email,
-    phone:           r.phone,
+    id: r.id,
+    firstName: r.firstName,
+    lastName: r.lastName,
+    email: r.email,
+    phone: r.phone,
     countryOfOrigin: r.countryOfOrigin,
-    status:          r.status,
+    status: r.status,
     activeCase: r.caseId
       ? {
-          id:              r.caseId,
-          caseType:        r.caseType,
-          status:          r.caseStatus,
-          caseProgress:    r.caseProgress,
+          id: r.caseId,
+          caseType: r.caseType,
+          status: r.caseStatus,
+          caseProgress: r.caseProgress,
           nextAppointment: r.nextAppointment,
           assignedTo: r.assignedStaffFirstName
             ? `${r.assignedStaffFirstName} ${r.assignedStaffLastName}`
@@ -437,16 +450,33 @@ export const getClientById = async (id: string, firmId: string) => {
 export const createClient = async (
   firmId: string,
   clientData: {
+<<<<<<< HEAD
+    firstName: string;
+    lastName: string;
+    email: string;
+    phone: string;
+    dateOfBirth: string;
+    nationality: string;
+    countryOfOrigin: string;
+    passportNumber?: string;
+    currentAddress: string;
+=======
     firstName: string; middleName?: string; lastName: string;
     secondLastName?: string; thirdLastName?: string; fourthLastName?: string;
     email: string; phone: string; dateOfBirth: string;
     nationality: string; countryOfOrigin: string;
     passportNumber?: string; currentAddress: string;
+>>>>>>> 38037588bc0177ce0bc2d671c52a8f4e5c3670e3
   },
   caseData: {
-    caseType: string; description: string; filingDate: string;
-    teamId?: string; assignedStaffId?: string;
-    requiredCertifications?: string[]; currentEmployer?: string; notes?: string;
+    caseType: string;
+    description: string;
+    filingDate: string;
+    teamId?: string;
+    assignedStaffId?: string;
+    requiredCertifications?: string[];
+    currentEmployer?: string;
+    notes?: string;
   },
   options?: { acknowledgeConflict?: boolean },
 ) => {
@@ -462,7 +492,7 @@ export const createClient = async (
   return db.transaction(async (tx) => {
     const [newClient] = await tx
       .insert(clients)
-      .values({ ...clientData, firmId, status: 'active' })
+      .values({ ...clientData, firmId, status: "active" })
       .returning();
 
     const [newCase] = await tx
@@ -470,15 +500,15 @@ export const createClient = async (
       .values({
         firmId,
         caseNumber,
-        clientId:               newClient.id,
-        caseType:               caseData.caseType as any,
-        description:            caseData.description,
-        filingDate:             caseData.filingDate,
-        teamId:                 caseData.teamId,
-        assignedStaffId:        caseData.assignedStaffId,
+        clientId: newClient.id,
+        caseType: caseData.caseType as any,
+        description: caseData.description,
+        filingDate: caseData.filingDate,
+        teamId: caseData.teamId,
+        assignedStaffId: caseData.assignedStaffId,
         requiredCertifications: caseData.requiredCertifications ?? [],
-        currentEmployer:        caseData.currentEmployer,
-        notes:                  caseData.notes,
+        currentEmployer: caseData.currentEmployer,
+        notes: caseData.notes,
       })
       .returning();
 
@@ -518,7 +548,9 @@ export const updateClient = async (
 };
 
 export const deleteClient = async (id: string, firmId: string) => {
-  await db.delete(clients).where(and(eq(clients.id, id), eq(clients.firmId, firmId)));
+  await db
+    .delete(clients)
+    .where(and(eq(clients.id, id), eq(clients.firmId, firmId)));
 };
 
 // ─── Cases ────────────────────────────────────────────────────────────────────
@@ -534,9 +566,14 @@ export const addCase = async (
   clientId: string,
   firmId: string,
   caseData: {
-    caseType: string; description: string; filingDate: string;
-    teamId?: string; assignedStaffId?: string;
-    requiredCertifications?: string[]; currentEmployer?: string; notes?: string;
+    caseType: string;
+    description: string;
+    filingDate: string;
+    teamId?: string;
+    assignedStaffId?: string;
+    requiredCertifications?: string[];
+    currentEmployer?: string;
+    notes?: string;
   },
   options?: { acknowledgeExistingCase?: boolean },
 ) => {
@@ -564,20 +601,24 @@ export const addCase = async (
       firmId,
       caseNumber,
       clientId,
-      caseType:               caseData.caseType as any,
-      description:            caseData.description,
-      filingDate:             caseData.filingDate,
-      teamId:                 caseData.teamId,
-      assignedStaffId:        caseData.assignedStaffId,
+      caseType: caseData.caseType as any,
+      description: caseData.description,
+      filingDate: caseData.filingDate,
+      teamId: caseData.teamId,
+      assignedStaffId: caseData.assignedStaffId,
       requiredCertifications: caseData.requiredCertifications ?? [],
-      currentEmployer:        caseData.currentEmployer,
-      notes:                  caseData.notes,
+      currentEmployer: caseData.currentEmployer,
+      notes: caseData.notes,
     })
     .returning();
   return newCase;
 };
 
-export const updateCaseStatus = async (caseId: string, firmId: string, status: string) => {
+export const updateCaseStatus = async (
+  caseId: string,
+  firmId: string,
+  status: string,
+) => {
   const [updated] = await db
     .update(cases)
     .set({ status: status as any, updatedAt: new Date() })
@@ -590,7 +631,12 @@ export const updateCaseStatus = async (caseId: string, firmId: string, status: s
 
 export const getTeamStaff = async (teamId: string, firmId: string) => {
   return db
-    .select({ id: staff.id, firstName: staff.firstName, lastName: staff.lastName, role: staff.role })
+    .select({
+      id: staff.id,
+      firstName: staff.firstName,
+      lastName: staff.lastName,
+      role: staff.role,
+    })
     .from(staff)
     .innerJoin(teamMembers, eq(teamMembers.staffId, staff.id))
     .where(and(eq(teamMembers.teamId, teamId), eq(staff.firmId, firmId)));

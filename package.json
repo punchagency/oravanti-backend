@@ -2,15 +2,17 @@
   "name": "oravanti-backend",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "src/index.ts",
   "scripts": {
-    "dev": "nodemon --exec ts-node src/index.ts",
+    "dev": "tsx watch .",
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "echo \"Error: no test specified\" && exit 1",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "ts-node src/migrate.ts",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "db:push": "drizzle-kit push",
+    "auth:generate": "auth generate --output ./src/db/schema/auth-schema.ts --yes"
   },
   "repository": {
     "type": "git",
@@ -25,17 +27,28 @@
   },
   "homepage": "https://github.com/BenjaminIbehpunch/oravanti-backend#readme",
   "dependencies": {
+    "@better-auth/infra": "^0.2.8",
     "@supabase/supabase-js": "^2.105.4",
     "@types/multer": "^2.1.0",
+    "auth": "^1.6.11",
+    "better-auth": "^1.6.11",
+    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
+    "geoip-lite": "^2.0.2",
+    "morgan": "^1.10.1",
     "multer": "^2.1.1",
-    "postgres": "^3.4.9"
+    "nodemailer": "^8.0.7",
+    "postgres": "^3.4.9",
+    "tsx": "^4.22.3"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/morgan": "^1.9.10",
     "@types/node": "^25.6.2",
+    "@types/nodemailer": "^8.0.0",
     "@types/pg": "^8.20.0",
     "drizzle-kit": "^0.31.10",
     "nodemon": "^3.1.14",

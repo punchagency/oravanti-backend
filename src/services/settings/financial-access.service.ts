@@ -1,6 +1,6 @@
-import { eq, and } from 'drizzle-orm';
-import { db } from '../../config/db';
-import { financialAccessControls } from '../../db/schema/financial-access-controls';
+import { and, eq } from "drizzle-orm";
+import { db } from "../../db/client";
+import { financialAccessControls } from "../../db/schema/financial-access-controls";
 
 export const getFinancialAccess = async (firmId: string) => {
   const rows = await db
@@ -8,11 +8,14 @@ export const getFinancialAccess = async (firmId: string) => {
     .from(financialAccessControls)
     .where(eq(financialAccessControls.firmId, firmId));
 
-  return rows.reduce((acc, row) => {
-    if (!acc[row.accountType]) acc[row.accountType] = {};
-    acc[row.accountType][row.role] = row.permission;
-    return acc;
-  }, {} as Record<string, Record<string, string>>);
+  return rows.reduce(
+    (acc, row) => {
+      if (!acc[row.accountType]) acc[row.accountType] = {};
+      acc[row.accountType][row.role] = row.permission;
+      return acc;
+    },
+    {} as Record<string, Record<string, string>>,
+  );
 };
 
 export const updateFinancialAccess = async (
@@ -26,9 +29,9 @@ export const updateFinancialAccess = async (
         .set({ permission: c.permission as any, updatedAt: new Date() })
         .where(
           and(
-            eq(financialAccessControls.firmId,       firmId),
-            eq(financialAccessControls.accountType,  c.accountType as any),
-            eq(financialAccessControls.role,         c.role as any),
+            eq(financialAccessControls.firmId, firmId),
+            eq(financialAccessControls.accountType, c.accountType as any),
+            eq(financialAccessControls.role, c.role as any),
           ),
         ),
     ),
