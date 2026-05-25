@@ -171,7 +171,7 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
-    requireEmailVerification: true,
+    // requireEmailVerification: true,
     sendResetPassword: async ({ user, url }, request) => {
       await sendPasswordResetEmail(user.email, url);
     },
@@ -192,6 +192,11 @@ export const auth = betterAuth({
       phoneNumber: { type: "string", required: false, input: true },
       jobTitle: { type: "string", required: false, input: true },
       barNumber: { type: "string", required: false, input: true },
+    },
+  },
+  session: {
+    additionalFields: {
+      location: { type: "string", required: false, input: true },
     },
   },
   plugins: [
@@ -252,10 +257,34 @@ export const auth = betterAuth({
       create: {
         before: async (session) => {
           const organization = await getActiveOrganization(session.userId);
+
+          const ipAddress = session.ipAddress;
+          let locationStr = "Unknown Location";
+
+          // Bypass localhost/internal IPs during development
+          if (ipAddress && ipAddress !== "::1" && ipAddress !== "127.0.0.1") {
+            try {
+              const response = await fetch(
+                `http://ip-api.com/json/${ipAddress}`,
+              );
+              const data = await response.json();
+
+              console.log(data);
+
+              if (!data.error && data.city && data.country) {
+                locationStr = `${data.city}, ${data.country}`;
+              }
+            } catch (error) {
+              console.error("Failed to fetch IP location:", error);
+            }
+          }
+
+          // Append the location data to the session object being saved
           return {
             data: {
               ...session,
               activeOrganizationId: organization?.id,
+              location: locationStr,
             },
           };
         },
