@@ -1,12 +1,13 @@
 import { Response } from "express";
+import { BadRequestError, NotFoundError } from "../../errors/app-error";
+import { sendErrorResponse } from "../../errors";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import * as casesService from "./cases.service";
 
 export const generateCaseNumber = async (req: AuthRequest, res: Response) => {
   const { caseType } = req.query;
   if (!caseType) {
-    res.status(400).json({ message: "caseType is required" });
-    return;
+    throw new BadRequestError("caseType is required");
   }
 
   try {
@@ -16,7 +17,7 @@ export const generateCaseNumber = async (req: AuthRequest, res: Response) => {
     );
     res.status(200).json({ caseNumber });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -31,7 +32,7 @@ export const getAllCases = async (req: AuthRequest, res: Response) => {
     });
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -42,12 +43,11 @@ export const getCaseById = async (req: AuthRequest, res: Response) => {
       req.firmId!,
     );
     if (!result) {
-      res.status(404).json({ message: "Case not found" });
-      return;
+      throw new NotFoundError("Case not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -55,12 +55,9 @@ export const createCase = async (req: AuthRequest, res: Response) => {
   const { clientId, caseType, filingDate, description } = req.body;
 
   if (!clientId || !caseType || !filingDate || !description) {
-    res
-      .status(400)
-      .json({
-        message: "clientId, caseType, filingDate and description are required",
-      });
-    return;
+    throw new BadRequestError(
+      "clientId, caseType, filingDate and description are required",
+    );
   }
 
   try {
@@ -70,7 +67,7 @@ export const createCase = async (req: AuthRequest, res: Response) => {
     });
     res.status(201).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -82,12 +79,11 @@ export const updateCase = async (req: AuthRequest, res: Response) => {
       req.body,
     );
     if (!result) {
-      res.status(404).json({ message: "Case not found" });
-      return;
+      throw new NotFoundError("Case not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -96,6 +92,6 @@ export const deleteCase = async (req: AuthRequest, res: Response) => {
     await casesService.deleteCase(req.params.id as string, req.firmId!);
     res.status(200).json({ message: "Case deleted" });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };

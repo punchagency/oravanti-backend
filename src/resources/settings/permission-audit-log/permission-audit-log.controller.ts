@@ -1,4 +1,5 @@
 import { Response } from "express";
+import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import * as auditLogService from "./permission-audit-log.service";
 
@@ -15,6 +16,6 @@ export const getPermissionAuditLog = async (
     );
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };

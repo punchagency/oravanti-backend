@@ -1,23 +1,17 @@
 import { NextFunction, Request, Response } from "express";
-import { HttpException } from "../utils/http.exception";
+import { getErrorResponse } from "../errors";
 
-export const errorMiddleware = (
-  err: HttpException,
-  req: Request,
+export const errorHandler = (
+  error: unknown,
+  _req: Request,
   res: Response,
-  _next: NextFunction,
+  next: NextFunction,
 ) => {
-  // set locals, only providing error in development
-  res.locals.message = err.message;
-  res.locals.error = req.app.get("env") === "development" ? err : {};
+  if (res.headersSent) {
+    next(error);
+    return;
+  }
 
-  // render the error page
-  res.status(err.status || 500);
-
-  console.log(err);
-
-  res.json({
-    success: false,
-    message: err.message || "something went wrong",
-  });
+  const { statusCode, body } = getErrorResponse(error);
+  res.status(statusCode).json(body);
 };

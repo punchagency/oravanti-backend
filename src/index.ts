@@ -1,9 +1,11 @@
 import { toNodeHandler } from "better-auth/node";
 import cors from "cors";
-import "dotenv/config";
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import morgan from "morgan";
+import { env } from "./config/env";
 import { auth } from "./auth";
+import { AuthorizationError, NotFoundError } from "./errors/app-error";
+import { errorHandler } from "./middleware/error.middleware";
 import aiErrorDetectionRoutes from "./resources/ai-error-detection/ai-error-detection.routes";
 import authRoutes from "./resources/auth/auth.routes";
 import calendarRoutes from "./resources/calendar/calendar.routes";
@@ -26,8 +28,8 @@ import securityRoutes from "./resources/settings/security/security.routes";
 import tasksRoutes from "./resources/tasks/tasks.routes";
 
 const app = express();
-const PORT = process.env.PORT || 8001;
-const allowedOrigins = process.env.CORS_ORIGIN;
+const PORT = env.PORT;
+const allowedOrigins = env.CORS_ORIGIN;
 
 const origin = (
   requestOrigin: string | undefined,
@@ -41,7 +43,7 @@ const origin = (
   }
 
   if (!allowedOrigins) {
-    return callback(new Error("Not allowed by CORS"));
+    return callback(new AuthorizationError("Not allowed by CORS"));
   }
 
   const origins = allowedOrigins.split(",").map((origin) => origin.trim());
@@ -49,7 +51,7 @@ const origin = (
   if (origins.includes(requestOrigin as string) || origins.includes("*")) {
     callback(null, true);
   } else {
-    callback(new Error("Not allowed by CORS"));
+    callback(new AuthorizationError("Not allowed by CORS"));
   }
 };
 
@@ -91,6 +93,12 @@ app.use("/api/revenue-analytics", revenueAnalyticsRoutes);
 app.use("/api/documents", documentsRoutes);
 app.use("/api/ai-error-detection", aiErrorDetectionRoutes);
 app.use("/api/calendar", calendarRoutes);
+
+app.use((_req: Request, _res: Response, next: NextFunction) => {
+  next(new NotFoundError("Route not found"));
+});
+
+app.use(errorHandler);
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);

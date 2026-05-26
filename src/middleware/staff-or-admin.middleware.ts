@@ -4,6 +4,7 @@ import { admins } from "../db/schema/admins";
 import { staff } from "../db/schema/staff";
 import { db } from "./../db/client";
 import { AuthRequest } from "./auth.middleware";
+import { AuthorizationError } from "../errors/app-error";
 
 export const requireStaffOrAdmin = async (
   req: AuthRequest,
@@ -34,5 +35,5 @@ export const requireStaffOrAdmin = async (
     return next();
   }
 
-  res.status(403).json({ message: "Staff or admin access required" });
+  throw new AuthorizationError("Staff or admin access required");
 };

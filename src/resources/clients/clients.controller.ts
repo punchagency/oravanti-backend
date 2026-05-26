@@ -1,4 +1,6 @@
 import { Response } from "express";
+import { BadRequestError, NotFoundError } from "../../errors/app-error";
+import { sendErrorResponse } from "../../errors";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import * as clientsService from "./clients.service";
 
@@ -9,7 +11,7 @@ export const getAllCompanies = async (req: AuthRequest, res: Response) => {
     const result = await clientsService.getAllCompanies(req.firmId!);
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -20,12 +22,11 @@ export const getCompanyById = async (req: AuthRequest, res: Response) => {
       req.firmId!,
     );
     if (!result) {
-      res.status(404).json({ message: "Company not found" });
-      return;
+      throw new NotFoundError("Company not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -41,10 +42,9 @@ export const createCompanyWithClients = async (
     !Array.isArray(individuals) ||
     !individuals.length
   ) {
-    res
-      .status(400)
-      .json({ message: "company and at least one individual are required" });
-    return;
+    throw new BadRequestError(
+      "company and at least one individual are required",
+    );
   }
 
   try {
@@ -61,7 +61,7 @@ export const createCompanyWithClients = async (
     }
     res.status(201).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -73,12 +73,11 @@ export const updateCompany = async (req: AuthRequest, res: Response) => {
       req.body,
     );
     if (!result) {
-      res.status(404).json({ message: "Company not found" });
-      return;
+      throw new NotFoundError("Company not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -87,7 +86,7 @@ export const deleteCompany = async (req: AuthRequest, res: Response) => {
     await clientsService.deleteCompany(req.params.id as string, req.firmId!);
     res.status(200).json({ message: "Company deleted" });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -95,8 +94,7 @@ export const addClientToCompany = async (req: AuthRequest, res: Response) => {
   const { clientData, caseData } = req.body;
 
   if (!clientData || !caseData) {
-    res.status(400).json({ message: "clientData and caseData are required" });
-    return;
+    throw new BadRequestError("clientData and caseData are required");
   }
 
   try {
@@ -109,7 +107,7 @@ export const addClientToCompany = async (req: AuthRequest, res: Response) => {
     );
     res.status(201).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -118,7 +116,7 @@ export const getCertifications = async (_req: AuthRequest, res: Response) => {
     const result = await clientsService.getCertifications();
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -128,7 +126,7 @@ export const getAllClients = async (req: AuthRequest, res: Response) => {
     const result = await clientsService.getAllClients(req.firmId!, search);
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -139,12 +137,11 @@ export const getClientById = async (req: AuthRequest, res: Response) => {
       req.firmId!,
     );
     if (!result) {
-      res.status(404).json({ message: "Client not found" });
-      return;
+      throw new NotFoundError("Client not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -152,8 +149,7 @@ export const createClient = async (req: AuthRequest, res: Response) => {
   const { client: clientData, case: caseData, acknowledgeConflict } = req.body;
 
   if (!clientData || !caseData) {
-    res.status(400).json({ message: "client and case data are required" });
-    return;
+    throw new BadRequestError("client and case data are required");
   }
 
   try {
@@ -169,7 +165,7 @@ export const createClient = async (req: AuthRequest, res: Response) => {
     }
     res.status(201).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -181,12 +177,11 @@ export const updateClient = async (req: AuthRequest, res: Response) => {
       req.body,
     );
     if (!result) {
-      res.status(404).json({ message: "Client not found" });
-      return;
+      throw new NotFoundError("Client not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -195,7 +190,7 @@ export const deleteClient = async (req: AuthRequest, res: Response) => {
     await clientsService.deleteClient(req.params.id as string, req.firmId!);
     res.status(200).json({ message: "Client deleted" });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -207,7 +202,7 @@ export const getClientCases = async (req: AuthRequest, res: Response) => {
     );
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -226,15 +221,14 @@ export const addCase = async (req: AuthRequest, res: Response) => {
     }
     res.status(201).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
 export const updateCaseStatus = async (req: AuthRequest, res: Response) => {
   const { status } = req.body;
   if (!status) {
-    res.status(400).json({ message: "status is required" });
-    return;
+    throw new BadRequestError("status is required");
   }
 
   try {
@@ -245,7 +239,7 @@ export const updateCaseStatus = async (req: AuthRequest, res: Response) => {
     );
     res.status(200).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -257,6 +251,6 @@ export const getTeamStaff = async (req: AuthRequest, res: Response) => {
     );
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };

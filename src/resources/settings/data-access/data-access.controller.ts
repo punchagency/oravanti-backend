@@ -1,4 +1,6 @@
 import { Response } from "express";
+import { BadRequestError } from "../../../errors/app-error";
+import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import { logPermissionChange } from "../permission-audit-log/permission-audit-log.service";
 import * as dataAccessService from "./data-access.service";
@@ -11,7 +13,7 @@ export const getDataAccessControls = async (
     const result = await dataAccessService.getDataAccessControls(req.firmId!);
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -22,8 +24,7 @@ export const updateDataAccessControls = async (
   const { controls } = req.body;
 
   if (!Array.isArray(controls) || controls.length === 0) {
-    res.status(400).json({ message: "controls array is required" });
-    return;
+    throw new BadRequestError("controls array is required");
   }
 
   try {
@@ -37,6 +38,6 @@ export const updateDataAccessControls = async (
 
     res.status(200).json({ message: "Data access controls updated" });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };

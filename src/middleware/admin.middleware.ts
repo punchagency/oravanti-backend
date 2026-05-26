@@ -3,6 +3,7 @@ import { NextFunction, Response } from "express";
 import { db } from "../db/client";
 import { admins } from "../db/schema/admins";
 import { AuthRequest } from "./auth.middleware";
+import { AuthorizationError } from "../errors/app-error";
 
 export const requireAdmin = async (
   req: AuthRequest,
@@ -16,8 +17,7 @@ export const requireAdmin = async (
     .limit(1);
 
   if (!record.length) {
-    res.status(403).json({ message: "Admin access required" });
-    return;
+    throw new AuthorizationError("Admin access required");
   }
 
   req.adminId = record[0].id;

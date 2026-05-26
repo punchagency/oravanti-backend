@@ -1,4 +1,6 @@
 import { Response } from "express";
+import { BadRequestError, NotFoundError } from "../../errors/app-error";
+import { sendErrorResponse } from "../../errors";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import * as tasksService from "./tasks.service";
 
@@ -7,7 +9,7 @@ export const getTaskStats = async (req: AuthRequest, res: Response) => {
     const stats = await tasksService.getTaskStats(req.firmId!);
     res.status(200).json(stats);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -22,7 +24,7 @@ export const getAllTasks = async (req: AuthRequest, res: Response) => {
     });
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -33,12 +35,11 @@ export const getTaskById = async (req: AuthRequest, res: Response) => {
       req.firmId!,
     );
     if (!result) {
-      res.status(404).json({ message: "Task not found" });
-      return;
+      throw new NotFoundError("Task not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -46,11 +47,9 @@ export const createTask = async (req: AuthRequest, res: Response) => {
   const { title, description, caseId, assignedToId, dueDate } = req.body;
 
   if (!title || !description || !caseId || !assignedToId || !dueDate) {
-    res.status(400).json({
-      message:
-        "title, description, caseId, assignedToId and dueDate are required",
-    });
-    return;
+    throw new BadRequestError(
+      "title, description, caseId, assignedToId and dueDate are required",
+    );
   }
 
   try {
@@ -61,7 +60,7 @@ export const createTask = async (req: AuthRequest, res: Response) => {
     });
     res.status(201).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -73,12 +72,11 @@ export const updateTask = async (req: AuthRequest, res: Response) => {
       req.body,
     );
     if (!result) {
-      res.status(404).json({ message: "Task not found" });
-      return;
+      throw new NotFoundError("Task not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -87,6 +85,6 @@ export const deleteTask = async (req: AuthRequest, res: Response) => {
     await tasksService.deleteTask(req.params.id as string, req.firmId!);
     res.status(200).json({ message: "Task deleted" });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
