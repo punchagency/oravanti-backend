@@ -10,6 +10,8 @@ import {
   signInAdmin,
   signUpAdmin,
 } from "./auth.service";
+import { BadRequestError } from "../../errors/app-error";
+import { sendErrorResponse } from "../../errors";
 
 export const signUp = async (
   req: Request<{}, {}, SignUpBody>,
@@ -26,13 +28,9 @@ export const signUp = async (
     !firmName ||
     !firmEmail
   ) {
-    res
-      .status(400)
-      .json({
-        message:
-          "firstName, lastName, email, password, firmName, and firmEmail are required",
-      });
-    return;
+    throw new BadRequestError(
+      "firstName, lastName, email, password, firmName, and firmEmail are required",
+    );
   }
 
   try {
@@ -44,7 +42,7 @@ export const signUp = async (
       firm: data.firm,
     });
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -55,8 +53,7 @@ export const signIn = async (
   const { email, password } = req.body;
 
   if (!email || !password) {
-    res.status(400).json({ message: "Email and password are required" });
-    return;
+    throw new BadRequestError("Email and password are required");
   }
 
   try {
@@ -75,7 +72,7 @@ export const signIn = async (
       user: data.user,
     });
   } catch (error) {
-    res.status(401).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 401);
   }
 };
 
@@ -86,14 +83,13 @@ export const forgotPassword = async (
   const { email } = req.body;
 
   if (!email) {
-    res.status(400).json({ message: "Email is required" });
-    return;
+    throw new BadRequestError("Email is required");
   }
 
   try {
     await sendPasswordResetEmail(email);
     res.status(200).json({ message: "Password reset email sent" });
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };

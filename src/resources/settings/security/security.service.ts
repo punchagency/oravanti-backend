@@ -6,6 +6,11 @@ import {
 } from "../../../config/supabase";
 import { db } from "../../../db/client";
 import { admins, adminSessions } from "../../../db/schema";
+import {
+  BadRequestError,
+  ExternalServiceError,
+  NotFoundError,
+} from "../../../errors/app-error";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -48,13 +53,13 @@ export const changePassword = async (
     .where(eq(admins.userId, userId))
     .limit(1);
 
-  if (!adminRecord.length) throw new Error("Admin not found");
+  if (!adminRecord.length) throw new NotFoundError("Admin not found");
 
   const { error: verifyError } = await supabase.auth.signInWithPassword({
     email: adminRecord[0].email,
     password: currentPassword,
   });
-  if (verifyError) throw new Error("Current password is incorrect");
+  if (verifyError) throw new BadRequestError("Current password is incorrect");
 
   const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
     userId,
@@ -62,14 +67,14 @@ export const changePassword = async (
       password: newPassword,
     },
   );
-  if (updateError) throw new Error(updateError.message);
+  if (updateError) throw new ExternalServiceError(updateError.message);
 };
 
 // ─── Two-Factor Authentication ───────────────────────────────────────────────
 
 export const get2FAStatus = async (userId: string) => {
   const { data, error } = await supabaseAdmin.auth.admin.getUserById(userId);
-  if (error) throw new Error(error.message);
+  if (error) throw new ExternalServiceError(error.message);
 
   const factors = data.user?.factors ?? [];
   const totp = factors.find(
@@ -85,7 +90,7 @@ export const enroll2FA = async (accessToken: string) => {
     factorType: "totp",
     issuer: "Oravanti",
   });
-  if (error) throw new Error(error.message);
+  if (error) throw new ExternalServiceError(error.message);
   return data;
 };
 
@@ -98,20 +103,20 @@ export const verify2FA = async (
 
   const { data: challenge, error: challengeError } =
     await userClient.auth.mfa.challenge({ factorId });
-  if (challengeError) throw new Error(challengeError.message);
+  if (challengeError) throw new BadRequestError(challengeError.message);
 
   const { error: verifyError } = await userClient.auth.mfa.verify({
     factorId,
     challengeId: challenge.id,
     code,
   });
-  if (verifyError) throw new Error(verifyError.message);
+  if (verifyError) throw new BadRequestError(verifyError.message);
 };
 
 export const unenroll2FA = async (accessToken: string, factorId: string) => {
   const userClient = createUserClient(accessToken);
   const { error } = await userClient.auth.mfa.unenroll({ factorId });
-  if (error) throw new Error(error.message);
+  if (error) throw new BadRequestError(error.message);
 };
 
 // ─── Active Sessions ─────────────────────────────────────────────────────────

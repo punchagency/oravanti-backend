@@ -1,7 +1,7 @@
 import { supabase, supabaseAdmin } from "../../config/supabase";
 import { db } from "../../db/client";
-import { admins } from "../../db/schema/admins";
-import { firms } from "../../db/schema/firm-info";
+import { admins, firms } from "../../db/schema";
+import { AuthenticationError, BadRequestError } from "../../errors/app-error";
 
 export const signUpAdmin = async (body: {
   firstName: string;
@@ -25,7 +25,7 @@ export const signUpAdmin = async (body: {
       email_confirm: true,
     });
 
-  if (authError) throw new Error(authError.message);
+  if (authError) throw new BadRequestError(authError.message);
 
   const userId = authData.user.id;
 
@@ -59,7 +59,7 @@ export const signUpAdmin = async (body: {
         password: body.password,
       });
 
-    if (sessionError) throw new Error(sessionError.message);
+    if (sessionError) throw new AuthenticationError(sessionError.message);
 
     return { session: sessionData.session, user: sessionData.user, firm };
   } catch (err) {
@@ -74,7 +74,7 @@ export const signInAdmin = async (email: string, password: string) => {
     password,
   });
 
-  if (error) throw new Error(error.message);
+  if (error) throw new AuthenticationError(error.message);
 
   return data;
 };
@@ -84,5 +84,5 @@ export const sendPasswordResetEmail = async (email: string) => {
     redirectTo: "http://localhost:3000/reset-password",
   });
 
-  if (error) throw new Error(error.message);
+  if (error) throw new BadRequestError(error.message);
 };
