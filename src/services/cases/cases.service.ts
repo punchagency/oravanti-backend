@@ -165,17 +165,11 @@ export const createCase = async (
       requiredCertifications: data.requiredCertifications ?? [],
       filingDate: data.filingDate,
       estimatedCompletionDate: data.estimatedCompletionDate,
-<<<<<<< HEAD
       description: data.description,
       notes: data.notes,
       currentEmployer: data.currentEmployer,
-=======
-      description:             data.description,
-      notes:                   data.notes,
-      currentEmployer:         data.currentEmployer,
-      createdByAdminId:        creator?.adminId,
-      createdByStaffId:        creator?.staffId,
->>>>>>> 38037588bc0177ce0bc2d671c52a8f4e5c3670e3
+      createdByAdminId: creator?.adminId,
+      createdByStaffId: creator?.staffId,
     })
     .returning();
 

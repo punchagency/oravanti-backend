@@ -1,11 +1,11 @@
-import { eq, and, ilike, or, count, desc } from 'drizzle-orm';
-import { db } from '../../config/db';
-import { documents } from '../../db/schema/documents';
-import { clients } from '../../db/schema/clients';
-import { staff } from '../../db/schema/staff';
-import { supabaseAdmin } from '../../config/supabase';
+import { and, count, desc, eq } from "drizzle-orm";
+import { supabaseAdmin } from "../../config/supabase";
+import { clients } from "../../db/schema/clients";
+import { documents } from "../../db/schema/documents";
+import { staff } from "../../db/schema/staff";
+import { db } from "./../../db/client";
 
-const BUCKET = 'documents';
+const BUCKET = "documents";
 
 // ─── Storage Path ─────────────────────────────────────────────────────────────
 
@@ -26,38 +26,49 @@ export const uploadDocument = async (
     caseId: string;
     uploadedById: string;
     name: string;
-    category: 'application' | 'supporting' | 'identity' | 'uscis_response';
+    category: "application" | "supporting" | "identity" | "uscis_response";
     fileBuffer: Buffer;
     mimeType: string;
     fileSize: number;
     originalFilename: string;
   },
 ) => {
-  const ext          = data.originalFilename.split('.').pop();
-  const safeFilename = `${Date.now()}-${data.name.replace(/\s+/g, '_')}.${ext}`;
-  const storagePath  = buildStoragePath(firmId, data.clientId, data.caseId, data.category, safeFilename);
+  const ext = data.originalFilename.split(".").pop();
+  const safeFilename = `${Date.now()}-${data.name.replace(/\s+/g, "_")}.${ext}`;
+  const storagePath = buildStoragePath(
+    firmId,
+    data.clientId,
+    data.caseId,
+    data.category,
+    safeFilename,
+  );
 
   const { error: uploadError } = await supabaseAdmin.storage
     .from(BUCKET)
-    .upload(storagePath, data.fileBuffer, { contentType: data.mimeType, upsert: false });
+    .upload(storagePath, data.fileBuffer, {
+      contentType: data.mimeType,
+      upsert: false,
+    });
 
   if (uploadError) throw new Error(uploadError.message);
 
-  const { data: urlData } = supabaseAdmin.storage.from(BUCKET).getPublicUrl(storagePath);
+  const { data: urlData } = supabaseAdmin.storage
+    .from(BUCKET)
+    .getPublicUrl(storagePath);
 
   const [doc] = await db
     .insert(documents)
     .values({
       firmId,
-      clientId:     data.clientId,
-      caseId:       data.caseId,
+      clientId: data.clientId,
+      caseId: data.caseId,
       uploadedById: data.uploadedById,
-      name:         data.name,
-      category:     data.category,
-      fileUrl:      urlData.publicUrl,
+      name: data.name,
+      category: data.category,
+      fileUrl: urlData.publicUrl,
       storagePath,
-      fileSize:     data.fileSize,
-      mimeType:     data.mimeType,
+      fileSize: data.fileSize,
+      mimeType: data.mimeType,
     })
     .returning();
 
@@ -78,26 +89,26 @@ export const getAllDocuments = async (
 ) => {
   const rows = await db
     .select({
-      id:           documents.id,
-      name:         documents.name,
-      category:     documents.category,
-      fileUrl:      documents.fileUrl,
-      fileSize:     documents.fileSize,
-      mimeType:     documents.mimeType,
-      status:       documents.status,
-      aiChecked:    documents.aiChecked,
-      createdAt:    documents.createdAt,
-      clientId:     clients.id,
-      clientFirst:  clients.firstName,
-      clientLast:   clients.lastName,
-      caseId:       documents.caseId,
+      id: documents.id,
+      name: documents.name,
+      category: documents.category,
+      fileUrl: documents.fileUrl,
+      fileSize: documents.fileSize,
+      mimeType: documents.mimeType,
+      status: documents.status,
+      aiChecked: documents.aiChecked,
+      createdAt: documents.createdAt,
+      clientId: clients.id,
+      clientFirst: clients.firstName,
+      clientLast: clients.lastName,
+      caseId: documents.caseId,
       uploadedById: documents.uploadedById,
       uploaderFirst: staff.firstName,
-      uploaderLast:  staff.lastName,
+      uploaderLast: staff.lastName,
     })
     .from(documents)
     .leftJoin(clients, eq(clients.id, documents.clientId))
-    .leftJoin(staff,   eq(staff.id,   documents.uploadedById))
+    .leftJoin(staff, eq(staff.id, documents.uploadedById))
     .where(eq(documents.firmId, firmId))
     .orderBy(desc(documents.createdAt));
 
@@ -105,8 +116,8 @@ export const getAllDocuments = async (
     .filter((r) => {
       if (filters?.category && r.category !== filters.category) return false;
       if (filters?.clientId && r.clientId !== filters.clientId) return false;
-      if (filters?.caseId   && r.caseId   !== filters.caseId)   return false;
-      if (filters?.status   && r.status   !== filters.status)   return false;
+      if (filters?.caseId && r.caseId !== filters.caseId) return false;
+      if (filters?.status && r.status !== filters.status) return false;
       if (filters?.search) {
         const q = filters.search.toLowerCase();
         const matches =
@@ -118,18 +129,21 @@ export const getAllDocuments = async (
       return true;
     })
     .map((r) => ({
-      id:        r.id,
-      name:      r.name,
-      category:  r.category,
-      fileUrl:   r.fileUrl,
-      fileSize:  r.fileSize,
-      mimeType:  r.mimeType,
-      status:    r.status,
+      id: r.id,
+      name: r.name,
+      category: r.category,
+      fileUrl: r.fileUrl,
+      fileSize: r.fileSize,
+      mimeType: r.mimeType,
+      status: r.status,
       aiChecked: r.aiChecked,
       createdAt: r.createdAt,
-      caseId:    r.caseId,
-      client:    { id: r.clientId, name: `${r.clientFirst} ${r.clientLast}` },
-      uploadedBy: { id: r.uploadedById, name: `${r.uploaderFirst} ${r.uploaderLast}` },
+      caseId: r.caseId,
+      client: { id: r.clientId, name: `${r.clientFirst} ${r.clientLast}` },
+      uploadedBy: {
+        id: r.uploadedById,
+        name: `${r.uploaderFirst} ${r.uploaderLast}`,
+      },
     }));
 };
 
@@ -143,9 +157,9 @@ export const getDocumentStats = async (firmId: string) => {
     .groupBy(documents.category);
 
   const stats: Record<string, number> = {
-    application:    0,
-    supporting:     0,
-    identity:       0,
+    application: 0,
+    supporting: 0,
+    identity: 0,
     uscis_response: 0,
   };
 
@@ -169,7 +183,7 @@ export const getDocumentById = async (id: string, firmId: string) => {
 export const updateDocumentStatus = async (
   id: string,
   firmId: string,
-  status: 'approved' | 'review_needed' | 'processing',
+  status: "approved" | "review_needed" | "processing",
 ) => {
   const [updated] = await db
     .update(documents)
@@ -183,7 +197,7 @@ export const updateDocumentStatus = async (
 
 export const getDownloadUrl = async (id: string, firmId: string) => {
   const doc = await getDocumentById(id, firmId);
-  if (!doc) throw new Error('Document not found');
+  if (!doc) throw new Error("Document not found");
 
   const { data, error } = await supabaseAdmin.storage
     .from(BUCKET)
@@ -197,8 +211,10 @@ export const getDownloadUrl = async (id: string, firmId: string) => {
 
 export const deleteDocument = async (id: string, firmId: string) => {
   const doc = await getDocumentById(id, firmId);
-  if (!doc) throw new Error('Document not found');
+  if (!doc) throw new Error("Document not found");
 
   await supabaseAdmin.storage.from(BUCKET).remove([doc.storagePath]);
-  await db.delete(documents).where(and(eq(documents.id, id), eq(documents.firmId, firmId)));
+  await db
+    .delete(documents)
+    .where(and(eq(documents.id, id), eq(documents.firmId, firmId)));
 };
