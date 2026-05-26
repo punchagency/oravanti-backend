@@ -1,11 +1,10 @@
 # Docker
 
-This repository includes a local Docker setup for the Express API plus Supabase Auth and Storage:
+This repository includes a local Docker setup for the Express API plus Postgres.
+Supabase Auth and Storage are expected to come from Supabase Cloud and are configured through the API `.env` file.
 
 - Express API: http://localhost:3000
-- Supabase Auth gateway: http://localhost:54321/auth/v1
-- Supabase Storage gateway: http://localhost:54321/storage/v1
-- Postgres: localhost:54322
+- Postgres: localhost:5432
 
 Start everything:
 
@@ -27,35 +26,28 @@ Stop everything:
 docker compose down
 ```
 
-Remove local database and storage data:
+Remove local database data:
 
 ```sh
 docker compose down -v
 ```
 
-The Compose file uses development-only Supabase JWT keys and a development Postgres password. Replace those values before using this outside local development.
-
-The local Storage setup creates the `avatars` and `documents` buckets used by the API.
+The Compose file uses a development Postgres password from `.env.db`. Replace it before using this outside local development.
+Supabase Cloud should already have any buckets used by the API, such as `avatars` and `documents`.
 
 Service environment is split by container:
 
 - API: `.env`
-- Auth: `.env.auth`
-- PostgREST: `.env.rest`
-- Storage: `.env.storage`
-- Storage bucket bootstrap: `.env.create-storage-buckets`
-- Kong: `.env.kong`
 - Postgres: `.env.db`
-- Database bootstrap: `.env.db-bootstrap`
 
 Each service env file has a matching `.example` file describing its values.
 
-The API continues to use the existing `.env` file. For the API to talk to this local Docker stack, its database and Supabase values should point at container hostnames, for example:
+The API continues to use the existing `.env` file. For the API container to talk to local Postgres and Supabase Cloud, use values like:
 
 ```sh
-DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
-PROD_DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
-SUPABASE_URL=http://kong:8000
-SUPABASE_ANON_KEY=<same value as ANON_KEY in .env.storage>
-SUPABASE_SERVICE_ROLE_KEY=<same value as SERVICE_KEY in .env.storage>
+DATABASE_URL=postgresql://postgres:password123@db:5432/postgres
+PROD_DATABASE_URL=postgresql://postgres:password123@db:5432/postgres
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_ANON_KEY=<supabase-cloud-anon-key>
+SUPABASE_SERVICE_ROLE_KEY=<supabase-cloud-service-role-key>
 ```
