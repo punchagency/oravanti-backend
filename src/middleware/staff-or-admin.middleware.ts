@@ -1,11 +1,15 @@
-import { Response, NextFunction } from 'express';
-import { eq } from 'drizzle-orm';
-import { db } from '../config/db';
-import { admins } from '../db/schema/admins';
-import { staff } from '../db/schema/staff';
-import { AuthRequest } from './auth.middleware';
+import { eq } from "drizzle-orm";
+import { NextFunction, Response } from "express";
+import { admins } from "../db/schema/admins";
+import { staff } from "../db/schema/staff";
+import { db } from "./../db/client";
+import { AuthRequest } from "./auth.middleware";
 
-export const requireStaffOrAdmin = async (req: AuthRequest, res: Response, next: NextFunction) => {
+export const requireStaffOrAdmin = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
   const adminRecord = await db
     .select({ id: admins.id, firmId: admins.firmId })
     .from(admins)
@@ -14,7 +18,7 @@ export const requireStaffOrAdmin = async (req: AuthRequest, res: Response, next:
 
   if (adminRecord.length) {
     req.adminId = adminRecord[0].id;
-    req.firmId  = adminRecord[0].firmId;
+    req.firmId = adminRecord[0].firmId;
     return next();
   }
 
@@ -26,9 +30,9 @@ export const requireStaffOrAdmin = async (req: AuthRequest, res: Response, next:
 
   if (staffRecord.length) {
     req.staffId = staffRecord[0].id;
-    req.firmId  = staffRecord[0].firmId;
+    req.firmId = staffRecord[0].firmId;
     return next();
   }
 
-  res.status(403).json({ message: 'Staff or admin access required' });
+  res.status(403).json({ message: "Staff or admin access required" });
 };

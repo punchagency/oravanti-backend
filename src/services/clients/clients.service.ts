@@ -1,5 +1,4 @@
 import { and, desc, eq, ilike, or } from "drizzle-orm";
-import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { certifications } from "../../db/schema/certifications";
 import { clients } from "../../db/schema/clients";
@@ -7,16 +6,31 @@ import { companies } from "../../db/schema/companies";
 import { staff } from "../../db/schema/staff";
 import { teamMembers } from "../../db/schema/team-members";
 import { generateCaseNumber } from "../cases/cases.service";
+<<<<<<< HEAD
+=======
+import { db } from "./../../db/client";
+>>>>>>> main
 
 // ─── Companies ───────────────────────────────────────────────────────────────
 
 export const createCompany = async (
   firmId: string,
   data: {
-    companyName: string; companyType: string; ein?: string; industry?: string;
-    numberOfEmployees?: number; address: string; city: string; state: string;
-    zipCode?: string; country: string; phone?: string; website?: string;
-    primaryContactName?: string; primaryContactEmail?: string; primaryContactPhone?: string;
+    companyName: string;
+    companyType: string;
+    ein?: string;
+    industry?: string;
+    numberOfEmployees?: number;
+    address: string;
+    city: string;
+    state: string;
+    zipCode?: string;
+    country: string;
+    phone?: string;
+    website?: string;
+    primaryContactName?: string;
+    primaryContactEmail?: string;
+    primaryContactPhone?: string;
   },
 ) => {
   const [company] = await db
@@ -29,13 +43,13 @@ export const createCompany = async (
 export const getAllCompanies = async (firmId: string) => {
   const rows = await db
     .select({
-      id:          companies.id,
+      id: companies.id,
       companyName: companies.companyName,
       companyType: companies.companyType,
-      industry:    companies.industry,
-      country:     companies.country,
-      status:      companies.status,
-      createdAt:   companies.createdAt,
+      industry: companies.industry,
+      country: companies.country,
+      status: companies.status,
+      createdAt: companies.createdAt,
     })
     .from(companies)
     .where(eq(companies.firmId, firmId))
@@ -53,7 +67,14 @@ export const getCompanyById = async (id: string, firmId: string) => {
   if (!company) return null;
 
   const companyClients = await db
-    .select({ id: clients.id, firstName: clients.firstName, middleName: clients.middleName, lastName: clients.lastName, email: clients.email, status: clients.status })
+    .select({
+      id: clients.id,
+      firstName: clients.firstName,
+      middleName: clients.middleName,
+      lastName: clients.lastName,
+      email: clients.email,
+      status: clients.status,
+    })
     .from(clients)
     .where(and(eq(clients.companyId, id), eq(clients.firmId, firmId)));
 
@@ -73,8 +94,13 @@ export const updateCompany = async (
   return updated;
 };
 
-export const deleteCompany = async (id: string, firmId: string): Promise<void> => {
-  await db.delete(companies).where(and(eq(companies.id, id), eq(companies.firmId, firmId)));
+export const deleteCompany = async (
+  id: string,
+  firmId: string,
+): Promise<void> => {
+  await db
+    .delete(companies)
+    .where(and(eq(companies.id, id), eq(companies.firmId, firmId)));
 };
 
 // ─── Company client batch creation ───────────────────────────────────────────
@@ -84,16 +110,29 @@ export const createCompanyWithClients = async (
   companyData: Parameters<typeof createCompany>[1],
   individuals: Array<{
     clientData: {
-      firstName: string; middleName?: string; lastName: string;
-      secondLastName?: string; thirdLastName?: string; fourthLastName?: string;
-      email: string; phone: string; dateOfBirth: string;
-      nationality: string; countryOfOrigin: string;
-      passportNumber?: string; currentAddress: string;
+      firstName: string;
+      middleName?: string;
+      lastName: string;
+      secondLastName?: string;
+      thirdLastName?: string;
+      fourthLastName?: string;
+      email: string;
+      phone: string;
+      dateOfBirth: string;
+      nationality: string;
+      countryOfOrigin: string;
+      passportNumber?: string;
+      currentAddress: string;
     };
     caseData: {
-      caseType: string; description: string; filingDate: string;
-      teamId?: string; assignedStaffId?: string;
-      requiredCertifications?: string[]; currentEmployer?: string; notes?: string;
+      caseType: string;
+      description: string;
+      filingDate: string;
+      teamId?: string;
+      assignedStaffId?: string;
+      requiredCertifications?: string[];
+      currentEmployer?: string;
+      notes?: string;
     };
   }>,
   creator?: { adminId?: string; staffId?: string },
@@ -104,18 +143,29 @@ export const createCompanyWithClients = async (
   }
 
   if (!options?.acknowledgeConflict) {
-    const allConflicts: Array<{ individual: number; conflicts: ConflictResult[] }> = [];
+    const allConflicts: Array<{
+      individual: number;
+      conflicts: ConflictResult[];
+    }> = [];
     for (let i = 0; i < individuals.length; i++) {
-      const conflicts = await checkForConflicts(firmId, individuals[i].clientData);
+      const conflicts = await checkForConflicts(
+        firmId,
+        individuals[i].clientData,
+      );
       if (conflicts.length) allConflicts.push({ individual: i, conflicts });
     }
-    if (allConflicts.length) return { type: 'conflict_warning' as const, conflicts: allConflicts };
+    if (allConflicts.length)
+      return { type: "conflict_warning" as const, conflicts: allConflicts };
   }
 
   return db.transaction(async (tx) => {
     const [company] = await tx
       .insert(companies)
-      .values({ ...companyData, firmId, companyType: companyData.companyType as any })
+      .values({
+        ...companyData,
+        firmId,
+        companyType: companyData.companyType as any,
+      })
       .returning();
 
     const results = [];
@@ -128,9 +178,9 @@ export const createCompanyWithClients = async (
         .values({
           ...clientData,
           firmId,
-          status:     'active',
-          clientType: 'company_representative',
-          companyId:  company.id,
+          status: "active",
+          clientType: "company_representative",
+          companyId: company.id,
         })
         .returning();
 
@@ -139,17 +189,17 @@ export const createCompanyWithClients = async (
         .values({
           firmId,
           caseNumber,
-          clientId:               newClient.id,
-          caseType:               caseData.caseType as any,
-          description:            caseData.description,
-          filingDate:             caseData.filingDate,
-          teamId:                 caseData.teamId,
-          assignedStaffId:        caseData.assignedStaffId,
+          clientId: newClient.id,
+          caseType: caseData.caseType as any,
+          description: caseData.description,
+          filingDate: caseData.filingDate,
+          teamId: caseData.teamId,
+          assignedStaffId: caseData.assignedStaffId,
           requiredCertifications: caseData.requiredCertifications ?? [],
-          currentEmployer:        company.companyName,
-          notes:                  caseData.notes,
-          createdByAdminId:       creator?.adminId,
-          createdByStaffId:       creator?.staffId,
+          currentEmployer: company.companyName,
+          notes: caseData.notes,
+          createdByAdminId: creator?.adminId,
+          createdByStaffId: creator?.staffId,
         })
         .returning();
 
@@ -166,16 +216,28 @@ export const addClientToCompany = async (
   companyId: string,
   firmId: string,
   clientData: {
-    firstName: string; middleName?: string; lastName: string;
-    secondLastName?: string; thirdLastName?: string; fourthLastName?: string;
-    email: string; phone: string; dateOfBirth: string;
-    nationality: string; countryOfOrigin: string;
-    passportNumber?: string; currentAddress: string;
+    firstName: string;
+    middleName?: string;
+    lastName: string;
+    secondLastName?: string;
+    thirdLastName?: string;
+    fourthLastName?: string;
+    email: string;
+    phone: string;
+    dateOfBirth: string;
+    nationality: string;
+    countryOfOrigin: string;
+    passportNumber?: string;
+    currentAddress: string;
   },
   caseData: {
-    caseType: string; description: string; filingDate: string;
-    teamId?: string; assignedStaffId?: string;
-    requiredCertifications?: string[]; notes?: string;
+    caseType: string;
+    description: string;
+    filingDate: string;
+    teamId?: string;
+    assignedStaffId?: string;
+    requiredCertifications?: string[];
+    notes?: string;
   },
   creator?: { adminId?: string; staffId?: string },
 ) => {
@@ -184,7 +246,7 @@ export const addClientToCompany = async (
     .from(companies)
     .where(and(eq(companies.id, companyId), eq(companies.firmId, firmId)));
 
-  if (!company) throw new Error('Company not found');
+  if (!company) throw new Error("Company not found");
 
   await checkForDuplicate(firmId, clientData);
 
@@ -196,8 +258,8 @@ export const addClientToCompany = async (
       .values({
         ...clientData,
         firmId,
-        status:     'active',
-        clientType: 'company_representative',
+        status: "active",
+        clientType: "company_representative",
         companyId,
       })
       .returning();
@@ -207,17 +269,17 @@ export const addClientToCompany = async (
       .values({
         firmId,
         caseNumber,
-        clientId:               newClient.id,
-        caseType:               caseData.caseType as any,
-        description:            caseData.description,
-        filingDate:             caseData.filingDate,
-        teamId:                 caseData.teamId,
-        assignedStaffId:        caseData.assignedStaffId,
+        clientId: newClient.id,
+        caseType: caseData.caseType as any,
+        description: caseData.description,
+        filingDate: caseData.filingDate,
+        teamId: caseData.teamId,
+        assignedStaffId: caseData.assignedStaffId,
         requiredCertifications: caseData.requiredCertifications ?? [],
-        currentEmployer:        company.companyName,
-        notes:                  caseData.notes,
-        createdByAdminId:       creator?.adminId,
-        createdByStaffId:       creator?.staffId,
+        currentEmployer: company.companyName,
+        notes: caseData.notes,
+        createdByAdminId: creator?.adminId,
+        createdByStaffId: creator?.staffId,
       })
       .returning();
 
@@ -228,22 +290,22 @@ export const addClientToCompany = async (
 // ─── Conflict of Interest Detection ──────────────────────────────────────────
 
 export type ConflictResult = {
-  existingClientId:   string;
+  existingClientId: string;
   existingClientName: string;
-  reason:             'same_surname_and_address' | 'same_surname' | 'same_address';
-  message:            string;
+  reason: "same_surname_and_address" | "same_surname" | "same_address";
+  message: string;
 };
 
 export const checkForConflicts = async (
-  firmId:    string,
-  data:      { lastName: string; currentAddress: string },
+  firmId: string,
+  data: { lastName: string; currentAddress: string },
   excludeId?: string,
 ): Promise<ConflictResult[]> => {
   const existing = await db
     .select({
-      id:             clients.id,
-      firstName:      clients.firstName,
-      lastName:       clients.lastName,
+      id: clients.id,
+      firstName: clients.firstName,
+      lastName: clients.lastName,
       currentAddress: clients.currentAddress,
     })
     .from(clients)
@@ -255,29 +317,30 @@ export const checkForConflicts = async (
     if (excludeId && client.id === excludeId) continue;
 
     const sameSurname = normName(client.lastName) === normName(data.lastName);
-    const sameAddress = normName(client.currentAddress) === normName(data.currentAddress);
-    const name        = `${client.firstName} ${client.lastName}`;
+    const sameAddress =
+      normName(client.currentAddress) === normName(data.currentAddress);
+    const name = `${client.firstName} ${client.lastName}`;
 
     if (sameSurname && sameAddress) {
       conflicts.push({
-        existingClientId:   client.id,
+        existingClientId: client.id,
         existingClientName: name,
-        reason:             'same_surname_and_address',
-        message:            `We are representing someone with the same surname living at the same address (${name})`,
+        reason: "same_surname_and_address",
+        message: `We are representing someone with the same surname living at the same address (${name})`,
       });
     } else if (sameSurname) {
       conflicts.push({
-        existingClientId:   client.id,
+        existingClientId: client.id,
         existingClientName: name,
-        reason:             'same_surname',
-        message:            `We are representing someone with the same surname (${name})`,
+        reason: "same_surname",
+        message: `We are representing someone with the same surname (${name})`,
       });
     } else if (sameAddress) {
       conflicts.push({
-        existingClientId:   client.id,
+        existingClientId: client.id,
         existingClientName: name,
-        reason:             'same_address',
-        message:            `We are representing someone at the same address (${name})`,
+        reason: "same_address",
+        message: `We are representing someone at the same address (${name})`,
       });
     }
   }
@@ -287,7 +350,7 @@ export const checkForConflicts = async (
 
 // ─── Duplicate Detection ──────────────────────────────────────────────────────
 
-const normName = (s?: string | null) => (s ?? '').trim().toLowerCase();
+const normName = (s?: string | null) => (s ?? "").trim().toLowerCase();
 
 const checkForDuplicate = async (
   firmId: string,
@@ -306,16 +369,16 @@ const checkForDuplicate = async (
 ) => {
   const existing = await db
     .select({
-      id:             clients.id,
-      email:          clients.email,
+      id: clients.id,
+      email: clients.email,
       passportNumber: clients.passportNumber,
-      firstName:      clients.firstName,
-      middleName:     clients.middleName,
-      lastName:       clients.lastName,
+      firstName: clients.firstName,
+      middleName: clients.middleName,
+      lastName: clients.lastName,
       secondLastName: clients.secondLastName,
-      thirdLastName:  clients.thirdLastName,
+      thirdLastName: clients.thirdLastName,
       fourthLastName: clients.fourthLastName,
-      dateOfBirth:    clients.dateOfBirth,
+      dateOfBirth: clients.dateOfBirth,
     })
     .from(clients)
     .where(eq(clients.firmId, firmId));
@@ -324,26 +387,44 @@ const checkForDuplicate = async (
     if (excludeId && client.id === excludeId) continue;
 
     if (client.email.toLowerCase() === data.email.toLowerCase()) {
-      throw new Error('A client with this email address already exists at this firm');
+      throw new Error(
+        "A client with this email address already exists at this firm",
+      );
     }
 
-    if (data.passportNumber && client.passportNumber && client.passportNumber === data.passportNumber) {
-      throw new Error('A client with this passport number already exists at this firm');
+    if (
+      data.passportNumber &&
+      client.passportNumber &&
+      client.passportNumber === data.passportNumber
+    ) {
+      throw new Error(
+        "A client with this passport number already exists at this firm",
+      );
     }
 
     const sameFullName =
-      normName(client.firstName)      === normName(data.firstName)      &&
-      normName(client.middleName)      === normName(data.middleName)      &&
-      normName(client.lastName)        === normName(data.lastName)        &&
-      normName(client.secondLastName)  === normName(data.secondLastName)  &&
-      normName(client.thirdLastName)   === normName(data.thirdLastName)   &&
-      normName(client.fourthLastName)  === normName(data.fourthLastName)  &&
-      client.dateOfBirth               === data.dateOfBirth;
+      normName(client.firstName) === normName(data.firstName) &&
+      normName(client.middleName) === normName(data.middleName) &&
+      normName(client.lastName) === normName(data.lastName) &&
+      normName(client.secondLastName) === normName(data.secondLastName) &&
+      normName(client.thirdLastName) === normName(data.thirdLastName) &&
+      normName(client.fourthLastName) === normName(data.fourthLastName) &&
+      client.dateOfBirth === data.dateOfBirth;
 
     if (sameFullName) {
-      const fullName = [data.firstName, data.middleName, data.lastName, data.secondLastName, data.thirdLastName, data.fourthLastName]
-        .filter(Boolean).join(' ');
-      throw new Error(`A client named "${fullName}" with this date of birth already exists at this firm`);
+      const fullName = [
+        data.firstName,
+        data.middleName,
+        data.lastName,
+        data.secondLastName,
+        data.thirdLastName,
+        data.fourthLastName,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      throw new Error(
+        `A client named "${fullName}" with this date of birth already exists at this firm`,
+      );
     }
   }
 };
@@ -470,7 +551,8 @@ export const createClient = async (
 
   if (!options?.acknowledgeConflict) {
     const conflicts = await checkForConflicts(firmId, clientData);
-    if (conflicts.length) return { type: 'conflict_warning' as const, conflicts };
+    if (conflicts.length)
+      return { type: "conflict_warning" as const, conflicts };
   }
 
   const caseNumber = await generateCaseNumber(caseData.caseType, firmId);
@@ -507,22 +589,43 @@ export const updateClient = async (
   firmId: string,
   data: Partial<typeof clients.$inferInsert>,
 ) => {
-  if (data.email || data.passportNumber || data.firstName || data.middleName || data.lastName ||
-      data.secondLastName || data.thirdLastName || data.fourthLastName || data.dateOfBirth) {
-    const current = await db.select().from(clients).where(and(eq(clients.id, id), eq(clients.firmId, firmId))).limit(1);
+  if (
+    data.email ||
+    data.passportNumber ||
+    data.firstName ||
+    data.middleName ||
+    data.lastName ||
+    data.secondLastName ||
+    data.thirdLastName ||
+    data.fourthLastName ||
+    data.dateOfBirth
+  ) {
+    const current = await db
+      .select()
+      .from(clients)
+      .where(and(eq(clients.id, id), eq(clients.firmId, firmId)))
+      .limit(1);
     if (!current.length) return null;
 
-    await checkForDuplicate(firmId, {
-      email:          data.email           ?? current[0].email,
-      passportNumber: data.passportNumber  ?? current[0].passportNumber  ?? undefined,
-      firstName:      data.firstName       ?? current[0].firstName,
-      middleName:     data.middleName      ?? current[0].middleName      ?? undefined,
-      lastName:       data.lastName        ?? current[0].lastName,
-      secondLastName: data.secondLastName  ?? current[0].secondLastName  ?? undefined,
-      thirdLastName:  data.thirdLastName   ?? current[0].thirdLastName   ?? undefined,
-      fourthLastName: data.fourthLastName  ?? current[0].fourthLastName  ?? undefined,
-      dateOfBirth:    data.dateOfBirth     ?? current[0].dateOfBirth,
-    }, id);
+    await checkForDuplicate(
+      firmId,
+      {
+        email: data.email ?? current[0].email,
+        passportNumber:
+          data.passportNumber ?? current[0].passportNumber ?? undefined,
+        firstName: data.firstName ?? current[0].firstName,
+        middleName: data.middleName ?? current[0].middleName ?? undefined,
+        lastName: data.lastName ?? current[0].lastName,
+        secondLastName:
+          data.secondLastName ?? current[0].secondLastName ?? undefined,
+        thirdLastName:
+          data.thirdLastName ?? current[0].thirdLastName ?? undefined,
+        fourthLastName:
+          data.fourthLastName ?? current[0].fourthLastName ?? undefined,
+        dateOfBirth: data.dateOfBirth ?? current[0].dateOfBirth,
+      },
+      id,
+    );
   }
 
   const [updated] = await db
@@ -565,16 +668,32 @@ export const addCase = async (
 ) => {
   if (!options?.acknowledgeExistingCase) {
     const existing = await db
-      .select({ id: cases.id, caseNumber: cases.caseNumber, caseType: cases.caseType, status: cases.status })
+      .select({
+        id: cases.id,
+        caseNumber: cases.caseNumber,
+        caseType: cases.caseType,
+        status: cases.status,
+      })
       .from(cases)
-      .where(and(eq(cases.clientId, clientId), eq(cases.firmId, firmId), eq(cases.caseType, caseData.caseType as any)));
+      .where(
+        and(
+          eq(cases.clientId, clientId),
+          eq(cases.firmId, firmId),
+          eq(cases.caseType, caseData.caseType as any),
+        ),
+      );
 
     if (existing.length) {
       const match = existing[0];
       return {
-        type:    'case_exists_warning' as const,
-        message: `This client already has a ${match.caseType.replace(/_/g, ' ')} case that is ${match.status.replace(/_/g, ' ')} (${match.caseNumber})`,
-        existingCases: existing.map(c => ({ id: c.id, caseNumber: c.caseNumber, caseType: c.caseType, status: c.status })),
+        type: "case_exists_warning" as const,
+        message: `This client already has a ${match.caseType.replace(/_/g, " ")} case that is ${match.status.replace(/_/g, " ")} (${match.caseNumber})`,
+        existingCases: existing.map((c) => ({
+          id: c.id,
+          caseNumber: c.caseNumber,
+          caseType: c.caseType,
+          status: c.status,
+        })),
       };
     }
   }

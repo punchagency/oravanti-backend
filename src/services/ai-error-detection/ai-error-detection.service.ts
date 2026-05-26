@@ -1,9 +1,9 @@
-import { eq, and, count, desc, gte, sql } from 'drizzle-orm';
-import { db } from '../../config/db';
-import { aiErrorFlags } from '../../db/schema/ai-error-flags';
-import { aiSystemConfig } from '../../db/schema/ai-system-config';
-import { clients } from '../../db/schema/clients';
-import { cases } from '../../db/schema/cases';
+import { and, count, desc, eq, gte } from "drizzle-orm";
+import { aiErrorFlags } from "../../db/schema/ai-error-flags";
+import { aiSystemConfig } from "../../db/schema/ai-system-config";
+import { cases } from "../../db/schema/cases";
+import { clients } from "../../db/schema/clients";
+import { db } from "./../../db/client";
 
 // ─── Stats ────────────────────────────────────────────────────────────────────
 
@@ -15,18 +15,25 @@ export const getStats = async (firmId: string) => {
   const [detectedThisMonth] = await db
     .select({ total: count() })
     .from(aiErrorFlags)
-    .where(and(eq(aiErrorFlags.firmId, firmId), gte(aiErrorFlags.createdAt, startOfMonth)));
+    .where(
+      and(
+        eq(aiErrorFlags.firmId, firmId),
+        gte(aiErrorFlags.createdAt, startOfMonth),
+      ),
+    );
 
   const [prevented] = await db
     .select({ total: count() })
     .from(aiErrorFlags)
-    .where(and(eq(aiErrorFlags.firmId, firmId), eq(aiErrorFlags.status, 'resolved')));
+    .where(
+      and(eq(aiErrorFlags.firmId, firmId), eq(aiErrorFlags.status, "resolved")),
+    );
 
   return {
     errorsDetectedThisMonth: Number(detectedThisMonth.total),
-    errorsPrevented:         Number(prevented.total),
-    avgDetectionTime:        '< 2 min',   // placeholder — update when AI service reports timing
-    errorRateReduction:      '34%',        // placeholder — update when AI service reports metrics
+    errorsPrevented: Number(prevented.total),
+    avgDetectionTime: "< 2 min", // placeholder — update when AI service reports timing
+    errorRateReduction: "34%", // placeholder — update when AI service reports metrics
   };
 };
 
@@ -38,46 +45,46 @@ export const getAllFlags = async (
 ) => {
   const rows = await db
     .select({
-      id:            aiErrorFlags.id,
-      title:         aiErrorFlags.title,
-      description:   aiErrorFlags.description,
-      severity:      aiErrorFlags.severity,
-      status:        aiErrorFlags.status,
+      id: aiErrorFlags.id,
+      title: aiErrorFlags.title,
+      description: aiErrorFlags.description,
+      severity: aiErrorFlags.severity,
+      status: aiErrorFlags.status,
       affectedField: aiErrorFlags.affectedField,
-      documentRef:   aiErrorFlags.documentRef,
-      caseId:        aiErrorFlags.caseId,
-      documentId:    aiErrorFlags.documentId,
-      createdAt:     aiErrorFlags.createdAt,
-      clientId:      clients.id,
-      clientFirst:   clients.firstName,
-      clientLast:    clients.lastName,
-      caseType:      cases.caseType,
+      documentRef: aiErrorFlags.documentRef,
+      caseId: aiErrorFlags.caseId,
+      documentId: aiErrorFlags.documentId,
+      createdAt: aiErrorFlags.createdAt,
+      clientId: clients.id,
+      clientFirst: clients.firstName,
+      clientLast: clients.lastName,
+      caseType: cases.caseType,
     })
     .from(aiErrorFlags)
     .leftJoin(clients, eq(clients.id, aiErrorFlags.clientId))
-    .leftJoin(cases,   eq(cases.id,   aiErrorFlags.caseId))
+    .leftJoin(cases, eq(cases.id, aiErrorFlags.caseId))
     .where(eq(aiErrorFlags.firmId, firmId))
     .orderBy(desc(aiErrorFlags.createdAt));
 
   return rows
     .filter((r) => {
       if (filters?.severity && r.severity !== filters.severity) return false;
-      if (filters?.status   && r.status   !== filters.status)   return false;
+      if (filters?.status && r.status !== filters.status) return false;
       return true;
     })
     .map((r) => ({
-      id:            r.id,
-      title:         r.title,
-      description:   r.description,
-      severity:      r.severity,
-      status:        r.status,
+      id: r.id,
+      title: r.title,
+      description: r.description,
+      severity: r.severity,
+      status: r.status,
       affectedField: r.affectedField,
-      documentRef:   r.documentRef,
-      caseId:        r.caseId,
-      documentId:    r.documentId,
-      createdAt:     r.createdAt,
-      client:        { id: r.clientId, name: `${r.clientFirst} ${r.clientLast}` },
-      caseType:      r.caseType,
+      documentRef: r.documentRef,
+      caseId: r.caseId,
+      documentId: r.documentId,
+      createdAt: r.createdAt,
+      client: { id: r.clientId, name: `${r.clientFirst} ${r.clientLast}` },
+      caseType: r.caseType,
     }));
 };
 
@@ -96,16 +103,16 @@ export const getFlagById = async (id: string, firmId: string) => {
 export const updateFlagStatus = async (
   id: string,
   firmId: string,
-  status: 'pending_review' | 'under_review' | 'resolved',
+  status: "pending_review" | "under_review" | "resolved",
   resolvedById?: string,
 ) => {
   const [updated] = await db
     .update(aiErrorFlags)
     .set({
       status,
-      resolvedById: status === 'resolved' ? resolvedById : null,
-      resolvedAt:   status === 'resolved' ? new Date()   : null,
-      updatedAt:    new Date(),
+      resolvedById: status === "resolved" ? resolvedById : null,
+      resolvedAt: status === "resolved" ? new Date() : null,
+      updatedAt: new Date(),
     })
     .where(and(eq(aiErrorFlags.id, id), eq(aiErrorFlags.firmId, firmId)))
     .returning();
@@ -122,7 +129,7 @@ export const createFlag = async (
     documentId?: string;
     title: string;
     description: string;
-    severity: 'critical' | 'high' | 'medium' | 'low';
+    severity: "critical" | "high" | "medium" | "low";
     affectedField?: string;
     documentRef?: string;
   },

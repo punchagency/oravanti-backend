@@ -4,10 +4,13 @@ import "dotenv/config";
 import express from "express";
 import morgan from "morgan";
 import { auth } from "./auth";
+import aiErrorDetectionRoutes from "./routes/ai-error-detection/ai-error-detection.routes";
 import authRoutes from "./routes/auth.routes";
+import calendarRoutes from "./routes/calendar/calendar.routes";
 import casesRoutes from "./routes/cases/cases.routes";
 import clientResponsivenessRoutes from "./routes/client-responsiveness/client-responsiveness.routes";
 import clientsRoutes from "./routes/clients/clients.routes";
+import documentsRoutes from "./routes/documents/documents.routes";
 import assignmentsRoutes from "./routes/hr/assignments.routes";
 import staffRoutes from "./routes/hr/staff.routes";
 import teamsRoutes from "./routes/hr/teams.routes";
@@ -21,9 +24,6 @@ import permissionAuditLogRoutes from "./routes/settings/permission-audit-log.rou
 import profileRoutes from "./routes/settings/profile.routes";
 import securityRoutes from "./routes/settings/security.routes";
 import tasksRoutes from "./routes/tasks/tasks.routes";
-import documentsRoutes from "./routes/documents/documents.routes";
-import aiErrorDetectionRoutes from "./routes/ai-error-detection/ai-error-detection.routes";
-import calendarRoutes from "./routes/calendar/calendar.routes";
 
 const app = express();
 const PORT = process.env.PORT || 8001;
@@ -63,9 +63,12 @@ app.use(cors(corsOptions));
 app.use(morgan("dev"));
 app.use(express.json());
 
-app.get("/health", (_req, res) => {
-  res.status(200).json({ status: "ok" });
-});
+/**
+ * Better Auth's toNodeHandler is used to wrap the auth instance and handle all requests to /api/auth/* routes.
+ * This allows Better Auth to manage authentication and session handling for these routes.
+ * The authRoutes are also mounted on /api/auth to handle any additional authentication-related endpoints.
+ */
+app.all("/api/auth/*splat", toNodeHandler(auth));
 
 app.use("/api/auth", authRoutes);
 app.all("/api/auth/*splat", toNodeHandler(auth));
