@@ -6,7 +6,10 @@ import { companies } from "../../db/schema/companies";
 import { staff } from "../../db/schema/staff";
 import { teamMembers } from "../../db/schema/team-members";
 import { generateCaseNumber } from "../cases/cases.service";
+<<<<<<< HEAD
+=======
 import { db } from "./../../db/client";
+>>>>>>> main
 
 // ─── Companies ───────────────────────────────────────────────────────────────
 
