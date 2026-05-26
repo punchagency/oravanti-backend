@@ -1,22 +1,12 @@
-<<<<<<< HEAD
 import { and, desc, eq, ilike, or } from "drizzle-orm";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { certifications } from "../../db/schema/certifications";
 import { clients } from "../../db/schema/clients";
+import { companies } from "../../db/schema/companies";
 import { staff } from "../../db/schema/staff";
+import { teamMembers } from "../../db/schema/team-members";
 import { generateCaseNumber } from "../cases/cases.service";
-=======
-import { eq, desc, ilike, or, and } from 'drizzle-orm';
-import { db } from '../../config/db';
-import { clients } from '../../db/schema/clients';
-import { companies } from '../../db/schema/companies';
-import { cases } from '../../db/schema/cases';
-import { certifications } from '../../db/schema/certifications';
-import { staff } from '../../db/schema/staff';
-import { teamMembers } from '../../db/schema/team-members';
-import { generateCaseNumber } from '../cases/cases.service';
->>>>>>> 38037588bc0177ce0bc2d671c52a8f4e5c3670e3
 
 // ─── Companies ───────────────────────────────────────────────────────────────
 
@@ -450,9 +440,12 @@ export const getClientById = async (id: string, firmId: string) => {
 export const createClient = async (
   firmId: string,
   clientData: {
-<<<<<<< HEAD
     firstName: string;
+    middleName?: string;
     lastName: string;
+    secondLastName?: string;
+    thirdLastName?: string;
+    fourthLastName?: string;
     email: string;
     phone: string;
     dateOfBirth: string;
@@ -460,13 +453,6 @@ export const createClient = async (
     countryOfOrigin: string;
     passportNumber?: string;
     currentAddress: string;
-=======
-    firstName: string; middleName?: string; lastName: string;
-    secondLastName?: string; thirdLastName?: string; fourthLastName?: string;
-    email: string; phone: string; dateOfBirth: string;
-    nationality: string; countryOfOrigin: string;
-    passportNumber?: string; currentAddress: string;
->>>>>>> 38037588bc0177ce0bc2d671c52a8f4e5c3670e3
   },
   caseData: {
     caseType: string;
