@@ -1,4 +1,6 @@
 import { Response } from "express";
+import { BadRequestError } from "../../../errors/app-error";
+import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import { logPermissionChange } from "../permission-audit-log/permission-audit-log.service";
 import * as accessControlService from "./access-control.service";
@@ -8,7 +10,7 @@ export const getRoleOverview = async (req: AuthRequest, res: Response) => {
     const result = await accessControlService.getRoleOverview(req.firmId!);
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -17,7 +19,7 @@ export const getPermissions = async (req: AuthRequest, res: Response) => {
     const result = await accessControlService.getPermissions(req.firmId!);
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -25,8 +27,7 @@ export const savePermissions = async (req: AuthRequest, res: Response) => {
   const { permissions } = req.body;
 
   if (!Array.isArray(permissions) || permissions.length === 0) {
-    res.status(400).json({ message: "permissions array is required" });
-    return;
+    throw new BadRequestError("permissions array is required");
   }
 
   try {
@@ -40,6 +41,6 @@ export const savePermissions = async (req: AuthRequest, res: Response) => {
 
     res.status(200).json({ message: "Permissions saved" });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };

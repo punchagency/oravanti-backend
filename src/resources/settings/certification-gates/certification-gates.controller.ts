@@ -1,4 +1,6 @@
 import { Response } from "express";
+import { BadRequestError } from "../../../errors/app-error";
+import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import { logPermissionChange } from "../permission-audit-log/permission-audit-log.service";
 import * as gatesService from "./certification-gates.service";
@@ -11,7 +13,7 @@ export const getCertificationGates = async (
     const result = await gatesService.getCertificationGates(req.firmId!);
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -22,8 +24,7 @@ export const updateCertificationGates = async (
   const { gates } = req.body;
 
   if (!Array.isArray(gates) || gates.length === 0) {
-    res.status(400).json({ message: "gates array is required" });
-    return;
+    throw new BadRequestError("gates array is required");
   }
 
   try {
@@ -35,7 +36,7 @@ export const updateCertificationGates = async (
     ).catch(() => {});
     res.status(200).json({ message: "Certification gates updated" });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -47,7 +48,7 @@ export const getActivationRequirements = async (
     const result = await gatesService.getActivationRequirements(req.firmId!);
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -58,8 +59,7 @@ export const updateActivationRequirements = async (
   const { certificationCodes } = req.body;
 
   if (!Array.isArray(certificationCodes)) {
-    res.status(400).json({ message: "certificationCodes array is required" });
-    return;
+    throw new BadRequestError("certificationCodes array is required");
   }
 
   try {
@@ -76,6 +76,6 @@ export const updateActivationRequirements = async (
       message: `Activation requirements updated. ${result.updated} paralegal(s) re-evaluated.`,
     });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };

@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { supabase } from "../../../config/supabase";
 import { db } from "../../../db/client";
 import { profiles } from "../../../db/schema";
+import { ExternalServiceError } from "../../../errors/app-error";
 import { UpdateProfileBody } from "../../../types/settings.types";
 
 export const getProfile = async (userId: string) => {
@@ -48,7 +49,7 @@ export const uploadAvatar = async (
       upsert: true,
     });
 
-  if (error) throw new Error(error.message);
+  if (error) throw new ExternalServiceError(error.message);
 
   const { data } = supabase.storage.from("avatars").getPublicUrl(fileName);
 

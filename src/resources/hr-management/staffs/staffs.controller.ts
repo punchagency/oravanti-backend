@@ -1,4 +1,6 @@
 import { Response } from "express";
+import { BadRequestError, NotFoundError } from "../../../errors/app-error";
+import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import { AddStaffBody, UpdateStaffBody } from "../../../types/hr.types";
 import * as staffService from "./staffs.service";
@@ -8,7 +10,7 @@ export const getAll = async (req: AuthRequest, res: Response) => {
     const result = await staffService.getAllStaff(req.firmId!);
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -19,12 +21,11 @@ export const getById = async (req: AuthRequest, res: Response) => {
       req.firmId!,
     );
     if (!result) {
-      res.status(404).json({ message: "Staff member not found" });
-      return;
+      throw new NotFoundError("Staff member not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -41,8 +42,7 @@ export const addStaff = async (req: AuthRequest, res: Response) => {
     !teamId ||
     !startDate
   ) {
-    res.status(400).json({ message: "All fields are required" });
-    return;
+    throw new BadRequestError("All fields are required");
   }
 
   try {
@@ -52,7 +52,7 @@ export const addStaff = async (req: AuthRequest, res: Response) => {
     });
     res.status(201).json({ message: "Staff member added", staff: result });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -64,12 +64,11 @@ export const updateStaff = async (req: AuthRequest, res: Response) => {
       req.body as UpdateStaffBody,
     );
     if (!result) {
-      res.status(404).json({ message: "Staff member not found" });
-      return;
+      throw new NotFoundError("Staff member not found");
     }
     res.status(200).json({ message: "Staff member updated", staff: result });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -80,11 +79,10 @@ export const deleteStaff = async (req: AuthRequest, res: Response) => {
       req.firmId!,
     );
     if (!result) {
-      res.status(404).json({ message: "Staff member not found" });
-      return;
+      throw new NotFoundError("Staff member not found");
     }
     res.status(200).json({ message: "Staff member deleted" });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };

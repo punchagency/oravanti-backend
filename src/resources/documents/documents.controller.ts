@@ -1,4 +1,6 @@
 import { Response } from "express";
+import { BadRequestError, NotFoundError } from "../../errors/app-error";
+import { sendErrorResponse } from "../../errors";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import * as documentsService from "./documents.service";
 
@@ -14,7 +16,7 @@ export const getAllDocuments = async (req: AuthRequest, res: Response) => {
     });
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -23,7 +25,7 @@ export const getDocumentStats = async (req: AuthRequest, res: Response) => {
     const result = await documentsService.getDocumentStats(req.firmId!);
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -34,28 +36,25 @@ export const getDocumentById = async (req: AuthRequest, res: Response) => {
       req.firmId!,
     );
     if (!result) {
-      res.status(404).json({ message: "Document not found" });
-      return;
+      throw new NotFoundError("Document not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
 export const uploadDocument = async (req: AuthRequest, res: Response) => {
   const file = req.file;
   if (!file) {
-    res.status(400).json({ message: "File is required" });
-    return;
+    throw new BadRequestError("File is required");
   }
 
   const { clientId, caseId, name, category } = req.body;
   if (!clientId || !caseId || !name || !category) {
-    res
-      .status(400)
-      .json({ message: "clientId, caseId, name and category are required" });
-    return;
+    throw new BadRequestError(
+      "clientId, caseId, name and category are required",
+    );
   }
 
   try {
@@ -72,15 +71,14 @@ export const uploadDocument = async (req: AuthRequest, res: Response) => {
     });
     res.status(201).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
 export const updateDocumentStatus = async (req: AuthRequest, res: Response) => {
   const { status } = req.body;
   if (!status) {
-    res.status(400).json({ message: "status is required" });
-    return;
+    throw new BadRequestError("status is required");
   }
 
   try {
@@ -90,12 +88,11 @@ export const updateDocumentStatus = async (req: AuthRequest, res: Response) => {
       status,
     );
     if (!result) {
-      res.status(404).json({ message: "Document not found" });
-      return;
+      throw new NotFoundError("Document not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -107,7 +104,7 @@ export const getDownloadUrl = async (req: AuthRequest, res: Response) => {
     );
     res.status(200).json({ url });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -116,6 +113,6 @@ export const deleteDocument = async (req: AuthRequest, res: Response) => {
     await documentsService.deleteDocument(req.params.id as string, req.firmId!);
     res.status(200).json({ message: "Document deleted" });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };

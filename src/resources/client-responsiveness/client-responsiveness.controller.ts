@@ -1,4 +1,6 @@
 import { Response } from "express";
+import { BadRequestError, NotFoundError } from "../../errors/app-error";
+import { sendErrorResponse } from "../../errors";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import * as service from "./client-responsiveness.service";
 
@@ -7,7 +9,7 @@ export const getStats = async (req: AuthRequest, res: Response) => {
     const stats = await service.getStats(req.firmId!);
     res.status(200).json(stats);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -23,7 +25,7 @@ export const getAllClientResponsiveness = async (
     });
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -31,8 +33,7 @@ export const addRequests = async (req: AuthRequest, res: Response) => {
   const { caseId, items, requestedAt } = req.body;
 
   if (!caseId || !items || !Array.isArray(items) || items.length === 0) {
-    res.status(400).json({ message: "caseId and items[] are required" });
-    return;
+    throw new BadRequestError("caseId and items[] are required");
   }
 
   try {
@@ -43,7 +44,7 @@ export const addRequests = async (req: AuthRequest, res: Response) => {
     );
     res.status(201).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -54,12 +55,11 @@ export const fulfillRequest = async (req: AuthRequest, res: Response) => {
       req.firmId!,
     );
     if (!result) {
-      res.status(404).json({ message: "Request not found" });
-      return;
+      throw new NotFoundError("Request not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -73,12 +73,11 @@ export const generateTerminationLetter = async (
       req.firmId!,
     );
     if (!result) {
-      res.status(404).json({ message: "Client not found" });
-      return;
+      throw new NotFoundError("Client not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -89,11 +88,10 @@ export const exportReport = async (req: AuthRequest, res: Response) => {
       req.firmId!,
     );
     if (!result) {
-      res.status(404).json({ message: "Client not found" });
-      return;
+      throw new NotFoundError("Client not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };

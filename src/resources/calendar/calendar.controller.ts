@@ -1,4 +1,6 @@
 import { Response } from "express";
+import { BadRequestError, NotFoundError } from "../../errors/app-error";
+import { sendErrorResponse } from "../../errors";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import * as calendarService from "./calendar.service";
 
@@ -19,7 +21,7 @@ export const getCalendarEvents = async (req: AuthRequest, res: Response) => {
     );
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -30,12 +32,11 @@ export const getCalendarEventById = async (req: AuthRequest, res: Response) => {
       req.firmId!,
     );
     if (!result) {
-      res.status(404).json({ message: "Event not found" });
-      return;
+      throw new NotFoundError("Event not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -47,7 +48,7 @@ export const createCalendarEvent = async (req: AuthRequest, res: Response) => {
     );
     res.status(201).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -59,12 +60,11 @@ export const updateCalendarEvent = async (req: AuthRequest, res: Response) => {
       req.body,
     );
     if (!result) {
-      res.status(404).json({ message: "Event not found" });
-      return;
+      throw new NotFoundError("Event not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -76,7 +76,7 @@ export const deleteCalendarEvent = async (req: AuthRequest, res: Response) => {
     );
     res.status(200).json({ message: "Event deleted" });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -86,7 +86,7 @@ export const getCalendarStrip = async (req: AuthRequest, res: Response) => {
     const result = await calendarService.getCalendarStrip(req.firmId!, teamId);
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -98,12 +98,9 @@ export const createServiceRequestEvent = async (
     req.body;
 
   if (!clientId || !caseId || !clientName || !formType) {
-    res
-      .status(400)
-      .json({
-        message: "clientId, caseId, clientName, and formType are required",
-      });
-    return;
+    throw new BadRequestError(
+      "clientId, caseId, clientName, and formType are required",
+    );
   }
 
   try {
@@ -118,7 +115,7 @@ export const createServiceRequestEvent = async (
     );
     res.status(201).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -133,7 +130,7 @@ export const resolveServiceRequestEvents = async (
     );
     res.status(200).json({ message: "Service request events resolved" });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -145,12 +142,9 @@ export const scheduleNextServiceRequest = async (
     req.body;
 
   if (!clientId || !caseId || !clientName || !formType) {
-    res
-      .status(400)
-      .json({
-        message: "clientId, caseId, clientName, and formType are required",
-      });
-    return;
+    throw new BadRequestError(
+      "clientId, caseId, clientName, and formType are required",
+    );
   }
 
   try {
@@ -165,6 +159,6 @@ export const scheduleNextServiceRequest = async (
     );
     res.status(201).json(result);
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };

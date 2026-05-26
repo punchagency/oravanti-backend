@@ -2,6 +2,11 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../../../db/client";
 import { staff } from "../../../db/schema/staff";
 import { teams } from "../../../db/schema/teams";
+import {
+  BadRequestError,
+  ConflictError,
+  NotFoundError,
+} from "../../../errors/app-error";
 import { CreateTeamBody, UpdateTeamBody } from "../../../types/hr.types";
 
 const ELIGIBLE_LEAD_ROLES = ["senior_paralegal", "attorney"] as const;
@@ -26,11 +31,13 @@ export const createTeam = async (body: CreateTeamBody & { firmId: string }) => {
       .where(and(eq(staff.id, body.leadId), eq(staff.firmId, body.firmId)));
 
     if (!lead[0]) {
-      throw new Error("Team lead not found");
+      throw new NotFoundError("Team lead not found");
     }
 
     if (!ELIGIBLE_LEAD_ROLES.includes(lead[0].role as any)) {
-      throw new Error("Only Senior Paralegals and Attorneys can be team leads");
+      throw new BadRequestError(
+        "Only Senior Paralegals and Attorneys can be team leads",
+      );
     }
   }
 
@@ -39,7 +46,7 @@ export const createTeam = async (body: CreateTeamBody & { firmId: string }) => {
     return newTeam;
   } catch (error: any) {
     if (error.code === "23505") {
-      throw new Error(`A team named "${body.name}" already exists`);
+      throw new ConflictError(`A team named "${body.name}" already exists`);
     }
     throw error;
   }
@@ -57,11 +64,13 @@ export const updateTeam = async (
       .where(and(eq(staff.id, body.leadId), eq(staff.firmId, firmId)));
 
     if (!lead[0]) {
-      throw new Error("Team lead not found");
+      throw new NotFoundError("Team lead not found");
     }
 
     if (!ELIGIBLE_LEAD_ROLES.includes(lead[0].role as any)) {
-      throw new Error("Only Senior Paralegals and Attorneys can be team leads");
+      throw new BadRequestError(
+        "Only Senior Paralegals and Attorneys can be team leads",
+      );
     }
   }
 

@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../../../db/client";
 import { assignments } from "../../../db/schema/assignments";
 import { contractors } from "../../../db/schema/contractors";
+import { BadRequestError, NotFoundError } from "../../../errors/app-error";
 import { AssignCaseBody, FilingType } from "../../../types/hr.types";
 
 export const getAvailableContractors = async (
@@ -31,11 +32,11 @@ export const assignCase = async (body: AssignCaseBody & { firmId: string }) => {
   } = body;
 
   if (assignmentType === "internal_team" && !teamId) {
-    throw new Error("teamId is required for internal team assignments");
+    throw new BadRequestError("teamId is required for internal team assignments");
   }
 
   if (assignmentType === "external_contractor" && !contractorId) {
-    throw new Error(
+    throw new BadRequestError(
       "contractorId is required for external contractor assignments",
     );
   }
@@ -49,11 +50,11 @@ export const assignCase = async (body: AssignCaseBody & { firmId: string }) => {
       );
 
     if (!contractor[0]) {
-      throw new Error("Contractor not found");
+      throw new NotFoundError("Contractor not found");
     }
 
     if (contractor[0].status !== "active") {
-      throw new Error("Contractor is not available");
+      throw new BadRequestError("Contractor is not available");
     }
   }
 

@@ -1,4 +1,6 @@
 import { Response } from "express";
+import { BadRequestError } from "../../../errors/app-error";
+import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import { logPermissionChange } from "../permission-audit-log/permission-audit-log.service";
 import * as approvalWorkflowsService from "./approval-workflows.service";
@@ -10,7 +12,7 @@ export const getApprovalWorkflows = async (req: AuthRequest, res: Response) => {
     );
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -21,8 +23,7 @@ export const updateApprovalWorkflows = async (
   const { workflows } = req.body;
 
   if (!Array.isArray(workflows) || workflows.length === 0) {
-    res.status(400).json({ message: "workflows array is required" });
-    return;
+    throw new BadRequestError("workflows array is required");
   }
 
   try {
@@ -39,6 +40,6 @@ export const updateApprovalWorkflows = async (
 
     res.status(200).json({ message: "Approval workflows updated" });
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };

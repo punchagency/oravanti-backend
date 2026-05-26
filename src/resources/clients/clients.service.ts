@@ -5,6 +5,7 @@ import { clients } from "../../db/schema/clients";
 import { companies } from "../../db/schema/companies";
 import { staff } from "../../db/schema/staff";
 import { teamMembers } from "../../db/schema/team-members";
+import { ConflictError, NotFoundError } from "../../errors/app-error";
 import { generateCaseNumber } from "../cases/cases.service";
 import { db } from "./../../db/client";
 
@@ -243,7 +244,7 @@ export const addClientToCompany = async (
     .from(companies)
     .where(and(eq(companies.id, companyId), eq(companies.firmId, firmId)));
 
-  if (!company) throw new Error("Company not found");
+  if (!company) throw new NotFoundError("Company not found");
 
   await checkForDuplicate(firmId, clientData);
 
@@ -384,7 +385,7 @@ const checkForDuplicate = async (
     if (excludeId && client.id === excludeId) continue;
 
     if (client.email.toLowerCase() === data.email.toLowerCase()) {
-      throw new Error(
+      throw new ConflictError(
         "A client with this email address already exists at this firm",
       );
     }
@@ -394,7 +395,7 @@ const checkForDuplicate = async (
       client.passportNumber &&
       client.passportNumber === data.passportNumber
     ) {
-      throw new Error(
+      throw new ConflictError(
         "A client with this passport number already exists at this firm",
       );
     }
@@ -419,7 +420,7 @@ const checkForDuplicate = async (
       ]
         .filter(Boolean)
         .join(" ");
-      throw new Error(
+      throw new ConflictError(
         `A client named "${fullName}" with this date of birth already exists at this firm`,
       );
     }

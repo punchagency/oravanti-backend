@@ -1,4 +1,6 @@
 import { Response } from "express";
+import { BadRequestError, NotFoundError } from "../../../errors/app-error";
+import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import { AssignCaseBody, FilingType } from "../../../types/hr.types";
 import * as assignmentsService from "./assignments.service";
@@ -19,10 +21,7 @@ export const getAvailableContractors = async (
   const { filingType } = req.query;
 
   if (!filingType || !VALID_FILING_TYPES.includes(filingType as FilingType)) {
-    res
-      .status(400)
-      .json({ message: "A valid filingType query param is required" });
-    return;
+    throw new BadRequestError("A valid filingType query param is required");
   }
 
   try {
@@ -32,7 +31,7 @@ export const getAvailableContractors = async (
     );
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -41,17 +40,13 @@ export const assignCase = async (req: AuthRequest, res: Response) => {
     req.body as AssignCaseBody;
 
   if (!assignmentType || !filingType || !urgencyLevel) {
-    res
-      .status(400)
-      .json({
-        message: "assignmentType, filingType, and urgencyLevel are required",
-      });
-    return;
+    throw new BadRequestError(
+      "assignmentType, filingType, and urgencyLevel are required",
+    );
   }
 
   if (!VALID_FILING_TYPES.includes(filingType)) {
-    res.status(400).json({ message: "Invalid filing type" });
-    return;
+    throw new BadRequestError("Invalid filing type");
   }
 
   try {
@@ -63,7 +58,7 @@ export const assignCase = async (req: AuthRequest, res: Response) => {
       .status(201)
       .json({ message: "Case assigned successfully", assignment: result });
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };
 
@@ -72,7 +67,7 @@ export const getAllAssignments = async (req: AuthRequest, res: Response) => {
     const result = await assignmentsService.getAllAssignments(req.firmId!);
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -83,12 +78,11 @@ export const getAssignmentById = async (req: AuthRequest, res: Response) => {
       req.firmId!,
     );
     if (!result) {
-      res.status(404).json({ message: "Assignment not found" });
-      return;
+      throw new NotFoundError("Assignment not found");
     }
     res.status(200).json(result);
   } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+    sendErrorResponse(res, error);
   }
 };
 
@@ -99,8 +93,7 @@ export const updateAssignmentStatus = async (
   const { status } = req.body;
 
   if (!status) {
-    res.status(400).json({ message: "status is required" });
-    return;
+    throw new BadRequestError("status is required");
   }
 
   try {
@@ -110,13 +103,12 @@ export const updateAssignmentStatus = async (
       status,
     );
     if (!result) {
-      res.status(404).json({ message: "Assignment not found" });
-      return;
+      throw new NotFoundError("Assignment not found");
     }
     res
       .status(200)
       .json({ message: "Assignment status updated", assignment: result });
   } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
+    sendErrorResponse(res, error, 400);
   }
 };

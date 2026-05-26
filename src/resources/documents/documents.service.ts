@@ -2,6 +2,7 @@ import { and, count, desc, eq } from "drizzle-orm";
 import { supabaseAdmin } from "../../config/supabase";
 import { clients } from "../../db/schema/clients";
 import { documents } from "../../db/schema/documents";
+import { ExternalServiceError, NotFoundError } from "../../errors/app-error";
 import { staff } from "../../db/schema/staff";
 import { db } from "./../../db/client";
 
@@ -50,7 +51,7 @@ export const uploadDocument = async (
       upsert: false,
     });
 
-  if (uploadError) throw new Error(uploadError.message);
+  if (uploadError) throw new ExternalServiceError(uploadError.message);
 
   const { data: urlData } = supabaseAdmin.storage
     .from(BUCKET)
@@ -197,13 +198,13 @@ export const updateDocumentStatus = async (
 
 export const getDownloadUrl = async (id: string, firmId: string) => {
   const doc = await getDocumentById(id, firmId);
-  if (!doc) throw new Error("Document not found");
+  if (!doc) throw new NotFoundError("Document not found");
 
   const { data, error } = await supabaseAdmin.storage
     .from(BUCKET)
     .createSignedUrl(doc.storagePath, 60 * 60);
 
-  if (error) throw new Error(error.message);
+  if (error) throw new ExternalServiceError(error.message);
   return data.signedUrl;
 };
 
@@ -211,7 +212,7 @@ export const getDownloadUrl = async (id: string, firmId: string) => {
 
 export const deleteDocument = async (id: string, firmId: string) => {
   const doc = await getDocumentById(id, firmId);
-  if (!doc) throw new Error("Document not found");
+  if (!doc) throw new NotFoundError("Document not found");
 
   await supabaseAdmin.storage.from(BUCKET).remove([doc.storagePath]);
   await db
