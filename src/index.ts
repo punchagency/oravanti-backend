@@ -1,8 +1,8 @@
 import { toNodeHandler } from "better-auth/node";
 import cors from "cors";
-import "dotenv/config";
 import express, { Request, Response, NextFunction } from "express";
 import morgan from "morgan";
+import { env } from "./config/env";
 import { auth } from "./auth";
 import aiErrorDetectionRoutes from "./routes/ai-error-detection/ai-error-detection.routes";
 import authRoutes from "./routes/auth.routes";
@@ -28,8 +28,8 @@ import { AuthorizationError, NotFoundError } from "./errors/app-error";
 import { errorHandler } from "./middleware/error.middleware";
 
 const app = express();
-const PORT = process.env.PORT || 8001;
-const allowedOrigins = process.env.CORS_ORIGIN;
+const PORT = env.PORT;
+const allowedOrigins = env.CORS_ORIGIN;
 
 const origin = (
   requestOrigin: string | undefined,
