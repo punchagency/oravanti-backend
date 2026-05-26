@@ -1,0 +1,156 @@
+name: oravanti
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: oravanti-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      kong:
+        condition: service_healthy
+      create-storage-buckets:
+        condition: service_completed_successfully
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kong:
+    image: kong/kong:3.9.1
+    container_name: supabase-kong
+    restart: unless-stopped
+    depends_on:
+      auth:
+        condition: service_healthy
+      rest:
+        condition: service_started
+      storage:
+        condition: service_healthy
+    ports:
+      - "54321:8000"
+    volumes:
+      - ./docker/supabase/kong.yml:/usr/local/kong/declarative/kong.yml:ro
+    env_file:
+      - .env.kong
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rest:
+    image: postgrest/postgrest:v14.8
+    container_name: supabase-rest
+    restart: unless-stopped
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+    env_file:
+      - .env.rest
+
+  storage:
+    image: supabase/storage-api:v1.48.26
+    container_name: supabase-storage
+    restart: unless-stopped
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+      rest:
+        condition: service_started
+    volumes:
+      - supabase-storage-data:/var/lib/storage
+    env_file:
+      - .env.storage
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/status"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  create-storage-buckets:
+    image: curlimages/curl:8.16.0
+    container_name: supabase-create-storage-buckets
+    depends_on:
+      kong:
+        condition: service_healthy
+    env_file:
+      - .env.create-storage-buckets
+    command:
+      - sh
+      - -ec
+      - |
+        create_bucket() {
+          bucket="$$1"
+          if curl -fsS -H "Authorization: Bearer $$SERVICE_ROLE_KEY" -H "apikey: $$SERVICE_ROLE_KEY" "http://kong:8000/storage/v1/bucket/$$bucket" >/dev/null; then
+            return 0
+          fi
+          curl -fsS -X POST http://kong:8000/storage/v1/bucket \
+            -H "Authorization: Bearer $$SERVICE_ROLE_KEY" \
+            -H "apikey: $$SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"id\":\"$$bucket\",\"name\":\"$$bucket\",\"public\":true,\"file_size_limit\":52428800}"
+        }
+        create_bucket avatars
+        create_bucket documents
+    restart: "no"
+
+  auth:
+    image: supabase/gotrue:v2.186.0
+    container_name: supabase-auth
+    restart: unless-stopped
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+    env_file:
+      - .env.auth
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  db:
+    image: postgres:16-alpine
+    container_name: oravanti_db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    env_file:
+      - .env.db
+    volumes:
+      - supabase-db-data:/var/lib/postgresql/data
+      - ./docker/supabase/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  db-bootstrap:
+    image: postgres:16-alpine
+    container_name: supabase-db-bootstrap
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env.db-bootstrap
+    volumes:
+      - ./docker/supabase/init/00-roles.sql:/bootstrap/00-roles.sql:ro
+    command:
+      - sh
+      - -ec
+      - psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f /bootstrap/00-roles.sql
+    restart: "no"
+
+volumes:
+  supabase-db-data:
+  supabase-storage-data:
