@@ -71,6 +71,7 @@ app.use(express.json());
 app.all("/api/auth/*splat", toNodeHandler(auth));
 
 app.use("/api/auth", authRoutes);
+app.all("/api/auth/*splat", toNodeHandler(auth));
 app.use("/api/hr/staff", staffRoutes);
 app.use("/api/hr/teams", teamsRoutes);
 app.use("/api/hr/assignments", assignmentsRoutes);

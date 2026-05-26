@@ -3,8 +3,12 @@ import { teamMembers } from "../../db/schema";
 import { certifications } from "../../db/schema/certifications";
 import { staff } from "../../db/schema/staff";
 import { staffCertifications } from "../../db/schema/staff-certifications";
+import { teamMembers } from "../../db/schema/team-members";
 import { timeEntries } from "../../db/schema/time-entries";
+<<<<<<< HEAD
+=======
 import { db } from "./../../db/client";
+>>>>>>> main
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -208,10 +212,14 @@ export const getRevenueAnalytics = async (
   const { startStr, endStr, label, months } = getPeriodRange(period);
   const prevRange = getPreviousPeriodRange(period);
 
+<<<<<<< HEAD
+  const baseConditions = and(eq(staff.firmId, firmId), eq(staff.status, "active"));
+=======
   const baseConditions = and(
     eq(staff.firmId, firmId),
     eq(staff.status, "active"),
   );
+>>>>>>> main
 
   const staffList = teamId
     ? await db
