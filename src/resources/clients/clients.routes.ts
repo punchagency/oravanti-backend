@@ -2,49 +2,60 @@ import { Router } from "express";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { setFirmContext } from "../../middleware/rls.middleware";
-import {
-  addCase,
-  addClientToCompany,
-  createClient,
-  createCompanyWithClients,
-  deleteClient,
-  deleteCompany,
-  getAllClients,
-  getAllCompanies,
-  getCertifications,
-  getClientById,
-  getClientCases,
-  getCompanyById,
-  getTeamStaff,
-  updateCaseStatus,
-  updateClient,
-  updateCompany,
-} from "./clients.controller";
+import { ClientsController } from "./clients.controller";
 
-const router = Router();
+export class ClientsRouter {
+  public router: Router;
+  public path: string;
+  private clientsController: ClientsController;
 
-router.use(requireAuth, requireAdmin, setFirmContext);
+  constructor(clientsController: ClientsController) {
+    this.router = Router();
+    this.path = "/clients";
+    this.clientsController = clientsController;
 
-router.get("/certifications", getCertifications);
-router.get("/teams/:teamId/staff", getTeamStaff);
+    this.initializeRoutes();
+  }
 
-// Individual clients
-router.get("/", getAllClients);
-router.post("/", createClient);
-router.get("/:id", getClientById);
-router.patch("/:id", updateClient);
-router.delete("/:id", deleteClient);
+  private initializeRoutes() {
+    this.router.use(this.path, this.router);
+    this.router.use(requireAuth, requireAdmin, setFirmContext);
 
-router.get("/:id/cases", getClientCases);
-router.post("/:id/cases", addCase);
-router.patch("/:id/cases/:caseId/status", updateCaseStatus);
+    this.router.get(
+      "/certifications",
+      this.clientsController.getCertifications,
+    );
+    this.router.get(
+      "/teams/:teamId/staff",
+      this.clientsController.getTeamStaff,
+    );
 
-// Companies
-router.get("/companies", getAllCompanies);
-router.post("/companies", createCompanyWithClients);
-router.get("/companies/:id", getCompanyById);
-router.patch("/companies/:id", updateCompany);
-router.delete("/companies/:id", deleteCompany);
-router.post("/companies/:id/clients", addClientToCompany);
+    // Individual clients
+    this.router.get("/", this.clientsController.getAllClients);
+    this.router.post("/", this.clientsController.createClient);
+    this.router.get("/:id", this.clientsController.getClientById);
+    this.router.patch("/:id", this.clientsController.updateClient);
+    this.router.delete("/:id", this.clientsController.deleteClient);
 
-export default router;
+    this.router.get("/:id/cases", this.clientsController.getClientCases);
+    this.router.post("/:id/cases", this.clientsController.addCase);
+    this.router.patch(
+      "/:id/cases/:caseId/status",
+      this.clientsController.updateCaseStatus,
+    );
+
+    // Companies
+    this.router.get("/companies", this.clientsController.getAllCompanies);
+    this.router.post(
+      "/companies",
+      this.clientsController.createCompanyWithClients,
+    );
+    this.router.get("/companies/:id", this.clientsController.getCompanyById);
+    this.router.patch("/companies/:id", this.clientsController.updateCompany);
+    this.router.delete("/companies/:id", this.clientsController.deleteCompany);
+    this.router.post(
+      "/companies/:id/clients",
+      this.clientsController.addClientToCompany,
+    );
+  }
+}

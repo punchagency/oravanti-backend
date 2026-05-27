@@ -2,24 +2,29 @@ import { Router } from "express";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { setFirmContext } from "../../middleware/rls.middleware";
-import {
-  createTask,
-  deleteTask,
-  getAllTasks,
-  getTaskById,
-  getTaskStats,
-  updateTask,
-} from "./tasks.controller";
+import { TasksController } from "./tasks.controller";
 
-const router = Router();
+export class TasksRouter {
+  public router: Router;
+  public path: string;
+  private tasksController: TasksController;
 
-router.use(requireAuth, requireAdmin, setFirmContext);
+  constructor(taskController: TasksController) {
+    this.router = Router();
+    this.path = "/tasks";
+    this.tasksController = taskController;
 
-router.get("/stats", getTaskStats);
-router.get("/", getAllTasks);
-router.get("/:id", getTaskById);
-router.post("/", createTask);
-router.patch("/:id", updateTask);
-router.delete("/:id", deleteTask);
+    this.initializeRoutes();
+  }
 
-export default router;
+  private initializeRoutes() {
+    this.router.use(requireAuth, requireAdmin, setFirmContext);
+
+    this.router.get("/stats", this.tasksController.getTaskStats);
+    this.router.get("/", this.tasksController.getAllTasks);
+    this.router.get("/:id", this.tasksController.getTaskById);
+    this.router.post("/", this.tasksController.createTask);
+    this.router.patch("/:id", this.tasksController.updateTask);
+    this.router.delete("/:id", this.tasksController.deleteTask);
+  }
+}

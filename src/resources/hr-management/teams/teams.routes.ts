@@ -2,24 +2,30 @@ import { Router } from "express";
 import { requireAdmin } from "../../../middleware/admin.middleware";
 import { requireAuth } from "../../../middleware/auth.middleware";
 import { setFirmContext } from "../../../middleware/rls.middleware";
-import {
-  createTeam,
-  deleteTeam,
-  getAll,
-  getById,
-  getEligibleLeads,
-  updateTeam,
-} from "./teams.controller";
+import { TeamsController } from "./teams.controller";
 
-const router = Router();
+export class TeamsRouter {
+  public router: Router;
+  public path: string;
+  private teamsController: TeamsController;
 
-router.use(requireAuth, requireAdmin, setFirmContext);
+  constructor(teamsController: TeamsController) {
+    this.router = Router();
+    this.path = "/hr/teams";
+    this.teamsController = teamsController;
 
-router.get("/eligible-leads", getEligibleLeads);
-router.get("/", getAll);
-router.get("/:id", getById);
-router.post("/", createTeam);
-router.patch("/:id", updateTeam);
-router.delete("/:id", deleteTeam);
+    this.initializeRoutes();
+  }
 
-export default router;
+  private initializeRoutes() {
+    this.router.use(this.path, this.router);
+    this.router.use(requireAuth, requireAdmin, setFirmContext);
+
+    this.router.get("/eligible-leads", this.teamsController.getEligibleLeads);
+    this.router.get("/", this.teamsController.getAll);
+    this.router.get("/:id", this.teamsController.getById);
+    this.router.post("/", this.teamsController.createTeam);
+    this.router.patch("/:id", this.teamsController.updateTeam);
+    this.router.delete("/:id", this.teamsController.deleteTeam);
+  }
+}

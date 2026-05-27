@@ -3,27 +3,40 @@ import multer from "multer";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { setFirmContext } from "../../middleware/rls.middleware";
-import {
-  deleteDocument,
-  getAllDocuments,
-  getDocumentById,
-  getDocumentStats,
-  getDownloadUrl,
-  updateDocumentStatus,
-  uploadDocument,
-} from "./documents.controller";
+import { DocumentsController } from "./documents.controller";
 
-const router = Router();
-const upload = multer({ storage: multer.memoryStorage() });
+export class DocumentsRouter {
+  public router: Router;
+  public path: string;
+  private documentsController: DocumentsController;
+  private upload: multer.Multer;
 
-router.use(requireAuth, requireAdmin, setFirmContext);
+  constructor(documentsController: DocumentsController) {
+    this.router = Router();
+    this.path = "/documents";
+    this.documentsController = documentsController;
+    this.upload = multer({ storage: multer.memoryStorage() });
 
-router.get("/stats", getDocumentStats);
-router.get("/", getAllDocuments);
-router.get("/:id", getDocumentById);
-router.get("/:id/download", getDownloadUrl);
-router.post("/", upload.single("file"), uploadDocument);
-router.patch("/:id/status", updateDocumentStatus);
-router.delete("/:id", deleteDocument);
+    this.initializeRoutes();
+  }
 
-export default router;
+  private initializeRoutes() {
+    this.router.use(this.path, this.router);
+    this.router.use(requireAuth, requireAdmin, setFirmContext);
+
+    this.router.get("/stats", this.documentsController.getDocumentStats);
+    this.router.get("/", this.documentsController.getAllDocuments);
+    this.router.get("/:id", this.documentsController.getDocumentById);
+    this.router.get("/:id/download", this.documentsController.getDownloadUrl);
+    this.router.post(
+      "/",
+      this.upload.single("file"),
+      this.documentsController.uploadDocument,
+    );
+    this.router.patch(
+      "/:id/status",
+      this.documentsController.updateDocumentStatus,
+    );
+    this.router.delete("/:id", this.documentsController.deleteDocument);
+  }
+}

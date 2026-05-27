@@ -7,81 +7,86 @@ import {
   staffCertifications,
 } from "../../../db/schema";
 
-export const getCertificationGates = async (firmId: string) => {
-  return db
-    .select()
-    .from(paralegalCertificationGates)
-    .where(eq(paralegalCertificationGates.firmId, firmId));
-};
+export class CertificationGatesService {
+  getCertificationGates = async (firmId: string) => {
+    return db
+      .select()
+      .from(paralegalCertificationGates)
+      .where(eq(paralegalCertificationGates.firmId, firmId));
+  };
 
-export const updateCertificationGates = async (
-  firmId: string,
-  gates: { action: string; requiredCertifications: string[] }[],
-) => {
-  await Promise.all(
-    gates.map((g) =>
-      db
-        .update(paralegalCertificationGates)
-        .set({
-          requiredCertifications: g.requiredCertifications,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(paralegalCertificationGates.firmId, firmId),
-            eq(paralegalCertificationGates.action, g.action as any),
+  updateCertificationGates = async (
+    firmId: string,
+    gates: { action: string; requiredCertifications: string[] }[],
+  ) => {
+    await Promise.all(
+      gates.map((g) =>
+        db
+          .update(paralegalCertificationGates)
+          .set({
+            requiredCertifications: g.requiredCertifications,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(paralegalCertificationGates.firmId, firmId),
+              eq(paralegalCertificationGates.action, g.action as any),
+            ),
           ),
-        ),
-    ),
-  );
-};
+      ),
+    );
+  };
 
-export const getActivationRequirements = async (firmId: string) => {
-  return db
-    .select()
-    .from(paralegalActivationRequirements)
-    .where(eq(paralegalActivationRequirements.firmId, firmId));
-};
+  getActivationRequirements = async (firmId: string) => {
+    return db
+      .select()
+      .from(paralegalActivationRequirements)
+      .where(eq(paralegalActivationRequirements.firmId, firmId));
+  };
 
-export const updateActivationRequirements = async (
-  firmId: string,
-  certificationCodes: string[],
-) => {
-  await db
-    .delete(paralegalActivationRequirements)
-    .where(eq(paralegalActivationRequirements.firmId, firmId));
-
-  if (certificationCodes.length > 0) {
+  updateActivationRequirements = async (
+    firmId: string,
+    certificationCodes: string[],
+  ) => {
     await db
-      .insert(paralegalActivationRequirements)
-      .values(
-        certificationCodes.map((code) => ({ firmId, certificationCode: code })),
-      );
-  }
+      .delete(paralegalActivationRequirements)
+      .where(eq(paralegalActivationRequirements.firmId, firmId));
 
-  const allParalegals = await db
-    .select()
-    .from(paralegalProfiles)
-    .where(eq(paralegalProfiles.firmId, firmId));
-
-  await Promise.all(
-    allParalegals.map(async (paralegal) => {
-      const held = await db
-        .select()
-        .from(staffCertifications)
-        .where(eq(staffCertifications.staffId, paralegal.staffId));
-
-      const heldCodes = held.map((c) => c.certificationCode);
-      const meetsAll = certificationCodes.every((req) =>
-        heldCodes.includes(req),
-      );
-
+    if (certificationCodes.length > 0) {
       await db
-        .update(paralegalProfiles)
-        .set({ isCertified: meetsAll, updatedAt: new Date() })
-        .where(eq(paralegalProfiles.id, paralegal.id));
-    }),
-  );
+        .insert(paralegalActivationRequirements)
+        .values(
+          certificationCodes.map((code) => ({
+            firmId,
+            certificationCode: code,
+          })),
+        );
+    }
 
-  return { updated: allParalegals.length };
-};
+    const allParalegals = await db
+      .select()
+      .from(paralegalProfiles)
+      .where(eq(paralegalProfiles.firmId, firmId));
+
+    await Promise.all(
+      allParalegals.map(async (paralegal) => {
+        const held = await db
+          .select()
+          .from(staffCertifications)
+          .where(eq(staffCertifications.staffId, paralegal.staffId));
+
+        const heldCodes = held.map((c) => c.certificationCode);
+        const meetsAll = certificationCodes.every((req) =>
+          heldCodes.includes(req),
+        );
+
+        await db
+          .update(paralegalProfiles)
+          .set({ isCertified: meetsAll, updatedAt: new Date() })
+          .where(eq(paralegalProfiles.id, paralegal.id));
+      }),
+    );
+
+    return { updated: allParalegals.length };
+  };
+}

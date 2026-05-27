@@ -351,3 +351,12 @@ export const exportClientReport = async (clientId: string, firmId: string) => {
     allRequests,
   };
 };
+
+export class ClientResponsivenessService {
+  getStats = getStats;
+  getAllClientResponsiveness = getAllClientResponsiveness;
+  addRequests = addRequests;
+  fulfillRequest = fulfillRequest;
+  getTerminationLetterData = getTerminationLetterData;
+  exportClientReport = exportClientReport;
+}

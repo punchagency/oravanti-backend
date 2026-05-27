@@ -2,22 +2,35 @@ import { Router } from "express";
 import { requireAdmin } from "../../../middleware/admin.middleware";
 import { requireAuth } from "../../../middleware/auth.middleware";
 import { setFirmContext } from "../../../middleware/rls.middleware";
-import {
-  assignCase,
-  getAllAssignments,
-  getAssignmentById,
-  getAvailableContractors,
-  updateAssignmentStatus,
-} from "./assignments.controller";
+import { AssignmentsController } from "./assignments.controller";
 
-const router = Router();
+export class AssignmentsRouter {
+  public router: Router;
+  public path: string;
+  private assignmentsController: AssignmentsController;
 
-router.use(requireAuth, requireAdmin, setFirmContext);
+  constructor(assignmentsController: AssignmentsController) {
+    this.router = Router();
+    this.path = "/hr/assignments";
+    this.assignmentsController = assignmentsController;
 
-router.get("/available-contractors", getAvailableContractors);
-router.get("/", getAllAssignments);
-router.get("/:id", getAssignmentById);
-router.post("/", assignCase);
-router.patch("/:id/status", updateAssignmentStatus);
+    this.initializeRoutes();
+  }
 
-export default router;
+  private initializeRoutes() {
+    this.router.use(this.path, this.router);
+    this.router.use(requireAuth, requireAdmin, setFirmContext);
+
+    this.router.get(
+      "/available-contractors",
+      this.assignmentsController.getAvailableContractors,
+    );
+    this.router.get("/", this.assignmentsController.getAllAssignments);
+    this.router.get("/:id", this.assignmentsController.getAssignmentById);
+    this.router.post("/", this.assignmentsController.assignCase);
+    this.router.patch(
+      "/:id/status",
+      this.assignmentsController.updateAssignmentStatus,
+    );
+  }
+}

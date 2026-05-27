@@ -1,15 +1,33 @@
 import { Router } from "express";
 import multer from "multer";
 import { requireAuth } from "../../../middleware/auth.middleware";
-import { getProfile, updateProfile, uploadAvatar } from "./profile.controller";
+import { ProfileController } from "./profile.controller";
 
-const router = Router();
-const upload = multer({ storage: multer.memoryStorage() });
+export class ProfileRouter {
+  public router: Router;
+  public path: string;
+  private profileController: ProfileController;
+  private upload: multer.Multer;
 
-router.use(requireAuth);
+  constructor(profileController: ProfileController) {
+    this.router = Router();
+    this.path = "/settings/profile";
+    this.profileController = profileController;
+    this.upload = multer({ storage: multer.memoryStorage() });
 
-router.get("/", getProfile);
-router.patch("/", updateProfile);
-router.post("/avatar", upload.single("avatar"), uploadAvatar);
+    this.initializeRoutes();
+  }
 
-export default router;
+  private initializeRoutes() {
+    this.router.use(this.path, this.router);
+    this.router.use(requireAuth);
+
+    this.router.get("/", this.profileController.getProfile);
+    this.router.patch("/", this.profileController.updateProfile);
+    this.router.post(
+      "/avatar",
+      this.upload.single("avatar"),
+      this.profileController.uploadAvatar,
+    );
+  }
+}

@@ -100,6 +100,26 @@ export const deleteCompany = async (
     .where(and(eq(companies.id, id), eq(companies.firmId, firmId)));
 };
 
+export class ClientsService {
+  createCompany = createCompany;
+  getAllCompanies = getAllCompanies;
+  getCompanyById = getCompanyById;
+  updateCompany = updateCompany;
+  deleteCompany = deleteCompany;
+  createCompanyWithClients = createCompanyWithClients;
+  addClientToCompany = addClientToCompany;
+  getCertifications = getCertifications;
+  getAllClients = getAllClients;
+  getClientById = getClientById;
+  createClient = createClient;
+  updateClient = updateClient;
+  deleteClient = deleteClient;
+  getClientCases = getClientCases;
+  addCase = addCase;
+  updateCaseStatus = updateCaseStatus;
+  getTeamStaff = getTeamStaff;
+}
+
 // ─── Company client batch creation ───────────────────────────────────────────
 
 export const createCompanyWithClients = async (

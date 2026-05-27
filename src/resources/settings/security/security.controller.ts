@@ -1,101 +1,109 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
-import * as securityService from "./security.service";
+import { SecurityService } from "./security.service";
 
-// ─── Change Password ──────────────────────────────────────────────────────────
+export class SecurityController {
+  private securityService: SecurityService;
 
-export const changePassword = async (req: AuthRequest, res: Response) => {
-  const { currentPassword, newPassword } = req.body;
-
-  if (!currentPassword || !newPassword) {
-    res
-      .status(400)
-      .json({ message: "currentPassword and newPassword are required" });
-    return;
+  constructor(securityService: SecurityService) {
+    this.securityService = securityService;
   }
 
-  try {
-    await securityService.changePassword(
-      req.userId!,
-      currentPassword,
-      newPassword,
-    );
-    res.status(200).json({ message: "Password updated successfully" });
-  } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
-  }
-};
+  // ─── Change Password ──────────────────────────────────────────────────────────
 
-// ─── Two-Factor Authentication ────────────────────────────────────────────────
+  changePassword = async (req: AuthRequest, res: Response) => {
+    const { currentPassword, newPassword } = req.body;
 
-export const get2FAStatus = async (req: AuthRequest, res: Response) => {
-  try {
-    const result = await securityService.get2FAStatus(req.userId!);
-    res.status(200).json(result);
-  } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
-  }
-};
+    if (!currentPassword || !newPassword) {
+      res
+        .status(400)
+        .json({ message: "currentPassword and newPassword are required" });
+      return;
+    }
 
-export const enroll2FA = async (req: AuthRequest, res: Response) => {
-  try {
-    const data = await securityService.enroll2FA(req.accessToken!);
-    res.status(200).json(data);
-  } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
-  }
-};
+    try {
+      await this.securityService.changePassword(
+        req.userId!,
+        currentPassword,
+        newPassword,
+      );
+      res.status(200).json({ message: "Password updated successfully" });
+    } catch (error) {
+      res.status(400).json({ message: (error as Error).message });
+    }
+  };
 
-export const verify2FA = async (req: AuthRequest, res: Response) => {
-  const { factorId, code } = req.body;
+  // ─── Two-Factor Authentication ────────────────────────────────────────────────
 
-  if (!factorId || !code) {
-    res.status(400).json({ message: "factorId and code are required" });
-    return;
-  }
+  get2FAStatus = async (req: AuthRequest, res: Response) => {
+    try {
+      const result = await this.securityService.get2FAStatus(req.userId!);
+      res.status(200).json(result);
+    } catch (error) {
+      res.status(500).json({ message: (error as Error).message });
+    }
+  };
 
-  try {
-    await securityService.verify2FA(req.accessToken!, factorId, code);
-    res.status(200).json({ message: "2FA enabled successfully" });
-  } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
-  }
-};
+  enroll2FA = async (req: AuthRequest, res: Response) => {
+    try {
+      const data = await this.securityService.enroll2FA(req.accessToken!);
+      res.status(200).json(data);
+    } catch (error) {
+      res.status(500).json({ message: (error as Error).message });
+    }
+  };
 
-export const unenroll2FA = async (req: AuthRequest, res: Response) => {
-  const { factorId } = req.body;
+  verify2FA = async (req: AuthRequest, res: Response) => {
+    const { factorId, code } = req.body;
 
-  if (!factorId) {
-    res.status(400).json({ message: "factorId is required" });
-    return;
-  }
+    if (!factorId || !code) {
+      res.status(400).json({ message: "factorId and code are required" });
+      return;
+    }
 
-  try {
-    await securityService.unenroll2FA(req.accessToken!, factorId);
-    res.status(200).json({ message: "2FA disabled successfully" });
-  } catch (error) {
-    res.status(400).json({ message: (error as Error).message });
-  }
-};
+    try {
+      await this.securityService.verify2FA(req.accessToken!, factorId, code);
+      res.status(200).json({ message: "2FA enabled successfully" });
+    } catch (error) {
+      res.status(400).json({ message: (error as Error).message });
+    }
+  };
 
-// ─── Active Sessions ──────────────────────────────────────────────────────────
+  unenroll2FA = async (req: AuthRequest, res: Response) => {
+    const { factorId } = req.body;
 
-export const getSessions = async (req: AuthRequest, res: Response) => {
-  try {
-    const result = await securityService.getSessions(req.userId!);
-    res.status(200).json(result);
-  } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
-  }
-};
+    if (!factorId) {
+      res.status(400).json({ message: "factorId is required" });
+      return;
+    }
 
-export const deleteSession = async (req: AuthRequest, res: Response) => {
-  const { id } = req.params;
+    try {
+      await this.securityService.unenroll2FA(req.accessToken!, factorId);
+      res.status(200).json({ message: "2FA disabled successfully" });
+    } catch (error) {
+      res.status(400).json({ message: (error as Error).message });
+    }
+  };
 
-  try {
-    await securityService.deleteSession(id as string, req.userId!);
-    res.status(200).json({ message: "Session removed" });
-  } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
-  }
-};
+  // ─── Active Sessions ──────────────────────────────────────────────────────────
+
+  getSessions = async (req: AuthRequest, res: Response) => {
+    try {
+      const result = await this.securityService.getSessions(req.userId!);
+      res.status(200).json(result);
+    } catch (error) {
+      res.status(500).json({ message: (error as Error).message });
+    }
+  };
+
+  deleteSession = async (req: AuthRequest, res: Response) => {
+    const { id } = req.params;
+
+    try {
+      await this.securityService.deleteSession(id as string, req.userId!);
+      res.status(200).json({ message: "Session removed" });
+    } catch (error) {
+      res.status(500).json({ message: (error as Error).message });
+    }
+  };
+}

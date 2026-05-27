@@ -343,3 +343,7 @@ export const getRevenueAnalytics = async (
     staff: staffWithShare,
   };
 };
+
+export class RevenueAnalyticsService {
+  getRevenueAnalytics = getRevenueAnalytics;
+}
