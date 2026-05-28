@@ -4,6 +4,7 @@ import { db } from "../db/client";
 import { admins } from "../db/schema/admins";
 import { AuthorizationError } from "../utils/error/app-error";
 import { AuthRequest } from "./auth.middleware";
+import { AuthorizationError } from "../errors/app-error";
 
 export const requireAdmin = async (
   req: AuthRequest,

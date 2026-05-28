@@ -1,4 +1,5 @@
 import { Response } from "express";
+import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import { PermissionAuditLogService } from "./permission-audit-log.service";
 

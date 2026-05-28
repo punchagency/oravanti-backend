@@ -3,6 +3,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { openAPI, organization, twoFactor } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
 import nodemailer from "nodemailer";
+import { env } from "./config/env";
 import { db } from "./db/client";
 import {
   account,
@@ -29,8 +30,8 @@ const EMAIL_CONFIG = {
 const transporter = nodemailer.createTransport({
   service: EMAIL_CONFIG.SERVICE,
   auth: {
-    user: process.env.SMTP_EMAIL_ADDRESS,
-    pass: process.env.SMTP_PASSWORD,
+    user: env.SMTP_EMAIL_ADDRESS,
+    pass: env.SMTP_PASSWORD,
   },
 });
 
@@ -125,7 +126,7 @@ async function sendPasswordResetEmail(
   }
 }
 
-const isProduction = process.env.NODE_ENV === "production";
+const { isProduction } = env;
 
 export async function getActiveOrganization(userId: string) {
   const [memberUser] = await db
@@ -147,7 +148,7 @@ export async function getActiveOrganization(userId: string) {
 
 export const auth = betterAuth({
   appName: "Oravanti",
-  trustedOrigins: (process.env.CORS_ORIGIN as string)
+  trustedOrigins: env.CORS_ORIGIN
     .split(",")
     .map((origin) => origin.trim()),
   advanced: {

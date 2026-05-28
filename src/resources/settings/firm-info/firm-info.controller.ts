@@ -1,4 +1,6 @@
 import { Response } from "express";
+import { BadRequestError, NotFoundError } from "../../../errors/app-error";
+import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import { UpsertFirmInfoBody } from "../../../types/settings.types";
 import { FirmInfoService } from "./firm-info.service";
