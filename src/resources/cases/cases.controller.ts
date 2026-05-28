@@ -25,12 +25,13 @@ export class CasesController {
   });
 
   getAllCases = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { search, status, assigneeId, clientId } = req.query;
+    const { search, status, assigneeId, clientId, practiceAreaId } = req.query;
     const result = await this.casesService.getAllCases(req.firmId!, {
       search: search as string,
       status: status as string,
       assigneeId: assigneeId as string,
       clientId: clientId as string,
+      practiceAreaId: practiceAreaId as string,
     });
     res.status(200).json(result);
   });
@@ -47,11 +48,18 @@ export class CasesController {
   });
 
   createCase = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { clientId, caseType, filingDate, description } = req.body;
+    const { clientId, practiceAreaId, caseType, filingDate, description } =
+      req.body;
 
-    if (!clientId || !caseType || !filingDate || !description) {
+    if (
+      !clientId ||
+      !practiceAreaId ||
+      !caseType ||
+      !filingDate ||
+      !description
+    ) {
       throw new BadRequestError(
-        "clientId, caseType, filingDate and description are required",
+        "clientId, practiceAreaId, caseType, filingDate and description are required",
       );
     }
 

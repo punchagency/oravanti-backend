@@ -53,6 +53,9 @@ import { FirmInfoService } from "./resources/settings/firm-info/firm-info.servic
 import { PermissionAuditLogController } from "./resources/settings/permission-audit-log/permission-audit-log.controller";
 import { PermissionAuditLogRouter } from "./resources/settings/permission-audit-log/permission-audit-log.routes";
 import { PermissionAuditLogService } from "./resources/settings/permission-audit-log/permission-audit-log.service";
+import { PracticeAreasController } from "./resources/practice-areas/practice-areas.controller";
+import { PracticeAreasRouter } from "./resources/practice-areas/practice-areas.routes";
+import { PracticeAreasService } from "./resources/practice-areas/practice-areas.service";
 import { ProfileController } from "./resources/settings/profile/profile.controller";
 import { ProfileRouter } from "./resources/settings/profile/profile.routes";
 import { ProfileService } from "./resources/settings/profile/profile.service";
@@ -105,6 +108,12 @@ const calendarRouter = new CalendarRouter(calendarController);
 const casesService = new CasesService();
 const casesController = new CasesController(casesService);
 const casesRouter = new CasesRouter(casesController);
+
+const practiceAreasService = new PracticeAreasService();
+const practiceAreasController = new PracticeAreasController(
+  practiceAreasService,
+);
+const practiceAreasRouter = new PracticeAreasRouter(practiceAreasController);
 
 const clientResponsivenessService = new ClientResponsivenessService();
 const clientResponsivenessController = new ClientResponsivenessController(
@@ -198,6 +207,7 @@ const app = new App(
     aiErrorDetectionRouter,
     calendarRouter,
     casesRouter,
+    practiceAreasRouter,
     clientResponsivenessRouter,
     clientsRouter,
     revenueAnalyticsRouter,

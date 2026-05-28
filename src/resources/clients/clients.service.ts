@@ -3,10 +3,15 @@ import { cases } from "../../db/schema/cases";
 import { certifications } from "../../db/schema/certifications";
 import { clients } from "../../db/schema/clients";
 import { companies } from "../../db/schema/companies";
+import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
 import { teamMembers } from "../../db/schema/team-members";
-import { ConflictError, NotFoundError } from "../../utils/error/app-error";
+import {
+  ConflictError,
+  NotFoundError,
+} from "../../utils/error/app-error";
 import { generateCaseNumber } from "../cases/cases.service";
+import { ensurePracticeAreaExists } from "../practice-areas/practice-areas.utils";
 import { db } from "./../../db/client";
 
 // ─── Companies ───────────────────────────────────────────────────────────────
@@ -143,6 +148,7 @@ export const createCompanyWithClients = async (
       currentAddress: string;
     };
     caseData: {
+      practiceAreaId: string;
       caseType: string;
       description: string;
       filingDate: string;
@@ -174,6 +180,10 @@ export const createCompanyWithClients = async (
     }
     if (allConflicts.length)
       return { type: "conflict_warning" as const, conflicts: allConflicts };
+  }
+
+  for (const { caseData } of individuals) {
+    await ensurePracticeAreaExists(firmId, caseData.practiceAreaId);
   }
 
   return db.transaction(async (tx) => {
@@ -208,6 +218,7 @@ export const createCompanyWithClients = async (
           firmId,
           caseNumber,
           clientId: newClient.id,
+          practiceAreaId: caseData.practiceAreaId,
           caseType: caseData.caseType as any,
           description: caseData.description,
           filingDate: caseData.filingDate,
@@ -249,6 +260,7 @@ export const addClientToCompany = async (
     currentAddress: string;
   },
   caseData: {
+    practiceAreaId: string;
     caseType: string;
     description: string;
     filingDate: string;
@@ -266,6 +278,7 @@ export const addClientToCompany = async (
 
   if (!company) throw new NotFoundError("Company not found");
 
+  await ensurePracticeAreaExists(firmId, caseData.practiceAreaId);
   await checkForDuplicate(firmId, clientData);
 
   return db.transaction(async (tx) => {
@@ -288,6 +301,7 @@ export const addClientToCompany = async (
         firmId,
         caseNumber,
         clientId: newClient.id,
+        practiceAreaId: caseData.practiceAreaId,
         caseType: caseData.caseType as any,
         description: caseData.description,
         filingDate: caseData.filingDate,
@@ -475,6 +489,8 @@ export const getAllClients = async (firmId: string, search?: string) => {
       status: clients.status,
       caseId: cases.id,
       caseType: cases.caseType,
+      practiceAreaId: practiceAreas.id,
+      practiceAreaName: practiceAreas.name,
       caseStatus: cases.status,
       caseProgress: cases.caseProgress,
       nextAppointment: cases.nextAppointment,
@@ -483,6 +499,7 @@ export const getAllClients = async (firmId: string, search?: string) => {
     })
     .from(clients)
     .leftJoin(cases, eq(cases.clientId, clients.id))
+    .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
     .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
     .where(
       search
@@ -511,6 +528,10 @@ export const getAllClients = async (firmId: string, search?: string) => {
       ? {
           id: r.caseId,
           caseType: r.caseType,
+          practiceArea: {
+            id: r.practiceAreaId,
+            name: r.practiceAreaName,
+          },
           status: r.caseStatus,
           caseProgress: r.caseProgress,
           nextAppointment: r.nextAppointment,
@@ -554,6 +575,7 @@ export const createClient = async (
     currentAddress: string;
   },
   caseData: {
+    practiceAreaId: string;
     caseType: string;
     description: string;
     filingDate: string;
@@ -565,6 +587,8 @@ export const createClient = async (
   },
   options?: { acknowledgeConflict?: boolean },
 ) => {
+  await ensurePracticeAreaExists(firmId, caseData.practiceAreaId);
+
   await checkForDuplicate(firmId, clientData);
 
   if (!options?.acknowledgeConflict) {
@@ -587,6 +611,7 @@ export const createClient = async (
         firmId,
         caseNumber,
         clientId: newClient.id,
+        practiceAreaId: caseData.practiceAreaId,
         caseType: caseData.caseType as any,
         description: caseData.description,
         filingDate: caseData.filingDate,
@@ -673,6 +698,7 @@ export const addCase = async (
   clientId: string,
   firmId: string,
   caseData: {
+    practiceAreaId: string;
     caseType: string;
     description: string;
     filingDate: string;
@@ -684,6 +710,8 @@ export const addCase = async (
   },
   options?: { acknowledgeExistingCase?: boolean },
 ) => {
+  await ensurePracticeAreaExists(firmId, caseData.practiceAreaId);
+
   if (!options?.acknowledgeExistingCase) {
     const existing = await db
       .select({
@@ -724,6 +752,7 @@ export const addCase = async (
       firmId,
       caseNumber,
       clientId,
+      practiceAreaId: caseData.practiceAreaId,
       caseType: caseData.caseType as any,
       description: caseData.description,
       filingDate: caseData.filingDate,
