@@ -2,7 +2,6 @@ import { eq } from "drizzle-orm";
 import { supabase } from "../../../config/supabase";
 import { db } from "../../../db/client";
 import { profiles } from "../../../db/schema";
-import { ExternalServiceError } from "../../../errors/app-error";
 import { UpdateProfileBody } from "../../../types/settings.types";
 import { ExternalServiceError } from "../../../utils/error/app-error";
 

@@ -2,7 +2,6 @@ import { and, count, desc, eq } from "drizzle-orm";
 import { supabaseAdmin } from "../../config/supabase";
 import { clients } from "../../db/schema/clients";
 import { documents } from "../../db/schema/documents";
-import { ExternalServiceError, NotFoundError } from "../../errors/app-error";
 import { staff } from "../../db/schema/staff";
 import {
   ExternalServiceError,
