@@ -3,28 +3,65 @@ import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { setFirmContext } from "../../middleware/rls.middleware";
 import { requireStaffOrAdmin } from "../../middleware/staff-or-admin.middleware";
-import {
-  createCase,
-  deleteCase,
-  generateCaseNumber,
-  getAllCases,
-  getCaseById,
-  updateCase,
-} from "./cases.controller";
+import { CasesController } from "./cases.controller";
 
-const router = Router();
+export class CasesRouter {
+  public router: Router;
+  public path: string;
+  private casesController: CasesController;
 
-router.get(
-  "/generate-number",
-  requireAuth,
-  requireAdmin,
-  setFirmContext,
-  generateCaseNumber,
-);
-router.get("/", requireAuth, requireAdmin, setFirmContext, getAllCases);
-router.get("/:id", requireAuth, requireAdmin, setFirmContext, getCaseById);
-router.post("/", requireAuth, requireStaffOrAdmin, setFirmContext, createCase);
-router.patch("/:id", requireAuth, requireAdmin, setFirmContext, updateCase);
-router.delete("/:id", requireAuth, requireAdmin, setFirmContext, deleteCase);
+  constructor(casesController: CasesController) {
+    this.router = Router();
+    this.path = "/cases";
+    this.casesController = casesController;
 
-export default router;
+    this.initializeRoutes();
+  }
+
+  private initializeRoutes() {
+    this.router.use(this.path, this.router);
+
+    this.router.get(
+      "/generate-number",
+      requireAuth,
+      requireAdmin,
+      setFirmContext,
+      this.casesController.generateCaseNumber,
+    );
+    this.router.get(
+      "/",
+      requireAuth,
+      requireAdmin,
+      setFirmContext,
+      this.casesController.getAllCases,
+    );
+    this.router.get(
+      "/:id",
+      requireAuth,
+      requireAdmin,
+      setFirmContext,
+      this.casesController.getCaseById,
+    );
+    this.router.post(
+      "/",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      this.casesController.createCase,
+    );
+    this.router.patch(
+      "/:id",
+      requireAuth,
+      requireAdmin,
+      setFirmContext,
+      this.casesController.updateCase,
+    );
+    this.router.delete(
+      "/:id",
+      requireAuth,
+      requireAdmin,
+      setFirmContext,
+      this.casesController.deleteCase,
+    );
+  }
+}

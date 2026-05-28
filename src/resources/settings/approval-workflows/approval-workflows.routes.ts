@@ -2,16 +2,29 @@ import { Router } from "express";
 import { requireAdmin } from "../../../middleware/admin.middleware";
 import { requireAuth } from "../../../middleware/auth.middleware";
 import { setFirmContext } from "../../../middleware/rls.middleware";
-import {
-  getApprovalWorkflows,
-  updateApprovalWorkflows,
-} from "./approval-workflows.controller";
+import { ApprovalWorkflowsController } from "./approval-workflows.controller";
 
-const router = Router();
+export class ApprovalWorkflowsRouter {
+  public router: Router;
+  public path: string;
+  private approvalWorkflowsController: ApprovalWorkflowsController;
 
-router.use(requireAuth, requireAdmin, setFirmContext);
+  constructor(approvalWorkflowsController: ApprovalWorkflowsController) {
+    this.router = Router();
+    this.path = "/settings/approval-workflows";
+    this.approvalWorkflowsController = approvalWorkflowsController;
 
-router.get("/", getApprovalWorkflows);
-router.patch("/", updateApprovalWorkflows);
+    this.initializeRoutes();
+  }
 
-export default router;
+  private initializeRoutes() {
+    this.router.use(this.path, this.router);
+    this.router.use(requireAuth, requireAdmin, setFirmContext);
+
+    this.router.get("/", this.approvalWorkflowsController.getApprovalWorkflows);
+    this.router.patch(
+      "/",
+      this.approvalWorkflowsController.updateApprovalWorkflows,
+    );
+  }
+}

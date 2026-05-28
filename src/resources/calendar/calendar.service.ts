@@ -462,3 +462,15 @@ export const scheduleNextServiceRequest = async (
 
   return event;
 };
+
+export class CalendarService {
+  getCalendarEvents = getCalendarEvents;
+  getCalendarEventById = getCalendarEventById;
+  createCalendarEvent = createCalendarEvent;
+  updateCalendarEvent = updateCalendarEvent;
+  deleteCalendarEvent = deleteCalendarEvent;
+  getCalendarStrip = getCalendarStrip;
+  createServiceRequestEvent = createServiceRequestEvent;
+  resolveServiceRequestEvents = resolveServiceRequestEvents;
+  scheduleNextServiceRequest = scheduleNextServiceRequest;
+}

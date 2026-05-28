@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { NextFunction, Response } from "express";
 import { db } from "../db/client";
 import { admins } from "../db/schema/admins";
+import { AuthorizationError } from "../utils/error/app-error";
 import { AuthRequest } from "./auth.middleware";
 
 export const requireAdmin = async (
@@ -16,8 +17,7 @@ export const requireAdmin = async (
     .limit(1);
 
   if (!record.length) {
-    res.status(403).json({ message: "Admin access required" });
-    return;
+    throw new AuthorizationError("Admin access required");
   }
 
   req.adminId = record[0].id;

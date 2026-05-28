@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { NextFunction, Response } from "express";
 import { admins } from "../db/schema/admins";
 import { staff } from "../db/schema/staff";
+import { AuthorizationError } from "../utils/error/app-error";
 import { db } from "./../db/client";
 import { AuthRequest } from "./auth.middleware";
 
@@ -34,5 +35,5 @@ export const requireStaffOrAdmin = async (
     return next();
   }
 
-  res.status(403).json({ message: "Staff or admin access required" });
+  throw new AuthorizationError("Staff or admin access required");
 };

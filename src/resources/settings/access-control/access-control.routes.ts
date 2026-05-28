@@ -2,28 +2,55 @@ import { Router } from "express";
 import { requireAdmin } from "../../../middleware/admin.middleware";
 import { requireAuth } from "../../../middleware/auth.middleware";
 import { setFirmContext } from "../../../middleware/rls.middleware";
-import {
-  getActivationRequirements,
-  getCertificationGates,
-  updateActivationRequirements,
-  updateCertificationGates,
-} from "../certification-gates/certification-gates.controller";
-import {
-  getPermissions,
-  getRoleOverview,
-  savePermissions,
-} from "./access-control.controller";
+import { CertificationGatesController } from "../certification-gates/certification-gates.controller";
+import { AccessControlController } from "./access-control.controller";
 
-const router = Router();
+export class AccessControlRouter {
+  public router: Router;
+  public path: string;
+  private accessControlController: AccessControlController;
+  private certificationGatesController: CertificationGatesController;
 
-router.use(requireAuth, requireAdmin, setFirmContext);
+  constructor(
+    accessControlController: AccessControlController,
+    certificationGatesController: CertificationGatesController,
+  ) {
+    this.router = Router();
+    this.path = "/settings/access-control";
+    this.accessControlController = accessControlController;
+    this.certificationGatesController = certificationGatesController;
 
-router.get("/overview", getRoleOverview);
-router.get("/permissions", getPermissions);
-router.post("/permissions", savePermissions);
-router.get("/certification-gates", getCertificationGates);
-router.post("/certification-gates", updateCertificationGates);
-router.get("/activation-requirements", getActivationRequirements);
-router.post("/activation-requirements", updateActivationRequirements);
+    this.initializeRoutes();
+  }
 
-export default router;
+  private initializeRoutes() {
+    this.router.use(this.path, this.router);
+    this.router.use(requireAuth, requireAdmin, setFirmContext);
+
+    this.router.get("/overview", this.accessControlController.getRoleOverview);
+    this.router.get(
+      "/permissions",
+      this.accessControlController.getPermissions,
+    );
+    this.router.post(
+      "/permissions",
+      this.accessControlController.savePermissions,
+    );
+    this.router.get(
+      "/certification-gates",
+      this.certificationGatesController.getCertificationGates,
+    );
+    this.router.post(
+      "/certification-gates",
+      this.certificationGatesController.updateCertificationGates,
+    );
+    this.router.get(
+      "/activation-requirements",
+      this.certificationGatesController.getActivationRequirements,
+    );
+    this.router.post(
+      "/activation-requirements",
+      this.certificationGatesController.updateActivationRequirements,
+    );
+  }
+}

@@ -192,3 +192,12 @@ export const updateCase = async (
 export const deleteCase = async (id: string, firmId: string) => {
   await db.delete(cases).where(and(eq(cases.id, id), eq(cases.firmId, firmId)));
 };
+
+export class CasesService {
+  generateCaseNumber = generateCaseNumber;
+  getAllCases = getAllCases;
+  getCaseById = getCaseById;
+  createCase = createCase;
+  updateCase = updateCase;
+  deleteCase = deleteCase;
+}

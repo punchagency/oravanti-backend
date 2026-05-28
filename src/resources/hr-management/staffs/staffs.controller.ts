@@ -1,90 +1,76 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import { AddStaffBody, UpdateStaffBody } from "../../../types/hr.types";
-import * as staffService from "./staffs.service";
+import asyncWrap from "../../../utils/asyncWrapper";
+import { BadRequestError, NotFoundError } from "../../../utils/error/app-error";
+import { StaffService } from "./staffs.service";
 
-export const getAll = async (req: AuthRequest, res: Response) => {
-  try {
-    const result = await staffService.getAllStaff(req.firmId!);
-    res.status(200).json(result);
-  } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
+export class StaffController {
+  private staffService: StaffService;
+
+  constructor(staffService: StaffService) {
+    this.staffService = staffService;
   }
-};
 
-export const getById = async (req: AuthRequest, res: Response) => {
-  try {
-    const result = await staffService.getStaffById(
+  getAll = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.staffService.getAllStaff(req.firmId!);
+    res.status(200).json(result);
+  });
+
+  getById = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.staffService.getStaffById(
       req.params.id as string,
       req.firmId!,
     );
     if (!result) {
-      res.status(404).json({ message: "Staff member not found" });
-      return;
+      throw new NotFoundError("Staff member not found");
     }
     res.status(200).json(result);
-  } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
-  }
-};
+  });
 
-export const addStaff = async (req: AuthRequest, res: Response) => {
-  const { firstName, lastName, email, phone, role, teamId, startDate } =
-    req.body as AddStaffBody;
+  addStaff = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const { firstName, lastName, email, phone, role, teamId, startDate } =
+      req.body as AddStaffBody;
 
-  if (
-    !firstName ||
-    !lastName ||
-    !email ||
-    !phone ||
-    !role ||
-    !teamId ||
-    !startDate
-  ) {
-    res.status(400).json({ message: "All fields are required" });
-    return;
-  }
+    if (
+      !firstName ||
+      !lastName ||
+      !email ||
+      !phone ||
+      !role ||
+      !teamId ||
+      !startDate
+    ) {
+      throw new BadRequestError("All fields are required");
+    }
 
-  try {
-    const result = await staffService.addStaff({
+    const result = await this.staffService.addStaff({
       ...req.body,
       firmId: req.firmId!,
     });
     res.status(201).json({ message: "Staff member added", staff: result });
-  } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
-  }
-};
+  });
 
-export const updateStaff = async (req: AuthRequest, res: Response) => {
-  try {
-    const result = await staffService.updateStaff(
+  updateStaff = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.staffService.updateStaff(
       req.params.id as string,
       req.firmId!,
       req.body as UpdateStaffBody,
     );
     if (!result) {
-      res.status(404).json({ message: "Staff member not found" });
-      return;
+      throw new NotFoundError("Staff member not found");
     }
     res.status(200).json({ message: "Staff member updated", staff: result });
-  } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
-  }
-};
+  });
 
-export const deleteStaff = async (req: AuthRequest, res: Response) => {
-  try {
-    const result = await staffService.deleteStaff(
+  deleteStaff = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.staffService.deleteStaff(
       req.params.id as string,
       req.firmId!,
     );
     if (!result) {
-      res.status(404).json({ message: "Staff member not found" });
-      return;
+      throw new NotFoundError("Staff member not found");
     }
     res.status(200).json({ message: "Staff member deleted" });
-  } catch (error) {
-    res.status(500).json({ message: (error as Error).message });
-  }
-};
+  });
+}
