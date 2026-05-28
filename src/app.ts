@@ -76,6 +76,12 @@ export class App {
       });
     });
 
+    this.express.get("/health", (_req: Request, res: Response) => {
+      res.json({
+        status: "Oravanti API up and running",
+      });
+    })
+
     this.express.get("/api", (_req: Request, res: Response) => {
       res.redirect("/");
     });
