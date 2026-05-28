@@ -9,11 +9,10 @@ import {
   ConflictError,
   NotFoundError,
 } from "../../utils/error/app-error";
-
-const normalizeName = (name: string) => name.trim();
+import { normalizePracticeAreaName } from "./practice-areas.utils";
 
 const assertNameIsValid = (name?: string) => {
-  if (!name || !normalizeName(name)) {
+  if (!name || !normalizePracticeAreaName(name)) {
     throw new BadRequestError("name is required");
   }
 };
@@ -118,7 +117,7 @@ export const createPracticeArea = async (
   data: { name: string },
 ) => {
   assertNameIsValid(data.name);
-  const name = normalizeName(data.name);
+  const name = normalizePracticeAreaName(data.name);
   await ensureNameIsAvailable(firmId, name);
 
   const [practiceArea] = await db
@@ -144,7 +143,7 @@ export const updatePracticeArea = async (
   const updateData: Partial<typeof practiceAreas.$inferInsert> = {};
   if (data.name !== undefined) {
     assertNameIsValid(data.name);
-    updateData.name = normalizeName(data.name);
+    updateData.name = normalizePracticeAreaName(data.name);
     await ensureNameIsAvailable(firmId, updateData.name, id);
   }
 

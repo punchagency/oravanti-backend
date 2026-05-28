@@ -7,11 +7,11 @@ import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
 import { teamMembers } from "../../db/schema/team-members";
 import {
-  BadRequestError,
   ConflictError,
   NotFoundError,
 } from "../../utils/error/app-error";
 import { generateCaseNumber } from "../cases/cases.service";
+import { ensurePracticeAreaExists } from "../practice-areas/practice-areas.utils";
 import { db } from "./../../db/client";
 
 // ─── Companies ───────────────────────────────────────────────────────────────
@@ -383,29 +383,6 @@ export const checkForConflicts = async (
 // ─── Duplicate Detection ──────────────────────────────────────────────────────
 
 const normName = (s?: string | null) => (s ?? "").trim().toLowerCase();
-
-const ensurePracticeAreaExists = async (
-  firmId: string,
-  practiceAreaId?: string,
-) => {
-  if (!practiceAreaId) {
-    throw new BadRequestError("practiceAreaId is required");
-  }
-
-  const [practiceArea] = await db
-    .select({ id: practiceAreas.id })
-    .from(practiceAreas)
-    .where(
-      and(
-        eq(practiceAreas.id, practiceAreaId),
-        eq(practiceAreas.firmId, firmId),
-      ),
-    );
-
-  if (!practiceArea) {
-    throw new NotFoundError("Practice area not found");
-  }
-};
 
 const checkForDuplicate = async (
   firmId: string,

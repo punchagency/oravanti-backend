@@ -4,7 +4,7 @@ import { cases } from "../../db/schema/cases";
 import { clients } from "../../db/schema/clients";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
-import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import { ensurePracticeAreaExists } from "../practice-areas/practice-areas.utils";
 
 // ─── Case Number Generation ──────────────────────────────────────────────────
 
@@ -49,29 +49,6 @@ export const generateCaseNumber = async (
 
   const next = String(maxSeq + 1).padStart(3, "0");
   return `${prefix}${next}`;
-};
-
-const ensurePracticeAreaExists = async (
-  firmId: string,
-  practiceAreaId?: string,
-) => {
-  if (!practiceAreaId) {
-    throw new BadRequestError("practiceAreaId is required");
-  }
-
-  const [practiceArea] = await db
-    .select({ id: practiceAreas.id })
-    .from(practiceAreas)
-    .where(
-      and(
-        eq(practiceAreas.id, practiceAreaId),
-        eq(practiceAreas.firmId, firmId),
-      ),
-    );
-
-  if (!practiceArea) {
-    throw new NotFoundError("Practice area not found");
-  }
 };
 
 // ─── Cases CRUD ──────────────────────────────────────────────────────────────
