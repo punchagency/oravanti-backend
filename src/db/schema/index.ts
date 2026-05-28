@@ -29,3 +29,4 @@ export * from './documents';
 export * from './ai-error-flags';
 export * from './ai-system-config';
 export * from './calendar-events';
+export * from './practice-areas';

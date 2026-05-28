@@ -2,7 +2,9 @@ import { and, desc, eq, ilike } from "drizzle-orm";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { clients } from "../../db/schema/clients";
+import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
+import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 
 // ─── Case Number Generation ──────────────────────────────────────────────────
 
@@ -49,6 +51,29 @@ export const generateCaseNumber = async (
   return `${prefix}${next}`;
 };
 
+const ensurePracticeAreaExists = async (
+  firmId: string,
+  practiceAreaId?: string,
+) => {
+  if (!practiceAreaId) {
+    throw new BadRequestError("practiceAreaId is required");
+  }
+
+  const [practiceArea] = await db
+    .select({ id: practiceAreas.id })
+    .from(practiceAreas)
+    .where(
+      and(
+        eq(practiceAreas.id, practiceAreaId),
+        eq(practiceAreas.firmId, firmId),
+      ),
+    );
+
+  if (!practiceArea) {
+    throw new NotFoundError("Practice area not found");
+  }
+};
+
 // ─── Cases CRUD ──────────────────────────────────────────────────────────────
 
 export const getAllCases = async (
@@ -58,12 +83,15 @@ export const getAllCases = async (
     status?: string;
     assigneeId?: string;
     clientId?: string;
+    practiceAreaId?: string;
   },
 ) => {
   const rows = await db
     .select({
       id: cases.id,
       caseNumber: cases.caseNumber,
+      practiceAreaId: practiceAreas.id,
+      practiceAreaName: practiceAreas.name,
       caseType: cases.caseType,
       status: cases.status,
       priority: cases.priority,
@@ -72,12 +100,14 @@ export const getAllCases = async (
       clientId: clients.id,
       clientFirstName: clients.firstName,
       clientLastName: clients.lastName,
+      assignedStaffId: staff.id,
       assigneeFirstName: staff.firstName,
       assigneeLastName: staff.lastName,
       assigneeRole: staff.role,
     })
     .from(cases)
     .leftJoin(clients, eq(clients.id, cases.clientId))
+    .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
     .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
     .where(eq(cases.firmId, firmId))
     .orderBy(desc(cases.createdAt));
@@ -85,8 +115,16 @@ export const getAllCases = async (
   return rows
     .filter((r) => {
       if (filters?.status && r.status !== filters.status) return false;
-      if (filters?.assigneeId && r.assigneeFirstName === null) return false;
+      if (filters?.assigneeId && r.assignedStaffId !== filters.assigneeId) {
+        return false;
+      }
       if (filters?.clientId && r.clientId !== filters.clientId) return false;
+      if (
+        filters?.practiceAreaId &&
+        r.practiceAreaId !== filters.practiceAreaId
+      ) {
+        return false;
+      }
       if (filters?.search) {
         const q = filters.search.toLowerCase();
         const matches =
@@ -101,6 +139,10 @@ export const getAllCases = async (
     .map((r) => ({
       id: r.id,
       caseNumber: r.caseNumber,
+      practiceArea: {
+        id: r.practiceAreaId,
+        name: r.practiceAreaName,
+      },
       caseType: r.caseType,
       status: r.status,
       priority: r.priority,
@@ -124,6 +166,7 @@ export const getCaseById = async (id: string, firmId: string) => {
     .select()
     .from(cases)
     .leftJoin(clients, eq(clients.id, cases.clientId))
+    .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
     .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
     .where(and(eq(cases.id, id), eq(cases.firmId, firmId)));
   return row ?? null;
@@ -133,6 +176,7 @@ export const createCase = async (
   firmId: string,
   data: {
     clientId: string;
+    practiceAreaId: string;
     caseType: string;
     caseNumber?: string;
     priority?: string;
@@ -148,6 +192,8 @@ export const createCase = async (
   },
   creator?: { adminId?: string; staffId?: string },
 ) => {
+  await ensurePracticeAreaExists(firmId, data.practiceAreaId);
+
   const caseNumber =
     data.caseNumber || (await generateCaseNumber(data.caseType, firmId));
 
@@ -157,6 +203,7 @@ export const createCase = async (
       firmId,
       caseNumber,
       clientId: data.clientId,
+      practiceAreaId: data.practiceAreaId,
       caseType: data.caseType as any,
       priority: (data.priority ?? "medium") as any,
       assignmentType: data.assignmentType ?? "internal_team",
@@ -181,6 +228,10 @@ export const updateCase = async (
   firmId: string,
   data: Partial<typeof cases.$inferInsert>,
 ) => {
+  if (data.practiceAreaId) {
+    await ensurePracticeAreaExists(firmId, data.practiceAreaId);
+  }
+
   const [updated] = await db
     .update(cases)
     .set({ ...data, updatedAt: new Date() })

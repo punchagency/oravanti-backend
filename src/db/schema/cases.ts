@@ -4,6 +4,7 @@ import { teams } from './teams';
 import { staff } from './staff';
 import { admins } from './admins';
 import { firms } from './firm-info';
+import { practiceAreas } from './practice-areas';
 
 export const caseTypeEnum = pgEnum('case_type', [
   'h1b_visa',
@@ -39,6 +40,7 @@ export const cases = pgTable('cases', {
   firmId:                  uuid('firm_id').notNull().references(() => firms.id),
   caseNumber:              text('case_number').notNull().unique(),
   clientId:                uuid('client_id').notNull().references(() => clients.id),
+  practiceAreaId:          uuid('practice_area_id').notNull().references(() => practiceAreas.id),
   caseType:                caseTypeEnum('case_type').notNull(),
   status:                  caseStatusEnum('status').notNull().default('active'),
   priority:                casePriorityEnum('priority').notNull().default('medium'),
