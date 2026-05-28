@@ -1,12 +1,9 @@
 import { Response } from "express";
-import { BadRequestError } from "../../../errors/app-error";
-import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
-import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
-import { DataAccessService } from "./data-access.service";
-
 import asyncWrap from "../../../utils/asyncWrapper";
 import { BadRequestError } from "../../../utils/error/app-error";
+import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
+import { DataAccessService } from "./data-access.service";
 
 export class DataAccessController {
   private dataAccessService: DataAccessService;
@@ -21,22 +18,20 @@ export class DataAccessController {
   }
 
   getDataAccessControls = asyncWrap(async (req: AuthRequest, res: Response) => {
-    
-      const result = await this.dataAccessService.getDataAccessControls(
-        req.firmId!,
-      );
-      res.status(200).json(result);
-    
+    const result = await this.dataAccessService.getDataAccessControls(
+      req.firmId!,
+    );
+    res.status(200).json(result);
   });
 
-  updateDataAccessControls = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { controls } = req.body;
+  updateDataAccessControls = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const { controls } = req.body;
 
-    if (!Array.isArray(controls) || controls.length === 0) {
-      throw new BadRequestError("controls array is required");
-    }
+      if (!Array.isArray(controls) || controls.length === 0) {
+        throw new BadRequestError("controls array is required");
+      }
 
-    
       await this.dataAccessService.updateDataAccessControls(
         req.firmId!,
         controls,
@@ -51,6 +46,6 @@ export class DataAccessController {
         .catch(() => {});
 
       res.status(200).json({ message: "Data access controls updated" });
-    
-  });
+    },
+  );
 }

@@ -1,12 +1,9 @@
 import { Response } from "express";
-import { BadRequestError } from "../../../errors/app-error";
-import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
-import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
-import { CertificationGatesService } from "./certification-gates.service";
-
 import asyncWrap from "../../../utils/asyncWrapper";
 import { BadRequestError } from "../../../utils/error/app-error";
+import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
+import { CertificationGatesService } from "./certification-gates.service";
 
 export class CertificationGatesController {
   private certifcationGatesService: CertificationGatesService;
@@ -21,22 +18,20 @@ export class CertificationGatesController {
   }
 
   getCertificationGates = asyncWrap(async (req: AuthRequest, res: Response) => {
-    
-      const result = await this.certifcationGatesService.getCertificationGates(
-        req.firmId!,
-      );
-      res.status(200).json(result);
-    
+    const result = await this.certifcationGatesService.getCertificationGates(
+      req.firmId!,
+    );
+    res.status(200).json(result);
   });
 
-  updateCertificationGates = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { gates } = req.body;
+  updateCertificationGates = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const { gates } = req.body;
 
-    if (!Array.isArray(gates) || gates.length === 0) {
-      throw new BadRequestError("gates array is required");
-    }
+      if (!Array.isArray(gates) || gates.length === 0) {
+        throw new BadRequestError("gates array is required");
+      }
 
-    
       await this.certifcationGatesService.updateCertificationGates(
         req.firmId!,
         gates,
@@ -47,27 +42,27 @@ export class CertificationGatesController {
         req.firmId!,
       );
       res.status(200).json({ message: "Certification gates updated" });
-    
-  });
+    },
+  );
 
-  getActivationRequirements = asyncWrap(async (req: AuthRequest, res: Response) => {
-    
+  getActivationRequirements = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
       const result =
         await this.certifcationGatesService.getActivationRequirements(
           req.firmId!,
         );
       res.status(200).json(result);
-    
-  });
+    },
+  );
 
-  updateActivationRequirements = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { certificationCodes } = req.body;
+  updateActivationRequirements = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const { certificationCodes } = req.body;
 
-    if (!Array.isArray(certificationCodes)) {
-      throw new BadRequestError("certificationCodes array is required");
-    }
+      if (!Array.isArray(certificationCodes)) {
+        throw new BadRequestError("certificationCodes array is required");
+      }
 
-    
       const result =
         await this.certifcationGatesService.updateActivationRequirements(
           req.firmId!,
@@ -81,6 +76,6 @@ export class CertificationGatesController {
       res.status(200).json({
         message: `Activation requirements updated. ${result.updated} paralegal(s) re-evaluated.`,
       });
-    
-  });
+    },
+  );
 }

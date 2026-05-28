@@ -1,12 +1,9 @@
 import { Response } from "express";
-import { BadRequestError, NotFoundError } from "../../../errors/app-error";
-import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import { AssignCaseBody, FilingType } from "../../../types/hr.types";
-import { AssignmentsService } from "./assignments.service";
-
 import asyncWrap from "../../../utils/asyncWrapper";
 import { BadRequestError, NotFoundError } from "../../../utils/error/app-error";
+import { AssignmentsService } from "./assignments.service";
 
 const VALID_FILING_TYPES: FilingType[] = [
   "I-130",
@@ -24,21 +21,24 @@ export class AssignmentsController {
     this.assignmentsService = assignmentsService;
   }
 
-  getAvailableContractors = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { filingType } = req.query;
+  getAvailableContractors = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const { filingType } = req.query;
 
-    if (!filingType || !VALID_FILING_TYPES.includes(filingType as FilingType)) {
-      throw new BadRequestError("A valid filingType query param is required");
-    }
+      if (
+        !filingType ||
+        !VALID_FILING_TYPES.includes(filingType as FilingType)
+      ) {
+        throw new BadRequestError("A valid filingType query param is required");
+      }
 
-    
       const result = await this.assignmentsService.getAvailableContractors(
         filingType as FilingType,
         req.firmId!,
       );
       res.status(200).json(result);
-    
-  });
+    },
+  );
 
   assignCase = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { assignmentType, filingType, urgencyLevel } =
@@ -54,47 +54,39 @@ export class AssignmentsController {
       throw new BadRequestError("Invalid filing type");
     }
 
-    
-      const result = await this.assignmentsService.assignCase({
-        ...req.body,
-        firmId: req.firmId!,
-      });
-      res
-        .status(201)
-        .json({ message: "Case assigned successfully", assignment: result });
-    
+    const result = await this.assignmentsService.assignCase({
+      ...req.body,
+      firmId: req.firmId!,
+    });
+    res
+      .status(201)
+      .json({ message: "Case assigned successfully", assignment: result });
   });
 
   getAllAssignments = asyncWrap(async (req: AuthRequest, res: Response) => {
-    
-      const result = await this.assignmentsService.getAllAssignments(
-        req.firmId!,
-      );
-      res.status(200).json(result);
-    
+    const result = await this.assignmentsService.getAllAssignments(req.firmId!);
+    res.status(200).json(result);
   });
 
   getAssignmentById = asyncWrap(async (req: AuthRequest, res: Response) => {
-    
-      const result = await this.assignmentsService.getAssignmentById(
-        req.params.id as string,
-        req.firmId!,
-      );
-      if (!result) {
-        throw new NotFoundError("Assignment not found");
-      }
-      res.status(200).json(result);
-    
+    const result = await this.assignmentsService.getAssignmentById(
+      req.params.id as string,
+      req.firmId!,
+    );
+    if (!result) {
+      throw new NotFoundError("Assignment not found");
+    }
+    res.status(200).json(result);
   });
 
-  updateAssignmentStatus = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { status } = req.body;
+  updateAssignmentStatus = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const { status } = req.body;
 
-    if (!status) {
-      throw new BadRequestError("status is required");
-    }
+      if (!status) {
+        throw new BadRequestError("status is required");
+      }
 
-    
       const result = await this.assignmentsService.updateAssignmentStatus(
         req.params.id as string,
         req.firmId!,
@@ -106,6 +98,6 @@ export class AssignmentsController {
       res
         .status(200)
         .json({ message: "Assignment status updated", assignment: result });
-    
-  });
+    },
+  );
 }

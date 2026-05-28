@@ -1,9 +1,8 @@
 import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
-import { Period, RevenueAnalyticsService } from "./revenue-analytics.service";
-
 import asyncWrap from "../../utils/asyncWrapper";
 import { BadRequestError } from "../../utils/error/app-error";
+import { Period, RevenueAnalyticsService } from "./revenue-analytics.service";
 
 const VALID_PERIODS: Period[] = ["month", "quarter", "year", "all"];
 
@@ -19,7 +18,9 @@ export class RevenueAnalyticsController {
     const teamId = req.query.teamId as string | undefined;
 
     if (!VALID_PERIODS.includes(period)) {
-      throw new BadRequestError("Invalid period. Use: month, quarter, year, all");
+      throw new BadRequestError(
+        "Invalid period. Use: month, quarter, year, all",
+      );
     }
 
     const data = await this.revenueAnalyticsService.getRevenueAnalytics(
@@ -35,7 +36,9 @@ export class RevenueAnalyticsController {
     const teamId = req.query.teamId as string | undefined;
 
     if (!VALID_PERIODS.includes(period)) {
-      throw new BadRequestError("Invalid period. Use: month, quarter, year, all");
+      throw new BadRequestError(
+        "Invalid period. Use: month, quarter, year, all",
+      );
     }
 
     const data = await this.revenueAnalyticsService.getRevenueAnalytics(

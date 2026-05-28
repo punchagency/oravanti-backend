@@ -1,12 +1,9 @@
 import { Response } from "express";
-import { BadRequestError, NotFoundError } from "../../../errors/app-error";
-import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import { UpdateProfileBody } from "../../../types/settings.types";
-import { ProfileService } from "./profile.service";
-
 import asyncWrap from "../../../utils/asyncWrapper";
 import { BadRequestError, NotFoundError } from "../../../utils/error/app-error";
+import { ProfileService } from "./profile.service";
 
 export class ProfileController {
   private profileService: ProfileService;
@@ -16,27 +13,22 @@ export class ProfileController {
   }
 
   getProfile = asyncWrap(async (req: AuthRequest, res: Response) => {
-    
-      const result = await this.profileService.getProfile(req.userId!);
-      if (!result) {
-        throw new NotFoundError("Profile not found");
-      }
-      res.status(200).json(result);
-    
+    const result = await this.profileService.getProfile(req.userId!);
+    if (!result) {
+      throw new NotFoundError("Profile not found");
+    }
+    res.status(200).json(result);
   });
 
-  updateProfile = asyncWrap(async (
-    req: AuthRequest & { body: UpdateProfileBody },
-    res: Response,
-  ) => {
-    
+  updateProfile = asyncWrap(
+    async (req: AuthRequest & { body: UpdateProfileBody }, res: Response) => {
       const result = await this.profileService.upsertProfile(
         req.userId!,
         req.body,
       );
       res.status(200).json({ message: "Profile updated", profile: result });
-    
-  });
+    },
+  );
 
   uploadAvatar = asyncWrap(async (req: AuthRequest, res: Response) => {
     if (!req.file) {
@@ -52,14 +44,12 @@ export class ProfileController {
       throw new BadRequestError("File size must be under 2MB");
     }
 
-    
-      const result = await this.profileService.uploadAvatar(
-        req.userId!,
-        req.file,
-      );
-      res
-        .status(200)
-        .json({ message: "Avatar uploaded", avatarUrl: result?.avatarUrl });
-    
+    const result = await this.profileService.uploadAvatar(
+      req.userId!,
+      req.file,
+    );
+    res
+      .status(200)
+      .json({ message: "Avatar uploaded", avatarUrl: result?.avatarUrl });
   });
 }

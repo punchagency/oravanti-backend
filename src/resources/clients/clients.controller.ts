@@ -1,11 +1,12 @@
 import { Response } from "express";
-import { BadRequestError, NotFoundError } from "../../errors/app-error";
-import { sendErrorResponse } from "../../errors";
 import { AuthRequest } from "../../middleware/auth.middleware";
-import { ClientsService } from "./clients.service";
-
 import asyncWrap from "../../utils/asyncWrapper";
-import { BadRequestError, NotFoundError, ConflictError } from "../../utils/error/app-error";
+import {
+  BadRequestError,
+  ConflictError,
+  NotFoundError,
+} from "../../utils/error/app-error";
+import { ClientsService } from "./clients.service";
 
 export class ClientsController {
   private clientsService: ClientsService;

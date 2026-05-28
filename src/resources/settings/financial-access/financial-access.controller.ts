@@ -1,12 +1,9 @@
 import { Response } from "express";
-import { BadRequestError } from "../../../errors/app-error";
-import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
-import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
-import { FinancialAccessService } from "./financial-access.service";
-
 import asyncWrap from "../../../utils/asyncWrapper";
 import { BadRequestError } from "../../../utils/error/app-error";
+import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
+import { FinancialAccessService } from "./financial-access.service";
 
 export class FinancialAccessController {
   private financialAccessService: FinancialAccessService;
@@ -21,12 +18,10 @@ export class FinancialAccessController {
   }
 
   getFinancialAccess = asyncWrap(async (req: AuthRequest, res: Response) => {
-    
-      const result = await this.financialAccessService.getFinancialAccess(
-        req.firmId!,
-      );
-      res.status(200).json(result);
-    
+    const result = await this.financialAccessService.getFinancialAccess(
+      req.firmId!,
+    );
+    res.status(200).json(result);
   });
 
   updateFinancialAccess = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -36,21 +31,19 @@ export class FinancialAccessController {
       throw new BadRequestError("controls array is required");
     }
 
-    
-      await this.financialAccessService.updateFinancialAccess(
-        req.firmId!,
-        controls,
-      );
+    await this.financialAccessService.updateFinancialAccess(
+      req.firmId!,
+      controls,
+    );
 
-      const action =
-        controls.length === 1
-          ? `Updated financial access for ${controls[0].role} role`
-          : "Updated financial access controls";
-      this.auditLogService
-        .logPermissionChange(action, req.userId!, req.firmId!)
-        .catch(() => {});
+    const action =
+      controls.length === 1
+        ? `Updated financial access for ${controls[0].role} role`
+        : "Updated financial access controls";
+    this.auditLogService
+      .logPermissionChange(action, req.userId!, req.firmId!)
+      .catch(() => {});
 
-      res.status(200).json({ message: "Financial access controls updated" });
-    
+    res.status(200).json({ message: "Financial access controls updated" });
   });
 }

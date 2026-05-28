@@ -1,11 +1,8 @@
 import { Response } from "express";
-import { BadRequestError, NotFoundError } from "../../errors/app-error";
-import { sendErrorResponse } from "../../errors";
 import { AuthRequest } from "../../middleware/auth.middleware";
-import { CasesService } from "./cases.service";
-
 import asyncWrap from "../../utils/asyncWrapper";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import { CasesService } from "./cases.service";
 
 export class CasesController {
   private casesService: CasesService;

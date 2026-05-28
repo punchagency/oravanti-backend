@@ -1,11 +1,8 @@
 import { Response } from "express";
-import { BadRequestError, NotFoundError } from "../../errors/app-error";
-import { sendErrorResponse } from "../../errors";
 import { AuthRequest } from "../../middleware/auth.middleware";
-import { CalendarService } from "./calendar.service";
-
 import asyncWrap from "../../utils/asyncWrapper";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import { CalendarService } from "./calendar.service";
 
 export class CalendarController {
   private calendarService: CalendarService;

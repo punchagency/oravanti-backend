@@ -1,12 +1,9 @@
 import { Response } from "express";
-import { BadRequestError } from "../../../errors/app-error";
-import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
-import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
-import { ApprovalWorkflowsService } from "./approval-workflows.service";
-
 import asyncWrap from "../../../utils/asyncWrapper";
 import { BadRequestError } from "../../../utils/error/app-error";
+import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
+import { ApprovalWorkflowsService } from "./approval-workflows.service";
 
 export class ApprovalWorkflowsController {
   private approvalWorkflowsService: ApprovalWorkflowsService;
@@ -21,22 +18,20 @@ export class ApprovalWorkflowsController {
   }
 
   getApprovalWorkflows = asyncWrap(async (req: AuthRequest, res: Response) => {
-    
-      const result = await this.approvalWorkflowsService.getApprovalWorkflows(
-        req.firmId!,
-      );
-      res.status(200).json(result);
-    
+    const result = await this.approvalWorkflowsService.getApprovalWorkflows(
+      req.firmId!,
+    );
+    res.status(200).json(result);
   });
 
-  updateApprovalWorkflows = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { workflows } = req.body;
+  updateApprovalWorkflows = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const { workflows } = req.body;
 
-    if (!Array.isArray(workflows) || workflows.length === 0) {
-      throw new BadRequestError("workflows array is required");
-    }
+      if (!Array.isArray(workflows) || workflows.length === 0) {
+        throw new BadRequestError("workflows array is required");
+      }
 
-    
       await this.approvalWorkflowsService.updateApprovalWorkflows(
         req.firmId!,
         workflows,
@@ -51,6 +46,6 @@ export class ApprovalWorkflowsController {
         .catch(() => {});
 
       res.status(200).json({ message: "Approval workflows updated" });
-    
-  });
+    },
+  );
 }
