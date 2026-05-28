@@ -5,7 +5,7 @@ import { clients } from "../../db/schema/clients";
 import { companies } from "../../db/schema/companies";
 import { staff } from "../../db/schema/staff";
 import { teamMembers } from "../../db/schema/team-members";
-import { ConflictError, NotFoundError } from "../../errors/app-error";
+import { ConflictError, NotFoundError } from "../../utils/error/app-error";
 import { generateCaseNumber } from "../cases/cases.service";
 import { db } from "./../../db/client";
 
@@ -100,6 +100,26 @@ export const deleteCompany = async (
     .delete(companies)
     .where(and(eq(companies.id, id), eq(companies.firmId, firmId)));
 };
+
+export class ClientsService {
+  createCompany = createCompany;
+  getAllCompanies = getAllCompanies;
+  getCompanyById = getCompanyById;
+  updateCompany = updateCompany;
+  deleteCompany = deleteCompany;
+  createCompanyWithClients = createCompanyWithClients;
+  addClientToCompany = addClientToCompany;
+  getCertifications = getCertifications;
+  getAllClients = getAllClients;
+  getClientById = getClientById;
+  createClient = createClient;
+  updateClient = updateClient;
+  deleteClient = deleteClient;
+  getClientCases = getClientCases;
+  addCase = addCase;
+  updateCaseStatus = updateCaseStatus;
+  getTeamStaff = getTeamStaff;
+}
 
 // ─── Company client batch creation ───────────────────────────────────────────
 

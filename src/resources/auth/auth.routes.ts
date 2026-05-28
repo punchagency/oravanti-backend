@@ -1,10 +1,24 @@
 import { Router } from "express";
-import { forgotPassword, signIn, signUp } from "./auth.controller";
+import { AuthController } from "./auth.controller";
 
-const router = Router();
+export class AuthRouter {
+  public router: Router;
+  public path: string;
+  private authController: AuthController;
 
-router.post("/signup", signUp);
-router.post("/signin", signIn);
-router.post("/forgot-password", forgotPassword);
+  constructor(authController: AuthController) {
+    this.router = Router();
+    this.path = "/auth";
+    this.authController = authController;
 
-export default router;
+    this.initializeRoutes();
+  }
+
+  private initializeRoutes() {
+    this.router.use(this.path, this.router);
+
+    this.router.post("/signup", this.authController.signUp);
+    this.router.post("/signin", this.authController.signIn);
+    this.router.post("/forgot-password", this.authController.forgotPassword);
+  }
+}

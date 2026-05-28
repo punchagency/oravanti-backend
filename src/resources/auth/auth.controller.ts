@@ -4,92 +4,85 @@ import {
   SignInBody,
   SignUpBody,
 } from "../../types/auth.types";
-import { logSession } from "../settings/security/security.service";
-import {
-  sendPasswordResetEmail,
-  signInAdmin,
-  signUpAdmin,
-} from "./auth.service";
-import { BadRequestError } from "../../errors/app-error";
-import { sendErrorResponse } from "../../errors";
+import { SecurityService } from "../settings/security/security.service";
+import { AuthService } from "./auth.service";
 
-export const signUp = async (
-  req: Request<{}, {}, SignUpBody>,
-  res: Response,
-) => {
-  const { firstName, lastName, email, password, firmName, firmEmail } =
-    req.body;
+import asyncWrap from "../../utils/asyncWrapper";
+import { BadRequestError } from "../../utils/error/app-error";
 
-  if (
-    !firstName ||
-    !lastName ||
-    !email ||
-    !password ||
-    !firmName ||
-    !firmEmail
-  ) {
-    throw new BadRequestError(
-      "firstName, lastName, email, password, firmName, and firmEmail are required",
-    );
+export class AuthController {
+  private authService: AuthService;
+  private securityService = new SecurityService();
+
+  constructor(authService: AuthService) {
+    this.authService = authService;
   }
 
-  try {
-    const data = await signUpAdmin(req.body);
-    res.status(201).json({
-      message: "Account created successfully",
-      session: data.session,
-      user: data.user,
-      firm: data.firm,
-    });
-  } catch (error) {
-    sendErrorResponse(res, error, 400);
-  }
-};
+  signUp = asyncWrap(
+    async (req: Request<{}, {}, SignUpBody>, res: Response) => {
+      const { firstName, lastName, email, password, firmName, firmEmail } =
+        req.body;
 
-export const signIn = async (
-  req: Request<{}, {}, SignInBody>,
-  res: Response,
-) => {
-  const { email, password } = req.body;
+      if (
+        !firstName ||
+        !lastName ||
+        !email ||
+        !password ||
+        !firmName ||
+        !firmEmail
+      ) {
+        throw new BadRequestError(
+          "firstName, lastName, email, password, firmName, and firmEmail are required",
+        );
+      }
 
-  if (!email || !password) {
-    throw new BadRequestError("Email and password are required");
-  }
+      const data = await this.authService.signUpAdmin(req.body);
+      res.status(201).json({
+        message: "Account created successfully",
+        session: data.session,
+        user: data.user,
+        firm: data.firm,
+      });
+    },
+  );
 
-  try {
-    const data = await signInAdmin(email, password);
+  signIn = asyncWrap(
+    async (req: Request<{}, {}, SignInBody>, res: Response) => {
+      const { email, password } = req.body;
 
-    const userId = data.user?.id;
-    if (userId) {
-      const userAgent = (req.headers["user-agent"] as string) ?? "Unknown";
-      const ipAddress = req.ip ?? req.socket.remoteAddress ?? "Unknown";
-      logSession(userId, userAgent, ipAddress).catch(() => {});
-    }
+      if (!email || !password) {
+        throw new BadRequestError("Email and password are required");
+      }
 
-    res.status(200).json({
-      message: "Sign in successful",
-      session: data.session,
-      user: data.user,
-    });
-  } catch (error) {
-    sendErrorResponse(res, error, 401);
-  }
-};
+      const data = await this.authService.signInAdmin(email, password);
 
-export const forgotPassword = async (
-  req: Request<{}, {}, ForgotPasswordBody>,
-  res: Response,
-) => {
-  const { email } = req.body;
+      const userId = data.user?.id;
+      if (userId) {
+        const userAgent = (req.headers["user-agent"] as string) ?? "Unknown";
+        const ipAddress = req.ip ?? req.socket.remoteAddress ?? "Unknown";
+        this.securityService
+          .logSession(userId, userAgent, ipAddress)
+          .catch(() => {});
+      }
 
-  if (!email) {
-    throw new BadRequestError("Email is required");
-  }
+      res.status(200).json({
+        message: "Sign in successful",
+        session: data.session,
+        user: data.user,
+      });
+    },
+  );
 
-  try {
-    await sendPasswordResetEmail(email);
-    res.status(200).json({ message: "Password reset email sent" });
-  } catch (error) {
-    sendErrorResponse(res, error, 400);
-  }
-};
+  forgotPassword = asyncWrap(
+    async (req: Request<{}, {}, ForgotPasswordBody>, res: Response) => {
+      const { email } = req.body;
+
+      if (!email) {
+        throw new BadRequestError("Email is required");
+      }
+
+      await this.authService.sendPasswordResetEmail(email);
+      res.status(200).json({ message: "Password reset email sent" });
+    },
+  );
+}

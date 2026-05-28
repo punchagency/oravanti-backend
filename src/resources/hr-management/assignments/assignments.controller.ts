@@ -1,9 +1,9 @@
 import { Response } from "express";
-import { BadRequestError, NotFoundError } from "../../../errors/app-error";
-import { sendErrorResponse } from "../../../errors";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import { AssignCaseBody, FilingType } from "../../../types/hr.types";
-import * as assignmentsService from "./assignments.service";
+import asyncWrap from "../../../utils/asyncWrapper";
+import { BadRequestError, NotFoundError } from "../../../utils/error/app-error";
+import { AssignmentsService } from "./assignments.service";
 
 const VALID_FILING_TYPES: FilingType[] = [
   "I-130",
@@ -14,66 +14,62 @@ const VALID_FILING_TYPES: FilingType[] = [
   "I-131",
 ];
 
-export const getAvailableContractors = async (
-  req: AuthRequest,
-  res: Response,
-) => {
-  const { filingType } = req.query;
+export class AssignmentsController {
+  private assignmentsService: AssignmentsService;
 
-  if (!filingType || !VALID_FILING_TYPES.includes(filingType as FilingType)) {
-    throw new BadRequestError("A valid filingType query param is required");
+  constructor(assignmentsService: AssignmentsService) {
+    this.assignmentsService = assignmentsService;
   }
 
-  try {
-    const result = await assignmentsService.getAvailableContractors(
-      filingType as FilingType,
-      req.firmId!,
-    );
-    res.status(200).json(result);
-  } catch (error) {
-    sendErrorResponse(res, error);
-  }
-};
+  getAvailableContractors = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const { filingType } = req.query;
 
-export const assignCase = async (req: AuthRequest, res: Response) => {
-  const { assignmentType, filingType, urgencyLevel } =
-    req.body as AssignCaseBody;
+      if (
+        !filingType ||
+        !VALID_FILING_TYPES.includes(filingType as FilingType)
+      ) {
+        throw new BadRequestError("A valid filingType query param is required");
+      }
 
-  if (!assignmentType || !filingType || !urgencyLevel) {
-    throw new BadRequestError(
-      "assignmentType, filingType, and urgencyLevel are required",
-    );
-  }
+      const result = await this.assignmentsService.getAvailableContractors(
+        filingType as FilingType,
+        req.firmId!,
+      );
+      res.status(200).json(result);
+    },
+  );
 
-  if (!VALID_FILING_TYPES.includes(filingType)) {
-    throw new BadRequestError("Invalid filing type");
-  }
+  assignCase = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const { assignmentType, filingType, urgencyLevel } =
+      req.body as AssignCaseBody;
 
-  try {
-    const result = await assignmentsService.assignCase({
+    if (!assignmentType || !filingType || !urgencyLevel) {
+      throw new BadRequestError(
+        "assignmentType, filingType, and urgencyLevel are required",
+      );
+    }
+
+    if (!VALID_FILING_TYPES.includes(filingType)) {
+      throw new BadRequestError("Invalid filing type");
+    }
+
+    const result = await this.assignmentsService.assignCase({
       ...req.body,
       firmId: req.firmId!,
     });
     res
       .status(201)
       .json({ message: "Case assigned successfully", assignment: result });
-  } catch (error) {
-    sendErrorResponse(res, error, 400);
-  }
-};
+  });
 
-export const getAllAssignments = async (req: AuthRequest, res: Response) => {
-  try {
-    const result = await assignmentsService.getAllAssignments(req.firmId!);
+  getAllAssignments = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.assignmentsService.getAllAssignments(req.firmId!);
     res.status(200).json(result);
-  } catch (error) {
-    sendErrorResponse(res, error);
-  }
-};
+  });
 
-export const getAssignmentById = async (req: AuthRequest, res: Response) => {
-  try {
-    const result = await assignmentsService.getAssignmentById(
+  getAssignmentById = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.assignmentsService.getAssignmentById(
       req.params.id as string,
       req.firmId!,
     );
@@ -81,34 +77,27 @@ export const getAssignmentById = async (req: AuthRequest, res: Response) => {
       throw new NotFoundError("Assignment not found");
     }
     res.status(200).json(result);
-  } catch (error) {
-    sendErrorResponse(res, error);
-  }
-};
+  });
 
-export const updateAssignmentStatus = async (
-  req: AuthRequest,
-  res: Response,
-) => {
-  const { status } = req.body;
+  updateAssignmentStatus = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const { status } = req.body;
 
-  if (!status) {
-    throw new BadRequestError("status is required");
-  }
+      if (!status) {
+        throw new BadRequestError("status is required");
+      }
 
-  try {
-    const result = await assignmentsService.updateAssignmentStatus(
-      req.params.id as string,
-      req.firmId!,
-      status,
-    );
-    if (!result) {
-      throw new NotFoundError("Assignment not found");
-    }
-    res
-      .status(200)
-      .json({ message: "Assignment status updated", assignment: result });
-  } catch (error) {
-    sendErrorResponse(res, error, 400);
-  }
-};
+      const result = await this.assignmentsService.updateAssignmentStatus(
+        req.params.id as string,
+        req.firmId!,
+        status,
+      );
+      if (!result) {
+        throw new NotFoundError("Assignment not found");
+      }
+      res
+        .status(200)
+        .json({ message: "Assignment status updated", assignment: result });
+    },
+  );
+}

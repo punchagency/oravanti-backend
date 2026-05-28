@@ -2,26 +2,40 @@ import { Router } from "express";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { setFirmContext } from "../../middleware/rls.middleware";
-import {
-  createFlag,
-  getAllFlags,
-  getFlagById,
-  getStats,
-  getSystemConfig,
-  updateFlagStatus,
-  updateSystemConfig,
-} from "./ai-error-detection.controller";
+import { AIErrorDetectionController } from "./ai-error-detection.controller";
 
-const router = Router();
+export class AIErrorDetectionRouter {
+  public router: Router;
+  public path: string;
+  private aiErrorDetectionController: AIErrorDetectionController;
 
-router.use(requireAuth, requireAdmin, setFirmContext);
+  constructor(aiErrorDetectionController: AIErrorDetectionController) {
+    this.router = Router();
+    this.path = "/ai-error-detection";
+    this.aiErrorDetectionController = aiErrorDetectionController;
 
-router.get("/stats", getStats);
-router.get("/flags", getAllFlags);
-router.get("/flags/:id", getFlagById);
-router.post("/flags", createFlag);
-router.patch("/flags/:id/status", updateFlagStatus);
-router.get("/system-config", getSystemConfig);
-router.patch("/system-config", updateSystemConfig);
+    this.initializeRoutes();
+  }
 
-export default router;
+  private initializeRoutes() {
+    this.router.use(this.path, this.router);
+    this.router.use(requireAuth, requireAdmin, setFirmContext);
+
+    this.router.get("/stats", this.aiErrorDetectionController.getStats);
+    this.router.get("/flags", this.aiErrorDetectionController.getAllFlags);
+    this.router.get("/flags/:id", this.aiErrorDetectionController.getFlagById);
+    this.router.post("/flags", this.aiErrorDetectionController.createFlag);
+    this.router.patch(
+      "/flags/:id/status",
+      this.aiErrorDetectionController.updateFlagStatus,
+    );
+    this.router.get(
+      "/system-config",
+      this.aiErrorDetectionController.getSystemConfig,
+    );
+    this.router.patch(
+      "/system-config",
+      this.aiErrorDetectionController.updateSystemConfig,
+    );
+  }
+}

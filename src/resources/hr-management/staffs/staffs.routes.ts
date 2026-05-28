@@ -2,22 +2,29 @@ import { Router } from "express";
 import { requireAdmin } from "../../../middleware/admin.middleware";
 import { requireAuth } from "../../../middleware/auth.middleware";
 import { setFirmContext } from "../../../middleware/rls.middleware";
-import {
-  addStaff,
-  deleteStaff,
-  getAll,
-  getById,
-  updateStaff,
-} from "./staffs.controller";
+import { StaffController } from "./staffs.controller";
 
-const router = Router();
+export class StaffRouter {
+  public router: Router;
+  public path: string;
+  private staffController: StaffController;
 
-router.use(requireAuth, requireAdmin, setFirmContext);
+  constructor(staffController: StaffController) {
+    this.router = Router();
+    this.path = "/hr/staff";
+    this.staffController = staffController;
 
-router.get("/", getAll);
-router.get("/:id", getById);
-router.post("/", addStaff);
-router.patch("/:id", updateStaff);
-router.delete("/:id", deleteStaff);
+    this.initializeRoutes();
+  }
 
-export default router;
+  private initializeRoutes() {
+    this.router.use(this.path, this.router);
+    this.router.use(requireAuth, requireAdmin, setFirmContext);
+
+    this.router.get("/", this.staffController.getAll);
+    this.router.get("/:id", this.staffController.getById);
+    this.router.post("/", this.staffController.addStaff);
+    this.router.patch("/:id", this.staffController.updateStaff);
+    this.router.delete("/:id", this.staffController.deleteStaff);
+  }
+}

@@ -1,6 +1,6 @@
-import { Request, Response, NextFunction } from "express";
+import { NextFunction, Request, Response } from "express";
 import { supabase } from "../config/supabase";
-import { AuthenticationError } from "../errors/app-error";
+import { AuthenticationError } from "../utils/error/app-error";
 
 export interface AuthRequest extends Request {
   userId?: string;
@@ -12,7 +12,7 @@ export interface AuthRequest extends Request {
 
 export const requireAuth = async (
   req: AuthRequest,
-  res: Response,
+  _res: Response,
   next: NextFunction,
 ) => {
   const authHeader = req.headers.authorization;
@@ -26,7 +26,7 @@ export const requireAuth = async (
   const { data, error } = await supabase.auth.getUser(token);
 
   if (error || !data.user) {
-    throw new AuthenticationError("Invalid or expired token");
+    throw new AuthenticationError("Missing or invalid authorization header");
   }
 
   req.userId = data.user.id;

@@ -2,24 +2,45 @@ import { Router } from "express";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { setFirmContext } from "../../middleware/rls.middleware";
-import {
-  addRequests,
-  exportReport,
-  fulfillRequest,
-  generateTerminationLetter,
-  getAllClientResponsiveness,
-  getStats,
-} from "./client-responsiveness.controller";
+import { ClientResponsivenessController } from "./client-responsiveness.controller";
 
-const router = Router();
+export class ClientResponsivenessRouter {
+  public router: Router;
+  public path: string;
+  private clientResponsivenessController: ClientResponsivenessController;
 
-router.use(requireAuth, requireAdmin, setFirmContext);
+  constructor(clientResponsivenessController: ClientResponsivenessController) {
+    this.router = Router();
+    this.path = "/client-responsiveness";
+    this.clientResponsivenessController = clientResponsivenessController;
 
-router.get("/stats", getStats);
-router.get("/", getAllClientResponsiveness);
-router.post("/:clientId/requests", addRequests);
-router.patch("/requests/:requestId/fulfill", fulfillRequest);
-router.post("/:clientId/termination-letter", generateTerminationLetter);
-router.get("/:clientId/export", exportReport);
+    this.initializeRoutes();
+  }
 
-export default router;
+  private initializeRoutes() {
+    this.router.use(this.path, this.router);
+    this.router.use(requireAuth, requireAdmin, setFirmContext);
+
+    this.router.get("/stats", this.clientResponsivenessController.getStats);
+    this.router.get(
+      "/",
+      this.clientResponsivenessController.getAllClientResponsiveness,
+    );
+    this.router.post(
+      "/:clientId/requests",
+      this.clientResponsivenessController.addRequests,
+    );
+    this.router.patch(
+      "/requests/:requestId/fulfill",
+      this.clientResponsivenessController.fulfillRequest,
+    );
+    this.router.post(
+      "/:clientId/termination-letter",
+      this.clientResponsivenessController.generateTerminationLetter,
+    );
+    this.router.get(
+      "/:clientId/export",
+      this.clientResponsivenessController.exportReport,
+    );
+  }
+}

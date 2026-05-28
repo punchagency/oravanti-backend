@@ -13,19 +13,23 @@ export const getErrorResponse = (error: unknown, fallbackStatusCode = 500) => {
       statusCode: error.statusCode,
       body: {
         message: error.message,
+        success: false,
         code: error.code,
         ...(error.details ? { details: error.details } : {}),
       },
     };
   }
 
-  const message = error instanceof Error ? error.message : DEFAULT_ERROR_MESSAGE;
+  const message =
+    error instanceof Error ? error.message : DEFAULT_ERROR_MESSAGE;
 
   return {
     statusCode: fallbackStatusCode,
     body: {
       message,
-      code: fallbackStatusCode >= 500 ? "INTERNAL_SERVER_ERROR" : "REQUEST_ERROR",
+      success: false,
+      code:
+        fallbackStatusCode >= 500 ? "INTERNAL_SERVER_ERROR" : "REQUEST_ERROR",
     },
   };
 };

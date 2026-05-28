@@ -1,34 +1,32 @@
 import { Response } from "express";
-import { BadRequestError, NotFoundError } from "../../errors/app-error";
-import { sendErrorResponse } from "../../errors";
 import { AuthRequest } from "../../middleware/auth.middleware";
-import * as aiService from "./ai-error-detection.service";
+import asyncWrap from "../../utils/asyncWrapper";
+import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import { AIErrorDetectionService } from "./ai-error-detection.service";
 
-export const getStats = async (req: AuthRequest, res: Response) => {
-  try {
-    const result = await aiService.getStats(req.firmId!);
-    res.status(200).json(result);
-  } catch (error) {
-    sendErrorResponse(res, error);
+export class AIErrorDetectionController {
+  private aiService: AIErrorDetectionService;
+
+  constructor(aiService: AIErrorDetectionService) {
+    this.aiService = aiService;
   }
-};
 
-export const getAllFlags = async (req: AuthRequest, res: Response) => {
-  const { severity, status } = req.query;
-  try {
-    const result = await aiService.getAllFlags(req.firmId!, {
+  getStats = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.aiService.getStats(req.firmId!);
+    res.status(200).json(result);
+  });
+
+  getAllFlags = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const { severity, status } = req.query;
+    const result = await this.aiService.getAllFlags(req.firmId!, {
       severity: severity as string,
       status: status as string,
     });
     res.status(200).json(result);
-  } catch (error) {
-    sendErrorResponse(res, error);
-  }
-};
+  });
 
-export const getFlagById = async (req: AuthRequest, res: Response) => {
-  try {
-    const result = await aiService.getFlagById(
+  getFlagById = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.aiService.getFlagById(
       req.params.id as string,
       req.firmId!,
     );
@@ -36,19 +34,15 @@ export const getFlagById = async (req: AuthRequest, res: Response) => {
       throw new NotFoundError("Flag not found");
     }
     res.status(200).json(result);
-  } catch (error) {
-    sendErrorResponse(res, error);
-  }
-};
+  });
 
-export const updateFlagStatus = async (req: AuthRequest, res: Response) => {
-  const { status } = req.body;
-  if (!status) {
-    throw new BadRequestError("status is required");
-  }
+  updateFlagStatus = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const { status } = req.body;
+    if (!status) {
+      throw new BadRequestError("status is required");
+    }
 
-  try {
-    const result = await aiService.updateFlagStatus(
+    const result = await this.aiService.updateFlagStatus(
       req.params.id as string,
       req.firmId!,
       status,
@@ -58,41 +52,30 @@ export const updateFlagStatus = async (req: AuthRequest, res: Response) => {
       throw new NotFoundError("Flag not found");
     }
     res.status(200).json(result);
-  } catch (error) {
-    sendErrorResponse(res, error, 400);
-  }
-};
+  });
 
-export const createFlag = async (req: AuthRequest, res: Response) => {
-  const { clientId, caseId, title, description, severity } = req.body;
-  if (!clientId || !caseId || !title || !description || !severity) {
-    throw new BadRequestError(
-      "clientId, caseId, title, description and severity are required",
-    );
-  }
+  createFlag = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const { clientId, caseId, title, description, severity } = req.body;
+    if (!clientId || !caseId || !title || !description || !severity) {
+      throw new BadRequestError(
+        "clientId, caseId, title, description and severity are required",
+      );
+    }
 
-  try {
-    const result = await aiService.createFlag(req.firmId!, req.body);
+    const result = await this.aiService.createFlag(req.firmId!, req.body);
     res.status(201).json(result);
-  } catch (error) {
-    sendErrorResponse(res, error, 400);
-  }
-};
+  });
 
-export const getSystemConfig = async (req: AuthRequest, res: Response) => {
-  try {
-    const result = await aiService.getSystemConfig(req.firmId!);
+  getSystemConfig = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.aiService.getSystemConfig(req.firmId!);
     res.status(200).json(result);
-  } catch (error) {
-    sendErrorResponse(res, error);
-  }
-};
+  });
 
-export const updateSystemConfig = async (req: AuthRequest, res: Response) => {
-  try {
-    const result = await aiService.updateSystemConfig(req.firmId!, req.body);
+  updateSystemConfig = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.aiService.updateSystemConfig(
+      req.firmId!,
+      req.body,
+    );
     res.status(200).json(result);
-  } catch (error) {
-    sendErrorResponse(res, error, 400);
-  }
-};
+  });
+}

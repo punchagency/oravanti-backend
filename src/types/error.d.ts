@@ -1,1 +1,1 @@
-type ErrorDetails = Record<string, unknown> | unknown[]
+type ErrorDetails = Record<string, unknown> | unknown[];

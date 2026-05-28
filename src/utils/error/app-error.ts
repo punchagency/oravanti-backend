@@ -62,7 +62,10 @@ export class ConflictError extends AppError {
 }
 
 export class ExternalServiceError extends AppError {
-  constructor(message = "External service request failed", details?: ErrorDetails) {
+  constructor(
+    message = "External service request failed",
+    details?: ErrorDetails,
+  ) {
     super(message, 502, "EXTERNAL_SERVICE_ERROR", details);
   }
 }
