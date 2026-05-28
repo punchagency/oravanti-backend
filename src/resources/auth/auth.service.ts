@@ -2,6 +2,35 @@ import { supabase, supabaseAdmin } from "../../config/supabase";
 import { db } from "../../db/client";
 import { admins } from "../../db/schema/admins";
 import { firms } from "../../db/schema/firm-info";
+import {
+  AppError,
+  AuthenticationError,
+  BadRequestError,
+  ConflictError,
+  ExternalServiceError,
+  InternalServerError,
+  ValidationError,
+} from "../../utils/error/app-error";
+
+type AuthServiceError = {
+  message: string;
+  status?: number;
+};
+
+const mapAuthError = (error: AuthServiceError) => {
+  switch (error.status) {
+    case 400:
+      return new BadRequestError(error.message);
+    case 401:
+      return new AuthenticationError(error.message);
+    case 409:
+      return new ConflictError(error.message);
+    case 422:
+      return new ValidationError(error.message);
+    default:
+      return new ExternalServiceError(error.message);
+  }
+};
 
 export class AuthService {
   signUpAdmin = async (body: {
@@ -26,7 +55,7 @@ export class AuthService {
         email_confirm: true,
       });
 
-    if (authError) throw new Error(authError.message);
+    if (authError) throw mapAuthError(authError);
 
     const userId = authData.user.id;
 
@@ -60,12 +89,13 @@ export class AuthService {
           password: body.password,
         });
 
-      if (sessionError) throw new Error(sessionError.message);
+      if (sessionError) throw mapAuthError(sessionError);
 
       return { session: sessionData.session, user: sessionData.user, firm };
     } catch (err) {
       await supabaseAdmin.auth.admin.deleteUser(userId);
-      throw err;
+      if (err instanceof AppError) throw err;
+      throw new InternalServerError((err as Error).message);
     }
   };
 
@@ -75,7 +105,7 @@ export class AuthService {
       password,
     });
 
-    if (error) throw new Error(error.message);
+    if (error) throw new AuthenticationError(error.message);
 
     return data;
   };
@@ -85,6 +115,6 @@ export class AuthService {
       redirectTo: "http://localhost:3000/reset-password",
     });
 
-    if (error) throw new Error(error.message);
+    if (error) throw mapAuthError(error);
   };
 }

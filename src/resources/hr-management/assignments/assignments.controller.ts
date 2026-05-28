@@ -3,6 +3,9 @@ import { AuthRequest } from "../../../middleware/auth.middleware";
 import { AssignCaseBody, FilingType } from "../../../types/hr.types";
 import { AssignmentsService } from "./assignments.service";
 
+import asyncWrap from "../../../utils/asyncWrapper";
+import { BadRequestError, NotFoundError } from "../../../utils/error/app-error";
+
 const VALID_FILING_TYPES: FilingType[] = [
   "I-130",
   "I-485",
@@ -19,44 +22,37 @@ export class AssignmentsController {
     this.assignmentsService = assignmentsService;
   }
 
-  getAvailableContractors = async (req: AuthRequest, res: Response) => {
+  getAvailableContractors = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { filingType } = req.query;
 
     if (!filingType || !VALID_FILING_TYPES.includes(filingType as FilingType)) {
-      res
-        .status(400)
-        .json({ message: "A valid filingType query param is required" });
-      return;
+      throw new BadRequestError("A valid filingType query param is required");
     }
 
-    try {
+    
       const result = await this.assignmentsService.getAvailableContractors(
         filingType as FilingType,
         req.firmId!,
       );
       res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  assignCase = async (req: AuthRequest, res: Response) => {
+  assignCase = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { assignmentType, filingType, urgencyLevel } =
       req.body as AssignCaseBody;
 
     if (!assignmentType || !filingType || !urgencyLevel) {
-      res.status(400).json({
-        message: "assignmentType, filingType, and urgencyLevel are required",
-      });
-      return;
+      throw new BadRequestError(
+        "assignmentType, filingType, and urgencyLevel are required",
+      );
     }
 
     if (!VALID_FILING_TYPES.includes(filingType)) {
-      res.status(400).json({ message: "Invalid filing type" });
-      return;
+      throw new BadRequestError("Invalid filing type");
     }
 
-    try {
+    
       const result = await this.assignmentsService.assignCase({
         ...req.body,
         firmId: req.firmId!,
@@ -64,61 +60,50 @@ export class AssignmentsController {
       res
         .status(201)
         .json({ message: "Case assigned successfully", assignment: result });
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  getAllAssignments = async (req: AuthRequest, res: Response) => {
-    try {
+  getAllAssignments = asyncWrap(async (req: AuthRequest, res: Response) => {
+    
       const result = await this.assignmentsService.getAllAssignments(
         req.firmId!,
       );
       res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  getAssignmentById = async (req: AuthRequest, res: Response) => {
-    try {
+  getAssignmentById = asyncWrap(async (req: AuthRequest, res: Response) => {
+    
       const result = await this.assignmentsService.getAssignmentById(
         req.params.id as string,
         req.firmId!,
       );
       if (!result) {
-        res.status(404).json({ message: "Assignment not found" });
-        return;
+        throw new NotFoundError("Assignment not found");
       }
       res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  updateAssignmentStatus = async (req: AuthRequest, res: Response) => {
+  updateAssignmentStatus = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { status } = req.body;
 
     if (!status) {
-      res.status(400).json({ message: "status is required" });
-      return;
+      throw new BadRequestError("status is required");
     }
 
-    try {
+    
       const result = await this.assignmentsService.updateAssignmentStatus(
         req.params.id as string,
         req.firmId!,
         status,
       );
       if (!result) {
-        res.status(404).json({ message: "Assignment not found" });
-        return;
+        throw new NotFoundError("Assignment not found");
       }
       res
         .status(200)
         .json({ message: "Assignment status updated", assignment: result });
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 }

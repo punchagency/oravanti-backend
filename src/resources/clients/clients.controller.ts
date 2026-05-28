@@ -2,6 +2,9 @@ import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import { ClientsService } from "./clients.service";
 
+import asyncWrap from "../../utils/asyncWrapper";
+import { BadRequestError, NotFoundError, ConflictError } from "../../utils/error/app-error";
+
 export class ClientsController {
   private clientsService: ClientsService;
 
@@ -9,47 +12,41 @@ export class ClientsController {
     this.clientsService = clientsService;
   }
 
-  getAllCompanies = async (req: AuthRequest, res: Response) => {
-    try {
-      const result = await this.clientsService.getAllCompanies(req.firmId!);
-      res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+  getAllCompanies = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.clientsService.getAllCompanies(req.firmId!);
+    res.status(200).json(result);
+  });
 
-  getCompanyById = async (req: AuthRequest, res: Response) => {
-    try {
-      const result = await this.clientsService.getCompanyById(
-        req.params.id as string,
-        req.firmId!,
-      );
-      if (!result) {
-        res.status(404).json({ message: "Company not found" });
-        return;
+  getCompanyById = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.clientsService.getCompanyById(
+      req.params.id as string,
+      req.firmId!,
+    );
+    if (!result) {
+      throw new NotFoundError("Company not found");
+    }
+    res.status(200).json(result);
+  });
+
+  createCompanyWithClients = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const {
+        company: companyData,
+        individuals,
+        acknowledgeConflict,
+      } = req.body;
+
+      if (
+        !companyData ||
+        !individuals ||
+        !Array.isArray(individuals) ||
+        !individuals.length
+      ) {
+        throw new BadRequestError(
+          "company and at least one individual are required",
+        );
       }
-      res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
 
-  createCompanyWithClients = async (req: AuthRequest, res: Response) => {
-    const { company: companyData, individuals, acknowledgeConflict } = req.body;
-
-    if (
-      !companyData ||
-      !individuals ||
-      !Array.isArray(individuals) ||
-      !individuals.length
-    ) {
-      res
-        .status(400)
-        .json({ message: "company and at least one individual are required" });
-      return;
-    }
-
-    try {
       const result = await this.clientsService.createCompanyWithClients(
         req.firmId!,
         companyData,
@@ -58,105 +55,75 @@ export class ClientsController {
         { acknowledgeConflict },
       );
       if ("type" in result && result.type === "conflict_warning") {
-        res.status(409).json(result);
-        return;
+        throw new ConflictError(result.type, result);
       }
       res.status(201).json(result);
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
-    }
-  };
+    },
+  );
 
-  updateCompany = async (req: AuthRequest, res: Response) => {
-    try {
-      const result = await this.clientsService.updateCompany(
-        req.params.id as string,
-        req.firmId!,
-        req.body,
-      );
-      if (!result) {
-        res.status(404).json({ message: "Company not found" });
-        return;
-      }
-      res.status(200).json(result);
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
-    }
-  };
+  updateCompany = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.clientsService.updateCompany(
+      req.params.id as string,
+      req.firmId!,
+      req.body,
+    );
 
-  deleteCompany = async (req: AuthRequest, res: Response) => {
-    try {
-      await this.clientsService.deleteCompany(
-        req.params.id as string,
-        req.firmId!,
-      );
-      res.status(200).json({ message: "Company deleted" });
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
+    if (!result) {
+      throw new NotFoundError("Company not found");
     }
-  };
 
-  addClientToCompany = async (req: AuthRequest, res: Response) => {
+    res.status(200).json(result);
+  });
+
+  deleteCompany = asyncWrap(async (req: AuthRequest, res: Response) => {
+    await this.clientsService.deleteCompany(
+      req.params.id as string,
+      req.firmId!,
+    );
+    res.status(200).json({ message: "Company deleted" });
+  });
+
+  addClientToCompany = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { clientData, caseData } = req.body;
 
     if (!clientData || !caseData) {
-      res.status(400).json({ message: "clientData and caseData are required" });
-      return;
+      throw new BadRequestError("clientData and caseData are required");
     }
 
-    try {
-      const result = await this.clientsService.addClientToCompany(
-        req.params.id as string,
-        req.firmId!,
-        clientData,
-        caseData,
-        { adminId: req.adminId, staffId: req.staffId },
-      );
-      res.status(201).json(result);
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
-    }
-  };
+    const result = await this.clientsService.addClientToCompany(
+      req.params.id as string,
+      req.firmId!,
+      clientData,
+      caseData,
+      { adminId: req.adminId, staffId: req.staffId },
+    );
+    res.status(201).json(result);
+  });
 
-  getCertifications = async (_req: AuthRequest, res: Response) => {
-    try {
-      const result = await this.clientsService.getCertifications();
-      res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+  getCertifications = asyncWrap(async (_req: AuthRequest, res: Response) => {
+    const result = await this.clientsService.getCertifications();
+    res.status(200).json(result);
+  });
 
-  getAllClients = async (req: AuthRequest, res: Response) => {
+  getAllClients = asyncWrap(async (req: AuthRequest, res: Response) => {
     const search = req.query.search as string | undefined;
-    try {
-      const result = await this.clientsService.getAllClients(
-        req.firmId!,
-        search,
-      );
-      res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
 
-  getClientById = async (req: AuthRequest, res: Response) => {
-    try {
-      const result = await this.clientsService.getClientById(
-        req.params.id as string,
-        req.firmId!,
-      );
-      if (!result) {
-        res.status(404).json({ message: "Client not found" });
-        return;
-      }
-      res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    const result = await this.clientsService.getAllClients(req.firmId!, search);
+    res.status(200).json(result);
+  });
 
-  createClient = async (req: AuthRequest, res: Response) => {
+  getClientById = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.clientsService.getClientById(
+      req.params.id as string,
+      req.firmId!,
+    );
+    if (!result) {
+      throw new NotFoundError("Client not found");
+    }
+    res.status(200).json(result);
+  });
+
+  createClient = asyncWrap(async (req: AuthRequest, res: Response) => {
     const {
       client: clientData,
       case: caseData,
@@ -164,115 +131,84 @@ export class ClientsController {
     } = req.body;
 
     if (!clientData || !caseData) {
-      res.status(400).json({ message: "client and case data are required" });
-      return;
+      throw new BadRequestError("client and case data are required");
     }
 
-    try {
-      const result = await this.clientsService.createClient(
-        req.firmId!,
-        clientData,
-        caseData,
-        { acknowledgeConflict },
-      );
-      if ("type" in result && result.type === "conflict_warning") {
-        res.status(409).json(result);
-        return;
-      }
-      res.status(201).json(result);
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
+    const result = await this.clientsService.createClient(
+      req.firmId!,
+      clientData,
+      caseData,
+      { acknowledgeConflict },
+    );
+    if ("type" in result && result.type === "conflict_warning") {
+      throw new ConflictError(result.type, result);
     }
-  };
+    res.status(201).json(result);
+  });
 
-  updateClient = async (req: AuthRequest, res: Response) => {
-    try {
-      const result = await this.clientsService.updateClient(
-        req.params.id as string,
-        req.firmId!,
-        req.body,
-      );
-      if (!result) {
-        res.status(404).json({ message: "Client not found" });
-        return;
-      }
-      res.status(200).json(result);
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
+  updateClient = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.clientsService.updateClient(
+      req.params.id as string,
+      req.firmId!,
+      req.body,
+    );
+    if (!result) {
+      throw new NotFoundError("Client not found");
     }
-  };
+    res.status(200).json(result);
+  });
 
-  deleteClient = async (req: AuthRequest, res: Response) => {
-    try {
-      await this.clientsService.deleteClient(
-        req.params.id as string,
-        req.firmId!,
-      );
-      res.status(200).json({ message: "Client deleted" });
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+  deleteClient = asyncWrap(async (req: AuthRequest, res: Response) => {
+    await this.clientsService.deleteClient(
+      req.params.id as string,
+      req.firmId!,
+    );
+    res.status(200).json({ message: "Client deleted" });
+  });
 
-  getClientCases = async (req: AuthRequest, res: Response) => {
-    try {
-      const result = await this.clientsService.getClientCases(
-        req.params.id as string,
-        req.firmId!,
-      );
-      res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+  getClientCases = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.clientsService.getClientCases(
+      req.params.id as string,
+      req.firmId!,
+    );
 
-  addCase = async (req: AuthRequest, res: Response) => {
+    res.status(200).json(result);
+  });
+
+  addCase = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { acknowledgeExistingCase, ...caseData } = req.body;
-    try {
-      const result = await this.clientsService.addCase(
-        req.params.id as string,
-        req.firmId!,
-        caseData,
-        { acknowledgeExistingCase },
-      );
-      if ("type" in result && result.type === "case_exists_warning") {
-        res.status(409).json(result);
-        return;
-      }
-      res.status(201).json(result);
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
-    }
-  };
 
-  updateCaseStatus = async (req: AuthRequest, res: Response) => {
+    const result = await this.clientsService.addCase(
+      req.params.id as string,
+      req.firmId!,
+      caseData,
+      { acknowledgeExistingCase },
+    );
+    if ("type" in result && result.type === "case_exists_warning") {
+      throw new ConflictError(result.type, result);
+    }
+    res.status(201).json(result);
+  });
+
+  updateCaseStatus = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { status } = req.body;
     if (!status) {
-      res.status(400).json({ message: "status is required" });
-      return;
+      throw new BadRequestError("status is required");
     }
 
-    try {
-      const result = await this.clientsService.updateCaseStatus(
-        req.params.caseId as string,
-        req.firmId!,
-        status,
-      );
-      res.status(200).json(result);
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
-    }
-  };
+    const result = await this.clientsService.updateCaseStatus(
+      req.params.caseId as string,
+      req.firmId!,
+      status,
+    );
+    res.status(200).json(result);
+  });
 
-  getTeamStaff = async (req: AuthRequest, res: Response) => {
-    try {
-      const result = await this.clientsService.getTeamStaff(
-        req.params.teamId as string,
-        req.firmId!,
-      );
-      res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+  getTeamStaff = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.clientsService.getTeamStaff(
+      req.params.teamId as string,
+      req.firmId!,
+    );
+    res.status(200).json(result);
+  });
 }

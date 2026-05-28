@@ -3,6 +3,12 @@ import { db } from "../../../db/client";
 import { staff } from "../../../db/schema/staff";
 import { teams } from "../../../db/schema/teams";
 import { CreateTeamBody, UpdateTeamBody } from "../../../types/hr.types";
+import {
+  BadRequestError,
+  ConflictError,
+  InternalServerError,
+  NotFoundError,
+} from "../../../utils/error/app-error";
 
 const ELIGIBLE_LEAD_ROLES = ["senior_paralegal", "attorney"] as const;
 
@@ -27,11 +33,11 @@ export class TeamsService {
         .where(and(eq(staff.id, body.leadId), eq(staff.firmId, body.firmId)));
 
       if (!lead[0]) {
-        throw new Error("Team lead not found");
+        throw new NotFoundError("Team lead not found");
       }
 
       if (!ELIGIBLE_LEAD_ROLES.includes(lead[0].role as any)) {
-        throw new Error(
+        throw new BadRequestError(
           "Only Senior Paralegals and Attorneys can be team leads",
         );
       }
@@ -42,9 +48,9 @@ export class TeamsService {
       return newTeam;
     } catch (error: any) {
       if (error.code === "23505") {
-        throw new Error(`A team named "${body.name}" already exists`);
+        throw new ConflictError(`A team named "${body.name}" already exists`);
       }
-      throw error;
+      throw new InternalServerError((error as Error).message);
     }
   };
 
@@ -56,11 +62,11 @@ export class TeamsService {
         .where(and(eq(staff.id, body.leadId), eq(staff.firmId, firmId)));
 
       if (!lead[0]) {
-        throw new Error("Team lead not found");
+        throw new NotFoundError("Team lead not found");
       }
 
       if (!ELIGIBLE_LEAD_ROLES.includes(lead[0].role as any)) {
-        throw new Error(
+        throw new BadRequestError(
           "Only Senior Paralegals and Attorneys can be team leads",
         );
       }

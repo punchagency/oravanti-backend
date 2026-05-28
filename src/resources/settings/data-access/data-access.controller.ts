@@ -3,6 +3,9 @@ import { AuthRequest } from "../../../middleware/auth.middleware";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
 import { DataAccessService } from "./data-access.service";
 
+import asyncWrap from "../../../utils/asyncWrapper";
+import { BadRequestError } from "../../../utils/error/app-error";
+
 export class DataAccessController {
   private dataAccessService: DataAccessService;
   private auditLogService: PermissionAuditLogService;
@@ -15,26 +18,23 @@ export class DataAccessController {
     this.auditLogService = auditLogService;
   }
 
-  getDataAccessControls = async (req: AuthRequest, res: Response) => {
-    try {
+  getDataAccessControls = asyncWrap(async (req: AuthRequest, res: Response) => {
+    
       const result = await this.dataAccessService.getDataAccessControls(
         req.firmId!,
       );
       res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  updateDataAccessControls = async (req: AuthRequest, res: Response) => {
+  updateDataAccessControls = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { controls } = req.body;
 
     if (!Array.isArray(controls) || controls.length === 0) {
-      res.status(400).json({ message: "controls array is required" });
-      return;
+      throw new BadRequestError("controls array is required");
     }
 
-    try {
+    
       await this.dataAccessService.updateDataAccessControls(
         req.firmId!,
         controls,
@@ -49,8 +49,6 @@ export class DataAccessController {
         .catch(() => {});
 
       res.status(200).json({ message: "Data access controls updated" });
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 }

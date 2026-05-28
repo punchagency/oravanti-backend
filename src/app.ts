@@ -9,6 +9,7 @@ import { notFoundMiddleware } from "./middleware/notFound.middleware";
 
 export interface RouterEntry {
   router: Router;
+  path: string;
 }
 
 export class App {
@@ -80,7 +81,7 @@ export class App {
     });
 
     this.routers.forEach((entry: RouterEntry) => {
-      this.express.use(entry.router);
+      this.express.use(entry.path, entry.router);
     });
   }
 

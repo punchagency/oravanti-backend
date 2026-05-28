@@ -6,6 +6,36 @@ import {
 } from "../../../config/supabase";
 import { db } from "../../../db/client";
 import { admins, adminSessions } from "../../../db/schema";
+import {
+  AuthenticationError,
+  AuthorizationError,
+  BadRequestError,
+  ExternalServiceError,
+  NotFoundError,
+  ValidationError,
+} from "../../../utils/error/app-error";
+
+type AuthServiceError = {
+  message: string;
+  status?: number;
+};
+
+const mapAuthError = (error: AuthServiceError) => {
+  switch (error.status) {
+    case 400:
+      return new BadRequestError(error.message);
+    case 401:
+      return new AuthenticationError(error.message);
+    case 403:
+      return new AuthorizationError(error.message);
+    case 404:
+      return new NotFoundError(error.message);
+    case 422:
+      return new ValidationError(error.message);
+    default:
+      return new ExternalServiceError(error.message);
+  }
+};
 
 export class SecurityService {
   // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -49,26 +79,28 @@ export class SecurityService {
       .where(eq(admins.userId, userId))
       .limit(1);
 
-    if (!adminRecord.length) throw new Error("Admin not found");
+    if (!adminRecord.length) throw new NotFoundError("Admin not found");
 
     const { error: verifyError } = await supabase.auth.signInWithPassword({
       email: adminRecord[0].email,
       password: currentPassword,
     });
-    if (verifyError) throw new Error("Current password is incorrect");
+    if (verifyError) {
+      throw new AuthenticationError("Current password is incorrect");
+    }
 
     const { error: updateError } =
       await supabaseAdmin.auth.admin.updateUserById(userId, {
         password: newPassword,
       });
-    if (updateError) throw new Error(updateError.message);
+    if (updateError) throw mapAuthError(updateError);
   };
 
   // ─── Two-Factor Authentication ───────────────────────────────────────────────
 
   get2FAStatus = async (userId: string) => {
     const { data, error } = await supabaseAdmin.auth.admin.getUserById(userId);
-    if (error) throw new Error(error.message);
+    if (error) throw mapAuthError(error);
 
     const factors = data.user?.factors ?? [];
     const totp = factors.find(
@@ -84,7 +116,7 @@ export class SecurityService {
       factorType: "totp",
       issuer: "Oravanti",
     });
-    if (error) throw new Error(error.message);
+    if (error) throw mapAuthError(error);
     return data;
   };
 
@@ -93,20 +125,20 @@ export class SecurityService {
 
     const { data: challenge, error: challengeError } =
       await userClient.auth.mfa.challenge({ factorId });
-    if (challengeError) throw new Error(challengeError.message);
+    if (challengeError) throw mapAuthError(challengeError);
 
     const { error: verifyError } = await userClient.auth.mfa.verify({
       factorId,
       challengeId: challenge.id,
       code,
     });
-    if (verifyError) throw new Error(verifyError.message);
+    if (verifyError) throw mapAuthError(verifyError);
   };
 
   unenroll2FA = async (accessToken: string, factorId: string) => {
     const userClient = createUserClient(accessToken);
     const { error } = await userClient.auth.mfa.unenroll({ factorId });
-    if (error) throw new Error(error.message);
+    if (error) throw mapAuthError(error);
   };
 
   // ─── Active Sessions ─────────────────────────────────────────────────────────

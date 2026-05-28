@@ -3,6 +3,9 @@ import { AuthRequest } from "../../../middleware/auth.middleware";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
 import { AccessControlService } from "./access-control.service";
 
+import asyncWrap from "../../../utils/asyncWrapper";
+import { BadRequestError } from "../../../utils/error/app-error";
+
 export class AccessControlController {
   private accessControlService: AccessControlService;
   private auditLogService: PermissionAuditLogService;
@@ -15,37 +18,32 @@ export class AccessControlController {
     this.auditLogService = auditLogService;
   }
 
-  getRoleOverview = async (req: AuthRequest, res: Response) => {
-    try {
+  getRoleOverview = asyncWrap(async (req: AuthRequest, res: Response) => {
+    
       const result = await this.accessControlService.getRoleOverview(
         req.firmId!,
       );
       res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  getPermissions = async (req: AuthRequest, res: Response) => {
-    try {
+  getPermissions = asyncWrap(async (req: AuthRequest, res: Response) => {
+    
       const result = await this.accessControlService.getPermissions(
         req.firmId!,
       );
       res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  savePermissions = async (req: AuthRequest, res: Response) => {
+  savePermissions = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { permissions } = req.body;
 
     if (!Array.isArray(permissions) || permissions.length === 0) {
-      res.status(400).json({ message: "permissions array is required" });
-      return;
+      throw new BadRequestError("permissions array is required");
     }
 
-    try {
+    
       await this.accessControlService.savePermissions(req.firmId!, permissions);
 
       const action =
@@ -57,8 +55,6 @@ export class AccessControlController {
         .catch(() => {});
 
       res.status(200).json({ message: "Permissions saved" });
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 }

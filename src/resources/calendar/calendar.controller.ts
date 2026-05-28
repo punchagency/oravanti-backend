@@ -2,6 +2,9 @@ import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import { CalendarService } from "./calendar.service";
 
+import asyncWrap from "../../utils/asyncWrapper";
+import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+
 export class CalendarController {
   private calendarService: CalendarService;
 
@@ -9,7 +12,7 @@ export class CalendarController {
     this.calendarService = calendarService;
   }
 
-  getCalendarEvents = async (req: AuthRequest, res: Response) => {
+  getCalendarEvents = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { year, month, teamId, eventTypes } = req.query;
 
     const filters = {
@@ -19,99 +22,78 @@ export class CalendarController {
       eventTypes: eventTypes ? (eventTypes as string).split(",") : undefined,
     };
 
-    try {
-      const result = await this.calendarService.getCalendarEvents(
-        req.firmId!,
-        filters,
-      );
-      res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    const result = await this.calendarService.getCalendarEvents(
+      req.firmId!,
+      filters,
+    );
+    res.status(200).json(result);
+  });
 
-  getCalendarEventById = async (req: AuthRequest, res: Response) => {
-    try {
-      const result = await this.calendarService.getCalendarEventById(
-        req.params.id as string,
-        req.firmId!,
-      );
-      if (!result) {
-        res.status(404).json({ message: "Event not found" });
-        return;
-      }
-      res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
+  getCalendarEventById = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.calendarService.getCalendarEventById(
+      req.params.id as string,
+      req.firmId!,
+    );
+    if (!result) {
+      throw new NotFoundError("Event not found");
     }
-  };
+    res.status(200).json(result);
+  });
 
-  createCalendarEvent = async (req: AuthRequest, res: Response) => {
-    try {
-      const result = await this.calendarService.createCalendarEvent(
-        req.firmId!,
-        req.body,
-      );
-      res.status(201).json(result);
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
+  createCalendarEvent = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.calendarService.createCalendarEvent(
+      req.firmId!,
+      req.body,
+    );
+    res.status(201).json(result);
+  });
+
+  updateCalendarEvent = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.calendarService.updateCalendarEvent(
+      req.params.id as string,
+      req.firmId!,
+      req.body,
+    );
+    if (!result) {
+      throw new NotFoundError("Event not found");
     }
-  };
+    res.status(200).json(result);
+  });
 
-  updateCalendarEvent = async (req: AuthRequest, res: Response) => {
-    try {
-      const result = await this.calendarService.updateCalendarEvent(
-        req.params.id as string,
-        req.firmId!,
-        req.body,
-      );
-      if (!result) {
-        res.status(404).json({ message: "Event not found" });
-        return;
-      }
-      res.status(200).json(result);
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
-    }
-  };
+  deleteCalendarEvent = asyncWrap(async (req: AuthRequest, res: Response) => {
+    await this.calendarService.deleteCalendarEvent(
+      req.params.id as string,
+      req.firmId!,
+    );
+    res.status(200).json({ message: "Event deleted" });
+  });
 
-  deleteCalendarEvent = async (req: AuthRequest, res: Response) => {
-    try {
-      await this.calendarService.deleteCalendarEvent(
-        req.params.id as string,
-        req.firmId!,
-      );
-      res.status(200).json({ message: "Event deleted" });
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
-
-  getCalendarStrip = async (req: AuthRequest, res: Response) => {
+  getCalendarStrip = asyncWrap(async (req: AuthRequest, res: Response) => {
     const teamId = req.query.teamId as string | undefined;
-    try {
-      const result = await this.calendarService.getCalendarStrip(
-        req.firmId!,
+    const result = await this.calendarService.getCalendarStrip(
+      req.firmId!,
+      teamId,
+    );
+    res.status(200).json(result);
+  });
+
+  createServiceRequestEvent = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const {
+        clientId,
+        caseId,
+        clientName,
+        formType,
+        assignedStaffId,
         teamId,
-      );
-      res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+      } = req.body;
 
-  createServiceRequestEvent = async (req: AuthRequest, res: Response) => {
-    const { clientId, caseId, clientName, formType, assignedStaffId, teamId } =
-      req.body;
+      if (!clientId || !caseId || !clientName || !formType) {
+        throw new BadRequestError(
+          "clientId, caseId, clientName, and formType are required",
+        );
+      }
 
-    if (!clientId || !caseId || !clientName || !formType) {
-      res.status(400).json({
-        message: "clientId, caseId, clientName, and formType are required",
-      });
-      return;
-    }
-
-    try {
       const result = await this.calendarService.createServiceRequestEvent(
         req.firmId!,
         clientId,
@@ -122,35 +104,36 @@ export class CalendarController {
         teamId,
       );
       res.status(201).json(result);
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
-    }
-  };
+    },
+  );
 
-  resolveServiceRequestEvents = async (req: AuthRequest, res: Response) => {
-    try {
+  resolveServiceRequestEvents = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
       await this.calendarService.resolveServiceRequestEvents(
         req.params.caseId as string,
         req.firmId!,
       );
       res.status(200).json({ message: "Service request events resolved" });
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    },
+  );
 
-  scheduleNextServiceRequest = async (req: AuthRequest, res: Response) => {
-    const { clientId, caseId, clientName, formType, assignedStaffId, teamId } =
-      req.body;
+  scheduleNextServiceRequest = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const {
+        clientId,
+        caseId,
+        clientName,
+        formType,
+        assignedStaffId,
+        teamId,
+      } = req.body;
 
-    if (!clientId || !caseId || !clientName || !formType) {
-      res.status(400).json({
-        message: "clientId, caseId, clientName, and formType are required",
-      });
-      return;
-    }
+      if (!clientId || !caseId || !clientName || !formType) {
+        throw new BadRequestError(
+          "clientId, caseId, clientName, and formType are required",
+        );
+      }
 
-    try {
       const result = await this.calendarService.scheduleNextServiceRequest(
         req.firmId!,
         clientId,
@@ -161,8 +144,6 @@ export class CalendarController {
         teamId,
       );
       res.status(201).json(result);
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
-    }
-  };
+    },
+  );
 }

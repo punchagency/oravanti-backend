@@ -3,6 +3,9 @@ import { AuthRequest } from "../../../middleware/auth.middleware";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
 import { FinancialAccessService } from "./financial-access.service";
 
+import asyncWrap from "../../../utils/asyncWrapper";
+import { BadRequestError } from "../../../utils/error/app-error";
+
 export class FinancialAccessController {
   private financialAccessService: FinancialAccessService;
   private auditLogService: PermissionAuditLogService;
@@ -15,26 +18,23 @@ export class FinancialAccessController {
     this.auditLogService = auditLogService;
   }
 
-  getFinancialAccess = async (req: AuthRequest, res: Response) => {
-    try {
+  getFinancialAccess = asyncWrap(async (req: AuthRequest, res: Response) => {
+    
       const result = await this.financialAccessService.getFinancialAccess(
         req.firmId!,
       );
       res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  updateFinancialAccess = async (req: AuthRequest, res: Response) => {
+  updateFinancialAccess = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { controls } = req.body;
 
     if (!Array.isArray(controls) || controls.length === 0) {
-      res.status(400).json({ message: "controls array is required" });
-      return;
+      throw new BadRequestError("controls array is required");
     }
 
-    try {
+    
       await this.financialAccessService.updateFinancialAccess(
         req.firmId!,
         controls,
@@ -49,8 +49,6 @@ export class FinancialAccessController {
         .catch(() => {});
 
       res.status(200).json({ message: "Financial access controls updated" });
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 }

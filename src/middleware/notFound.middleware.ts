@@ -1,12 +1,10 @@
 import { NextFunction, Request, Response } from "express";
+import { NotFoundError } from "../utils/error/app-error";
 
 export function notFoundMiddleware(
   req: Request,
-  res: Response,
-  _: NextFunction,
+  _res: Response,
+  _next: NextFunction,
 ) {
-  res.status(404).json({
-    success: false,
-    message: `${req.method} '${req.url}' not found`,
-  });
+  throw new NotFoundError(`${req.method} '${req.url}' not found`);
 }

@@ -3,6 +3,9 @@ import { AuthRequest } from "../../../middleware/auth.middleware";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
 import { ApprovalWorkflowsService } from "./approval-workflows.service";
 
+import asyncWrap from "../../../utils/asyncWrapper";
+import { BadRequestError } from "../../../utils/error/app-error";
+
 export class ApprovalWorkflowsController {
   private approvalWorkflowsService: ApprovalWorkflowsService;
   private auditLogService: PermissionAuditLogService;
@@ -15,26 +18,23 @@ export class ApprovalWorkflowsController {
     this.auditLogService = auditLogService;
   }
 
-  getApprovalWorkflows = async (req: AuthRequest, res: Response) => {
-    try {
+  getApprovalWorkflows = asyncWrap(async (req: AuthRequest, res: Response) => {
+    
       const result = await this.approvalWorkflowsService.getApprovalWorkflows(
         req.firmId!,
       );
       res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  updateApprovalWorkflows = async (req: AuthRequest, res: Response) => {
+  updateApprovalWorkflows = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { workflows } = req.body;
 
     if (!Array.isArray(workflows) || workflows.length === 0) {
-      res.status(400).json({ message: "workflows array is required" });
-      return;
+      throw new BadRequestError("workflows array is required");
     }
 
-    try {
+    
       await this.approvalWorkflowsService.updateApprovalWorkflows(
         req.firmId!,
         workflows,
@@ -49,8 +49,6 @@ export class ApprovalWorkflowsController {
         .catch(() => {});
 
       res.status(200).json({ message: "Approval workflows updated" });
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 }

@@ -3,6 +3,7 @@ import { supabase } from "../../../config/supabase";
 import { db } from "../../../db/client";
 import { profiles } from "../../../db/schema";
 import { UpdateProfileBody } from "../../../types/settings.types";
+import { ExternalServiceError } from "../../../utils/error/app-error";
 
 export class ProfileService {
   getProfile = async (userId: string) => {
@@ -46,7 +47,7 @@ export class ProfileService {
         upsert: true,
       });
 
-    if (error) throw new Error(error.message);
+    if (error) throw new ExternalServiceError(error.message);
 
     const { data } = supabase.storage.from("avatars").getPublicUrl(fileName);
 

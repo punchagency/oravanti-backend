@@ -2,6 +2,9 @@ import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import * as documentsService from "./documents.service";
 
+import asyncWrap from "../../utils/asyncWrapper";
+import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+
 export class DocumentsController {
   private documentsService: documentsService.DocumentsService;
 
@@ -9,9 +12,9 @@ export class DocumentsController {
     this.documentsService = documentsService;
   }
 
-  getAllDocuments = async (req: AuthRequest, res: Response) => {
+  getAllDocuments = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { search, category, clientId, caseId, status } = req.query;
-    try {
+    
       const result = await this.documentsService.getAllDocuments(req.firmId!, {
         search: search as string,
         category: category as string,
@@ -20,52 +23,41 @@ export class DocumentsController {
         status: status as string,
       });
       res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  getDocumentStats = async (req: AuthRequest, res: Response) => {
-    try {
+  getDocumentStats = asyncWrap(async (req: AuthRequest, res: Response) => {
+    
       const result = await this.documentsService.getDocumentStats(req.firmId!);
       res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  getDocumentById = async (req: AuthRequest, res: Response) => {
-    try {
+  getDocumentById = asyncWrap(async (req: AuthRequest, res: Response) => {
+    
       const result = await this.documentsService.getDocumentById(
         req.params.id as string,
         req.firmId!,
       );
       if (!result) {
-        res.status(404).json({ message: "Document not found" });
-        return;
+        throw new NotFoundError("Document not found");
       }
       res.status(200).json(result);
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  uploadDocument = async (req: AuthRequest, res: Response) => {
+  uploadDocument = asyncWrap(async (req: AuthRequest, res: Response) => {
     const file = req.file;
     if (!file) {
-      res.status(400).json({ message: "File is required" });
-      return;
+      throw new BadRequestError("File is required");
     }
 
     const { clientId, caseId, name, category } = req.body;
     if (!clientId || !caseId || !name || !category) {
-      res
-        .status(400)
-        .json({ message: "clientId, caseId, name and category are required" });
-      return;
+      throw new BadRequestError("clientId, caseId, name and category are required");
     }
 
-    try {
+    
       const result = await this.documentsService.uploadDocument(req.firmId!, {
         clientId,
         caseId,
@@ -78,55 +70,45 @@ export class DocumentsController {
         originalFilename: file.originalname,
       });
       res.status(201).json(result);
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  updateDocumentStatus = async (req: AuthRequest, res: Response) => {
+  updateDocumentStatus = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { status } = req.body;
     if (!status) {
-      res.status(400).json({ message: "status is required" });
-      return;
+      throw new BadRequestError("status is required");
     }
 
-    try {
+    
       const result = await this.documentsService.updateDocumentStatus(
         req.params.id as string,
         req.firmId!,
         status,
       );
       if (!result) {
-        res.status(404).json({ message: "Document not found" });
-        return;
+        throw new NotFoundError("Document not found");
       }
       res.status(200).json(result);
-    } catch (error) {
-      res.status(400).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  getDownloadUrl = async (req: AuthRequest, res: Response) => {
-    try {
+  getDownloadUrl = asyncWrap(async (req: AuthRequest, res: Response) => {
+    
       const url = await this.documentsService.getDownloadUrl(
         req.params.id as string,
         req.firmId!,
       );
       res.status(200).json({ url });
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 
-  deleteDocument = async (req: AuthRequest, res: Response) => {
-    try {
+  deleteDocument = asyncWrap(async (req: AuthRequest, res: Response) => {
+    
       await this.documentsService.deleteDocument(
         req.params.id as string,
         req.firmId!,
       );
       res.status(200).json({ message: "Document deleted" });
-    } catch (error) {
-      res.status(500).json({ message: (error as Error).message });
-    }
-  };
+    
+  });
 }
