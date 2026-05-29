@@ -31,7 +31,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -h localhost"]
+      test: ["CMD-SHELL", "pg_isready -U oravanti_admin -h localhost"]
       interval: 5s
       timeout: 5s
       retries: 10
