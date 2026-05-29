@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+      - "4983:4983"
     command: sh -c "npm install && npm run dev"
     volumes:
       - .:/app
