@@ -1,29 +1,10 @@
-import { pgTable, uuid, text, integer, date, boolean, timestamp, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, integer, date, boolean, timestamp, pgEnum, varchar } from 'drizzle-orm/pg-core';
 import { clients } from './clients';
 import { teams } from './teams';
 import { staff } from './staff';
 import { admins } from './admins';
 import { firms } from './firm-info';
 import { practiceAreas } from './practice-areas';
-
-export const caseTypeEnum = pgEnum('case_type', [
-  'h1b_visa',
-  'green_card',
-  'citizenship',
-  'l1_visa',
-  'asylum',
-  'family_petition',
-  'e2_treaty_investor',
-  'o1_extraordinary_ability',
-  'eb1_priority_workers',
-  'eb2_advanced_degree',
-  'eb3_skilled_workers',
-  'eb5_immigrant_investor',
-  'work_authorization',
-  'travel_document',
-  'naturalization',
-  'other',
-]);
 
 export const caseStatusEnum = pgEnum('case_status', [
   'active',
@@ -41,7 +22,7 @@ export const cases = pgTable('cases', {
   caseNumber:              text('case_number').notNull().unique(),
   clientId:                uuid('client_id').notNull().references(() => clients.id),
   practiceAreaId:          uuid('practice_area_id').notNull().references(() => practiceAreas.id),
-  caseType:                caseTypeEnum('case_type').notNull(),
+  caseType:                varchar('case_type', { length: 100 }).notNull(),
   status:                  caseStatusEnum('status').notNull().default('active'),
   priority:                casePriorityEnum('priority').notNull().default('medium'),
   assignmentType:          text('assignment_type').notNull().default('internal_team'),

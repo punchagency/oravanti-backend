@@ -1,6 +1,7 @@
 import { and, asc, eq, ilike, inArray } from "drizzle-orm";
 import { db } from "../../db/client";
 import { firmPracticeAreas } from "../../db/schema/firm-practice-areas";
+import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import {
   SubscriptionStatus,
@@ -74,6 +75,38 @@ const getPracticeAreaWhere = (filters?: PracticeAreaFilters) => {
   return search ? ilike(practiceAreas.name, `%${search}%`) : undefined;
 };
 
+const getCaseTypesByPracticeArea = async (practiceAreaIds: string[]) => {
+  if (!practiceAreaIds.length) return new Map<string, unknown[]>();
+
+  const rows = await db
+    .select({
+      id: practiceAreaCaseTypes.id,
+      practiceAreaId: practiceAreaCaseTypes.practiceAreaId,
+      code: practiceAreaCaseTypes.code,
+      name: practiceAreaCaseTypes.name,
+      caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
+      createdAt: practiceAreaCaseTypes.createdAt,
+      updatedAt: practiceAreaCaseTypes.updatedAt,
+    })
+    .from(practiceAreaCaseTypes)
+    .where(inArray(practiceAreaCaseTypes.practiceAreaId, practiceAreaIds))
+    .orderBy(asc(practiceAreaCaseTypes.name));
+
+  return rows.reduce((acc, row) => {
+    const caseTypes = acc.get(row.practiceAreaId) ?? [];
+    caseTypes.push({
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      caseNumberPrefix: row.caseNumberPrefix,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+    acc.set(row.practiceAreaId, caseTypes);
+    return acc;
+  }, new Map<string, unknown[]>());
+};
+
 const normalizeSubscriptionInputs = (body: CreateSubscriptionsBody) => {
   const topLevelPaymentProvider = body.paymentProvider || "demo";
   const topLevelBillingCycle = body.billingCycle;
@@ -126,7 +159,7 @@ const normalizeSubscriptionInputs = (body: CreateSubscriptionsBody) => {
 export const getAllPracticeAreas = async (filters?: PracticeAreaFilters) => {
   const where = getPracticeAreaWhere(filters);
 
-  return db
+  const areas = await db
     .select({
       id: practiceAreas.id,
       name: practiceAreas.name,
@@ -136,6 +169,15 @@ export const getAllPracticeAreas = async (filters?: PracticeAreaFilters) => {
     .from(practiceAreas)
     .where(where)
     .orderBy(asc(practiceAreas.name));
+
+  const caseTypesByPracticeArea = await getCaseTypesByPracticeArea(
+    areas.map((area) => area.id),
+  );
+
+  return areas.map((area) => ({
+    ...area,
+    caseTypes: caseTypesByPracticeArea.get(area.id) ?? [],
+  }));
 };
 
 export const getFirmPracticeAreas = async (
@@ -178,11 +220,16 @@ export const getFirmPracticeAreas = async (
     .where(where)
     .orderBy(asc(practiceAreas.name));
 
+  const caseTypesByPracticeArea = await getCaseTypesByPracticeArea(
+    rows.map((row) => row.id),
+  );
+
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    caseTypes: caseTypesByPracticeArea.get(row.id) ?? [],
     subscription: row.subscriptionId
       ? {
           id: row.subscriptionId,

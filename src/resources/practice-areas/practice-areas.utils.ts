@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../../db/client";
 import { firmPracticeAreas } from "../../db/schema/firm-practice-areas";
+import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import {
   SubscriptionStatus,
@@ -45,4 +46,42 @@ export const ensurePracticeAreaExists = async (
   }
 
   return practiceArea;
+};
+
+export const ensureCaseTypeBelongsToPracticeArea = async (
+  firmId: string,
+  practiceAreaId?: string,
+  caseType?: string,
+) => {
+  const practiceArea = await ensurePracticeAreaExists(firmId, practiceAreaId);
+
+  if (!caseType?.trim()) {
+    throw new BadRequestError("caseType is required");
+  }
+
+  const [practiceAreaCaseType] = await db
+    .select({
+      id: practiceAreaCaseTypes.id,
+      code: practiceAreaCaseTypes.code,
+      name: practiceAreaCaseTypes.name,
+      caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
+    })
+    .from(practiceAreaCaseTypes)
+    .where(
+      and(
+        eq(practiceAreaCaseTypes.practiceAreaId, practiceArea.id),
+        eq(practiceAreaCaseTypes.code, caseType.trim()),
+      ),
+    );
+
+  if (!practiceAreaCaseType) {
+    throw new BadRequestError(
+      "caseType does not belong to the selected practice area",
+    );
+  }
+
+  return {
+    practiceArea,
+    caseType: practiceAreaCaseType,
+  };
 };

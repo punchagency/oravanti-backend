@@ -30,5 +30,6 @@ export * from './ai-error-flags';
 export * from './ai-system-config';
 export * from './calendar-events';
 export * from './practice-areas';
+export * from './practice-area-case-types';
 export * from './subscriptions';
 export * from './firm-practice-areas';

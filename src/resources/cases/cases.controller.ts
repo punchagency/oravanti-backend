@@ -12,14 +12,15 @@ export class CasesController {
   }
 
   generateCaseNumber = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { caseType } = req.query;
-    if (!caseType) {
-      throw new BadRequestError("caseType is required");
+    const { practiceAreaId, caseType } = req.query;
+    if (!practiceAreaId || !caseType) {
+      throw new BadRequestError("practiceAreaId and caseType are required");
     }
 
     const caseNumber = await this.casesService.generateCaseNumber(
-      caseType as string,
       req.firmId!,
+      practiceAreaId as string,
+      caseType as string,
     );
     res.status(200).json({ caseNumber });
   });

@@ -11,7 +11,7 @@ import {
   NotFoundError,
 } from "../../utils/error/app-error";
 import { generateCaseNumber } from "../cases/cases.service";
-import { ensurePracticeAreaExists } from "../practice-areas/practice-areas.utils";
+import { ensureCaseTypeBelongsToPracticeArea } from "../practice-areas/practice-areas.utils";
 import { db } from "./../../db/client";
 
 // ─── Companies ───────────────────────────────────────────────────────────────
@@ -183,7 +183,11 @@ export const createCompanyWithClients = async (
   }
 
   for (const { caseData } of individuals) {
-    await ensurePracticeAreaExists(firmId, caseData.practiceAreaId);
+    await ensureCaseTypeBelongsToPracticeArea(
+      firmId,
+      caseData.practiceAreaId,
+      caseData.caseType,
+    );
   }
 
   return db.transaction(async (tx) => {
@@ -199,7 +203,11 @@ export const createCompanyWithClients = async (
     const results = [];
 
     for (const { clientData, caseData } of individuals) {
-      const caseNumber = await generateCaseNumber(caseData.caseType, firmId);
+      const caseNumber = await generateCaseNumber(
+        firmId,
+        caseData.practiceAreaId,
+        caseData.caseType,
+      );
 
       const [newClient] = await tx
         .insert(clients)
@@ -278,11 +286,19 @@ export const addClientToCompany = async (
 
   if (!company) throw new NotFoundError("Company not found");
 
-  await ensurePracticeAreaExists(firmId, caseData.practiceAreaId);
+  await ensureCaseTypeBelongsToPracticeArea(
+    firmId,
+    caseData.practiceAreaId,
+    caseData.caseType,
+  );
   await checkForDuplicate(firmId, clientData);
 
   return db.transaction(async (tx) => {
-    const caseNumber = await generateCaseNumber(caseData.caseType, firmId);
+    const caseNumber = await generateCaseNumber(
+      firmId,
+      caseData.practiceAreaId,
+      caseData.caseType,
+    );
 
     const [newClient] = await tx
       .insert(clients)
@@ -587,7 +603,11 @@ export const createClient = async (
   },
   options?: { acknowledgeConflict?: boolean },
 ) => {
-  await ensurePracticeAreaExists(firmId, caseData.practiceAreaId);
+  await ensureCaseTypeBelongsToPracticeArea(
+    firmId,
+    caseData.practiceAreaId,
+    caseData.caseType,
+  );
 
   await checkForDuplicate(firmId, clientData);
 
@@ -597,7 +617,11 @@ export const createClient = async (
       return { type: "conflict_warning" as const, conflicts };
   }
 
-  const caseNumber = await generateCaseNumber(caseData.caseType, firmId);
+  const caseNumber = await generateCaseNumber(
+    firmId,
+    caseData.practiceAreaId,
+    caseData.caseType,
+  );
 
   return db.transaction(async (tx) => {
     const [newClient] = await tx
@@ -710,7 +734,11 @@ export const addCase = async (
   },
   options?: { acknowledgeExistingCase?: boolean },
 ) => {
-  await ensurePracticeAreaExists(firmId, caseData.practiceAreaId);
+  await ensureCaseTypeBelongsToPracticeArea(
+    firmId,
+    caseData.practiceAreaId,
+    caseData.caseType,
+  );
 
   if (!options?.acknowledgeExistingCase) {
     const existing = await db
@@ -744,7 +772,11 @@ export const addCase = async (
     }
   }
 
-  const caseNumber = await generateCaseNumber(caseData.caseType, firmId);
+  const caseNumber = await generateCaseNumber(
+    firmId,
+    caseData.practiceAreaId,
+    caseData.caseType,
+  );
 
   const [newCase] = await db
     .insert(cases)
