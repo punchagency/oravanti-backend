@@ -25,10 +25,10 @@ export class AuthRouter {
       "/send-verification-otp",
       this.authController.sendVerificationOTP,
     );
-
     this.router.post(
       "/reset-password",
       this.authController.resetPasswordWithOTP,
     );
+    this.router.post("/change-password", this.authController.changePassword);
   }
 }

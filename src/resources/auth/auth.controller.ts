@@ -161,4 +161,28 @@ export class AuthController {
       success: true,
     });
   });
+
+  changePassword = asyncWrap(async (req: Request, res: Response) => {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      throw new BadRequestError(
+        "Current password and new password are required",
+      );
+    }
+
+    const authResponse = await this.authService.changePassword(
+      {
+        currentPassword,
+        newPassword,
+      },
+      req,
+    );
+
+    const data = await authResponse.json();
+
+    res.status(200).json({
+      message: data.message || "Password updated successfully",
+      success: true,
+    });
+  });
 }
