@@ -11,10 +11,28 @@ import {
   text,
 } from "@clack/prompts";
 import { Command } from "commander";
+import { randomUUID } from "crypto";
 import { and, asc, eq, inArray, ilike } from "drizzle-orm";
 import { closeDb, db } from "../db/client";
+import { admins } from "../db/schema/admins";
+import { aiErrorFlags } from "../db/schema/ai-error-flags";
+import { aiSystemConfig } from "../db/schema/ai-system-config";
+import { calendarEvents } from "../db/schema/calendar-events";
+import { cases } from "../db/schema/cases";
+import { clientRequests } from "../db/schema/client-requests";
+import { clients } from "../db/schema/clients";
+import { companies } from "../db/schema/companies";
+import { documents } from "../db/schema/documents";
+import { firms } from "../db/schema/firm-info";
+import { firmPracticeAreas } from "../db/schema/firm-practice-areas";
 import { practiceAreaCaseTypes } from "../db/schema/practice-area-case-types";
 import { practiceAreas } from "../db/schema/practice-areas";
+import { staff } from "../db/schema/staff";
+import { subscriptions, SubscriptionStatus } from "../db/schema/subscriptions";
+import { tasks } from "../db/schema/tasks";
+import { teamMembers } from "../db/schema/team-members";
+import { teams } from "../db/schema/teams";
+import { timeEntries } from "../db/schema/time-entries";
 
 const DEFAULT_PRACTICE_AREAS = [
   "Immigration",
@@ -76,11 +94,30 @@ const DEFAULT_IMMIGRATION_CASE_TYPES = [
 
 type PracticeAreaRow = typeof practiceAreas.$inferSelect;
 type PracticeAreaCaseTypeRow = typeof practiceAreaCaseTypes.$inferSelect;
+type FirmRow = typeof firms.$inferSelect;
 
 type CaseTypeInput = {
   code: string;
   name: string;
   caseNumberPrefix: string;
+};
+
+type DemoSeedResult = {
+  firm: Pick<FirmRow, "id" | "firmName">;
+  practiceArea: { id: string; name: string };
+  subscriptionId: string;
+  adminId: string;
+  staffCount: number;
+  teamId: string;
+  companyId: string;
+  clientCount: number;
+  caseCount: number;
+  documentCount: number;
+  taskCount: number;
+  calendarEventCount: number;
+  clientRequestCount: number;
+  timeEntryCount: number;
+  aiErrorFlagCount: number;
 };
 
 const program = new Command();
@@ -99,6 +136,31 @@ const normalizeName = (name: string) => name.trim();
 const normalizeKey = (name: string) => normalizeName(name).toLocaleLowerCase();
 const normalizeCode = (code: string) => code.trim().toLowerCase();
 const normalizePrefix = (prefix: string) => prefix.trim().toUpperCase();
+const slugify = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+
+const isoDateFromNow = (days: number) => {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
+};
+
+const timestampFromNow = (days: number, hour = 14) => {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  date.setHours(hour, 0, 0, 0);
+  return date;
+};
+
+const assertDevelopment = () => {
+  if (process.env.NODE_ENV !== "development") {
+    throw new Error("Demo data seeding is only available in development.");
+  }
+};
 
 const parseNames = (input: string | readonly string[]) => {
   const rawNames = typeof input === "string" ? input.split(/\r?\n|,/) : input;
@@ -130,6 +192,18 @@ const getPracticeAreas = () =>
     .from(practiceAreas)
     .orderBy(asc(practiceAreas.name));
 
+const getFirms = () =>
+  db
+    .select({
+      id: firms.id,
+      firmName: firms.firmName,
+      firmEmail: firms.firmEmail,
+      city: firms.city,
+      state: firms.state,
+    })
+    .from(firms)
+    .orderBy(asc(firms.firmName));
+
 const getCaseTypes = (practiceAreaId: string) =>
   db
     .select()
@@ -151,6 +225,28 @@ const printPracticeAreas = (areas: PracticeAreaRow[]) => {
       updatedAt: area.updatedAt.toISOString(),
     })),
   );
+};
+
+const printDemoSeedResult = (result: DemoSeedResult) => {
+  console.table([
+    {
+      firm: result.firm.firmName,
+      practiceArea: result.practiceArea.name,
+      subscriptionId: result.subscriptionId,
+      adminId: result.adminId,
+      staff: result.staffCount,
+      teamId: result.teamId,
+      companyId: result.companyId,
+      clients: result.clientCount,
+      cases: result.caseCount,
+      documents: result.documentCount,
+      tasks: result.taskCount,
+      calendarEvents: result.calendarEventCount,
+      clientRequests: result.clientRequestCount,
+      timeEntries: result.timeEntryCount,
+      aiErrorFlags: result.aiErrorFlagCount,
+    },
+  ]);
 };
 
 const printCaseTypes = (caseTypes: PracticeAreaCaseTypeRow[]) => {
@@ -279,6 +375,38 @@ const resolvePracticeArea = async (id?: string) => {
   );
 
   return areas.find((area) => area.id === selectedId) ?? null;
+};
+
+const resolveFirm = async (id?: string) => {
+  const allFirms = await getFirms();
+
+  if (!allFirms.length) {
+    note("No firms found.");
+    return null;
+  }
+
+  if (id) {
+    const firm = allFirms.find((currentFirm) => currentFirm.id === id);
+    if (!firm) {
+      note(`Firm not found: ${id}`);
+      return null;
+    }
+
+    return firm;
+  }
+
+  const selectedId = abortIfCancelled(
+    await select({
+      message: "Select a firm for demo data",
+      options: allFirms.map((firm) => ({
+        value: firm.id,
+        label: firm.firmName,
+        hint: firm.firmEmail,
+      })),
+    }),
+  );
+
+  return allFirms.find((firm) => firm.id === selectedId) ?? null;
 };
 
 const resolvePracticeAreaByName = async (name: string) => {
@@ -548,6 +676,630 @@ const deleteCaseTypes = async (practiceAreaId?: string, ids: readonly string[] =
   printCaseTypes(deleted);
 };
 
+const seedDemoData = async (firmId?: string) => {
+  assertDevelopment();
+
+  const firm = await resolveFirm(firmId);
+  if (!firm) return;
+
+  note(
+    `This will add linked demo data for ${firm.firmName}. Existing data will not be deleted.`,
+    "Development-only demo seed",
+  );
+
+  const shouldSeed = abortIfCancelled(
+    await confirm({
+      message: "Continue?",
+      initialValue: false,
+    }),
+  );
+
+  if (!shouldSeed) {
+    note("Nothing seeded.");
+    return;
+  }
+
+  const suffix = `${slugify(firm.firmName) || "firm"}-${Date.now()}`;
+  const emailDomain = "demo.oravanti.test";
+
+  const result = await db.transaction(async (tx) => {
+    let [immigrationPracticeArea] = await tx
+      .select()
+      .from(practiceAreas)
+      .where(ilike(practiceAreas.name, "Immigration"))
+      .limit(1);
+
+    if (!immigrationPracticeArea) {
+      [immigrationPracticeArea] = await tx
+        .insert(practiceAreas)
+        .values({ name: "Immigration" })
+        .returning();
+    }
+
+    const caseTypeRows = [];
+    for (const caseType of DEFAULT_IMMIGRATION_CASE_TYPES) {
+      const [existingCaseType] = await tx
+        .select()
+        .from(practiceAreaCaseTypes)
+        .where(
+          and(
+            eq(practiceAreaCaseTypes.practiceAreaId, immigrationPracticeArea.id),
+            eq(practiceAreaCaseTypes.code, caseType.code),
+          ),
+        )
+        .limit(1);
+
+      if (existingCaseType) {
+        caseTypeRows.push(existingCaseType);
+        continue;
+      }
+
+      const [createdCaseType] = await tx
+        .insert(practiceAreaCaseTypes)
+        .values({
+          practiceAreaId: immigrationPracticeArea.id,
+          code: caseType.code,
+          name: caseType.name,
+          caseNumberPrefix: caseType.caseNumberPrefix,
+        })
+        .returning();
+      caseTypeRows.push(createdCaseType);
+    }
+
+    const [existingSubscription] = await tx
+      .select()
+      .from(subscriptions)
+      .where(
+        and(
+          eq(subscriptions.firmId, firm.id),
+          eq(subscriptions.practiceAreaId, immigrationPracticeArea.id),
+          eq(subscriptions.status, SubscriptionStatus.ACTIVE),
+        ),
+      )
+      .limit(1);
+
+    const [activeSubscription] = existingSubscription
+      ? [existingSubscription]
+      : await tx
+          .insert(subscriptions)
+          .values({
+            firmId: firm.id,
+            practiceAreaId: immigrationPracticeArea.id,
+            status: SubscriptionStatus.ACTIVE,
+            billingCycle: "monthly",
+            startsAt: new Date(),
+            paymentProvider: "demo",
+            providerSubscriptionId: `demo-sub-${suffix}`,
+          })
+          .returning();
+
+    const [existingFirmPracticeArea] = await tx
+      .select()
+      .from(firmPracticeAreas)
+      .where(
+        and(
+          eq(firmPracticeAreas.firmId, firm.id),
+          eq(firmPracticeAreas.practiceAreaId, immigrationPracticeArea.id),
+          eq(firmPracticeAreas.active, true),
+        ),
+      )
+      .limit(1);
+
+    if (!existingFirmPracticeArea) {
+      await tx.insert(firmPracticeAreas).values({
+        firmId: firm.id,
+        practiceAreaId: immigrationPracticeArea.id,
+        subscriptionId: activeSubscription.id,
+        active: true,
+      });
+    }
+
+    let [firmAdmin] = await tx
+      .select()
+      .from(admins)
+      .where(eq(admins.firmId, firm.id))
+      .limit(1);
+
+    if (!firmAdmin) {
+      [firmAdmin] = await tx
+        .insert(admins)
+        .values({
+          firmId: firm.id,
+          userId: randomUUID(),
+          firstName: "Demo",
+          lastName: "Admin",
+          email: `demo.admin.${suffix}@${emailDomain}`,
+        })
+        .returning();
+    }
+
+    const createdStaff = await tx
+      .insert(staff)
+      .values([
+        {
+          firmId: firm.id,
+          firstName: "Amara",
+          lastName: "Okafor",
+          email: `amara.okafor.${suffix}@${emailDomain}`,
+          phone: "+1-555-0101",
+          role: "attorney",
+          status: "active",
+          maxCaseload: 12,
+          startDate: isoDateFromNow(-600),
+          performanceScore: 94,
+          certificationsCount: 3,
+          activeCases: 2,
+          totalCases: 48,
+          monthlySalary: "9200",
+          hourlyRate: "125",
+        },
+        {
+          firmId: firm.id,
+          firstName: "Noah",
+          lastName: "Reed",
+          email: `noah.reed.${suffix}@${emailDomain}`,
+          phone: "+1-555-0102",
+          role: "senior_paralegal",
+          status: "active",
+          maxCaseload: 15,
+          startDate: isoDateFromNow(-420),
+          performanceScore: 88,
+          certificationsCount: 2,
+          activeCases: 3,
+          totalCases: 35,
+          monthlySalary: "6200",
+          hourlyRate: "75",
+        },
+        {
+          firmId: firm.id,
+          firstName: "Mia",
+          lastName: "Chen",
+          email: `mia.chen.${suffix}@${emailDomain}`,
+          phone: "+1-555-0103",
+          role: "paralegal",
+          status: "active",
+          maxCaseload: 10,
+          startDate: isoDateFromNow(-180),
+          performanceScore: 81,
+          certificationsCount: 1,
+          activeCases: 1,
+          totalCases: 14,
+          monthlySalary: "4800",
+          hourlyRate: "55",
+        },
+      ])
+      .returning();
+
+    const attorney = createdStaff[0];
+    const seniorParalegal = createdStaff[1];
+    const paralegal = createdStaff[2];
+
+    const [demoTeam] = await tx
+      .insert(teams)
+      .values({
+        firmId: firm.id,
+        name: `Demo Immigration Team ${suffix}`,
+        leadId: attorney.id,
+        description: "Demo team for immigration case workflows.",
+        maxCaseload: 40,
+        workloadPercentage: 55,
+        status: "available",
+        activeCases: 3,
+      })
+      .returning();
+
+    await tx.insert(teamMembers).values(
+      createdStaff.map((staffMember) => ({
+        teamId: demoTeam.id,
+        staffId: staffMember.id,
+      })),
+    );
+
+    const [demoCompany] = await tx
+      .insert(companies)
+      .values({
+        firmId: firm.id,
+        companyName: `Northstar Robotics Demo ${suffix}`,
+        companyType: "corporation",
+        ein: `99-${String(Date.now()).slice(-7)}`,
+        industry: "Technology",
+        numberOfEmployees: 180,
+        address: "120 Market Street",
+        city: "Austin",
+        state: "TX",
+        zipCode: "78701",
+        country: "United States",
+        phone: "+1-555-0200",
+        website: "https://northstar-robotics.example",
+        primaryContactName: "Priya Raman",
+        primaryContactEmail: `priya.raman.${suffix}@${emailDomain}`,
+        primaryContactPhone: "+1-555-0201",
+        status: "active",
+      })
+      .returning();
+
+    const createdClients = await tx
+      .insert(clients)
+      .values([
+        {
+          firmId: firm.id,
+          firstName: "Sofia",
+          lastName: "Martinez",
+          email: `sofia.martinez.${suffix}@${emailDomain}`,
+          phone: "+1-555-0301",
+          dateOfBirth: "1990-04-12",
+          nationality: "Mexican",
+          countryOfOrigin: "Mexico",
+          passportNumber: `MX${String(Date.now()).slice(-7)}`,
+          currentAddress: "55 Lake View Dr, Austin, TX",
+          clientType: "individual",
+          status: "active",
+        },
+        {
+          firmId: firm.id,
+          firstName: "Daniel",
+          lastName: "Kim",
+          email: `daniel.kim.${suffix}@${emailDomain}`,
+          phone: "+1-555-0302",
+          dateOfBirth: "1986-11-02",
+          nationality: "South Korean",
+          countryOfOrigin: "South Korea",
+          passportNumber: `KR${String(Date.now()).slice(-7)}`,
+          currentAddress: "98 Cedar Lane, Dallas, TX",
+          clientType: "individual",
+          status: "active",
+        },
+        {
+          firmId: firm.id,
+          firstName: "Priya",
+          lastName: "Raman",
+          email: `client.priya.raman.${suffix}@${emailDomain}`,
+          phone: "+1-555-0303",
+          dateOfBirth: "1988-07-20",
+          nationality: "Indian",
+          countryOfOrigin: "India",
+          passportNumber: `IN${String(Date.now()).slice(-7)}`,
+          currentAddress: "120 Market Street, Austin, TX",
+          clientType: "company_representative",
+          companyId: demoCompany.id,
+          status: "active",
+        },
+      ])
+      .returning();
+
+    const caseTypeByCode = new Map(
+      caseTypeRows.map((caseType) => [caseType.code, caseType]),
+    );
+    const h1bCaseType = caseTypeByCode.get("h1b_visa")!;
+    const familyCaseType = caseTypeByCode.get("family_petition")!;
+    const greenCardCaseType = caseTypeByCode.get("green_card")!;
+
+    const createdCases = await tx
+      .insert(cases)
+      .values([
+        {
+          firmId: firm.id,
+          caseNumber: `2026-${h1bCaseType.caseNumberPrefix}-DEMO-${suffix}-001`,
+          clientId: createdClients[2].id,
+          practiceAreaId: immigrationPracticeArea.id,
+          caseType: h1bCaseType.code,
+          status: "active",
+          priority: "high",
+          assignmentType: "internal_team",
+          teamId: demoTeam.id,
+          assignedStaffId: attorney.id,
+          requiredCertifications: ["immigration_forms"],
+          caseProgress: 45,
+          filingDate: isoDateFromNow(-15),
+          estimatedCompletionDate: isoDateFromNow(60),
+          nextAppointment: isoDateFromNow(10),
+          description: "Demo H-1B petition for a robotics engineer.",
+          notes: "Employer packet received; review supporting documents.",
+          currentEmployer: demoCompany.companyName,
+          createdByAdminId: firmAdmin.id,
+        },
+        {
+          firmId: firm.id,
+          caseNumber: `2026-${familyCaseType.caseNumberPrefix}-DEMO-${suffix}-002`,
+          clientId: createdClients[0].id,
+          practiceAreaId: immigrationPracticeArea.id,
+          caseType: familyCaseType.code,
+          status: "pending_review",
+          priority: "medium",
+          assignmentType: "internal_team",
+          teamId: demoTeam.id,
+          assignedStaffId: seniorParalegal.id,
+          requiredCertifications: ["family_petitions"],
+          caseProgress: 25,
+          filingDate: isoDateFromNow(-5),
+          estimatedCompletionDate: isoDateFromNow(90),
+          nextAppointment: isoDateFromNow(14),
+          description: "Demo family petition case awaiting evidence review.",
+          notes: "Collect marriage certificate translation.",
+          createdByAdminId: firmAdmin.id,
+        },
+        {
+          firmId: firm.id,
+          caseNumber: `2026-${greenCardCaseType.caseNumberPrefix}-DEMO-${suffix}-003`,
+          clientId: createdClients[1].id,
+          practiceAreaId: immigrationPracticeArea.id,
+          caseType: greenCardCaseType.code,
+          status: "active",
+          priority: "medium",
+          assignmentType: "internal_team",
+          teamId: demoTeam.id,
+          assignedStaffId: paralegal.id,
+          requiredCertifications: ["adjustment_of_status"],
+          caseProgress: 60,
+          filingDate: isoDateFromNow(-45),
+          estimatedCompletionDate: isoDateFromNow(120),
+          nextAppointment: isoDateFromNow(21),
+          description: "Demo adjustment of status case with interview upcoming.",
+          notes: "Prepare interview checklist.",
+          createdByAdminId: firmAdmin.id,
+        },
+      ])
+      .returning();
+
+    const createdDocuments = await tx
+      .insert(documents)
+      .values([
+        {
+          firmId: firm.id,
+          clientId: createdClients[2].id,
+          caseId: createdCases[0].id,
+          uploadedById: attorney.id,
+          name: "H-1B Employer Support Letter",
+          category: "supporting",
+          fileUrl: `https://demo.oravanti.test/documents/${suffix}/h1b-support-letter.pdf`,
+          storagePath: `${firm.id}/${createdClients[2].id}/${createdCases[0].id}/supporting/h1b-support-letter.pdf`,
+          fileSize: 245760,
+          mimeType: "application/pdf",
+          status: "review_needed",
+          aiChecked: true,
+        },
+        {
+          firmId: firm.id,
+          clientId: createdClients[0].id,
+          caseId: createdCases[1].id,
+          uploadedById: seniorParalegal.id,
+          name: "Family Petition Evidence Packet",
+          category: "application",
+          fileUrl: `https://demo.oravanti.test/documents/${suffix}/family-petition.pdf`,
+          storagePath: `${firm.id}/${createdClients[0].id}/${createdCases[1].id}/application/family-petition.pdf`,
+          fileSize: 389120,
+          mimeType: "application/pdf",
+          status: "processing",
+          aiChecked: false,
+        },
+        {
+          firmId: firm.id,
+          clientId: createdClients[1].id,
+          caseId: createdCases[2].id,
+          uploadedById: paralegal.id,
+          name: "Green Card Identity Documents",
+          category: "identity",
+          fileUrl: `https://demo.oravanti.test/documents/${suffix}/identity-documents.pdf`,
+          storagePath: `${firm.id}/${createdClients[1].id}/${createdCases[2].id}/identity/identity-documents.pdf`,
+          fileSize: 198656,
+          mimeType: "application/pdf",
+          status: "approved",
+          aiChecked: true,
+        },
+      ])
+      .returning();
+
+    const createdTasks = await tx
+      .insert(tasks)
+      .values([
+        {
+          firmId: firm.id,
+          title: "Review H-1B support letter",
+          description: "Confirm role duties, wage details, and employer signature.",
+          caseId: createdCases[0].id,
+          teamId: demoTeam.id,
+          assignedToId: attorney.id,
+          assignedById: firmAdmin.id,
+          dueDate: isoDateFromNow(3),
+          priority: "high",
+          status: "in_progress",
+          progress: 35,
+          requiredCertifications: ["immigration_forms"],
+        },
+        {
+          firmId: firm.id,
+          title: "Request translated marriage certificate",
+          description: "Send client request for certified translation.",
+          caseId: createdCases[1].id,
+          teamId: demoTeam.id,
+          assignedToId: seniorParalegal.id,
+          assignedById: firmAdmin.id,
+          dueDate: isoDateFromNow(5),
+          priority: "medium",
+          status: "pending",
+          progress: 0,
+          requiredCertifications: ["family_petitions"],
+        },
+        {
+          firmId: firm.id,
+          title: "Prepare interview checklist",
+          description: "Build client-facing checklist for adjustment interview.",
+          caseId: createdCases[2].id,
+          teamId: demoTeam.id,
+          assignedToId: paralegal.id,
+          assignedById: firmAdmin.id,
+          dueDate: isoDateFromNow(8),
+          priority: "medium",
+          status: "in_progress",
+          progress: 60,
+          requiredCertifications: ["adjustment_of_status"],
+        },
+      ])
+      .returning();
+
+    const createdCalendarEvents = await tx
+      .insert(calendarEvents)
+      .values([
+        {
+          firmId: firm.id,
+          eventType: "client_meeting",
+          status: "scheduled",
+          title: "H-1B Filing Strategy Call",
+          startTime: timestampFromNow(4, 15),
+          endTime: timestampFromNow(4, 16),
+          clientId: createdClients[2].id,
+          caseId: createdCases[0].id,
+          assignedStaffId: attorney.id,
+          teamId: demoTeam.id,
+          location: "Zoom",
+          zoomLink: "https://zoom.example/demo-h1b",
+          notes: "Walk through employer timeline and premium processing.",
+          isAutoGenerated: false,
+        },
+        {
+          firmId: firm.id,
+          eventType: "uscis_interview",
+          status: "scheduled",
+          title: "Green Card Interview Prep",
+          startTime: timestampFromNow(18, 10),
+          endTime: timestampFromNow(18, 11),
+          clientId: createdClients[1].id,
+          caseId: createdCases[2].id,
+          assignedStaffId: paralegal.id,
+          teamId: demoTeam.id,
+          location: "Office",
+          notes: "Mock interview and document review.",
+          isAutoGenerated: false,
+        },
+      ])
+      .returning();
+
+    const createdClientRequests = await tx
+      .insert(clientRequests)
+      .values([
+        {
+          firmId: firm.id,
+          clientId: createdClients[0].id,
+          caseId: createdCases[1].id,
+          description: "Upload certified translation of marriage certificate.",
+          requestedAt: isoDateFromNow(0),
+          status: "pending",
+        },
+        {
+          firmId: firm.id,
+          clientId: createdClients[2].id,
+          caseId: createdCases[0].id,
+          description: "Confirm latest job description and worksite address.",
+          requestedAt: isoDateFromNow(-1),
+          status: "fulfilled",
+        },
+      ])
+      .returning();
+
+    const createdTimeEntries = await tx
+      .insert(timeEntries)
+      .values([
+        {
+          firmId: firm.id,
+          staffId: attorney.id,
+          caseId: createdCases[0].id,
+          hoursWorked: "2.50",
+          entryDate: isoDateFromNow(-2),
+          description: "Reviewed H-1B support materials.",
+        },
+        {
+          firmId: firm.id,
+          staffId: seniorParalegal.id,
+          caseId: createdCases[1].id,
+          hoursWorked: "1.75",
+          entryDate: isoDateFromNow(-1),
+          description: "Prepared family petition evidence checklist.",
+        },
+        {
+          firmId: firm.id,
+          staffId: paralegal.id,
+          caseId: createdCases[2].id,
+          hoursWorked: "3.00",
+          entryDate: isoDateFromNow(0),
+          description: "Compiled green card interview packet.",
+        },
+      ])
+      .returning();
+
+    const [existingAiConfig] = await tx
+      .select()
+      .from(aiSystemConfig)
+      .where(eq(aiSystemConfig.firmId, firm.id))
+      .limit(1);
+
+    if (existingAiConfig) {
+      await tx
+        .update(aiSystemConfig)
+        .set({
+          isActive: true,
+          crossCheckingEnabled: true,
+          inaValidationActive: true,
+          realtimeAnalysis: true,
+          updatedAt: new Date(),
+        })
+        .where(eq(aiSystemConfig.id, existingAiConfig.id));
+    } else {
+      await tx.insert(aiSystemConfig).values({
+        firmId: firm.id,
+        isActive: true,
+        crossCheckingEnabled: true,
+        inaValidationActive: true,
+        realtimeAnalysis: true,
+      });
+    }
+
+    const createdAiErrorFlags = await tx
+      .insert(aiErrorFlags)
+      .values([
+        {
+          firmId: firm.id,
+          clientId: createdClients[2].id,
+          caseId: createdCases[0].id,
+          documentId: createdDocuments[0].id,
+          title: "Employer letter missing worksite detail",
+          description:
+            "Demo AI review found that the support letter does not list the exact worksite address.",
+          severity: "medium",
+          status: "pending_review",
+          affectedField: "worksite_address",
+          documentRef: createdDocuments[0].name,
+        },
+      ])
+      .returning();
+
+    return {
+      firm: {
+        id: firm.id,
+        firmName: firm.firmName,
+      },
+      practiceArea: {
+        id: immigrationPracticeArea.id,
+        name: immigrationPracticeArea.name,
+      },
+      subscriptionId: activeSubscription.id,
+      adminId: firmAdmin.id,
+      staffCount: createdStaff.length,
+      teamId: demoTeam.id,
+      companyId: demoCompany.id,
+      clientCount: createdClients.length,
+      caseCount: createdCases.length,
+      documentCount: createdDocuments.length,
+      taskCount: createdTasks.length,
+      calendarEventCount: createdCalendarEvents.length,
+      clientRequestCount: createdClientRequests.length,
+      timeEntryCount: createdTimeEntries.length,
+      aiErrorFlagCount: createdAiErrorFlags.length,
+    } satisfies DemoSeedResult;
+  });
+
+  printDemoSeedResult(result);
+};
+
 const editPracticeArea = async (id?: string, name?: string) => {
   const area = await resolvePracticeArea(id);
 
@@ -677,6 +1429,7 @@ const runInteractive = async () => {
         { value: "case-types-defaults", label: "Create Immigration case types" },
         { value: "case-types-edit", label: "Edit a case type" },
         { value: "case-types-delete", label: "Delete case types" },
+        { value: "demo-data", label: "Seed demo data for a firm" },
       ],
     }),
   );
@@ -721,6 +1474,10 @@ const runInteractive = async () => {
 
   if (action === "case-types-delete") {
     await deleteCaseTypes();
+  }
+
+  if (action === "demo-data") {
+    await seedDemoData();
   }
 
   outro("Done.");
@@ -829,6 +1586,16 @@ caseTypesCommand
   .argument("[practiceAreaId]", "Practice area id")
   .argument("[ids...]", "Case type ids")
   .action(deleteCaseTypes);
+
+const demoDataCommand = program
+  .command("demo-data")
+  .description("Development-only demo data tools");
+
+demoDataCommand
+  .command("seed")
+  .description("Select a firm and populate linked demo data")
+  .argument("[firmId]", "Firm id")
+  .action(seedDemoData);
 
 program
   .parseAsync(process.argv)
