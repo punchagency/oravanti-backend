@@ -134,4 +134,37 @@ export class AuthService {
 
     return response;
   };
+
+  verifyTOTP = async (code: string, req: Request) => {
+    const clientHeaders = fromNodeHeaders(req.headers);
+
+    const response = await auth.api.verifyTOTP({
+      body: { code },
+      headers: clientHeaders,
+      returnHeaders: true,
+      asResponse: true,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorCode = errorData.code as
+        | "INVALID_CODE"
+        | "TOTP_EXPIRED"
+        | "MISSING_TOTP_CODE"
+        | "VALIDATION_ERROR";
+
+      console.log({ errorCode });
+
+      const message = errorData.message || "TOTP verification failed";
+      switch (errorCode) {
+        case "INVALID_CODE":
+          throw new AuthenticationError(message, errorData);
+
+        default:
+          throw new Error(message);
+      }
+    }
+
+    return response;
+  };
 }

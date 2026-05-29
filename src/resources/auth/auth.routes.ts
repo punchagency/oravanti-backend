@@ -19,5 +19,6 @@ export class AuthRouter {
 
     this.router.post("/sign-up/email", this.authController.signUpWithEmail);
     this.router.post("/sign-in/email", this.authController.signInWithEmail);
+    this.router.post("/verify-totp", this.authController.verifyTOTP);
   }
 }

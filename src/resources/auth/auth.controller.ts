@@ -70,4 +70,25 @@ export class AuthController {
       });
     },
   );
+
+  verifyTOTP = asyncWrap(async (req: Request, res: Response) => {
+    const { code } = req.body;
+
+    if (!code) {
+      throw new BadRequestError("Code is required");
+    }
+
+    const authResponse = await this.authService.verifyTOTP(code, req);
+
+    applyAuthHeaders(authResponse.headers, res);
+
+    const data = await authResponse.json();
+
+    res.status(200).json({
+      message: "Sign in successful",
+      success: true,
+
+      data,
+    });
+  });
 }
