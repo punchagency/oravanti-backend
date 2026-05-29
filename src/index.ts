@@ -223,4 +223,7 @@ const app = new App(
   PORT,
 );
 
-app.listen();
+app.listen().catch((error) => {
+  console.error("Failed to start app:", error);
+  process.exit(1);
+});
