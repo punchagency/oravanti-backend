@@ -21,40 +21,27 @@ export class PracticeAreasRouter {
   private initializeRoutes() {
     this.router.use(this.path, this.router);
 
+    this.router.get("/public", this.practiceAreasController.getAllPracticeAreas);
     this.router.get(
-      "/",
+      "/firm",
       requireAuth,
       requireStaffOrAdmin,
       setFirmContext,
-      this.practiceAreasController.getAllPracticeAreas,
-    );
-    this.router.get(
-      "/:id",
-      requireAuth,
-      requireAdmin,
-      setFirmContext,
-      this.practiceAreasController.getPracticeAreaById,
+      this.practiceAreasController.getFirmPracticeAreas,
     );
     this.router.post(
-      "/",
+      "/subscriptions",
       requireAuth,
       requireAdmin,
       setFirmContext,
-      this.practiceAreasController.createPracticeArea,
+      this.practiceAreasController.createSubscriptions,
     );
     this.router.patch(
-      "/:id",
+      "/subscriptions/cancel",
       requireAuth,
       requireAdmin,
       setFirmContext,
-      this.practiceAreasController.updatePracticeArea,
-    );
-    this.router.delete(
-      "/:id",
-      requireAuth,
-      requireAdmin,
-      setFirmContext,
-      this.practiceAreasController.deletePracticeArea,
+      this.practiceAreasController.cancelSubscriptions,
     );
   }
 }
