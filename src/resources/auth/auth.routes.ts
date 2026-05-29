@@ -19,7 +19,7 @@ export class AuthRouter {
 
     this.router.post("/sign-up/email", this.authController.signUpWithEmail);
     this.router.post("/sign-in/email", this.authController.signInWithEmail);
-    this.router.post("/verify-totp", this.authController.verifyTOTP);
+    this.router.post("/two-factor/verify-totp", this.authController.verifyTOTP);
     this.router.post("/sign-out", this.authController.signOut);
     this.router.post(
       "/send-verification-otp",
