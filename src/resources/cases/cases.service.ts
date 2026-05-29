@@ -2,38 +2,22 @@ import { and, desc, eq, ilike } from "drizzle-orm";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { clients } from "../../db/schema/clients";
+import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
-import { ensurePracticeAreaExists } from "../practice-areas/practice-areas.utils";
+import { ensureCaseTypeBelongsToPracticeArea } from "../practice-areas/practice-areas.utils";
 
 // ─── Case Number Generation ──────────────────────────────────────────────────
 
-const CASE_TYPE_CODES: Record<string, string> = {
-  h1b_visa: "H1B",
-  green_card: "GC",
-  citizenship: "CIT",
-  l1_visa: "L1",
-  asylum: "ASY",
-  family_petition: "FAM",
-  e2_treaty_investor: "E2",
-  o1_extraordinary_ability: "O1",
-  eb1_priority_workers: "EB1",
-  eb2_advanced_degree: "EB2",
-  eb3_skilled_workers: "EB3",
-  eb5_immigrant_investor: "EB5",
-  work_authorization: "EAD",
-  travel_document: "TRV",
-  naturalization: "NAT",
-  other: "OTH",
-};
-
 export const generateCaseNumber = async (
-  caseType: string,
   firmId: string,
+  practiceAreaId: string,
+  caseType: string,
 ): Promise<string> => {
+  const { caseType: practiceAreaCaseType } =
+    await ensureCaseTypeBelongsToPracticeArea(firmId, practiceAreaId, caseType);
   const year = new Date().getFullYear();
-  const typeCode = CASE_TYPE_CODES[caseType] ?? "OTH";
-  const prefix = `${year}-${typeCode}-`;
+  const prefix = `${year}-${practiceAreaCaseType.caseNumberPrefix}-`;
 
   const existing = await db
     .select({ caseNumber: cases.caseNumber })
@@ -70,6 +54,8 @@ export const getAllCases = async (
       practiceAreaId: practiceAreas.id,
       practiceAreaName: practiceAreas.name,
       caseType: cases.caseType,
+      caseTypeName: practiceAreaCaseTypes.name,
+      caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
       status: cases.status,
       priority: cases.priority,
       filingDate: cases.filingDate,
@@ -85,6 +71,13 @@ export const getAllCases = async (
     .from(cases)
     .leftJoin(clients, eq(clients.id, cases.clientId))
     .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
+    .leftJoin(
+      practiceAreaCaseTypes,
+      and(
+        eq(practiceAreaCaseTypes.practiceAreaId, cases.practiceAreaId),
+        eq(practiceAreaCaseTypes.code, cases.caseType),
+      ),
+    )
     .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
     .where(eq(cases.firmId, firmId))
     .orderBy(desc(cases.createdAt));
@@ -120,7 +113,11 @@ export const getAllCases = async (
         id: r.practiceAreaId,
         name: r.practiceAreaName,
       },
-      caseType: r.caseType,
+      caseType: {
+        code: r.caseType,
+        name: r.caseTypeName,
+        caseNumberPrefix: r.caseNumberPrefix,
+      },
       status: r.status,
       priority: r.priority,
       filingDate: r.filingDate,
@@ -144,6 +141,13 @@ export const getCaseById = async (id: string, firmId: string) => {
     .from(cases)
     .leftJoin(clients, eq(clients.id, cases.clientId))
     .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
+    .leftJoin(
+      practiceAreaCaseTypes,
+      and(
+        eq(practiceAreaCaseTypes.practiceAreaId, cases.practiceAreaId),
+        eq(practiceAreaCaseTypes.code, cases.caseType),
+      ),
+    )
     .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
     .where(and(eq(cases.id, id), eq(cases.firmId, firmId)));
   return row ?? null;
@@ -169,10 +173,15 @@ export const createCase = async (
   },
   creator?: { adminId?: string; staffId?: string },
 ) => {
-  await ensurePracticeAreaExists(firmId, data.practiceAreaId);
+  await ensureCaseTypeBelongsToPracticeArea(
+    firmId,
+    data.practiceAreaId,
+    data.caseType,
+  );
 
   const caseNumber =
-    data.caseNumber || (await generateCaseNumber(data.caseType, firmId));
+    data.caseNumber ||
+    (await generateCaseNumber(firmId, data.practiceAreaId, data.caseType));
 
   const [newCase] = await db
     .insert(cases)
@@ -205,8 +214,23 @@ export const updateCase = async (
   firmId: string,
   data: Partial<typeof cases.$inferInsert>,
 ) => {
-  if (data.practiceAreaId) {
-    await ensurePracticeAreaExists(firmId, data.practiceAreaId);
+  if (data.practiceAreaId || data.caseType) {
+    const [existing] = await db
+      .select({
+        practiceAreaId: cases.practiceAreaId,
+        caseType: cases.caseType,
+      })
+      .from(cases)
+      .where(and(eq(cases.id, id), eq(cases.firmId, firmId)))
+      .limit(1);
+
+    if (!existing) return null;
+
+    await ensureCaseTypeBelongsToPracticeArea(
+      firmId,
+      data.practiceAreaId ?? existing.practiceAreaId,
+      data.caseType ?? existing.caseType,
+    );
   }
 
   const [updated] = await db

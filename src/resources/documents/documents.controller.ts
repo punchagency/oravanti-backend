@@ -1,6 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
+import { parsePaginationQuery } from "../../utils/pagination";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import * as documentsService from "./documents.service";
 
@@ -12,7 +13,10 @@ export class DocumentsController {
   }
 
   getAllDocuments = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { search, category, clientId, caseId, status } = req.query;
+    const { search, category, clientId, caseId, status, page, limit } =
+      req.query;
+
+    const pagination = parsePaginationQuery({ page, limit });
 
     const result = await this.documentsService.getAllDocuments(req.firmId!, {
       search: search as string,
@@ -20,6 +24,7 @@ export class DocumentsController {
       clientId: clientId as string,
       caseId: caseId as string,
       status: status as string,
+      ...pagination,
     });
     res.status(200).json(result);
   });

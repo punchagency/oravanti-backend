@@ -9,5 +9,6 @@ COPY tsconfig.json drizzle.config.ts ./
 COPY src ./src
 
 EXPOSE 3000
+EXPOSE 4983
 
 CMD ["npm", "run", "dev"]

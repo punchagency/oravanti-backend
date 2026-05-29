@@ -1,8 +1,10 @@
 import { toNodeHandler } from "better-auth/node";
 import cors from "cors";
+import { sql } from "drizzle-orm";
 import express, { Application, Request, Response, Router } from "express";
 import morgan from "morgan";
 import { auth } from "./auth";
+import { db } from "./db/client";
 
 import { errorMiddleware } from "./middleware/error.middleware";
 import { notFoundMiddleware } from "./middleware/notFound.middleware";
@@ -76,6 +78,12 @@ export class App {
       });
     });
 
+    this.express.get("/health", (_req: Request, res: Response) => {
+      res.json({
+        status: "Oravanti API up and running",
+      });
+    });
+
     this.express.get("/api", (_req: Request, res: Response) => {
       res.redirect("/");
     });
@@ -93,7 +101,14 @@ export class App {
     this.express.use(errorMiddleware);
   }
 
-  public listen() {
+  public async testDbConnection() {
+    await db.execute(sql`SELECT 1`);
+    console.log("database connection verified");
+  }
+
+  public async listen() {
+    await this.testDbConnection();
+
     this.express.listen(this.port, () => {
       console.log(`app listening on port ${this.port}`);
     });

@@ -1,45 +1,165 @@
-import { and, asc, desc, eq, ilike } from "drizzle-orm";
+import { and, asc, eq, ilike, inArray } from "drizzle-orm";
 import { db } from "../../db/client";
-import { cases } from "../../db/schema/cases";
-import { clients } from "../../db/schema/clients";
+import { firmPracticeAreas } from "../../db/schema/firm-practice-areas";
+import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreas } from "../../db/schema/practice-areas";
-import { staff } from "../../db/schema/staff";
+import {
+  SubscriptionStatus,
+  subscriptions,
+} from "../../db/schema/subscriptions";
 import {
   BadRequestError,
   ConflictError,
   NotFoundError,
 } from "../../utils/error/app-error";
-import { normalizePracticeAreaName } from "./practice-areas.utils";
 
-const assertNameIsValid = (name?: string) => {
-  if (!name || !normalizePracticeAreaName(name)) {
-    throw new BadRequestError("name is required");
-  }
+const BILLING_CYCLES = ["monthly", "annual"] as const;
+type BillingCycle = (typeof BILLING_CYCLES)[number];
+
+type PracticeAreaFilters = {
+  search?: string;
 };
 
-const ensureNameIsAvailable = async (
-  firmId: string,
-  name: string,
-  excludeId?: string,
-) => {
-  const matches = await db
-    .select({ id: practiceAreas.id })
-    .from(practiceAreas)
-    .where(
-      and(eq(practiceAreas.firmId, firmId), ilike(practiceAreas.name, name)),
+type SubscriptionInput = {
+  practiceAreaId?: string;
+  billingCycle?: string;
+  startsAt?: string;
+  expiresAt?: string | null;
+  paymentProvider?: string;
+  providerSubscriptionId?: string | null;
+};
+
+type CreateSubscriptionsBody = {
+  subscriptions?: SubscriptionInput[];
+  practiceAreaIds?: string[];
+  billingCycle?: string;
+  startsAt?: string;
+  expiresAt?: string | null;
+  paymentProvider?: string;
+  providerSubscriptionId?: string | null;
+};
+
+type CancelSubscriptionsBody = {
+  subscriptionIds?: string[];
+  practiceAreaIds?: string[];
+};
+
+const normalizeSearch = (search?: string) => search?.trim() || undefined;
+
+const assertBillingCycle = (billingCycle?: string): BillingCycle => {
+  if (!billingCycle || !BILLING_CYCLES.includes(billingCycle as BillingCycle)) {
+    throw new BadRequestError("billingCycle must be monthly or annual");
+  }
+
+  return billingCycle as BillingCycle;
+};
+
+const parseOptionalDate = (value: string | null | undefined, field: string) => {
+  if (value === null || value === undefined) return null;
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new BadRequestError(`${field} must be a valid date`);
+  }
+
+  return date;
+};
+
+const uniqueIds = (ids: string[]) => {
+  const cleanedIds = ids.map((id) => id.trim()).filter(Boolean);
+  return [...new Set(cleanedIds)];
+};
+
+const getPracticeAreaWhere = (filters?: PracticeAreaFilters) => {
+  const search = normalizeSearch(filters?.search);
+  return search ? ilike(practiceAreas.name, `%${search}%`) : undefined;
+};
+
+const getCaseTypesByPracticeArea = async (practiceAreaIds: string[]) => {
+  if (!practiceAreaIds.length) return new Map<string, unknown[]>();
+
+  const rows = await db
+    .select({
+      id: practiceAreaCaseTypes.id,
+      practiceAreaId: practiceAreaCaseTypes.practiceAreaId,
+      code: practiceAreaCaseTypes.code,
+      name: practiceAreaCaseTypes.name,
+      caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
+      createdAt: practiceAreaCaseTypes.createdAt,
+      updatedAt: practiceAreaCaseTypes.updatedAt,
+    })
+    .from(practiceAreaCaseTypes)
+    .where(inArray(practiceAreaCaseTypes.practiceAreaId, practiceAreaIds))
+    .orderBy(asc(practiceAreaCaseTypes.name));
+
+  return rows.reduce((acc, row) => {
+    const caseTypes = acc.get(row.practiceAreaId) ?? [];
+    caseTypes.push({
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      caseNumberPrefix: row.caseNumberPrefix,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+    acc.set(row.practiceAreaId, caseTypes);
+    return acc;
+  }, new Map<string, unknown[]>());
+};
+
+const normalizeSubscriptionInputs = (body: CreateSubscriptionsBody) => {
+  const topLevelPaymentProvider = body.paymentProvider || "demo";
+  const topLevelBillingCycle = body.billingCycle;
+  const topLevelStartsAt = body.startsAt;
+  const topLevelExpiresAt = body.expiresAt;
+  const topLevelProviderSubscriptionId = body.providerSubscriptionId;
+
+  const rawSubscriptions: SubscriptionInput[] | undefined =
+    body.subscriptions?.length
+      ? body.subscriptions
+      : body.practiceAreaIds?.map((practiceAreaId) => ({ practiceAreaId }));
+
+  if (!rawSubscriptions?.length) {
+    throw new BadRequestError(
+      "subscriptions or practiceAreaIds must contain at least one item",
     );
-
-  const duplicate = matches.find((row) => row.id !== excludeId);
-  if (duplicate) {
-    throw new ConflictError("A practice area with this name already exists");
   }
+
+  const normalized = rawSubscriptions.map((item) => {
+    if (!item.practiceAreaId?.trim()) {
+      throw new BadRequestError("practiceAreaId is required");
+    }
+
+    return {
+      practiceAreaId: item.practiceAreaId.trim(),
+      billingCycle: assertBillingCycle(item.billingCycle || topLevelBillingCycle),
+      startsAt:
+        parseOptionalDate(item.startsAt || topLevelStartsAt, "startsAt") ??
+        new Date(),
+      expiresAt: parseOptionalDate(
+        item.expiresAt ?? topLevelExpiresAt,
+        "expiresAt",
+      ),
+      paymentProvider: item.paymentProvider || topLevelPaymentProvider,
+      providerSubscriptionId:
+        item.providerSubscriptionId ?? topLevelProviderSubscriptionId ?? null,
+    };
+  });
+
+  const ids = uniqueIds(normalized.map((item) => item.practiceAreaId));
+  if (ids.length !== normalized.length) {
+    throw new BadRequestError(
+      "Each practice area can only appear once per subscription request",
+    );
+  }
+
+  return normalized;
 };
 
-export const getAllPracticeAreas = async (
-  firmId: string,
-  filters?: { search?: string },
-) => {
-  return db
+export const getAllPracticeAreas = async (filters?: PracticeAreaFilters) => {
+  const where = getPracticeAreaWhere(filters);
+
+  const areas = await db
     .select({
       id: practiceAreas.id,
       name: practiceAreas.name,
@@ -47,144 +167,263 @@ export const getAllPracticeAreas = async (
       updatedAt: practiceAreas.updatedAt,
     })
     .from(practiceAreas)
-    .where(
-      filters?.search
-        ? and(
-            eq(practiceAreas.firmId, firmId),
-            ilike(practiceAreas.name, `%${filters.search}%`),
-          )
-        : eq(practiceAreas.firmId, firmId),
-    )
+    .where(where)
     .orderBy(asc(practiceAreas.name));
+
+  const caseTypesByPracticeArea = await getCaseTypesByPracticeArea(
+    areas.map((area) => area.id),
+  );
+
+  return areas.map((area) => ({
+    ...area,
+    caseTypes: caseTypesByPracticeArea.get(area.id) ?? [],
+  }));
 };
 
-export const getPracticeAreaById = async (id: string, firmId: string) => {
-  const [practiceArea] = await db
-    .select()
-    .from(practiceAreas)
-    .where(and(eq(practiceAreas.id, id), eq(practiceAreas.firmId, firmId)));
+export const getFirmPracticeAreas = async (
+  firmId: string,
+  filters?: PracticeAreaFilters,
+) => {
+  const where = getPracticeAreaWhere(filters);
 
-  if (!practiceArea) return null;
-
-  const areaCases = await db
+  const rows = await db
     .select({
-      id: cases.id,
-      caseNumber: cases.caseNumber,
-      caseType: cases.caseType,
-      status: cases.status,
-      priority: cases.priority,
-      filingDate: cases.filingDate,
-      caseProgress: cases.caseProgress,
-      clientId: clients.id,
-      clientFirstName: clients.firstName,
-      clientLastName: clients.lastName,
-      assigneeFirstName: staff.firstName,
-      assigneeLastName: staff.lastName,
-      assigneeRole: staff.role,
+      id: practiceAreas.id,
+      name: practiceAreas.name,
+      createdAt: practiceAreas.createdAt,
+      updatedAt: practiceAreas.updatedAt,
+      firmPracticeAreaId: firmPracticeAreas.id,
+      firmPracticeAreaActive: firmPracticeAreas.active,
+      subscriptionId: subscriptions.id,
+      subscriptionStatus: subscriptions.status,
+      billingCycle: subscriptions.billingCycle,
+      startsAt: subscriptions.startsAt,
+      expiresAt: subscriptions.expiresAt,
+      cancelledAt: subscriptions.cancelledAt,
+      paymentProvider: subscriptions.paymentProvider,
+      providerSubscriptionId: subscriptions.providerSubscriptionId,
+      subscriptionCreatedAt: subscriptions.createdAt,
     })
-    .from(cases)
-    .leftJoin(clients, eq(clients.id, cases.clientId))
-    .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
-    .where(and(eq(cases.practiceAreaId, id), eq(cases.firmId, firmId)))
-    .orderBy(desc(cases.createdAt));
+    .from(practiceAreas)
+    .leftJoin(
+      firmPracticeAreas,
+      and(
+        eq(firmPracticeAreas.practiceAreaId, practiceAreas.id),
+        eq(firmPracticeAreas.firmId, firmId),
+        eq(firmPracticeAreas.active, true),
+      ),
+    )
+    .leftJoin(
+      subscriptions,
+      eq(subscriptions.id, firmPracticeAreas.subscriptionId),
+    )
+    .where(where)
+    .orderBy(asc(practiceAreas.name));
 
-  return {
-    ...practiceArea,
-    cases: areaCases.map((row) => ({
-      id: row.id,
-      caseNumber: row.caseNumber,
-      caseType: row.caseType,
-      status: row.status,
-      priority: row.priority,
-      filingDate: row.filingDate,
-      caseProgress: row.caseProgress,
-      client: {
-        id: row.clientId,
-        name: `${row.clientFirstName} ${row.clientLastName}`,
+  const caseTypesByPracticeArea = await getCaseTypesByPracticeArea(
+    rows.map((row) => row.id),
+  );
+
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    caseTypes: caseTypesByPracticeArea.get(row.id) ?? [],
+    subscription: row.subscriptionId
+      ? {
+          id: row.subscriptionId,
+          firmPracticeAreaId: row.firmPracticeAreaId,
+          active: row.firmPracticeAreaActive,
+          status: row.subscriptionStatus,
+          billingCycle: row.billingCycle,
+          startsAt: row.startsAt,
+          expiresAt: row.expiresAt,
+          cancelledAt: row.cancelledAt,
+          paymentProvider: row.paymentProvider,
+          providerSubscriptionId: row.providerSubscriptionId,
+          createdAt: row.subscriptionCreatedAt,
+        }
+      : null,
+  }));
+};
+
+export const createSubscriptions = async (
+  firmId: string,
+  body: CreateSubscriptionsBody = {},
+) => {
+  const items = normalizeSubscriptionInputs(body);
+  const requestedPracticeAreaIds = items.map((item) => item.practiceAreaId);
+
+  const existingPracticeAreas = await db
+    .select({ id: practiceAreas.id, name: practiceAreas.name })
+    .from(practiceAreas)
+    .where(inArray(practiceAreas.id, requestedPracticeAreaIds));
+
+  const existingPracticeAreaIds = new Set(
+    existingPracticeAreas.map((area) => area.id),
+  );
+  const missingPracticeAreaIds = requestedPracticeAreaIds.filter(
+    (id) => !existingPracticeAreaIds.has(id),
+  );
+
+  if (missingPracticeAreaIds.length) {
+    throw new NotFoundError("One or more practice areas were not found", {
+      practiceAreaIds: missingPracticeAreaIds,
+    });
+  }
+
+  const existingActiveFirmAreas = await db
+    .select({
+      practiceAreaId: firmPracticeAreas.practiceAreaId,
+    })
+    .from(firmPracticeAreas)
+    .where(
+      and(
+        eq(firmPracticeAreas.firmId, firmId),
+        eq(firmPracticeAreas.active, true),
+        inArray(firmPracticeAreas.practiceAreaId, requestedPracticeAreaIds),
+      ),
+    );
+
+  if (existingActiveFirmAreas.length) {
+    throw new ConflictError(
+      "Firm already has active subscriptions for one or more practice areas",
+      {
+        practiceAreaIds: existingActiveFirmAreas.map(
+          (area) => area.practiceAreaId,
+        ),
       },
-      assignee: row.assigneeFirstName
-        ? {
-            name: `${row.assigneeFirstName} ${row.assigneeLastName}`,
-            role: row.assigneeRole,
-          }
-        : null,
-    })),
-  };
+    );
+  }
+
+  return db.transaction(async (tx) => {
+    const created = [];
+
+    for (const item of items) {
+      const [subscription] = await tx
+        .insert(subscriptions)
+        .values({
+          firmId,
+          practiceAreaId: item.practiceAreaId,
+          status: SubscriptionStatus.ACTIVE,
+          billingCycle: item.billingCycle,
+          startsAt: item.startsAt,
+          expiresAt: item.expiresAt,
+          paymentProvider: item.paymentProvider,
+          providerSubscriptionId: item.providerSubscriptionId,
+        })
+        .returning();
+
+      const [firmPracticeArea] = await tx
+        .insert(firmPracticeAreas)
+        .values({
+          firmId,
+          practiceAreaId: item.practiceAreaId,
+          subscriptionId: subscription.id,
+        })
+        .returning();
+
+      const practiceArea = existingPracticeAreas.find(
+        (area) => area.id === item.practiceAreaId,
+      );
+
+      created.push({
+        practiceArea,
+        subscription,
+        firmPracticeArea,
+      });
+    }
+
+    return created;
+  });
 };
 
-export const createPracticeArea = async (
+export const cancelSubscriptions = async (
   firmId: string,
-  data: { name: string },
+  body: CancelSubscriptionsBody = {},
 ) => {
-  assertNameIsValid(data.name);
-  const name = normalizePracticeAreaName(data.name);
-  await ensureNameIsAvailable(firmId, name);
+  const subscriptionIds = uniqueIds(body.subscriptionIds ?? []);
+  const practiceAreaIds = uniqueIds(body.practiceAreaIds ?? []);
 
-  const [practiceArea] = await db
-    .insert(practiceAreas)
-    .values({ firmId, name })
-    .returning();
-
-  return practiceArea;
-};
-
-export const updatePracticeArea = async (
-  id: string,
-  firmId: string,
-  data: { name?: string },
-) => {
-  const [existing] = await db
-    .select({ id: practiceAreas.id })
-    .from(practiceAreas)
-    .where(and(eq(practiceAreas.id, id), eq(practiceAreas.firmId, firmId)));
-
-  if (!existing) return null;
-
-  const updateData: Partial<typeof practiceAreas.$inferInsert> = {};
-  if (data.name !== undefined) {
-    assertNameIsValid(data.name);
-    updateData.name = normalizePracticeAreaName(data.name);
-    await ensureNameIsAvailable(firmId, updateData.name, id);
+  if (subscriptionIds.length && practiceAreaIds.length) {
+    throw new BadRequestError(
+      "Provide either subscriptionIds or practiceAreaIds, not both",
+    );
   }
 
-  const [updated] = await db
-    .update(practiceAreas)
-    .set({ ...updateData, updatedAt: new Date() })
-    .where(and(eq(practiceAreas.id, id), eq(practiceAreas.firmId, firmId)))
-    .returning();
-
-  return updated;
-};
-
-export const deletePracticeArea = async (id: string, firmId: string) => {
-  const [existing] = await db
-    .select({ id: practiceAreas.id })
-    .from(practiceAreas)
-    .where(and(eq(practiceAreas.id, id), eq(practiceAreas.firmId, firmId)));
-
-  if (!existing) {
-    throw new NotFoundError("Practice area not found");
+  if (!subscriptionIds.length && !practiceAreaIds.length) {
+    throw new BadRequestError(
+      "subscriptionIds or practiceAreaIds must contain at least one item",
+    );
   }
 
-  const [caseUsingArea] = await db
-    .select({ id: cases.id })
-    .from(cases)
-    .where(and(eq(cases.practiceAreaId, id), eq(cases.firmId, firmId)))
-    .limit(1);
+  const firmAreaConditions = [
+    eq(firmPracticeAreas.firmId, firmId),
+    eq(firmPracticeAreas.active, true),
+  ];
 
-  if (caseUsingArea) {
-    throw new ConflictError("Cannot delete a practice area that has cases");
+  if (subscriptionIds.length) {
+    firmAreaConditions.push(
+      inArray(firmPracticeAreas.subscriptionId, subscriptionIds),
+    );
   }
 
-  await db
-    .delete(practiceAreas)
-    .where(and(eq(practiceAreas.id, id), eq(practiceAreas.firmId, firmId)));
+  if (practiceAreaIds.length) {
+    firmAreaConditions.push(
+      inArray(firmPracticeAreas.practiceAreaId, practiceAreaIds),
+    );
+  }
+
+  const activeFirmAreas = await db
+    .select({
+      subscriptionId: firmPracticeAreas.subscriptionId,
+      practiceAreaId: firmPracticeAreas.practiceAreaId,
+    })
+    .from(firmPracticeAreas)
+    .where(and(...firmAreaConditions));
+
+  if (!activeFirmAreas.length) {
+    throw new NotFoundError("No active subscriptions found");
+  }
+
+  const matchedSubscriptionIds = activeFirmAreas.map(
+    (area) => area.subscriptionId,
+  );
+  const now = new Date();
+
+  return db.transaction(async (tx) => {
+    const cancelledSubscriptions = await tx
+      .update(subscriptions)
+      .set({
+        status: SubscriptionStatus.CANCELLED,
+        cancelledAt: now,
+      })
+      .where(
+        and(
+          eq(subscriptions.firmId, firmId),
+          inArray(subscriptions.id, matchedSubscriptionIds),
+        ),
+      )
+      .returning();
+
+    await tx
+      .update(firmPracticeAreas)
+      .set({ active: false })
+      .where(
+        and(
+          eq(firmPracticeAreas.firmId, firmId),
+          inArray(firmPracticeAreas.subscriptionId, matchedSubscriptionIds),
+        ),
+      );
+
+    return cancelledSubscriptions;
+  });
 };
 
 export class PracticeAreasService {
   getAllPracticeAreas = getAllPracticeAreas;
-  getPracticeAreaById = getPracticeAreaById;
-  createPracticeArea = createPracticeArea;
-  updatePracticeArea = updatePracticeArea;
-  deletePracticeArea = deletePracticeArea;
+  getFirmPracticeAreas = getFirmPracticeAreas;
+  createSubscriptions = createSubscriptions;
+  cancelSubscriptions = cancelSubscriptions;
 }
