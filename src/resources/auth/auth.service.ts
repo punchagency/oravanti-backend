@@ -1,14 +1,11 @@
-import { supabase, supabaseAdmin } from "../../config/supabase";
-import { db } from "../../db/client";
-import { admins } from "../../db/schema/admins";
-import { firms } from "../../db/schema/firm-info";
+import { fromNodeHeaders } from "better-auth/node";
+import { Request } from "express";
+import { auth } from "../../auth";
 import {
-  AppError,
   AuthenticationError,
   BadRequestError,
   ConflictError,
   ExternalServiceError,
-  InternalServerError,
   ValidationError,
 } from "../../utils/error/app-error";
 
@@ -33,88 +30,49 @@ const mapAuthError = (error: AuthServiceError) => {
 };
 
 export class AuthService {
-  signUpAdmin = async (body: {
-    firstName: string;
-    lastName: string;
-    email: string;
-    password: string;
-    firmName: string;
-    firmEmail: string;
-    firmPhone?: string;
-    address?: string;
-    city?: string;
-    state?: string;
-    zipCode?: string;
-    website?: string;
-    taxId?: string;
-  }) => {
-    const { data: authData, error: authError } =
-      await supabaseAdmin.auth.admin.createUser({
-        email: body.email,
-        password: body.password,
-        email_confirm: true,
-      });
+  emailSignUp = async (
+    body: {
+      email: string;
+      password: string;
+      rememberMe?: boolean;
+    },
+    req: Request,
+  ) => {
+    const clientHeaders = fromNodeHeaders(req.headers);
 
-    if (authError) throw mapAuthError(authError);
+    const response = await auth.api.signUpEmail({
+      headers: clientHeaders,
+      body: {
+        ...body,
+        name: "User",
+        callbackURL: process.env.EMAIL_VERIFICATION_CALLBACK_URL,
+      },
+      asResponse: true,
+    });
 
-    const userId = authData.user.id;
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
 
-    try {
-      const [firm] = await db
-        .insert(firms)
-        .values({
-          firmName: body.firmName,
-          firmEmail: body.firmEmail,
-          firmPhone: body.firmPhone,
-          address: body.address,
-          city: body.city,
-          state: body.state,
-          zipCode: body.zipCode,
-          website: body.website,
-          taxId: body.taxId,
-        })
-        .returning();
+      const errorCode = errorData.code as
+        | "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL"
+        | "INVALID_EMAIL"
+        | "PASSWORD_TOO_SHORT";
 
-      await db.insert(admins).values({
-        userId,
-        firmId: firm.id,
-        firstName: body.firstName,
-        lastName: body.lastName,
-        email: body.email,
-      });
+      const message = errorData.message || "Registration failed";
 
-      const { data: sessionData, error: sessionError } =
-        await supabase.auth.signInWithPassword({
-          email: body.email,
-          password: body.password,
-        });
+      switch (errorCode) {
+        case "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL":
+          throw new ConflictError(message, errorData);
 
-      if (sessionError) throw mapAuthError(sessionError);
+        case "INVALID_EMAIL":
+        case "PASSWORD_TOO_SHORT":
+          throw new BadRequestError(message, errorData);
 
-      return { session: sessionData.session, user: sessionData.user, firm };
-    } catch (err) {
-      await supabaseAdmin.auth.admin.deleteUser(userId);
-      if (err instanceof AppError) throw err;
-      throw new InternalServerError((err as Error).message);
+        default:
+          throw new Error(message);
+      }
     }
-  };
 
-  signInAdmin = async (email: string, password: string) => {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (error) throw new AuthenticationError(error.message);
-
-    return data;
-  };
-
-  sendPasswordResetEmail = async (email: string) => {
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: "http://localhost:3000/reset-password",
-    });
-
-    if (error) throw mapAuthError(error);
+    return response;
   };
 }

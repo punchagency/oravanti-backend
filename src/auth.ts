@@ -191,4 +191,7 @@ export const auth = betterAuth({
     },
   },
   telemetry: { enabled: false },
+  onAPIError: {
+    throw: true, // Forces Better Auth to throw traditional exceptions even with asResponse: true
+  },
 });
