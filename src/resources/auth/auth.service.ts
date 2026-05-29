@@ -215,4 +215,43 @@ export class AuthService {
 
     return response;
   };
+
+  resetPasswordWithOTP = async ({
+    email,
+    otp,
+    password,
+  }: {
+    email: string;
+    otp: string;
+    password: string;
+  }) => {
+    const response = await auth.api.resetPasswordEmailOTP({
+      body: { email, otp, password },
+      asResponse: true,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorCode = errorData.code as
+        | "INVALID_TOKEN"
+        | "OTP_EXPIRED"
+        | "MISSING_FIELD"
+        | "VALIDATION_ERROR";
+
+      const message = errorData.message || "Password reset failed";
+
+      switch (errorCode) {
+        case "INVALID_TOKEN":
+        case "OTP_EXPIRED":
+        case "MISSING_FIELD":
+        case "VALIDATION_ERROR":
+          throw new BadRequestError(message, errorData);
+
+        default:
+          throw new Error(message);
+      }
+    }
+
+    return response;
+  };
 }

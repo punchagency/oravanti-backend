@@ -140,4 +140,25 @@ export class AuthController {
       });
     },
   );
+
+  resetPasswordWithOTP = asyncWrap(async (req: Request, res: Response) => {
+    const { email, otp, password } = req.body;
+
+    if (!email || !otp || !password) {
+      throw new BadRequestError("Email, OTP, and password are required");
+    }
+
+    const authResponse = await this.authService.resetPasswordWithOTP({
+      email,
+      otp,
+      password,
+    });
+
+    const data = await authResponse.json();
+
+    res.status(200).json({
+      message: data.message || "Password reset successful",
+      success: true,
+    });
+  });
 }
