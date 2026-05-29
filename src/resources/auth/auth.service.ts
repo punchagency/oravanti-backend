@@ -178,4 +178,41 @@ export class AuthService {
 
     return response;
   };
+
+  sendVerificationOTP = async ({
+    email,
+    type,
+  }: {
+    email: string;
+    type: "sign-in" | "email-verification" | "forget-password" | "change-email";
+  }) => {
+    const response = await auth.api.sendVerificationOTP({
+      body: { email, type },
+      asResponse: true,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorCode = errorData.code as
+        | "INVALID_EMAIL"
+        | "USER_NOT_FOUND"
+        | "MISSING_FIELD"
+        | "VALIDATION_ERROR";
+
+      const message = errorData.message || "Failed to send verification code";
+
+      switch (errorCode) {
+        case "INVALID_EMAIL":
+        case "USER_NOT_FOUND":
+        case "MISSING_FIELD":
+        case "VALIDATION_ERROR":
+          throw new BadRequestError(message, errorData);
+
+        default:
+          throw new Error(message);
+      }
+    }
+
+    return response;
+  };
 }

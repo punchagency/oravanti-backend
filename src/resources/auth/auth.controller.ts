@@ -104,4 +104,40 @@ export class AuthController {
       success: true,
     });
   });
+
+  sendVerificationOTP = asyncWrap(
+    async (
+      req: Request<
+        {},
+        {},
+        {
+          email: string;
+          type:
+            | "sign-in"
+            | "email-verification"
+            | "forget-password"
+            | "change-email";
+        }
+      >,
+      res: Response,
+    ) => {
+      const { email, type } = req.body;
+
+      if (!email || !type) {
+        throw new BadRequestError("Email and type are required");
+      }
+
+      const authResponse = await this.authService.sendVerificationOTP({
+        email,
+        type,
+      });
+
+      const data = await authResponse.json();
+
+      res.status(200).json({
+        message: data.message || "OTP sent successfully",
+        success: true,
+      });
+    },
+  );
 }
