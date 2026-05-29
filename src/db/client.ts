@@ -7,3 +7,5 @@ export const db = drizzle(client, {
   logger: false,
   // logger: env.NODE_ENV === "development",
 });
+
+export const closeDb = () => client.end();
