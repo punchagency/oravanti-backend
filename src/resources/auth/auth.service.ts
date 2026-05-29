@@ -418,4 +418,35 @@ export class AuthService {
 
     return response;
   };
+
+  enableTwoFactorAuth = async (password: string, req: Request) => {
+    const clientHeaders = fromNodeHeaders(req.headers);
+    const response = await auth.api.enableTwoFactor({
+      headers: clientHeaders,
+      body: { password, issuer: "Oravanti" },
+      asResponse: true,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorCode = errorData.code as
+        | "INVALID_PASSWORD"
+        | "MISSING_FIELD"
+        | "VALIDATION_ERROR";
+
+      const message = errorData.message || "Failed to enable 2FA";
+
+      switch (errorCode) {
+        case "INVALID_PASSWORD":
+          throw new AuthenticationError(message, errorData);
+        case "MISSING_FIELD":
+        case "VALIDATION_ERROR":
+          throw new ValidationError(message, errorData);
+        default:
+          throw new Error(message);
+      }
+    }
+
+    return response;
+  };
 }

@@ -241,4 +241,26 @@ export class AuthController {
       data,
     });
   });
+
+  enableTwoFactorAuth = asyncWrap(async (req, res) => {
+    const { password } = req.body;
+    if (!password) {
+      throw new BadRequestError("Password is required");
+    }
+
+    const authResponse = await this.authService.enableTwoFactorAuth(
+      password,
+      req,
+    );
+
+    const data = await authResponse.json();
+
+    applyAuthHeaders(authResponse.headers, res);
+
+    res.status(200).json({
+      message: data.message || "Two-factor authentication enabled successfully",
+      success: true,
+      data,
+    });
+  });
 }

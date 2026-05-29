@@ -34,5 +34,9 @@ export class AuthRouter {
     this.router.get("/get-session", this.authController.getSession);
     this.router.post("/refresh-session", this.authController.refreshSession);
     this.router.get("/sessions", this.authController.getActiveSessions);
+    this.router.post(
+      "/two-factor/enable",
+      this.authController.enableTwoFactorAuth,
+    );
   }
 }
