@@ -229,4 +229,16 @@ export class AuthController {
       data,
     });
   });
+
+  getActiveSessions = asyncWrap(async (req, res) => {
+    const authResponse = await this.authService.getActiveSessions(req);
+
+    const data = await authResponse.json();
+
+    res.status(200).json({
+      message: data.message || "Active sessions retrieved successfully",
+      success: true,
+      data,
+    });
+  });
 }

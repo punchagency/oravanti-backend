@@ -31,7 +31,8 @@ export class AuthRouter {
     );
     this.router.post("/change-password", this.authController.changePassword);
     this.router.post("/revoke-session", this.authController.revokeSession);
-    this.router.post("/get-session", this.authController.getSession);
+    this.router.get("/get-session", this.authController.getSession);
     this.router.post("/refresh-session", this.authController.refreshSession);
+    this.router.get("/sessions", this.authController.getActiveSessions);
   }
 }
