@@ -38,5 +38,9 @@ export class AuthRouter {
       "/two-factor/enable",
       this.authController.enableTwoFactorAuth,
     );
+    this.router.post(
+      "/two-factor/disable",
+      this.authController.disableTwoFactorAuth,
+    );
   }
 }

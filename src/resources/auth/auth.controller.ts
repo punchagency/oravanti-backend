@@ -263,4 +263,27 @@ export class AuthController {
       data,
     });
   });
+
+  disableTwoFactorAuth = asyncWrap(async (req, res) => {
+    const { password } = req.body;
+    if (!password) {
+      throw new BadRequestError("Password is required");
+    }
+
+    const authResponse = await this.authService.disableTwoFactorAuth(
+      password,
+      req,
+    );
+
+    const data = await authResponse.json();
+
+    applyAuthHeaders(authResponse.headers, res);
+
+    res.status(200).json({
+      message:
+        data.message || "Two-factor authentication disabled successfully",
+      success: true,
+      data,
+    });
+  });
 }
