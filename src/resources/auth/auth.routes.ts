@@ -30,5 +30,6 @@ export class AuthRouter {
       this.authController.resetPasswordWithOTP,
     );
     this.router.post("/change-password", this.authController.changePassword);
+    this.router.post("/revoke-session", this.authController.revokeSession);
   }
 }

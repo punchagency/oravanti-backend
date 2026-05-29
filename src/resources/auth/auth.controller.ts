@@ -185,4 +185,20 @@ export class AuthController {
       success: true,
     });
   });
+
+  revokeSession = asyncWrap(async (req: Request, res: Response) => {
+    const { token } = req.body;
+    if (!token) {
+      throw new BadRequestError("Token is required");
+    }
+
+    const authResponse = await this.authService.revokeSession(token, req);
+
+    const data = await authResponse.json();
+
+    res.status(200).json({
+      message: data.message || "Session revoked successfully",
+      success: true,
+    });
+  });
 }
