@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../../db/client";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
@@ -6,7 +6,7 @@ import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 export const normalizePracticeAreaName = (name: string) => name.trim();
 
 export const ensurePracticeAreaExists = async (
-  firmId: string,
+  _firmId: string,
   practiceAreaId?: string,
 ) => {
   if (!practiceAreaId) {
@@ -16,12 +16,7 @@ export const ensurePracticeAreaExists = async (
   const [practiceArea] = await db
     .select({ id: practiceAreas.id })
     .from(practiceAreas)
-    .where(
-      and(
-        eq(practiceAreas.id, practiceAreaId),
-        eq(practiceAreas.firmId, firmId),
-      ),
-    );
+    .where(eq(practiceAreas.id, practiceAreaId));
 
   if (!practiceArea) {
     throw new NotFoundError("Practice area not found");
