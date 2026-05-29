@@ -1,52 +1,50 @@
 import { Request, Response } from "express";
-import {
-  ForgotPasswordBody,
-  SignInBody,
-  SignUpBody,
-} from "../../types/auth.types";
-import { SecurityService } from "../settings/security/security.service";
-import { AuthService } from "./auth.service";
-
+import { SignInBody } from "../../types/auth.types";
+import { applyAuthHeaders } from "../../utils/applyAuthHeaders";
 import asyncWrap from "../../utils/asyncWrapper";
 import { BadRequestError } from "../../utils/error/app-error";
+import { AuthService } from "./auth.service";
 
 export class AuthController {
   private authService: AuthService;
-  private securityService = new SecurityService();
 
   constructor(authService: AuthService) {
     this.authService = authService;
   }
 
-  signUp = asyncWrap(
-    async (req: Request<{}, {}, SignUpBody>, res: Response) => {
-      const { firstName, lastName, email, password, firmName, firmEmail } =
-        req.body;
+  signUpWithEmail = asyncWrap(
+    async (
+      req: Request<
+        {},
+        {},
+        { email: string; password: string; rememberMe?: boolean }
+      >,
+      res: Response,
+    ) => {
+      const { email, password, rememberMe = false } = req.body;
 
-      if (
-        !firstName ||
-        !lastName ||
-        !email ||
-        !password ||
-        !firmName ||
-        !firmEmail
-      ) {
-        throw new BadRequestError(
-          "firstName, lastName, email, password, firmName, and firmEmail are required",
-        );
+      if (!email || !password) {
+        throw new BadRequestError("Email and password are required");
       }
 
-      const data = await this.authService.signUpAdmin(req.body);
-      res.status(201).json({
-        message: "Account created successfully",
-        session: data.session,
-        user: data.user,
-        firm: data.firm,
+      const authResponse = await this.authService.signUpWithEmail(
+        req.body,
+        req,
+      );
+
+      applyAuthHeaders(authResponse.headers, res);
+
+      const data = await authResponse.json();
+
+      res.status(200).json({
+        message: data.message || "Signup successful",
+        success: true,
+        data,
       });
     },
   );
 
-  signIn = asyncWrap(
+  signInWithEmail = asyncWrap(
     async (req: Request<{}, {}, SignInBody>, res: Response) => {
       const { email, password } = req.body;
 
@@ -54,35 +52,238 @@ export class AuthController {
         throw new BadRequestError("Email and password are required");
       }
 
-      const data = await this.authService.signInAdmin(email, password);
+      const authResponse = await this.authService.signInWithEmail(
+        email,
+        password,
+        req,
+      );
 
-      const userId = data.user?.id;
-      if (userId) {
-        const userAgent = (req.headers["user-agent"] as string) ?? "Unknown";
-        const ipAddress = req.ip ?? req.socket.remoteAddress ?? "Unknown";
-        this.securityService
-          .logSession(userId, userAgent, ipAddress)
-          .catch(() => {});
-      }
+      applyAuthHeaders(authResponse.headers, res);
+
+      const data = await authResponse.json();
 
       res.status(200).json({
         message: "Sign in successful",
-        session: data.session,
-        user: data.user,
+        success: true,
+
+        data,
       });
     },
   );
 
-  forgotPassword = asyncWrap(
-    async (req: Request<{}, {}, ForgotPasswordBody>, res: Response) => {
-      const { email } = req.body;
+  verifyTOTP = asyncWrap(async (req: Request, res: Response) => {
+    const { code } = req.body;
 
-      if (!email) {
-        throw new BadRequestError("Email is required");
+    if (!code) {
+      throw new BadRequestError("Code is required");
+    }
+
+    const authResponse = await this.authService.verifyTOTP(code, req);
+
+    applyAuthHeaders(authResponse.headers, res);
+
+    const data = await authResponse.json();
+
+    res.status(200).json({
+      message: "Sign in successful",
+      success: true,
+
+      data,
+    });
+  });
+
+  signOut = asyncWrap(async (req: Request, res: Response) => {
+    const authResponse = await this.authService.signOut(req);
+
+    applyAuthHeaders(authResponse.headers, res);
+
+    const data = await authResponse.json();
+
+    res.status(200).json({
+      message: data.message || "Sign out successful",
+      success: true,
+    });
+  });
+
+  sendVerificationOTP = asyncWrap(
+    async (
+      req: Request<
+        {},
+        {},
+        {
+          email: string;
+          type:
+            | "sign-in"
+            | "email-verification"
+            | "forget-password"
+            | "change-email";
+        }
+      >,
+      res: Response,
+    ) => {
+      const { email, type } = req.body;
+
+      if (!email || !type) {
+        throw new BadRequestError("Email and type are required");
       }
 
-      await this.authService.sendPasswordResetEmail(email);
-      res.status(200).json({ message: "Password reset email sent" });
+      const authResponse = await this.authService.sendVerificationOTP({
+        email,
+        type,
+      });
+
+      const data = await authResponse.json();
+
+      res.status(200).json({
+        message: data.message || "OTP sent successfully",
+        success: true,
+      });
     },
   );
+
+  resetPasswordWithOTP = asyncWrap(async (req: Request, res: Response) => {
+    const { email, otp, password } = req.body;
+
+    if (!email || !otp || !password) {
+      throw new BadRequestError("Email, OTP, and password are required");
+    }
+
+    const authResponse = await this.authService.resetPasswordWithOTP({
+      email,
+      otp,
+      password,
+    });
+
+    const data = await authResponse.json();
+
+    res.status(200).json({
+      message: data.message || "Password reset successful",
+      success: true,
+    });
+  });
+
+  changePassword = asyncWrap(async (req: Request, res: Response) => {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      throw new BadRequestError(
+        "Current password and new password are required",
+      );
+    }
+
+    const authResponse = await this.authService.changePassword(
+      {
+        currentPassword,
+        newPassword,
+      },
+      req,
+    );
+
+    const data = await authResponse.json();
+
+    res.status(200).json({
+      message: data.message || "Password updated successfully",
+      success: true,
+    });
+  });
+
+  revokeSession = asyncWrap(async (req: Request, res: Response) => {
+    const { token } = req.body;
+    if (!token) {
+      throw new BadRequestError("Token is required");
+    }
+
+    const authResponse = await this.authService.revokeSession(token, req);
+
+    const data = await authResponse.json();
+
+    res.status(200).json({
+      message: data.message || "Session revoked successfully",
+      success: true,
+    });
+  });
+
+  getSession = asyncWrap(async (req, res) => {
+    const authResponse = await this.authService.getSession(req);
+
+    const data = await authResponse.json();
+
+    applyAuthHeaders(authResponse.headers, res);
+
+    res.status(200).json({
+      message: data.message || "Session retrieved successfully",
+      success: true,
+      data,
+    });
+  });
+
+  refreshSession = asyncWrap(async (req, res) => {
+    const authResponse = await this.authService.refreshSession(req);
+
+    applyAuthHeaders(authResponse.headers, res);
+
+    const data = await authResponse.json();
+
+    res.status(200).json({
+      message: data.message || "Session refreshed successfully",
+      success: true,
+      data,
+    });
+  });
+
+  getActiveSessions = asyncWrap(async (req, res) => {
+    const authResponse = await this.authService.getActiveSessions(req);
+
+    const data = await authResponse.json();
+
+    res.status(200).json({
+      message: data.message || "Active sessions retrieved successfully",
+      success: true,
+      data,
+    });
+  });
+
+  enableTwoFactorAuth = asyncWrap(async (req, res) => {
+    const { password } = req.body;
+    if (!password) {
+      throw new BadRequestError("Password is required");
+    }
+
+    const authResponse = await this.authService.enableTwoFactorAuth(
+      password,
+      req,
+    );
+
+    const data = await authResponse.json();
+
+    applyAuthHeaders(authResponse.headers, res);
+
+    res.status(200).json({
+      message: data.message || "Two-factor authentication enabled successfully",
+      success: true,
+      data,
+    });
+  });
+
+  disableTwoFactorAuth = asyncWrap(async (req, res) => {
+    const { password } = req.body;
+    if (!password) {
+      throw new BadRequestError("Password is required");
+    }
+
+    const authResponse = await this.authService.disableTwoFactorAuth(
+      password,
+      req,
+    );
+
+    const data = await authResponse.json();
+
+    applyAuthHeaders(authResponse.headers, res);
+
+    res.status(200).json({
+      message:
+        data.message || "Two-factor authentication disabled successfully",
+      success: true,
+      data,
+    });
+  });
 }
