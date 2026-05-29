@@ -1,5 +1,6 @@
-import { and, count, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, ilike, or } from "drizzle-orm";
 import { supabaseAdmin } from "../../config/supabase";
+import { cases } from "../../db/schema/cases";
 import { clients } from "../../db/schema/clients";
 import { documents } from "../../db/schema/documents";
 import { staff } from "../../db/schema/staff";
@@ -7,6 +8,10 @@ import {
   ExternalServiceError,
   NotFoundError,
 } from "../../utils/error/app-error";
+import {
+  buildPaginatedResponse,
+  getPaginationOffset,
+} from "../../utils/pagination";
 import { db } from "./../../db/client";
 
 const BUCKET = "documents";
@@ -90,8 +95,49 @@ export class DocumentsService {
       clientId?: string;
       caseId?: string;
       status?: string;
+      page?: number;
+      limit?: number;
     },
   ) => {
+    const page = filters?.page ?? 1;
+    const limit = filters?.limit ?? 20;
+    const offset = getPaginationOffset({ page, limit });
+
+    const conditions = [eq(documents.firmId, firmId)];
+
+    if (filters?.category) {
+      conditions.push(eq(documents.category, filters.category as any));
+    }
+    if (filters?.clientId) {
+      conditions.push(eq(documents.clientId, filters.clientId));
+    }
+    if (filters?.caseId) {
+      conditions.push(eq(documents.caseId, filters.caseId));
+    }
+    if (filters?.status) {
+      conditions.push(eq(documents.status, filters.status as any));
+    }
+    if (filters?.search) {
+      const search = `%${filters.search}%`;
+      const searchCondition = or(
+        ilike(documents.name, search),
+        ilike(clients.firstName, search),
+        ilike(clients.lastName, search),
+      );
+
+      if (searchCondition) {
+        conditions.push(searchCondition);
+      }
+    }
+
+    const where = and(...conditions);
+
+    const [{ total }] = await db
+      .select({ total: count() })
+      .from(documents)
+      .leftJoin(clients, eq(clients.id, documents.clientId))
+      .where(where);
+
     const rows = await db
       .select({
         id: documents.id,
@@ -106,34 +152,23 @@ export class DocumentsService {
         clientId: clients.id,
         clientFirst: clients.firstName,
         clientLast: clients.lastName,
-        caseId: documents.caseId,
+        caseId: cases.id,
+        caseType: cases.caseType,
         uploadedById: documents.uploadedById,
         uploaderFirst: staff.firstName,
         uploaderLast: staff.lastName,
       })
       .from(documents)
       .leftJoin(clients, eq(clients.id, documents.clientId))
+      .leftJoin(cases, eq(cases.id, documents.caseId))
       .leftJoin(staff, eq(staff.id, documents.uploadedById))
-      .where(eq(documents.firmId, firmId))
-      .orderBy(desc(documents.createdAt));
+      .where(where)
+      .orderBy(desc(documents.createdAt))
+      .limit(limit)
+      .offset(offset);
 
-    return rows
-      .filter((r) => {
-        if (filters?.category && r.category !== filters.category) return false;
-        if (filters?.clientId && r.clientId !== filters.clientId) return false;
-        if (filters?.caseId && r.caseId !== filters.caseId) return false;
-        if (filters?.status && r.status !== filters.status) return false;
-        if (filters?.search) {
-          const q = filters.search.toLowerCase();
-          const matches =
-            r.name.toLowerCase().includes(q) ||
-            r.clientFirst?.toLowerCase().includes(q) ||
-            r.clientLast?.toLowerCase().includes(q);
-          if (!matches) return false;
-        }
-        return true;
-      })
-      .map((r) => ({
+    return buildPaginatedResponse(
+      rows.map((r) => ({
         id: r.id,
         name: r.name,
         category: r.category,
@@ -143,13 +178,22 @@ export class DocumentsService {
         status: r.status,
         aiChecked: r.aiChecked,
         createdAt: r.createdAt,
-        caseId: r.caseId,
+        case: {
+          id: r.caseId,
+          caseType: r.caseType,
+        },
         client: { id: r.clientId, name: `${r.clientFirst} ${r.clientLast}` },
         uploadedBy: {
           id: r.uploadedById,
           name: `${r.uploaderFirst} ${r.uploaderLast}`,
         },
-      }));
+      })),
+      {
+        page,
+        limit,
+        total: Number(total),
+      },
+    );
   };
 
   // ─── Stats ────────────────────────────────────────────────────────────────────
