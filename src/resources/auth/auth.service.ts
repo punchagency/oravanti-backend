@@ -310,11 +310,46 @@ export class AuthService {
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const errorCode = errorData.code as
+        | "UNAUTHORIZED"
         | "INVALID_TOKEN"
         | "MISSING_FIELD"
         | "VALIDATION_ERROR";
 
       const message = errorData.message || "Session revocation failed";
+
+      console.log({ errorCode, errorData });
+
+      switch (errorCode) {
+        case "INVALID_TOKEN":
+        case "UNAUTHORIZED":
+          throw new AuthenticationError(message, errorData);
+        case "MISSING_FIELD":
+        case "VALIDATION_ERROR":
+          throw new ValidationError(message, errorData);
+        default:
+          throw new Error(message);
+      }
+    }
+
+    return response;
+  };
+
+  getSession = async (req: Request) => {
+    const clientHeaders = fromNodeHeaders(req.headers);
+
+    const response = await auth.api.getSession({
+      headers: clientHeaders,
+      asResponse: true,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorCode = errorData.code as
+        | "INVALID_TOKEN"
+        | "MISSING_FIELD"
+        | "VALIDATION_ERROR";
+
+      const message = errorData.message || "Session retrieval failed";
 
       switch (errorCode) {
         case "INVALID_TOKEN":

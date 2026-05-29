@@ -202,6 +202,20 @@ export class AuthController {
     });
   });
 
+  getSession = asyncWrap(async (req, res) => {
+    const authResponse = await this.authService.getSession(req);
+
+    const data = await authResponse.json();
+
+    applyAuthHeaders(authResponse.headers, res);
+
+    res.status(200).json({
+      message: data.message || "Session retrieved successfully",
+      success: true,
+      data,
+    });
+  });
+
   refreshSession = asyncWrap(async (req, res) => {
     const authResponse = await this.authService.refreshSession(req);
 
