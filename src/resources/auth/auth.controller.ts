@@ -91,4 +91,17 @@ export class AuthController {
       data,
     });
   });
+
+  signOut = asyncWrap(async (req: Request, res: Response) => {
+    const authResponse = await this.authService.signOut(req);
+
+    applyAuthHeaders(authResponse.headers, res);
+
+    const data = await authResponse.json();
+
+    res.status(200).json({
+      message: data.message || "Sign out successful",
+      success: true,
+    });
+  });
 }

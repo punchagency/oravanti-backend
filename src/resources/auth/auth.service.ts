@@ -167,4 +167,15 @@ export class AuthService {
 
     return response;
   };
+
+  signOut = async (req: Request) => {
+    const clientHeaders = fromNodeHeaders(req.headers);
+
+    const response = await auth.api.signOut({
+      headers: clientHeaders,
+      asResponse: true,
+    });
+
+    return response;
+  };
 }
