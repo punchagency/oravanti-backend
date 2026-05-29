@@ -201,4 +201,18 @@ export class AuthController {
       success: true,
     });
   });
+
+  refreshSession = asyncWrap(async (req, res) => {
+    const authResponse = await this.authService.refreshSession(req);
+
+    applyAuthHeaders(authResponse.headers, res);
+
+    const data = await authResponse.json();
+
+    res.status(200).json({
+      message: data.message || "Session refreshed successfully",
+      success: true,
+      data,
+    });
+  });
 }

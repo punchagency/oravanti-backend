@@ -329,4 +329,28 @@ export class AuthService {
 
     return response;
   };
+
+  refreshSession = async (req: Request) => {
+    const clientHeaders = fromNodeHeaders(req.headers);
+    const response = await auth.api.getSession({
+      headers: clientHeaders,
+      asResponse: true,
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorCode = errorData.code as "SESSION_EXPIRED" | "INVALID_SESSION";
+
+      const message = errorData.message || "Session refresh failed";
+
+      switch (errorCode) {
+        case "SESSION_EXPIRED":
+        case "INVALID_SESSION":
+          throw new AuthenticationError(message, errorData);
+        default:
+          throw new Error(message);
+      }
+    }
+
+    return response;
+  };
 }

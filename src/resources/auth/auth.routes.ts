@@ -31,5 +31,6 @@ export class AuthRouter {
     );
     this.router.post("/change-password", this.authController.changePassword);
     this.router.post("/revoke-session", this.authController.revokeSession);
+    this.router.post("/refresh-session", this.authController.refreshSession);
   }
 }
