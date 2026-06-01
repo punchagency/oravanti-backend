@@ -12,7 +12,7 @@ export class ClientResponsivenessController {
   }
 
   getStats = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const stats = await this.clientResponsivenessService.getStats(req.firmId!);
+    const stats = await this.clientResponsivenessService.getStats(req.organizationId!);
     res.status(200).json(stats);
   });
 
@@ -21,7 +21,7 @@ export class ClientResponsivenessController {
       const { filter, search } = req.query;
       const result =
         await this.clientResponsivenessService.getAllClientResponsiveness(
-          req.firmId!,
+          req.organizationId!,
           {
             filter: filter as string,
             search: search as string,
@@ -40,7 +40,7 @@ export class ClientResponsivenessController {
 
     const result = await this.clientResponsivenessService.addRequests(
       req.params.clientId as string,
-      req.firmId!,
+      req.organizationId!,
       { caseId, items, requestedAt },
     );
     res.status(201).json(result);
@@ -49,7 +49,7 @@ export class ClientResponsivenessController {
   fulfillRequest = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.clientResponsivenessService.fulfillRequest(
       req.params.requestId as string,
-      req.firmId!,
+      req.organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Request not found");
@@ -62,7 +62,7 @@ export class ClientResponsivenessController {
       const result =
         await this.clientResponsivenessService.getTerminationLetterData(
           req.params.clientId as string,
-          req.firmId!,
+          req.organizationId!,
         );
       if (!result) {
         throw new NotFoundError("Client not found");
@@ -74,7 +74,7 @@ export class ClientResponsivenessController {
   exportReport = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.clientResponsivenessService.exportClientReport(
       req.params.clientId as string,
-      req.firmId!,
+      req.organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Client not found");

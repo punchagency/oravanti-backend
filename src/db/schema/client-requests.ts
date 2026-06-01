@@ -1,13 +1,13 @@
 import { pgTable, uuid, text, date, timestamp, pgEnum } from 'drizzle-orm/pg-core';
 import { clients } from './clients';
 import { cases } from './cases';
-import { firms } from './firm-info';
+import { organization } from './auth-schema';
 
 export const clientRequestStatusEnum = pgEnum('client_request_status', ['pending', 'fulfilled']);
 
 export const clientRequests = pgTable('client_requests', {
   id:          uuid('id').primaryKey().defaultRandom(),
-  firmId:      uuid('firm_id').notNull().references(() => firms.id),
+  organizationId:      text('organization_id').notNull().references(() => organization.id),
   clientId:    uuid('client_id').notNull().references(() => clients.id, { onDelete: 'cascade' }),
   caseId:      uuid('case_id').notNull().references(() => cases.id),
   description: text('description').notNull(),

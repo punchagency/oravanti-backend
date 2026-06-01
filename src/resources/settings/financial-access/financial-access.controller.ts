@@ -19,7 +19,7 @@ export class FinancialAccessController {
 
   getFinancialAccess = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.financialAccessService.getFinancialAccess(
-      req.firmId!,
+      req.organizationId!,
     );
     res.status(200).json(result);
   });
@@ -32,7 +32,7 @@ export class FinancialAccessController {
     }
 
     await this.financialAccessService.updateFinancialAccess(
-      req.firmId!,
+      req.organizationId!,
       controls,
     );
 
@@ -41,7 +41,7 @@ export class FinancialAccessController {
         ? `Updated financial access for ${controls[0].role} role`
         : "Updated financial access controls";
     this.auditLogService
-      .logPermissionChange(action, req.userId!, req.firmId!)
+      .logPermissionChange(action, req.userId!, req.organizationId!)
       .catch(() => {});
 
     res.status(200).json({ message: "Financial access controls updated" });

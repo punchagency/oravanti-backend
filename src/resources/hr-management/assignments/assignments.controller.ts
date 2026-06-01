@@ -34,7 +34,7 @@ export class AssignmentsController {
 
       const result = await this.assignmentsService.getAvailableContractors(
         filingType as FilingType,
-        req.firmId!,
+        req.organizationId!,
       );
       res.status(200).json(result);
     },
@@ -56,7 +56,7 @@ export class AssignmentsController {
 
     const result = await this.assignmentsService.assignCase({
       ...req.body,
-      firmId: req.firmId!,
+      organizationId: req.organizationId!,
     });
     res
       .status(201)
@@ -64,14 +64,14 @@ export class AssignmentsController {
   });
 
   getAllAssignments = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.assignmentsService.getAllAssignments(req.firmId!);
+    const result = await this.assignmentsService.getAllAssignments(req.organizationId!);
     res.status(200).json(result);
   });
 
   getAssignmentById = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.assignmentsService.getAssignmentById(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Assignment not found");
@@ -89,7 +89,7 @@ export class AssignmentsController {
 
       const result = await this.assignmentsService.updateAssignmentStatus(
         req.params.id as string,
-        req.firmId!,
+        req.organizationId!,
         status,
       );
       if (!result) {

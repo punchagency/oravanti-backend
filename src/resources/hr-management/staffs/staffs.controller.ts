@@ -13,14 +13,14 @@ export class StaffController {
   }
 
   getAll = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.staffService.getAllStaff(req.firmId!);
+    const result = await this.staffService.getAllStaff(req.organizationId!);
     res.status(200).json(result);
   });
 
   getById = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.staffService.getStaffById(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Staff member not found");
@@ -46,7 +46,7 @@ export class StaffController {
 
     const result = await this.staffService.addStaff({
       ...req.body,
-      firmId: req.firmId!,
+      organizationId: req.organizationId!,
     });
     res.status(201).json({ message: "Staff member added", staff: result });
   });
@@ -54,7 +54,7 @@ export class StaffController {
   updateStaff = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.staffService.updateStaff(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
       req.body as UpdateStaffBody,
     );
     if (!result) {
@@ -66,7 +66,7 @@ export class StaffController {
   deleteStaff = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.staffService.deleteStaff(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Staff member not found");

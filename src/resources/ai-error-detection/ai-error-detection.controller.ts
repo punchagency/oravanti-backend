@@ -12,13 +12,13 @@ export class AIErrorDetectionController {
   }
 
   getStats = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.aiService.getStats(req.firmId!);
+    const result = await this.aiService.getStats(req.organizationId!);
     res.status(200).json(result);
   });
 
   getAllFlags = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { severity, status } = req.query;
-    const result = await this.aiService.getAllFlags(req.firmId!, {
+    const result = await this.aiService.getAllFlags(req.organizationId!, {
       severity: severity as string,
       status: status as string,
     });
@@ -28,7 +28,7 @@ export class AIErrorDetectionController {
   getFlagById = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.aiService.getFlagById(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Flag not found");
@@ -44,7 +44,7 @@ export class AIErrorDetectionController {
 
     const result = await this.aiService.updateFlagStatus(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
       status,
       req.adminId,
     );
@@ -62,18 +62,18 @@ export class AIErrorDetectionController {
       );
     }
 
-    const result = await this.aiService.createFlag(req.firmId!, req.body);
+    const result = await this.aiService.createFlag(req.organizationId!, req.body);
     res.status(201).json(result);
   });
 
   getSystemConfig = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.aiService.getSystemConfig(req.firmId!);
+    const result = await this.aiService.getSystemConfig(req.organizationId!);
     res.status(200).json(result);
   });
 
   updateSystemConfig = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.aiService.updateSystemConfig(
-      req.firmId!,
+      req.organizationId!,
       req.body,
     );
     res.status(200).json(result);

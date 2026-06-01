@@ -3,23 +3,23 @@ import { db } from "../../../db/client";
 import { clients, modulePermissions, staff } from "../../../db/schema";
 
 export class AccessControlService {
-  getRoleOverview = async (firmId: string) => {
+  getRoleOverview = async (organizationId: string) => {
     const [adminCount, attorneyCount, paralegalCount, clientCount] =
       await Promise.all([
         db
           .select({ count: count() })
           .from(staff)
-          .where(and(eq(staff.firmId, firmId), eq(staff.role, "admin"))),
+          .where(and(eq(staff.organizationId, organizationId), eq(staff.role, "admin"))),
         db
           .select({ count: count() })
           .from(staff)
-          .where(and(eq(staff.firmId, firmId), eq(staff.role, "attorney"))),
+          .where(and(eq(staff.organizationId, organizationId), eq(staff.role, "attorney"))),
         db
           .select({ count: count() })
           .from(staff)
           .where(
             and(
-              eq(staff.firmId, firmId),
+              eq(staff.organizationId, organizationId),
               inArray(staff.role, [
                 "junior_paralegal",
                 "paralegal",
@@ -30,7 +30,7 @@ export class AccessControlService {
         db
           .select({ count: count() })
           .from(clients)
-          .where(eq(clients.firmId, firmId)),
+          .where(eq(clients.organizationId, organizationId)),
       ]);
 
     return {
@@ -53,11 +53,11 @@ export class AccessControlService {
     };
   };
 
-  getPermissions = async (firmId: string) => {
+  getPermissions = async (organizationId: string) => {
     const rows = await db
       .select()
       .from(modulePermissions)
-      .where(eq(modulePermissions.firmId, firmId));
+      .where(eq(modulePermissions.organizationId, organizationId));
 
     return rows.reduce(
       (acc, row) => {
@@ -70,7 +70,7 @@ export class AccessControlService {
   };
 
   savePermissions = async (
-    firmId: string,
+    organizationId: string,
     permissions: { module: string; role: string; permission: string }[],
   ) => {
     await Promise.all(
@@ -80,7 +80,7 @@ export class AccessControlService {
           .set({ permission: p.permission as any, updatedAt: new Date() })
           .where(
             and(
-              eq(modulePermissions.firmId, firmId),
+              eq(modulePermissions.organizationId, organizationId),
               eq(modulePermissions.module, p.module as any),
               eq(modulePermissions.role, p.role as any),
             ),

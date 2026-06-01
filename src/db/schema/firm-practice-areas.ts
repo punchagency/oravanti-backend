@@ -1,12 +1,12 @@
-import { boolean, pgTable, timestamp, uuid } from "drizzle-orm/pg-core";
-import { firms } from "./firm-info";
+import { boolean, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { organization } from './auth-schema';
 import { practiceAreas } from "./practice-areas";
 
 export const firmPracticeAreas = pgTable("firm_practice_areas", {
   id: uuid("id").primaryKey().defaultRandom(),
 
-  firmId: uuid("firm_id")
-    .references(() => firms.id, { onDelete: "cascade" })
+  organizationId: text("organization_id")
+    .references(() => organization.id, { onDelete: "cascade" })
     .notNull(),
 
   practiceAreaId: uuid("practice_area_id")

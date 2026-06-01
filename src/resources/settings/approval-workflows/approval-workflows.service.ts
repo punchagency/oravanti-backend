@@ -3,15 +3,15 @@ import { db } from "../../../db/client";
 import { approvalWorkflows } from "../../../db/schema";
 
 export class ApprovalWorkflowsService {
-  getApprovalWorkflows = async (firmId: string) => {
+  getApprovalWorkflows = async (organizationId: string) => {
     return db
       .select()
       .from(approvalWorkflows)
-      .where(eq(approvalWorkflows.firmId, firmId));
+      .where(eq(approvalWorkflows.organizationId, organizationId));
   };
 
   updateApprovalWorkflows = async (
-    firmId: string,
+    organizationId: string,
     workflows: {
       workflowType: string;
       chain?: string;
@@ -31,7 +31,7 @@ export class ApprovalWorkflowsService {
           })
           .where(
             and(
-              eq(approvalWorkflows.firmId, firmId),
+              eq(approvalWorkflows.organizationId, organizationId),
               eq(approvalWorkflows.workflowType, w.workflowType as any),
             ),
           ),

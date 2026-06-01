@@ -1,9 +1,9 @@
-import { pgTable, uuid, boolean, timestamp } from 'drizzle-orm/pg-core';
-import { firms } from './firm-info';
+import { pgTable, uuid, text, boolean, timestamp } from 'drizzle-orm/pg-core';
+import { organization } from './auth-schema';
 
 export const aiSystemConfig = pgTable('ai_system_config', {
   id:                    uuid('id').primaryKey().defaultRandom(),
-  firmId:                uuid('firm_id').notNull().unique().references(() => firms.id),
+  organizationId:                text('organization_id').notNull().unique().references(() => organization.id),
   isActive:              boolean('is_active').notNull().default(true),
   crossCheckingEnabled:  boolean('cross_checking_enabled').notNull().default(true),
   inaValidationActive:   boolean('ina_validation_active').notNull().default(true),

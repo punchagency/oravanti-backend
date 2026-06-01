@@ -19,7 +19,7 @@ export class ApprovalWorkflowsController {
 
   getApprovalWorkflows = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.approvalWorkflowsService.getApprovalWorkflows(
-      req.firmId!,
+      req.organizationId!,
     );
     res.status(200).json(result);
   });
@@ -33,7 +33,7 @@ export class ApprovalWorkflowsController {
       }
 
       await this.approvalWorkflowsService.updateApprovalWorkflows(
-        req.firmId!,
+        req.organizationId!,
         workflows,
       );
 
@@ -42,7 +42,7 @@ export class ApprovalWorkflowsController {
           ? `Changed approval workflow for ${workflows[0].workflowType.replace(/_/g, " ")}`
           : "Updated approval workflow configuration";
       this.auditLogService
-        .logPermissionChange(action, req.userId!, req.firmId!)
+        .logPermissionChange(action, req.userId!, req.organizationId!)
         .catch(() => {});
 
       res.status(200).json({ message: "Approval workflows updated" });

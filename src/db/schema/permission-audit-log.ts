@@ -1,9 +1,9 @@
 import { pgTable, uuid, text, timestamp } from 'drizzle-orm/pg-core';
-import { firms } from './firm-info';
+import { organization } from './auth-schema';
 
 export const permissionAuditLog = pgTable('permission_audit_log', {
   id:            uuid('id').primaryKey().defaultRandom(),
-  firmId:        uuid('firm_id').notNull().references(() => firms.id),
+  organizationId:        text('organization_id').notNull().references(() => organization.id),
   action:        text('action').notNull(),
   changedBy:     uuid('changed_by').notNull(),
   changedByName: text('changed_by_name').notNull(),

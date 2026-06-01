@@ -122,17 +122,17 @@ const buildClientRecord = (
 
 // ─── Stats ────────────────────────────────────────────────────────────────────
 
-export const getStats = async (firmId: string) => {
+export const getStats = async (organizationId: string) => {
   const allClients = await db
     .select()
     .from(clients)
-    .where(eq(clients.firmId, firmId));
+    .where(eq(clients.organizationId, organizationId));
   const pending = await db
     .select()
     .from(clientRequests)
     .where(
       and(
-        eq(clientRequests.firmId, firmId),
+        eq(clientRequests.organizationId, organizationId),
         eq(clientRequests.status, "pending"),
       ),
     );
@@ -161,13 +161,13 @@ export const getStats = async (firmId: string) => {
 // ─── List ─────────────────────────────────────────────────────────────────────
 
 export const getAllClientResponsiveness = async (
-  firmId: string,
+  organizationId: string,
   filters?: { filter?: string; search?: string },
 ) => {
   const allClients = await db
     .select()
     .from(clients)
-    .where(eq(clients.firmId, firmId));
+    .where(eq(clients.organizationId, organizationId));
 
   const pendingRows = await db
     .select({
@@ -183,7 +183,7 @@ export const getAllClientResponsiveness = async (
     .leftJoin(cases, eq(cases.id, clientRequests.caseId))
     .where(
       and(
-        eq(clientRequests.firmId, firmId),
+        eq(clientRequests.organizationId, organizationId),
         eq(clientRequests.status, "pending"),
       ),
     );
@@ -214,14 +214,14 @@ export const getAllClientResponsiveness = async (
 
 export const addRequests = async (
   clientId: string,
-  firmId: string,
+  organizationId: string,
   data: { caseId: string; items: string[]; requestedAt?: string },
 ) => {
   const requestedAt =
     data.requestedAt ?? new Date().toISOString().split("T")[0];
 
   const rows = data.items.map((description) => ({
-    firmId,
+    organizationId,
     clientId,
     caseId: data.caseId,
     description,
@@ -233,12 +233,12 @@ export const addRequests = async (
 
 // ─── Fulfill request ──────────────────────────────────────────────────────────
 
-export const fulfillRequest = async (requestId: string, firmId: string) => {
+export const fulfillRequest = async (requestId: string, organizationId: string) => {
   const [updated] = await db
     .update(clientRequests)
     .set({ status: "fulfilled", updatedAt: new Date() })
     .where(
-      and(eq(clientRequests.id, requestId), eq(clientRequests.firmId, firmId)),
+      and(eq(clientRequests.id, requestId), eq(clientRequests.organizationId, organizationId)),
     )
     .returning();
 
@@ -249,12 +249,12 @@ export const fulfillRequest = async (requestId: string, firmId: string) => {
 
 export const getTerminationLetterData = async (
   clientId: string,
-  firmId: string,
+  organizationId: string,
 ) => {
   const [client] = await db
     .select()
     .from(clients)
-    .where(and(eq(clients.id, clientId), eq(clients.firmId, firmId)));
+    .where(and(eq(clients.id, clientId), eq(clients.organizationId, organizationId)));
   if (!client) return null;
 
   const pending = await db
@@ -269,7 +269,7 @@ export const getTerminationLetterData = async (
     .leftJoin(cases, eq(cases.id, clientRequests.caseId))
     .where(
       and(
-        eq(clientRequests.firmId, firmId),
+        eq(clientRequests.organizationId, organizationId),
         eq(clientRequests.clientId, clientId),
         eq(clientRequests.status, "pending"),
       ),
@@ -299,11 +299,11 @@ export const getTerminationLetterData = async (
 
 // ─── Export report ────────────────────────────────────────────────────────────
 
-export const exportClientReport = async (clientId: string, firmId: string) => {
+export const exportClientReport = async (clientId: string, organizationId: string) => {
   const [client] = await db
     .select()
     .from(clients)
-    .where(and(eq(clients.id, clientId), eq(clients.firmId, firmId)));
+    .where(and(eq(clients.id, clientId), eq(clients.organizationId, organizationId)));
   if (!client) return null;
 
   const allRequests = await db
@@ -319,7 +319,7 @@ export const exportClientReport = async (clientId: string, firmId: string) => {
     .leftJoin(cases, eq(cases.id, clientRequests.caseId))
     .where(
       and(
-        eq(clientRequests.firmId, firmId),
+        eq(clientRequests.organizationId, organizationId),
         eq(clientRequests.clientId, clientId),
       ),
     );

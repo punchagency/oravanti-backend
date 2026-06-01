@@ -1,9 +1,9 @@
-import { pgTable, uuid, timestamp } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp } from 'drizzle-orm/pg-core';
 import { staff } from './staff';
 import { teams } from './teams';
 import { contractors } from './contractors';
 import { cases } from './cases';
-import { firms } from './firm-info';
+import { organization } from './auth-schema';
 import {
   assignmentTypeEnum,
   filingTypeEnum,
@@ -13,7 +13,7 @@ import {
 
 export const assignments = pgTable('assignments', {
   id:             uuid('id').primaryKey().defaultRandom(),
-  firmId:         uuid('firm_id').notNull().references(() => firms.id),
+  organizationId:         text('organization_id').notNull().references(() => organization.id),
   caseId:         uuid('case_id').references(() => cases.id),
   assignmentType: assignmentTypeEnum('assignment_type').notNull(),
   filingType:     filingTypeEnum('filing_type').notNull(),

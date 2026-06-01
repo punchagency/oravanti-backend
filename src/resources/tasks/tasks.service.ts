@@ -5,13 +5,13 @@ import { admins, cases, clients, staff, tasks } from "../../db/schema";
 export class TasksService {
   // ─── Stats ───────────────────────────────────────────────────────────────────
 
-  getTaskStats = async (firmId: string) => {
+  getTaskStats = async (organizationId: string) => {
     const [activeResult] = await db
       .select({ count: count() })
       .from(tasks)
       .where(
         and(
-          eq(tasks.firmId, firmId),
+          eq(tasks.organizationId, organizationId),
           or(eq(tasks.status, "pending"), eq(tasks.status, "in_progress")),
         ),
       );
@@ -29,7 +29,7 @@ export class TasksService {
       .from(tasks)
       .where(
         and(
-          eq(tasks.firmId, firmId),
+          eq(tasks.organizationId, organizationId),
           eq(tasks.status, "completed"),
           gte(tasks.updatedAt, startOfWeek),
         ),
@@ -40,7 +40,7 @@ export class TasksService {
       .from(tasks)
       .where(
         and(
-          eq(tasks.firmId, firmId),
+          eq(tasks.organizationId, organizationId),
           or(eq(tasks.priority, "high"), eq(tasks.priority, "critical")),
           or(eq(tasks.status, "pending"), eq(tasks.status, "in_progress")),
         ),
@@ -54,7 +54,7 @@ export class TasksService {
       .from(tasks)
       .where(
         and(
-          eq(tasks.firmId, firmId),
+          eq(tasks.organizationId, organizationId),
           gte(tasks.dueDate, todayStr),
           lte(tasks.dueDate, endOfWeekStr),
           or(eq(tasks.status, "pending"), eq(tasks.status, "in_progress")),
@@ -140,7 +140,7 @@ export class TasksService {
   // ─── Tasks CRUD ───────────────────────────────────────────────────────────────
 
   getAllTasks = async (
-    firmId: string,
+    organizationId: string,
     filters?: {
       search?: string;
       status?: string;
@@ -149,7 +149,7 @@ export class TasksService {
     },
   ) => {
     const rows = await this.withJoins(db.select(this.taskSelect).from(tasks))
-      .where(eq(tasks.firmId, firmId))
+      .where(eq(tasks.organizationId, organizationId))
       .orderBy(desc(tasks.createdAt));
 
     return rows
@@ -173,16 +173,16 @@ export class TasksService {
       .map(this.formatRow);
   };
 
-  getTaskById = async (id: string, firmId: string) => {
+  getTaskById = async (id: string, organizationId: string) => {
     const [row] = await this.withJoins(
       db.select(this.taskSelect).from(tasks),
-    ).where(and(eq(tasks.id, id), eq(tasks.firmId, firmId)));
+    ).where(and(eq(tasks.id, id), eq(tasks.organizationId, organizationId)));
 
     return row ? this.formatRow(row) : null;
   };
 
   createTask = async (data: {
-    firmId: string;
+    organizationId: string;
     title: string;
     description: string;
     caseId: string;
@@ -196,7 +196,7 @@ export class TasksService {
     const [newTask] = await db
       .insert(tasks)
       .values({
-        firmId: data.firmId,
+        organizationId: data.organizationId,
         title: data.title,
         description: data.description,
         caseId: data.caseId,
@@ -214,21 +214,21 @@ export class TasksService {
 
   updateTask = async (
     id: string,
-    firmId: string,
+    organizationId: string,
     data: Partial<typeof tasks.$inferInsert>,
   ) => {
     const [updated] = await db
       .update(tasks)
       .set({ ...data, updatedAt: new Date() })
-      .where(and(eq(tasks.id, id), eq(tasks.firmId, firmId)))
+      .where(and(eq(tasks.id, id), eq(tasks.organizationId, organizationId)))
       .returning();
 
     return updated ?? null;
   };
 
-  deleteTask = async (id: string, firmId: string) => {
+  deleteTask = async (id: string, organizationId: string) => {
     await db
       .delete(tasks)
-      .where(and(eq(tasks.id, id), eq(tasks.firmId, firmId)));
+      .where(and(eq(tasks.id, id), eq(tasks.organizationId, organizationId)));
   };
 }

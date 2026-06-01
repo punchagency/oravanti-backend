@@ -12,14 +12,14 @@ export class TasksController {
   }
 
   getTaskStats = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const stats = await this.tasksService.getTaskStats(req.firmId!);
+    const stats = await this.tasksService.getTaskStats(req.organizationId!);
     res.status(200).json(stats);
   });
 
   getAllTasks = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { search, status, priority, assignedToId } = req.query;
 
-    const result = await this.tasksService.getAllTasks(req.firmId!, {
+    const result = await this.tasksService.getAllTasks(req.organizationId!, {
       search: search as string,
       status: status as string,
       priority: priority as string,
@@ -31,7 +31,7 @@ export class TasksController {
   getTaskById = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.tasksService.getTaskById(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Task not found");
@@ -50,7 +50,7 @@ export class TasksController {
 
     const result = await this.tasksService.createTask({
       ...req.body,
-      firmId: req.firmId!,
+      organizationId: req.organizationId!,
       assignedById: req.adminId!,
     });
     res.status(201).json(result);
@@ -59,7 +59,7 @@ export class TasksController {
   updateTask = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.tasksService.updateTask(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
       req.body,
     );
     if (!result) {
@@ -69,7 +69,7 @@ export class TasksController {
   });
 
   deleteTask = asyncWrap(async (req: AuthRequest, res: Response) => {
-    await this.tasksService.deleteTask(req.params.id as string, req.firmId!);
+    await this.tasksService.deleteTask(req.params.id as string, req.organizationId!);
     res.status(200).json({ message: "Task deleted" });
   });
 }

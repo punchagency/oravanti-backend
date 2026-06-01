@@ -1,5 +1,5 @@
 import { pgTable, uuid, text, boolean, date, timestamp, pgEnum, AnyPgColumn } from 'drizzle-orm/pg-core';
-import { firms } from './firm-info';
+import { organization } from './auth-schema';
 import { clients } from './clients';
 import { cases } from './cases';
 import { staff } from './staff';
@@ -30,7 +30,7 @@ export const judgeDeadlineTypeEnum = pgEnum('judge_deadline_type', [
 
 export const calendarEvents = pgTable('calendar_events', {
   id:                     uuid('id').primaryKey().defaultRandom(),
-  firmId:                 uuid('firm_id').notNull().references(() => firms.id),
+  organizationId:                 text('organization_id').notNull().references(() => organization.id),
   eventType:              calendarEventTypeEnum('event_type').notNull(),
   status:                 calendarEventStatusEnum('status').notNull().default('scheduled'),
   title:                  text('title').notNull(),

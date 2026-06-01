@@ -8,7 +8,6 @@ export * from './leave-requests';
 export * from './team-members';
 export * from './assignments';
 export * from './profiles';
-export * from './firm-info';
 export * from './companies';
 export * from './clients';
 export * from './module-permissions';

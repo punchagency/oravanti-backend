@@ -22,7 +22,7 @@ const buildSelectChain = (rows: unknown[]) => {
 };
 
 describe("practice area utilities", () => {
-  const firmId = "firm-1";
+  const organizationId = "firm-1";
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -41,7 +41,7 @@ describe("practice area utilities", () => {
       "../../../src/resources/practice-areas/practice-areas.utils"
     );
 
-    await expect(ensurePracticeAreaExists(firmId)).rejects.toBeInstanceOf(
+    await expect(ensurePracticeAreaExists(organizationId)).rejects.toBeInstanceOf(
       BadRequestError,
     );
     expect(mockDb.select).not.toHaveBeenCalled();
@@ -54,7 +54,7 @@ describe("practice area utilities", () => {
     );
 
     await expect(
-      ensurePracticeAreaExists(firmId, "missing-area"),
+      ensurePracticeAreaExists(organizationId, "missing-area"),
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 
@@ -67,7 +67,7 @@ describe("practice area utilities", () => {
     );
 
     await expect(
-      ensurePracticeAreaExists(firmId, "area-1"),
+      ensurePracticeAreaExists(organizationId, "area-1"),
     ).rejects.toBeInstanceOf(BadRequestError);
   });
 
@@ -79,7 +79,7 @@ describe("practice area utilities", () => {
       "../../../src/resources/practice-areas/practice-areas.utils"
     );
 
-    await expect(ensurePracticeAreaExists(firmId, "area-1")).resolves.toEqual({
+    await expect(ensurePracticeAreaExists(organizationId, "area-1")).resolves.toEqual({
       id: "area-1",
     });
     expect(mockDb.select).toHaveBeenCalledTimes(2);
@@ -95,7 +95,7 @@ describe("practice area utilities", () => {
     );
 
     await expect(
-      ensureCaseTypeBelongsToPracticeArea(firmId, "area-1", "divorce"),
+      ensureCaseTypeBelongsToPracticeArea(organizationId, "area-1", "divorce"),
     ).rejects.toBeInstanceOf(BadRequestError);
   });
 
@@ -118,7 +118,7 @@ describe("practice area utilities", () => {
     );
 
     await expect(
-      ensureCaseTypeBelongsToPracticeArea(firmId, "area-1", "h1b_visa"),
+      ensureCaseTypeBelongsToPracticeArea(organizationId, "area-1", "h1b_visa"),
     ).resolves.toEqual({
       practiceArea: { id: "area-1" },
       caseType: {

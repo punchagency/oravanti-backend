@@ -124,7 +124,7 @@ function monthsSince(startDateStr: string): number {
 // ─── Data Fetchers ────────────────────────────────────────────────────────────
 
 async function fetchHoursByStaff(
-  firmId: string,
+  organizationId: string,
   staffIds: string[],
   startStr: string | null,
   endStr: string | null,
@@ -139,7 +139,7 @@ async function fetchHoursByStaff(
     .from(timeEntries)
     .where(
       and(
-        eq(timeEntries.firmId, firmId),
+        eq(timeEntries.organizationId, organizationId),
         inArray(timeEntries.staffId, staffIds),
         startStr ? gte(timeEntries.entryDate, startStr) : undefined,
         endStr ? lte(timeEntries.entryDate, endStr) : undefined,
@@ -201,7 +201,7 @@ async function fetchSkillLevelByStaff(
 // ─── Main Analytics ───────────────────────────────────────────────────────────
 
 export const getRevenueAnalytics = async (
-  firmId: string,
+  organizationId: string,
   period: Period = "month",
   teamId?: string,
 ) => {
@@ -209,7 +209,7 @@ export const getRevenueAnalytics = async (
   const prevRange = getPreviousPeriodRange(period);
 
   const baseConditions = and(
-    eq(staff.firmId, firmId),
+    eq(staff.organizationId, organizationId),
     eq(staff.status, "active"),
   );
 
@@ -245,10 +245,10 @@ export const getRevenueAnalytics = async (
   const staffIds = staffList.map((s) => s.id);
 
   const [hoursByStaff, prevHoursByStaff, skillLevels] = await Promise.all([
-    fetchHoursByStaff(firmId, staffIds, startStr, endStr),
+    fetchHoursByStaff(organizationId, staffIds, startStr, endStr),
     prevRange.startStr
       ? fetchHoursByStaff(
-          firmId,
+          organizationId,
           staffIds,
           prevRange.startStr,
           prevRange.endStr,

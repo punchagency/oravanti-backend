@@ -12,7 +12,7 @@ import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 export const normalizePracticeAreaName = (name: string) => name.trim();
 
 export const ensurePracticeAreaExists = async (
-  firmId: string,
+  organizationId: string,
   practiceAreaId?: string,
 ) => {
   if (!practiceAreaId) {
@@ -34,7 +34,7 @@ export const ensurePracticeAreaExists = async (
     .innerJoin(subscriptions, eq(subscriptions.id, firmPracticeAreas.subscriptionId))
     .where(
       and(
-        eq(firmPracticeAreas.firmId, firmId),
+        eq(firmPracticeAreas.organizationId, organizationId),
         eq(firmPracticeAreas.practiceAreaId, practiceAreaId),
         eq(firmPracticeAreas.active, true),
         eq(subscriptions.status, SubscriptionStatus.ACTIVE),
@@ -49,11 +49,11 @@ export const ensurePracticeAreaExists = async (
 };
 
 export const ensureCaseTypeBelongsToPracticeArea = async (
-  firmId: string,
+  organizationId: string,
   practiceAreaId?: string,
   caseType?: string,
 ) => {
-  const practiceArea = await ensurePracticeAreaExists(firmId, practiceAreaId);
+  const practiceArea = await ensurePracticeAreaExists(organizationId, practiceAreaId);
 
   if (!caseType?.trim()) {
     throw new BadRequestError("caseType is required");

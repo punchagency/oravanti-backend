@@ -1,5 +1,5 @@
 import { pgTable, uuid, text, integer, boolean, timestamp, pgEnum } from 'drizzle-orm/pg-core';
-import { firms } from './firm-info';
+import { organization } from './auth-schema';
 import { clients } from './clients';
 import { cases } from './cases';
 import { staff } from './staff';
@@ -19,7 +19,7 @@ export const documentStatusEnum = pgEnum('document_status', [
 
 export const documents = pgTable('documents', {
   id:           uuid('id').primaryKey().defaultRandom(),
-  firmId:       uuid('firm_id').notNull().references(() => firms.id),
+  organizationId:       text('organization_id').notNull().references(() => organization.id),
   clientId:     uuid('client_id').notNull().references(() => clients.id),
   caseId:       uuid('case_id').notNull().references(() => cases.id),
   uploadedById: uuid('uploaded_by_id').notNull().references(() => staff.id),

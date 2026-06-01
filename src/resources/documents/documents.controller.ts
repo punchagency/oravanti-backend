@@ -18,7 +18,7 @@ export class DocumentsController {
 
     const pagination = parsePaginationQuery({ page, limit });
 
-    const result = await this.documentsService.getAllDocuments(req.firmId!, {
+    const result = await this.documentsService.getAllDocuments(req.organizationId!, {
       search: search as string,
       category: category as string,
       clientId: clientId as string,
@@ -30,14 +30,14 @@ export class DocumentsController {
   });
 
   getDocumentStats = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.documentsService.getDocumentStats(req.firmId!);
+    const result = await this.documentsService.getDocumentStats(req.organizationId!);
     res.status(200).json(result);
   });
 
   getDocumentById = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.documentsService.getDocumentById(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Document not found");
@@ -58,10 +58,10 @@ export class DocumentsController {
       );
     }
 
-    const result = await this.documentsService.uploadDocument(req.firmId!, {
+    const result = await this.documentsService.uploadDocument(req.organizationId!, {
       clientId,
       caseId,
-      uploadedById: req.adminId!,
+      uploadedById: req.staffId!,
       name,
       category,
       fileBuffer: file.buffer,
@@ -80,7 +80,7 @@ export class DocumentsController {
 
     const result = await this.documentsService.updateDocumentStatus(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
       status,
     );
     if (!result) {
@@ -92,7 +92,7 @@ export class DocumentsController {
   getDownloadUrl = asyncWrap(async (req: AuthRequest, res: Response) => {
     const url = await this.documentsService.getDownloadUrl(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     res.status(200).json({ url });
   });
@@ -100,7 +100,7 @@ export class DocumentsController {
   deleteDocument = asyncWrap(async (req: AuthRequest, res: Response) => {
     await this.documentsService.deleteDocument(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     res.status(200).json({ message: "Document deleted" });
   });

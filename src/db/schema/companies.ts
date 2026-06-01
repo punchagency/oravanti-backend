@@ -1,5 +1,5 @@
 import { pgTable, uuid, text, integer, timestamp, pgEnum } from 'drizzle-orm/pg-core';
-import { firms } from './firm-info';
+import { organization } from './auth-schema';
 
 export const companyTypeEnum = pgEnum('company_type', [
   'llc',
@@ -16,7 +16,7 @@ export const companyStatusEnum = pgEnum('company_status', ['active', 'inactive',
 
 export const companies = pgTable('companies', {
   id:                   uuid('id').primaryKey().defaultRandom(),
-  firmId:               uuid('firm_id').notNull().references(() => firms.id),
+  organizationId:               text('organization_id').notNull().references(() => organization.id),
   companyName:          text('company_name').notNull(),
   companyType:          companyTypeEnum('company_type').notNull(),
   ein:                  text('ein'),

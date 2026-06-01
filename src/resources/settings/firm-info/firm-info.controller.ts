@@ -13,7 +13,7 @@ export class FirmInfoController {
   }
 
   getFirmInfo = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.firmInfoService.getFirmInfo(req.firmId!);
+    const result = await this.firmInfoService.getFirmInfo(req.organizationId!);
     if (!result) {
       throw new NotFoundError("Firm info not set up yet");
     }
@@ -29,7 +29,7 @@ export class FirmInfoController {
       }
 
       const result = await this.firmInfoService.upsertFirmInfo(
-        req.firmId!,
+        req.organizationId!,
         req.body,
       );
       res.status(200).json({ message: "Firm info saved", firmInfo: result });

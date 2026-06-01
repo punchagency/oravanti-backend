@@ -19,7 +19,7 @@ export class DataAccessController {
 
   getDataAccessControls = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.dataAccessService.getDataAccessControls(
-      req.firmId!,
+      req.organizationId!,
     );
     res.status(200).json(result);
   });
@@ -33,7 +33,7 @@ export class DataAccessController {
       }
 
       await this.dataAccessService.updateDataAccessControls(
-        req.firmId!,
+        req.organizationId!,
         controls,
       );
 
@@ -42,7 +42,7 @@ export class DataAccessController {
           ? `Updated ${controls[0].dataType.replace(/_/g, " ")} access for ${controls[0].role} role`
           : "Updated data access controls";
       this.auditLogService
-        .logPermissionChange(action, req.userId!, req.firmId!)
+        .logPermissionChange(action, req.userId!, req.organizationId!)
         .catch(() => {});
 
       res.status(200).json({ message: "Data access controls updated" });

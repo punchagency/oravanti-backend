@@ -17,7 +17,7 @@ import { db } from "./../../db/client";
 // ─── Companies ───────────────────────────────────────────────────────────────
 
 export const createCompany = async (
-  firmId: string,
+  organizationId: string,
   data: {
     companyName: string;
     companyType: string;
@@ -38,12 +38,12 @@ export const createCompany = async (
 ) => {
   const [company] = await db
     .insert(companies)
-    .values({ ...data, firmId, companyType: data.companyType as any })
+    .values({ ...data, organizationId, companyType: data.companyType as any })
     .returning();
   return company;
 };
 
-export const getAllCompanies = async (firmId: string) => {
+export const getAllCompanies = async (organizationId: string) => {
   const rows = await db
     .select({
       id: companies.id,
@@ -55,17 +55,17 @@ export const getAllCompanies = async (firmId: string) => {
       createdAt: companies.createdAt,
     })
     .from(companies)
-    .where(eq(companies.firmId, firmId))
+    .where(eq(companies.organizationId, organizationId))
     .orderBy(desc(companies.createdAt));
 
   return rows;
 };
 
-export const getCompanyById = async (id: string, firmId: string) => {
+export const getCompanyById = async (id: string, organizationId: string) => {
   const [company] = await db
     .select()
     .from(companies)
-    .where(and(eq(companies.id, id), eq(companies.firmId, firmId)));
+    .where(and(eq(companies.id, id), eq(companies.organizationId, organizationId)));
 
   if (!company) return null;
 
@@ -79,31 +79,31 @@ export const getCompanyById = async (id: string, firmId: string) => {
       status: clients.status,
     })
     .from(clients)
-    .where(and(eq(clients.companyId, id), eq(clients.firmId, firmId)));
+    .where(and(eq(clients.companyId, id), eq(clients.organizationId, organizationId)));
 
   return { ...company, clients: companyClients };
 };
 
 export const updateCompany = async (
   id: string,
-  firmId: string,
+  organizationId: string,
   data: Partial<typeof companies.$inferInsert>,
 ) => {
   const [updated] = await db
     .update(companies)
     .set({ ...data, updatedAt: new Date() })
-    .where(and(eq(companies.id, id), eq(companies.firmId, firmId)))
+    .where(and(eq(companies.id, id), eq(companies.organizationId, organizationId)))
     .returning();
   return updated;
 };
 
 export const deleteCompany = async (
   id: string,
-  firmId: string,
+  organizationId: string,
 ): Promise<void> => {
   await db
     .delete(companies)
-    .where(and(eq(companies.id, id), eq(companies.firmId, firmId)));
+    .where(and(eq(companies.id, id), eq(companies.organizationId, organizationId)));
 };
 
 export class ClientsService {
@@ -129,7 +129,7 @@ export class ClientsService {
 // ─── Company client batch creation ───────────────────────────────────────────
 
 export const createCompanyWithClients = async (
-  firmId: string,
+  organizationId: string,
   companyData: Parameters<typeof createCompany>[1],
   individuals: Array<{
     clientData: {
@@ -163,7 +163,7 @@ export const createCompanyWithClients = async (
   options?: { acknowledgeConflict?: boolean },
 ) => {
   for (const { clientData } of individuals) {
-    await checkForDuplicate(firmId, clientData);
+    await checkForDuplicate(organizationId, clientData);
   }
 
   if (!options?.acknowledgeConflict) {
@@ -173,7 +173,7 @@ export const createCompanyWithClients = async (
     }> = [];
     for (let i = 0; i < individuals.length; i++) {
       const conflicts = await checkForConflicts(
-        firmId,
+        organizationId,
         individuals[i].clientData,
       );
       if (conflicts.length) allConflicts.push({ individual: i, conflicts });
@@ -184,7 +184,7 @@ export const createCompanyWithClients = async (
 
   for (const { caseData } of individuals) {
     await ensureCaseTypeBelongsToPracticeArea(
-      firmId,
+      organizationId,
       caseData.practiceAreaId,
       caseData.caseType,
     );
@@ -195,7 +195,7 @@ export const createCompanyWithClients = async (
       .insert(companies)
       .values({
         ...companyData,
-        firmId,
+        organizationId,
         companyType: companyData.companyType as any,
       })
       .returning();
@@ -204,7 +204,7 @@ export const createCompanyWithClients = async (
 
     for (const { clientData, caseData } of individuals) {
       const caseNumber = await generateCaseNumber(
-        firmId,
+        organizationId,
         caseData.practiceAreaId,
         caseData.caseType,
       );
@@ -213,7 +213,7 @@ export const createCompanyWithClients = async (
         .insert(clients)
         .values({
           ...clientData,
-          firmId,
+          organizationId,
           status: "active",
           clientType: "company_representative",
           companyId: company.id,
@@ -223,7 +223,7 @@ export const createCompanyWithClients = async (
       const [newCase] = await tx
         .insert(cases)
         .values({
-          firmId,
+          organizationId,
           caseNumber,
           clientId: newClient.id,
           practiceAreaId: caseData.practiceAreaId,
@@ -251,7 +251,7 @@ export const createCompanyWithClients = async (
 
 export const addClientToCompany = async (
   companyId: string,
-  firmId: string,
+  organizationId: string,
   clientData: {
     firstName: string;
     middleName?: string;
@@ -282,20 +282,20 @@ export const addClientToCompany = async (
   const [company] = await db
     .select({ id: companies.id, companyName: companies.companyName })
     .from(companies)
-    .where(and(eq(companies.id, companyId), eq(companies.firmId, firmId)));
+    .where(and(eq(companies.id, companyId), eq(companies.organizationId, organizationId)));
 
   if (!company) throw new NotFoundError("Company not found");
 
   await ensureCaseTypeBelongsToPracticeArea(
-    firmId,
+    organizationId,
     caseData.practiceAreaId,
     caseData.caseType,
   );
-  await checkForDuplicate(firmId, clientData);
+  await checkForDuplicate(organizationId, clientData);
 
   return db.transaction(async (tx) => {
     const caseNumber = await generateCaseNumber(
-      firmId,
+      organizationId,
       caseData.practiceAreaId,
       caseData.caseType,
     );
@@ -304,7 +304,7 @@ export const addClientToCompany = async (
       .insert(clients)
       .values({
         ...clientData,
-        firmId,
+        organizationId,
         status: "active",
         clientType: "company_representative",
         companyId,
@@ -314,7 +314,7 @@ export const addClientToCompany = async (
     const [newCase] = await tx
       .insert(cases)
       .values({
-        firmId,
+        organizationId,
         caseNumber,
         clientId: newClient.id,
         practiceAreaId: caseData.practiceAreaId,
@@ -345,7 +345,7 @@ export type ConflictResult = {
 };
 
 export const checkForConflicts = async (
-  firmId: string,
+  organizationId: string,
   data: { lastName: string; currentAddress: string },
   excludeId?: string,
 ): Promise<ConflictResult[]> => {
@@ -357,7 +357,7 @@ export const checkForConflicts = async (
       currentAddress: clients.currentAddress,
     })
     .from(clients)
-    .where(eq(clients.firmId, firmId));
+    .where(eq(clients.organizationId, organizationId));
 
   const conflicts: ConflictResult[] = [];
 
@@ -401,7 +401,7 @@ export const checkForConflicts = async (
 const normName = (s?: string | null) => (s ?? "").trim().toLowerCase();
 
 const checkForDuplicate = async (
-  firmId: string,
+  organizationId: string,
   data: {
     email: string;
     passportNumber?: string;
@@ -429,7 +429,7 @@ const checkForDuplicate = async (
       dateOfBirth: clients.dateOfBirth,
     })
     .from(clients)
-    .where(eq(clients.firmId, firmId));
+    .where(eq(clients.organizationId, organizationId));
 
   for (const client of existing) {
     if (excludeId && client.id === excludeId) continue;
@@ -493,7 +493,7 @@ export const getCertifications = async () => {
 
 // ─── Clients ──────────────────────────────────────────────────────────────────
 
-export const getAllClients = async (firmId: string, search?: string) => {
+export const getAllClients = async (organizationId: string, search?: string) => {
   const rows = await db
     .select({
       id: clients.id,
@@ -520,7 +520,7 @@ export const getAllClients = async (firmId: string, search?: string) => {
     .where(
       search
         ? and(
-            eq(clients.firmId, firmId),
+            eq(clients.organizationId, organizationId),
             or(
               ilike(clients.firstName, `%${search}%`),
               ilike(clients.lastName, `%${search}%`),
@@ -528,7 +528,7 @@ export const getAllClients = async (firmId: string, search?: string) => {
               ilike(cases.caseType, `%${search}%`),
             ),
           )
-        : eq(clients.firmId, firmId),
+        : eq(clients.organizationId, organizationId),
     )
     .orderBy(desc(clients.createdAt));
 
@@ -559,22 +559,22 @@ export const getAllClients = async (firmId: string, search?: string) => {
   }));
 };
 
-export const getClientById = async (id: string, firmId: string) => {
+export const getClientById = async (id: string, organizationId: string) => {
   const [client] = await db
     .select()
     .from(clients)
-    .where(and(eq(clients.id, id), eq(clients.firmId, firmId)));
+    .where(and(eq(clients.id, id), eq(clients.organizationId, organizationId)));
   if (!client) return null;
 
   const clientCases = await db
     .select()
     .from(cases)
-    .where(and(eq(cases.clientId, id), eq(cases.firmId, firmId)));
+    .where(and(eq(cases.clientId, id), eq(cases.organizationId, organizationId)));
   return { ...client, cases: clientCases };
 };
 
 export const createClient = async (
-  firmId: string,
+  organizationId: string,
   clientData: {
     firstName: string;
     middleName?: string;
@@ -604,21 +604,21 @@ export const createClient = async (
   options?: { acknowledgeConflict?: boolean },
 ) => {
   await ensureCaseTypeBelongsToPracticeArea(
-    firmId,
+    organizationId,
     caseData.practiceAreaId,
     caseData.caseType,
   );
 
-  await checkForDuplicate(firmId, clientData);
+  await checkForDuplicate(organizationId, clientData);
 
   if (!options?.acknowledgeConflict) {
-    const conflicts = await checkForConflicts(firmId, clientData);
+    const conflicts = await checkForConflicts(organizationId, clientData);
     if (conflicts.length)
       return { type: "conflict_warning" as const, conflicts };
   }
 
   const caseNumber = await generateCaseNumber(
-    firmId,
+    organizationId,
     caseData.practiceAreaId,
     caseData.caseType,
   );
@@ -626,13 +626,13 @@ export const createClient = async (
   return db.transaction(async (tx) => {
     const [newClient] = await tx
       .insert(clients)
-      .values({ ...clientData, firmId, status: "active" })
+      .values({ ...clientData, organizationId, status: "active" })
       .returning();
 
     const [newCase] = await tx
       .insert(cases)
       .values({
-        firmId,
+        organizationId,
         caseNumber,
         clientId: newClient.id,
         practiceAreaId: caseData.practiceAreaId,
@@ -653,7 +653,7 @@ export const createClient = async (
 
 export const updateClient = async (
   id: string,
-  firmId: string,
+  organizationId: string,
   data: Partial<typeof clients.$inferInsert>,
 ) => {
   if (
@@ -670,12 +670,12 @@ export const updateClient = async (
     const current = await db
       .select()
       .from(clients)
-      .where(and(eq(clients.id, id), eq(clients.firmId, firmId)))
+      .where(and(eq(clients.id, id), eq(clients.organizationId, organizationId)))
       .limit(1);
     if (!current.length) return null;
 
     await checkForDuplicate(
-      firmId,
+      organizationId,
       {
         email: data.email ?? current[0].email,
         passportNumber:
@@ -698,29 +698,29 @@ export const updateClient = async (
   const [updated] = await db
     .update(clients)
     .set({ ...data, updatedAt: new Date() })
-    .where(and(eq(clients.id, id), eq(clients.firmId, firmId)))
+    .where(and(eq(clients.id, id), eq(clients.organizationId, organizationId)))
     .returning();
   return updated;
 };
 
-export const deleteClient = async (id: string, firmId: string) => {
+export const deleteClient = async (id: string, organizationId: string) => {
   await db
     .delete(clients)
-    .where(and(eq(clients.id, id), eq(clients.firmId, firmId)));
+    .where(and(eq(clients.id, id), eq(clients.organizationId, organizationId)));
 };
 
 // ─── Cases ────────────────────────────────────────────────────────────────────
 
-export const getClientCases = async (clientId: string, firmId: string) => {
+export const getClientCases = async (clientId: string, organizationId: string) => {
   return db
     .select()
     .from(cases)
-    .where(and(eq(cases.clientId, clientId), eq(cases.firmId, firmId)));
+    .where(and(eq(cases.clientId, clientId), eq(cases.organizationId, organizationId)));
 };
 
 export const addCase = async (
   clientId: string,
-  firmId: string,
+  organizationId: string,
   caseData: {
     practiceAreaId: string;
     caseType: string;
@@ -735,7 +735,7 @@ export const addCase = async (
   options?: { acknowledgeExistingCase?: boolean },
 ) => {
   await ensureCaseTypeBelongsToPracticeArea(
-    firmId,
+    organizationId,
     caseData.practiceAreaId,
     caseData.caseType,
   );
@@ -752,7 +752,7 @@ export const addCase = async (
       .where(
         and(
           eq(cases.clientId, clientId),
-          eq(cases.firmId, firmId),
+          eq(cases.organizationId, organizationId),
           eq(cases.caseType, caseData.caseType as any),
         ),
       );
@@ -773,7 +773,7 @@ export const addCase = async (
   }
 
   const caseNumber = await generateCaseNumber(
-    firmId,
+    organizationId,
     caseData.practiceAreaId,
     caseData.caseType,
   );
@@ -781,7 +781,7 @@ export const addCase = async (
   const [newCase] = await db
     .insert(cases)
     .values({
-      firmId,
+      organizationId,
       caseNumber,
       clientId,
       practiceAreaId: caseData.practiceAreaId,
@@ -800,20 +800,20 @@ export const addCase = async (
 
 export const updateCaseStatus = async (
   caseId: string,
-  firmId: string,
+  organizationId: string,
   status: string,
 ) => {
   const [updated] = await db
     .update(cases)
     .set({ status: status as any, updatedAt: new Date() })
-    .where(and(eq(cases.id, caseId), eq(cases.firmId, firmId)))
+    .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
     .returning();
   return updated;
 };
 
 // ─── Team staff for case assignment ──────────────────────────────────────────
 
-export const getTeamStaff = async (teamId: string, firmId: string) => {
+export const getTeamStaff = async (teamId: string, organizationId: string) => {
   return db
     .select({
       id: staff.id,
@@ -823,5 +823,5 @@ export const getTeamStaff = async (teamId: string, firmId: string) => {
     })
     .from(staff)
     .innerJoin(teamMembers, eq(teamMembers.staffId, staff.id))
-    .where(and(eq(teamMembers.teamId, teamId), eq(staff.firmId, firmId)));
+    .where(and(eq(teamMembers.teamId, teamId), eq(staff.organizationId, organizationId)));
 };
