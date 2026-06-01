@@ -13,8 +13,9 @@ import {
   getPaginationOffset,
 } from "../../utils/pagination";
 import { db } from "./../../db/client";
+import { env } from "../../config/env";
 
-const BUCKET = "documents";
+const { SUPABASE_STORAGE_BUCKET } = env
 
 // ─── Storage Path ─────────────────────────────────────────────────────────────
 
@@ -54,7 +55,7 @@ export class DocumentsService {
     );
 
     const { error: uploadError } = await supabaseAdmin.storage
-      .from(BUCKET)
+      .from(SUPABASE_STORAGE_BUCKET)
       .upload(storagePath, data.fileBuffer, {
         contentType: data.mimeType,
         upsert: false,
@@ -63,7 +64,7 @@ export class DocumentsService {
     if (uploadError) throw new ExternalServiceError(uploadError.message);
 
     const { data: urlData } = supabaseAdmin.storage
-      .from(BUCKET)
+      .from(SUPABASE_STORAGE_BUCKET)
       .getPublicUrl(storagePath);
 
     const [doc] = await db
@@ -78,7 +79,7 @@ export class DocumentsService {
         fileUrl: urlData.publicUrl,
         storagePath,
         fileSize: data.fileSize,
-        mimeType: data.mimeType,
+        mimeType: data.mimeType
       })
       .returning();
 
@@ -249,7 +250,7 @@ export class DocumentsService {
     if (!doc) throw new NotFoundError("Document not found");
 
     const { data, error } = await supabaseAdmin.storage
-      .from(BUCKET)
+      .from(SUPABASE_STORAGE_BUCKET)
       .createSignedUrl(doc.storagePath, 60 * 60);
 
     if (error) throw new ExternalServiceError(error.message);
@@ -262,7 +263,7 @@ export class DocumentsService {
     const doc = await this.getDocumentById(id, organizationId);
     if (!doc) throw new NotFoundError("Document not found");
 
-    await supabaseAdmin.storage.from(BUCKET).remove([doc.storagePath]);
+    await supabaseAdmin.storage.from(SUPABASE_STORAGE_BUCKET).remove([doc.storagePath]);
     await db
       .delete(documents)
       .where(and(eq(documents.id, id), eq(documents.organizationId, organizationId)));
