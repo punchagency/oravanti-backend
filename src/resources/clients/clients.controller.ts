@@ -6,6 +6,10 @@ import {
   ConflictError,
   NotFoundError,
 } from "../../utils/error/app-error";
+import {
+  parseBooleanQuery,
+  parsePaginationQuery,
+} from "../../utils/pagination";
 import { ClientsService } from "./clients.service";
 
 export class ClientsController {
@@ -109,9 +113,14 @@ export class ClientsController {
   });
 
   getAllClients = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const search = req.query.search as string | undefined;
+    const { search, page, limit, all } = req.query;
+    const bypassPagination = parseBooleanQuery(all, "all");
 
-    const result = await this.clientsService.getAllClients(req.organizationId!, search);
+    const result = await this.clientsService.getAllClients(req.organizationId!, {
+      search: search as string | undefined,
+      all: bypassPagination,
+      ...(!bypassPagination ? parsePaginationQuery({ page, limit }) : {}),
+    });
     res.status(200).json(result);
   });
 
@@ -170,9 +179,16 @@ export class ClientsController {
   });
 
   getClientCases = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const { page, limit, all } = req.query;
+    const bypassPagination = parseBooleanQuery(all, "all");
+
     const result = await this.clientsService.getClientCases(
       req.params.id as string,
       req.organizationId!,
+      {
+        all: bypassPagination,
+        ...(!bypassPagination ? parsePaginationQuery({ page, limit }) : {}),
+      },
     );
 
     res.status(200).json(result);
