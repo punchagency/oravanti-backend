@@ -3,14 +3,14 @@ import { cases } from './cases';
 import { staff } from './staff';
 import { admins } from './admins';
 import { teams } from './teams';
-import { firms } from './firm-info';
+import { organization } from './auth-schema';
 
 export const taskStatusEnum = pgEnum('task_status', ['pending', 'in_progress', 'completed', 'cancelled']);
 export const taskPriorityEnum = pgEnum('task_priority', ['low', 'medium', 'high', 'critical']);
 
 export const tasks = pgTable('tasks', {
   id:                     uuid('id').primaryKey().defaultRandom(),
-  firmId:                 uuid('firm_id').notNull().references(() => firms.id),
+  organizationId:                 text('organization_id').notNull().references(() => organization.id),
   title:                  text('title').notNull(),
   description:            text('description').notNull(),
   caseId:                 uuid('case_id').notNull().references(() => cases.id),

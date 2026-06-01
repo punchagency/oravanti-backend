@@ -1,10 +1,10 @@
 import { pgTable, uuid, text, timestamp } from 'drizzle-orm/pg-core';
-import { firms } from './firm-info';
+import { organization } from './auth-schema';
 
 export const adminSessions = pgTable('admin_sessions', {
   id:         uuid('id').primaryKey().defaultRandom(),
-  firmId:     uuid('firm_id').notNull().references(() => firms.id),
-  userId:     uuid('user_id').notNull(),
+  organizationId:     text('organization_id').notNull().references(() => organization.id),
+  userId:     text('user_id').notNull(),
   deviceInfo: text('device_info').notNull(),
   ipAddress:  text('ip_address').notNull(),
   createdAt:  timestamp('created_at').notNull().defaultNow(),

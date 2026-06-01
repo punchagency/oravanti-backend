@@ -8,15 +8,15 @@ import {
 } from "../../../db/schema";
 
 export class CertificationGatesService {
-  getCertificationGates = async (firmId: string) => {
+  getCertificationGates = async (organizationId: string) => {
     return db
       .select()
       .from(paralegalCertificationGates)
-      .where(eq(paralegalCertificationGates.firmId, firmId));
+      .where(eq(paralegalCertificationGates.organizationId, organizationId));
   };
 
   updateCertificationGates = async (
-    firmId: string,
+    organizationId: string,
     gates: { action: string; requiredCertifications: string[] }[],
   ) => {
     await Promise.all(
@@ -29,7 +29,7 @@ export class CertificationGatesService {
           })
           .where(
             and(
-              eq(paralegalCertificationGates.firmId, firmId),
+              eq(paralegalCertificationGates.organizationId, organizationId),
               eq(paralegalCertificationGates.action, g.action as any),
             ),
           ),
@@ -37,27 +37,27 @@ export class CertificationGatesService {
     );
   };
 
-  getActivationRequirements = async (firmId: string) => {
+  getActivationRequirements = async (organizationId: string) => {
     return db
       .select()
       .from(paralegalActivationRequirements)
-      .where(eq(paralegalActivationRequirements.firmId, firmId));
+      .where(eq(paralegalActivationRequirements.organizationId, organizationId));
   };
 
   updateActivationRequirements = async (
-    firmId: string,
+    organizationId: string,
     certificationCodes: string[],
   ) => {
     await db
       .delete(paralegalActivationRequirements)
-      .where(eq(paralegalActivationRequirements.firmId, firmId));
+      .where(eq(paralegalActivationRequirements.organizationId, organizationId));
 
     if (certificationCodes.length > 0) {
       await db
         .insert(paralegalActivationRequirements)
         .values(
           certificationCodes.map((code) => ({
-            firmId,
+            organizationId,
             certificationCode: code,
           })),
         );
@@ -66,7 +66,7 @@ export class CertificationGatesService {
     const allParalegals = await db
       .select()
       .from(paralegalProfiles)
-      .where(eq(paralegalProfiles.firmId, firmId));
+      .where(eq(paralegalProfiles.organizationId, organizationId));
 
     await Promise.all(
       allParalegals.map(async (paralegal) => {

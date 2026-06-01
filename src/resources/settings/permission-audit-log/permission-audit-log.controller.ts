@@ -15,7 +15,7 @@ export class PermissionAuditLogController {
     const limit = req.query.limit ? parseInt(req.query.limit as string) : 20;
 
     const result = await this.auditLogService.getPermissionAuditLog(
-      req.firmId!,
+      req.organizationId!,
       limit,
     );
     res.status(200).json(result);

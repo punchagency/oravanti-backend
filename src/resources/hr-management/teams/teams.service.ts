@@ -13,24 +13,24 @@ import {
 const ELIGIBLE_LEAD_ROLES = ["senior_paralegal", "attorney"] as const;
 
 export class TeamsService {
-  getAllTeams = async (firmId: string) => {
-    return db.select().from(teams).where(eq(teams.firmId, firmId));
+  getAllTeams = async (organizationId: string) => {
+    return db.select().from(teams).where(eq(teams.organizationId, organizationId));
   };
 
-  getTeamById = async (id: string, firmId: string) => {
+  getTeamById = async (id: string, organizationId: string) => {
     const result = await db
       .select()
       .from(teams)
-      .where(and(eq(teams.id, id), eq(teams.firmId, firmId)));
+      .where(and(eq(teams.id, id), eq(teams.organizationId, organizationId)));
     return result[0] ?? null;
   };
 
-  createTeam = async (body: CreateTeamBody & { firmId: string }) => {
+  createTeam = async (body: CreateTeamBody & { organizationId: string }) => {
     if (body.leadId) {
       const lead = await db
         .select()
         .from(staff)
-        .where(and(eq(staff.id, body.leadId), eq(staff.firmId, body.firmId)));
+        .where(and(eq(staff.id, body.leadId), eq(staff.organizationId, body.organizationId)));
 
       if (!lead[0]) {
         throw new NotFoundError("Team lead not found");
@@ -54,12 +54,12 @@ export class TeamsService {
     }
   };
 
-  updateTeam = async (id: string, firmId: string, body: UpdateTeamBody) => {
+  updateTeam = async (id: string, organizationId: string, body: UpdateTeamBody) => {
     if (body.leadId) {
       const lead = await db
         .select()
         .from(staff)
-        .where(and(eq(staff.id, body.leadId), eq(staff.firmId, firmId)));
+        .where(and(eq(staff.id, body.leadId), eq(staff.organizationId, organizationId)));
 
       if (!lead[0]) {
         throw new NotFoundError("Team lead not found");
@@ -75,30 +75,30 @@ export class TeamsService {
     const [updated] = await db
       .update(teams)
       .set({ ...body, updatedAt: new Date() })
-      .where(and(eq(teams.id, id), eq(teams.firmId, firmId)))
+      .where(and(eq(teams.id, id), eq(teams.organizationId, organizationId)))
       .returning();
 
     return updated ?? null;
   };
 
-  deleteTeam = async (id: string, firmId: string) => {
+  deleteTeam = async (id: string, organizationId: string) => {
     const [deleted] = await db
       .delete(teams)
-      .where(and(eq(teams.id, id), eq(teams.firmId, firmId)))
+      .where(and(eq(teams.id, id), eq(teams.organizationId, organizationId)))
       .returning();
     return deleted ?? null;
   };
 
-  getEligibleLeads = async (firmId: string) => {
+  getEligibleLeads = async (organizationId: string) => {
     return db
       .select()
       .from(staff)
-      .where(and(eq(staff.firmId, firmId), eq(staff.role, "senior_paralegal")))
+      .where(and(eq(staff.organizationId, organizationId), eq(staff.role, "senior_paralegal")))
       .union(
         db
           .select()
           .from(staff)
-          .where(and(eq(staff.firmId, firmId), eq(staff.role, "attorney"))),
+          .where(and(eq(staff.organizationId, organizationId), eq(staff.role, "attorney"))),
       );
   };
 }

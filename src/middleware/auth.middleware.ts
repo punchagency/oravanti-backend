@@ -1,13 +1,13 @@
+import { fromNodeHeaders } from "better-auth/node";
 import { NextFunction, Request, Response } from "express";
-import { supabase } from "../config/supabase";
+import { auth, getActiveOrganization } from "../auth";
 import { AuthenticationError } from "../utils/error/app-error";
 
 export interface AuthRequest extends Request {
   userId?: string;
-  accessToken?: string;
   adminId?: string;
   staffId?: string;
-  firmId?: string;
+  organizationId?: string;
 }
 
 export const requireAuth = async (
@@ -15,21 +15,24 @@ export const requireAuth = async (
   _res: Response,
   next: NextFunction,
 ) => {
-  const authHeader = req.headers.authorization;
+  const session = await auth.api.getSession({
+    headers: fromNodeHeaders(req.headers),
+  });
 
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    throw new AuthenticationError("Missing or invalid authorization header");
+  if (!session?.user) {
+    throw new AuthenticationError("Missing or invalid session");
   }
 
-  const token = authHeader.split(" ")[1];
+  req.userId = session.user.id;
 
-  const { data, error } = await supabase.auth.getUser(token);
-
-  if (error || !data.user) {
-    throw new AuthenticationError("Missing or invalid authorization header");
+  const activeOrganizationId = (session.session as { activeOrganizationId?: string })
+    .activeOrganizationId;
+  if (activeOrganizationId) {
+    req.organizationId = activeOrganizationId;
+  } else {
+    const organization = await getActiveOrganization(session.user.id);
+    req.organizationId = organization?.id;
   }
 
-  req.userId = data.user.id;
-  req.accessToken = token;
   next();
 };

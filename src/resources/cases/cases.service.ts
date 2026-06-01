@@ -10,12 +10,12 @@ import { ensureCaseTypeBelongsToPracticeArea } from "../practice-areas/practice-
 // ─── Case Number Generation ──────────────────────────────────────────────────
 
 export const generateCaseNumber = async (
-  firmId: string,
+  organizationId: string,
   practiceAreaId: string,
   caseType: string,
 ): Promise<string> => {
   const { caseType: practiceAreaCaseType } =
-    await ensureCaseTypeBelongsToPracticeArea(firmId, practiceAreaId, caseType);
+    await ensureCaseTypeBelongsToPracticeArea(organizationId, practiceAreaId, caseType);
   const year = new Date().getFullYear();
   const prefix = `${year}-${practiceAreaCaseType.caseNumberPrefix}-`;
 
@@ -23,7 +23,7 @@ export const generateCaseNumber = async (
     .select({ caseNumber: cases.caseNumber })
     .from(cases)
     .where(
-      and(eq(cases.firmId, firmId), ilike(cases.caseNumber, `${prefix}%`)),
+      and(eq(cases.organizationId, organizationId), ilike(cases.caseNumber, `${prefix}%`)),
     );
 
   const maxSeq = existing.reduce((max, row) => {
@@ -38,7 +38,7 @@ export const generateCaseNumber = async (
 // ─── Cases CRUD ──────────────────────────────────────────────────────────────
 
 export const getAllCases = async (
-  firmId: string,
+  organizationId: string,
   filters?: {
     search?: string;
     status?: string;
@@ -79,7 +79,7 @@ export const getAllCases = async (
       ),
     )
     .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
-    .where(eq(cases.firmId, firmId))
+    .where(eq(cases.organizationId, organizationId))
     .orderBy(desc(cases.createdAt));
 
   return rows
@@ -135,7 +135,7 @@ export const getAllCases = async (
     }));
 };
 
-export const getCaseById = async (id: string, firmId: string) => {
+export const getCaseById = async (id: string, organizationId: string) => {
   const [row] = await db
     .select()
     .from(cases)
@@ -149,12 +149,12 @@ export const getCaseById = async (id: string, firmId: string) => {
       ),
     )
     .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
-    .where(and(eq(cases.id, id), eq(cases.firmId, firmId)));
+    .where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)));
   return row ?? null;
 };
 
 export const createCase = async (
-  firmId: string,
+  organizationId: string,
   data: {
     clientId: string;
     practiceAreaId: string;
@@ -174,19 +174,19 @@ export const createCase = async (
   creator?: { adminId?: string; staffId?: string },
 ) => {
   await ensureCaseTypeBelongsToPracticeArea(
-    firmId,
+    organizationId,
     data.practiceAreaId,
     data.caseType,
   );
 
   const caseNumber =
     data.caseNumber ||
-    (await generateCaseNumber(firmId, data.practiceAreaId, data.caseType));
+    (await generateCaseNumber(organizationId, data.practiceAreaId, data.caseType));
 
   const [newCase] = await db
     .insert(cases)
     .values({
-      firmId,
+      organizationId,
       caseNumber,
       clientId: data.clientId,
       practiceAreaId: data.practiceAreaId,
@@ -211,7 +211,7 @@ export const createCase = async (
 
 export const updateCase = async (
   id: string,
-  firmId: string,
+  organizationId: string,
   data: Partial<typeof cases.$inferInsert>,
 ) => {
   if (data.practiceAreaId || data.caseType) {
@@ -221,13 +221,13 @@ export const updateCase = async (
         caseType: cases.caseType,
       })
       .from(cases)
-      .where(and(eq(cases.id, id), eq(cases.firmId, firmId)))
+      .where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)))
       .limit(1);
 
     if (!existing) return null;
 
     await ensureCaseTypeBelongsToPracticeArea(
-      firmId,
+      organizationId,
       data.practiceAreaId ?? existing.practiceAreaId,
       data.caseType ?? existing.caseType,
     );
@@ -236,13 +236,13 @@ export const updateCase = async (
   const [updated] = await db
     .update(cases)
     .set({ ...data, updatedAt: new Date() })
-    .where(and(eq(cases.id, id), eq(cases.firmId, firmId)))
+    .where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)))
     .returning();
   return updated;
 };
 
-export const deleteCase = async (id: string, firmId: string) => {
-  await db.delete(cases).where(and(eq(cases.id, id), eq(cases.firmId, firmId)));
+export const deleteCase = async (id: string, organizationId: string) => {
+  await db.delete(cases).where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)));
 };
 
 export class CasesService {

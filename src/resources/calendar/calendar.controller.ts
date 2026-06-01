@@ -22,7 +22,7 @@ export class CalendarController {
     };
 
     const result = await this.calendarService.getCalendarEvents(
-      req.firmId!,
+      req.organizationId!,
       filters,
     );
     res.status(200).json(result);
@@ -31,7 +31,7 @@ export class CalendarController {
   getCalendarEventById = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.calendarService.getCalendarEventById(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Event not found");
@@ -41,7 +41,7 @@ export class CalendarController {
 
   createCalendarEvent = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.calendarService.createCalendarEvent(
-      req.firmId!,
+      req.organizationId!,
       req.body,
     );
     res.status(201).json(result);
@@ -50,7 +50,7 @@ export class CalendarController {
   updateCalendarEvent = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.calendarService.updateCalendarEvent(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
       req.body,
     );
     if (!result) {
@@ -62,7 +62,7 @@ export class CalendarController {
   deleteCalendarEvent = asyncWrap(async (req: AuthRequest, res: Response) => {
     await this.calendarService.deleteCalendarEvent(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     res.status(200).json({ message: "Event deleted" });
   });
@@ -70,7 +70,7 @@ export class CalendarController {
   getCalendarStrip = asyncWrap(async (req: AuthRequest, res: Response) => {
     const teamId = req.query.teamId as string | undefined;
     const result = await this.calendarService.getCalendarStrip(
-      req.firmId!,
+      req.organizationId!,
       teamId,
     );
     res.status(200).json(result);
@@ -94,7 +94,7 @@ export class CalendarController {
       }
 
       const result = await this.calendarService.createServiceRequestEvent(
-        req.firmId!,
+        req.organizationId!,
         clientId,
         caseId,
         clientName,
@@ -110,7 +110,7 @@ export class CalendarController {
     async (req: AuthRequest, res: Response) => {
       await this.calendarService.resolveServiceRequestEvents(
         req.params.caseId as string,
-        req.firmId!,
+        req.organizationId!,
       );
       res.status(200).json({ message: "Service request events resolved" });
     },
@@ -134,7 +134,7 @@ export class CalendarController {
       }
 
       const result = await this.calendarService.scheduleNextServiceRequest(
-        req.firmId!,
+        req.organizationId!,
         clientId,
         caseId,
         clientName,

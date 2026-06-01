@@ -13,14 +13,14 @@ export class TeamsController {
   }
 
   getAll = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.teamsService.getAllTeams(req.firmId!);
+    const result = await this.teamsService.getAllTeams(req.organizationId!);
     res.status(200).json(result);
   });
 
   getById = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.teamsService.getTeamById(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Team not found");
@@ -37,7 +37,7 @@ export class TeamsController {
 
     const result = await this.teamsService.createTeam({
       ...req.body,
-      firmId: req.firmId!,
+      organizationId: req.organizationId!,
     });
     res.status(201).json({ message: "Team created", team: result });
   });
@@ -45,7 +45,7 @@ export class TeamsController {
   updateTeam = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.teamsService.updateTeam(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
       req.body as UpdateTeamBody,
     );
     if (!result) {
@@ -57,7 +57,7 @@ export class TeamsController {
   deleteTeam = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.teamsService.deleteTeam(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Team not found");
@@ -66,7 +66,7 @@ export class TeamsController {
   });
 
   getEligibleLeads = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.teamsService.getEligibleLeads(req.firmId!);
+    const result = await this.teamsService.getEligibleLeads(req.organizationId!);
     res.status(200).json(result);
   });
 }

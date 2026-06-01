@@ -3,11 +3,11 @@ import { db } from "../../../db/client";
 import { financialAccessControls } from "../../../db/schema";
 
 export class FinancialAccessService {
-  getFinancialAccess = async (firmId: string) => {
+  getFinancialAccess = async (organizationId: string) => {
     const rows = await db
       .select()
       .from(financialAccessControls)
-      .where(eq(financialAccessControls.firmId, firmId));
+      .where(eq(financialAccessControls.organizationId, organizationId));
 
     return rows.reduce(
       (acc, row) => {
@@ -20,7 +20,7 @@ export class FinancialAccessService {
   };
 
   updateFinancialAccess = async (
-    firmId: string,
+    organizationId: string,
     controls: { accountType: string; role: string; permission: string }[],
   ) => {
     await Promise.all(
@@ -30,7 +30,7 @@ export class FinancialAccessService {
           .set({ permission: c.permission as any, updatedAt: new Date() })
           .where(
             and(
-              eq(financialAccessControls.firmId, firmId),
+              eq(financialAccessControls.organizationId, organizationId),
               eq(financialAccessControls.accountType, c.accountType as any),
               eq(financialAccessControls.role, c.role as any),
             ),

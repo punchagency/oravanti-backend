@@ -3,7 +3,7 @@ import { clients } from './clients';
 import { teams } from './teams';
 import { staff } from './staff';
 import { admins } from './admins';
-import { firms } from './firm-info';
+import { organization } from './auth-schema';
 import { practiceAreas } from './practice-areas';
 
 export const caseStatusEnum = pgEnum('case_status', [
@@ -18,7 +18,7 @@ export const casePriorityEnum = pgEnum('case_priority', ['low', 'medium', 'high'
 
 export const cases = pgTable('cases', {
   id:                      uuid('id').primaryKey().defaultRandom(),
-  firmId:                  uuid('firm_id').notNull().references(() => firms.id),
+  organizationId:                  text('organization_id').notNull().references(() => organization.id),
   caseNumber:              text('case_number').notNull().unique(),
   clientId:                uuid('client_id').notNull().references(() => clients.id),
   practiceAreaId:          uuid('practice_area_id').notNull().references(() => practiceAreas.id),

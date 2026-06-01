@@ -24,7 +24,7 @@ export class RevenueAnalyticsController {
     }
 
     const data = await this.revenueAnalyticsService.getRevenueAnalytics(
-      req.firmId!,
+      req.organizationId!,
       period,
       teamId,
     );
@@ -42,7 +42,7 @@ export class RevenueAnalyticsController {
     }
 
     const data = await this.revenueAnalyticsService.getRevenueAnalytics(
-      req.firmId!,
+      req.organizationId!,
       period,
       teamId,
     );

@@ -19,6 +19,8 @@ import {
   user,
   verification,
 } from "./db/schema/auth-schema";
+import { admins } from "./db/schema/admins";
+import { staff } from "./db/schema/staff";
 import { emailService } from "./utils/email/email.service";
 
 const { isProduction } = env;
@@ -40,6 +42,73 @@ export async function getActiveOrganization(userId: string) {
 
   return activeOrganization;
 }
+
+const splitName = (name: string) => {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return {
+    firstName: parts[0] || "Admin",
+    lastName: parts.slice(1).join(" ") || "User",
+  };
+};
+
+const createDefaultAdminStaff = async ({
+  organizationId,
+  userId,
+  role,
+  name,
+  email,
+  firstName,
+  lastName,
+  phoneNumber,
+  image,
+}: {
+  organizationId: string;
+  userId: string;
+  role: string;
+  name: string;
+  email: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  phoneNumber?: string | null;
+  image?: string | null;
+}) => {
+  const memberRoles = role.split(",").map((currentRole) => currentRole.trim());
+  if (!memberRoles.some((currentRole) => currentRole === "owner" || currentRole === "admin")) {
+    return;
+  }
+
+  const fallbackName = splitName(name);
+  const adminFirstName = firstName || fallbackName.firstName;
+  const adminLastName = lastName || fallbackName.lastName;
+  const startDate = new Date().toISOString().split("T")[0];
+
+  await db
+    .insert(admins)
+    .values({
+      organizationId,
+      userId,
+      firstName: adminFirstName,
+      lastName: adminLastName,
+      email,
+      avatarUrl: image,
+    })
+    .onConflictDoNothing();
+
+  await db
+    .insert(staff)
+    .values({
+      organizationId,
+      userId,
+      firstName: adminFirstName,
+      lastName: adminLastName,
+      email,
+      phone: phoneNumber || "",
+      role: "admin",
+      status: "active",
+      startDate,
+    })
+    .onConflictDoNothing();
+};
 
 export const auth = betterAuth({
   appName: "Oravanti",
@@ -95,6 +164,21 @@ export const auth = betterAuth({
   },
   plugins: [
     organization({
+      organizationHooks: {
+        afterAddMember: async ({ organization, user, member }) => {
+          await createDefaultAdminStaff({
+            organizationId: organization.id,
+            userId: user.id,
+            role: member.role,
+            name: user.name,
+            email: user.email,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            phoneNumber: user.phoneNumber,
+            image: user.image,
+          });
+        },
+      },
       schema: {
         organization: {
           additionalFields: {

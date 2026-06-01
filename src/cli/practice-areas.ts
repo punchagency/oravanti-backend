@@ -23,7 +23,7 @@ import { clientRequests } from "../db/schema/client-requests";
 import { clients } from "../db/schema/clients";
 import { companies } from "../db/schema/companies";
 import { documents } from "../db/schema/documents";
-import { firms } from "../db/schema/firm-info";
+import { organization as organizations } from "../db/schema/auth-schema";
 import { firmPracticeAreas } from "../db/schema/firm-practice-areas";
 import { practiceAreaCaseTypes } from "../db/schema/practice-area-case-types";
 import { practiceAreas } from "../db/schema/practice-areas";
@@ -94,7 +94,13 @@ const DEFAULT_IMMIGRATION_CASE_TYPES = [
 
 type PracticeAreaRow = typeof practiceAreas.$inferSelect;
 type PracticeAreaCaseTypeRow = typeof practiceAreaCaseTypes.$inferSelect;
-type FirmRow = typeof firms.$inferSelect;
+type FirmRow = {
+  id: string;
+  firmName: string;
+  firmEmail: string | null;
+  city: string | null;
+  state: string | null;
+};
 
 type CaseTypeInput = {
   code: string;
@@ -195,14 +201,14 @@ const getPracticeAreas = () =>
 const getFirms = () =>
   db
     .select({
-      id: firms.id,
-      firmName: firms.firmName,
-      firmEmail: firms.firmEmail,
-      city: firms.city,
-      state: firms.state,
+      id: organizations.id,
+      firmName: organizations.name,
+      firmEmail: organizations.emailAddress,
+      city: organizations.city,
+      state: organizations.state,
     })
-    .from(firms)
-    .orderBy(asc(firms.firmName));
+    .from(organizations)
+    .orderBy(asc(organizations.name));
 
 const getCaseTypes = (practiceAreaId: string) =>
   db
@@ -401,7 +407,7 @@ const resolveFirm = async (id?: string) => {
       options: allFirms.map((firm) => ({
         value: firm.id,
         label: firm.firmName,
-        hint: firm.firmEmail,
+        hint: firm.firmEmail ?? undefined,
       })),
     }),
   );
@@ -676,10 +682,10 @@ const deleteCaseTypes = async (practiceAreaId?: string, ids: readonly string[] =
   printCaseTypes(deleted);
 };
 
-const seedDemoData = async (firmId?: string) => {
+const seedDemoData = async (organizationId?: string) => {
   assertDevelopment();
 
-  const firm = await resolveFirm(firmId);
+  const firm = await resolveFirm(organizationId);
   if (!firm) return;
 
   note(
@@ -751,7 +757,7 @@ const seedDemoData = async (firmId?: string) => {
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.firmId, firm.id),
+          eq(subscriptions.organizationId, firm.id),
           eq(subscriptions.practiceAreaId, immigrationPracticeArea.id),
           eq(subscriptions.status, SubscriptionStatus.ACTIVE),
         ),
@@ -763,7 +769,7 @@ const seedDemoData = async (firmId?: string) => {
       : await tx
           .insert(subscriptions)
           .values({
-            firmId: firm.id,
+            organizationId: firm.id,
             practiceAreaId: immigrationPracticeArea.id,
             status: SubscriptionStatus.ACTIVE,
             billingCycle: "monthly",
@@ -778,7 +784,7 @@ const seedDemoData = async (firmId?: string) => {
       .from(firmPracticeAreas)
       .where(
         and(
-          eq(firmPracticeAreas.firmId, firm.id),
+          eq(firmPracticeAreas.organizationId, firm.id),
           eq(firmPracticeAreas.practiceAreaId, immigrationPracticeArea.id),
           eq(firmPracticeAreas.active, true),
         ),
@@ -787,7 +793,7 @@ const seedDemoData = async (firmId?: string) => {
 
     if (!existingFirmPracticeArea) {
       await tx.insert(firmPracticeAreas).values({
-        firmId: firm.id,
+        organizationId: firm.id,
         practiceAreaId: immigrationPracticeArea.id,
         subscriptionId: activeSubscription.id,
         active: true,
@@ -797,14 +803,14 @@ const seedDemoData = async (firmId?: string) => {
     let [firmAdmin] = await tx
       .select()
       .from(admins)
-      .where(eq(admins.firmId, firm.id))
+      .where(eq(admins.organizationId, firm.id))
       .limit(1);
 
     if (!firmAdmin) {
       [firmAdmin] = await tx
         .insert(admins)
         .values({
-          firmId: firm.id,
+          organizationId: firm.id,
           userId: randomUUID(),
           firstName: "Demo",
           lastName: "Admin",
@@ -817,7 +823,7 @@ const seedDemoData = async (firmId?: string) => {
       .insert(staff)
       .values([
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           firstName: "Amara",
           lastName: "Okafor",
           email: `amara.okafor.${suffix}@${emailDomain}`,
@@ -834,7 +840,7 @@ const seedDemoData = async (firmId?: string) => {
           hourlyRate: "125",
         },
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           firstName: "Noah",
           lastName: "Reed",
           email: `noah.reed.${suffix}@${emailDomain}`,
@@ -851,7 +857,7 @@ const seedDemoData = async (firmId?: string) => {
           hourlyRate: "75",
         },
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           firstName: "Mia",
           lastName: "Chen",
           email: `mia.chen.${suffix}@${emailDomain}`,
@@ -877,7 +883,7 @@ const seedDemoData = async (firmId?: string) => {
     const [demoTeam] = await tx
       .insert(teams)
       .values({
-        firmId: firm.id,
+        organizationId: firm.id,
         name: `Demo Immigration Team ${suffix}`,
         leadId: attorney.id,
         description: "Demo team for immigration case workflows.",
@@ -898,7 +904,7 @@ const seedDemoData = async (firmId?: string) => {
     const [demoCompany] = await tx
       .insert(companies)
       .values({
-        firmId: firm.id,
+        organizationId: firm.id,
         companyName: `Northstar Robotics Demo ${suffix}`,
         companyType: "corporation",
         ein: `99-${String(Date.now()).slice(-7)}`,
@@ -922,7 +928,7 @@ const seedDemoData = async (firmId?: string) => {
       .insert(clients)
       .values([
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           firstName: "Sofia",
           lastName: "Martinez",
           email: `sofia.martinez.${suffix}@${emailDomain}`,
@@ -936,7 +942,7 @@ const seedDemoData = async (firmId?: string) => {
           status: "active",
         },
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           firstName: "Daniel",
           lastName: "Kim",
           email: `daniel.kim.${suffix}@${emailDomain}`,
@@ -950,7 +956,7 @@ const seedDemoData = async (firmId?: string) => {
           status: "active",
         },
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           firstName: "Priya",
           lastName: "Raman",
           email: `client.priya.raman.${suffix}@${emailDomain}`,
@@ -978,7 +984,7 @@ const seedDemoData = async (firmId?: string) => {
       .insert(cases)
       .values([
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           caseNumber: `2026-${h1bCaseType.caseNumberPrefix}-DEMO-${suffix}-001`,
           clientId: createdClients[2].id,
           practiceAreaId: immigrationPracticeArea.id,
@@ -999,7 +1005,7 @@ const seedDemoData = async (firmId?: string) => {
           createdByAdminId: firmAdmin.id,
         },
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           caseNumber: `2026-${familyCaseType.caseNumberPrefix}-DEMO-${suffix}-002`,
           clientId: createdClients[0].id,
           practiceAreaId: immigrationPracticeArea.id,
@@ -1019,7 +1025,7 @@ const seedDemoData = async (firmId?: string) => {
           createdByAdminId: firmAdmin.id,
         },
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           caseNumber: `2026-${greenCardCaseType.caseNumberPrefix}-DEMO-${suffix}-003`,
           clientId: createdClients[1].id,
           practiceAreaId: immigrationPracticeArea.id,
@@ -1045,7 +1051,7 @@ const seedDemoData = async (firmId?: string) => {
       .insert(documents)
       .values([
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           clientId: createdClients[2].id,
           caseId: createdCases[0].id,
           uploadedById: attorney.id,
@@ -1059,7 +1065,7 @@ const seedDemoData = async (firmId?: string) => {
           aiChecked: true,
         },
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           clientId: createdClients[0].id,
           caseId: createdCases[1].id,
           uploadedById: seniorParalegal.id,
@@ -1073,7 +1079,7 @@ const seedDemoData = async (firmId?: string) => {
           aiChecked: false,
         },
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           clientId: createdClients[1].id,
           caseId: createdCases[2].id,
           uploadedById: paralegal.id,
@@ -1093,7 +1099,7 @@ const seedDemoData = async (firmId?: string) => {
       .insert(tasks)
       .values([
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           title: "Review H-1B support letter",
           description: "Confirm role duties, wage details, and employer signature.",
           caseId: createdCases[0].id,
@@ -1107,7 +1113,7 @@ const seedDemoData = async (firmId?: string) => {
           requiredCertifications: ["immigration_forms"],
         },
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           title: "Request translated marriage certificate",
           description: "Send client request for certified translation.",
           caseId: createdCases[1].id,
@@ -1121,7 +1127,7 @@ const seedDemoData = async (firmId?: string) => {
           requiredCertifications: ["family_petitions"],
         },
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           title: "Prepare interview checklist",
           description: "Build client-facing checklist for adjustment interview.",
           caseId: createdCases[2].id,
@@ -1141,7 +1147,7 @@ const seedDemoData = async (firmId?: string) => {
       .insert(calendarEvents)
       .values([
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           eventType: "client_meeting",
           status: "scheduled",
           title: "H-1B Filing Strategy Call",
@@ -1157,7 +1163,7 @@ const seedDemoData = async (firmId?: string) => {
           isAutoGenerated: false,
         },
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           eventType: "uscis_interview",
           status: "scheduled",
           title: "Green Card Interview Prep",
@@ -1178,7 +1184,7 @@ const seedDemoData = async (firmId?: string) => {
       .insert(clientRequests)
       .values([
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           clientId: createdClients[0].id,
           caseId: createdCases[1].id,
           description: "Upload certified translation of marriage certificate.",
@@ -1186,7 +1192,7 @@ const seedDemoData = async (firmId?: string) => {
           status: "pending",
         },
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           clientId: createdClients[2].id,
           caseId: createdCases[0].id,
           description: "Confirm latest job description and worksite address.",
@@ -1200,7 +1206,7 @@ const seedDemoData = async (firmId?: string) => {
       .insert(timeEntries)
       .values([
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           staffId: attorney.id,
           caseId: createdCases[0].id,
           hoursWorked: "2.50",
@@ -1208,7 +1214,7 @@ const seedDemoData = async (firmId?: string) => {
           description: "Reviewed H-1B support materials.",
         },
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           staffId: seniorParalegal.id,
           caseId: createdCases[1].id,
           hoursWorked: "1.75",
@@ -1216,7 +1222,7 @@ const seedDemoData = async (firmId?: string) => {
           description: "Prepared family petition evidence checklist.",
         },
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           staffId: paralegal.id,
           caseId: createdCases[2].id,
           hoursWorked: "3.00",
@@ -1229,7 +1235,7 @@ const seedDemoData = async (firmId?: string) => {
     const [existingAiConfig] = await tx
       .select()
       .from(aiSystemConfig)
-      .where(eq(aiSystemConfig.firmId, firm.id))
+      .where(eq(aiSystemConfig.organizationId, firm.id))
       .limit(1);
 
     if (existingAiConfig) {
@@ -1245,7 +1251,7 @@ const seedDemoData = async (firmId?: string) => {
         .where(eq(aiSystemConfig.id, existingAiConfig.id));
     } else {
       await tx.insert(aiSystemConfig).values({
-        firmId: firm.id,
+        organizationId: firm.id,
         isActive: true,
         crossCheckingEnabled: true,
         inaValidationActive: true,
@@ -1257,7 +1263,7 @@ const seedDemoData = async (firmId?: string) => {
       .insert(aiErrorFlags)
       .values([
         {
-          firmId: firm.id,
+          organizationId: firm.id,
           clientId: createdClients[2].id,
           caseId: createdCases[0].id,
           documentId: createdDocuments[0].id,
@@ -1594,7 +1600,7 @@ const demoDataCommand = program
 demoDataCommand
   .command("seed")
   .description("Select a firm and populate linked demo data")
-  .argument("[firmId]", "Firm id")
+  .argument("[organizationId]", "Firm id")
   .action(seedDemoData);
 
 program

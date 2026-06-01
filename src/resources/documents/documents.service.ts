@@ -19,18 +19,18 @@ const BUCKET = "documents";
 // ─── Storage Path ─────────────────────────────────────────────────────────────
 
 const buildStoragePath = (
-  firmId: string,
+  organizationId: string,
   clientId: string,
   caseId: string,
   category: string,
   filename: string,
-) => `${firmId}/${clientId}/${caseId}/${category}/${filename}`;
+) => `${organizationId}/${clientId}/${caseId}/${category}/${filename}`;
 
 export class DocumentsService {
   // ─── Upload ───────────────────────────────────────────────────────────────────
 
   uploadDocument = async (
-    firmId: string,
+    organizationId: string,
     data: {
       clientId: string;
       caseId: string;
@@ -46,7 +46,7 @@ export class DocumentsService {
     const ext = data.originalFilename.split(".").pop();
     const safeFilename = `${Date.now()}-${data.name.replace(/\s+/g, "_")}.${ext}`;
     const storagePath = buildStoragePath(
-      firmId,
+      organizationId,
       data.clientId,
       data.caseId,
       data.category,
@@ -69,7 +69,7 @@ export class DocumentsService {
     const [doc] = await db
       .insert(documents)
       .values({
-        firmId,
+        organizationId,
         clientId: data.clientId,
         caseId: data.caseId,
         uploadedById: data.uploadedById,
@@ -88,7 +88,7 @@ export class DocumentsService {
   // ─── List ─────────────────────────────────────────────────────────────────────
 
   getAllDocuments = async (
-    firmId: string,
+    organizationId: string,
     filters?: {
       search?: string;
       category?: string;
@@ -103,7 +103,7 @@ export class DocumentsService {
     const limit = filters?.limit ?? 20;
     const offset = getPaginationOffset({ page, limit });
 
-    const conditions = [eq(documents.firmId, firmId)];
+    const conditions = [eq(documents.organizationId, organizationId)];
 
     if (filters?.category) {
       conditions.push(eq(documents.category, filters.category as any));
@@ -198,11 +198,11 @@ export class DocumentsService {
 
   // ─── Stats ────────────────────────────────────────────────────────────────────
 
-  getDocumentStats = async (firmId: string) => {
+  getDocumentStats = async (organizationId: string) => {
     const rows = await db
       .select({ category: documents.category, total: count() })
       .from(documents)
-      .where(eq(documents.firmId, firmId))
+      .where(eq(documents.organizationId, organizationId))
       .groupBy(documents.category);
 
     const stats: Record<string, number> = {
@@ -219,11 +219,11 @@ export class DocumentsService {
 
   // ─── Get One ──────────────────────────────────────────────────────────────────
 
-  getDocumentById = async (id: string, firmId: string) => {
+  getDocumentById = async (id: string, organizationId: string) => {
     const [row] = await db
       .select()
       .from(documents)
-      .where(and(eq(documents.id, id), eq(documents.firmId, firmId)));
+      .where(and(eq(documents.id, id), eq(documents.organizationId, organizationId)));
     return row ?? null;
   };
 
@@ -231,21 +231,21 @@ export class DocumentsService {
 
   updateDocumentStatus = async (
     id: string,
-    firmId: string,
+    organizationId: string,
     status: "approved" | "review_needed" | "processing",
   ) => {
     const [updated] = await db
       .update(documents)
       .set({ status, updatedAt: new Date() })
-      .where(and(eq(documents.id, id), eq(documents.firmId, firmId)))
+      .where(and(eq(documents.id, id), eq(documents.organizationId, organizationId)))
       .returning();
     return updated;
   };
 
   // ─── Signed Download URL ──────────────────────────────────────────────────────
 
-  getDownloadUrl = async (id: string, firmId: string) => {
-    const doc = await this.getDocumentById(id, firmId);
+  getDownloadUrl = async (id: string, organizationId: string) => {
+    const doc = await this.getDocumentById(id, organizationId);
     if (!doc) throw new NotFoundError("Document not found");
 
     const { data, error } = await supabaseAdmin.storage
@@ -258,13 +258,13 @@ export class DocumentsService {
 
   // ─── Delete ───────────────────────────────────────────────────────────────────
 
-  deleteDocument = async (id: string, firmId: string) => {
-    const doc = await this.getDocumentById(id, firmId);
+  deleteDocument = async (id: string, organizationId: string) => {
+    const doc = await this.getDocumentById(id, organizationId);
     if (!doc) throw new NotFoundError("Document not found");
 
     await supabaseAdmin.storage.from(BUCKET).remove([doc.storagePath]);
     await db
       .delete(documents)
-      .where(and(eq(documents.id, id), eq(documents.firmId, firmId)));
+      .where(and(eq(documents.id, id), eq(documents.organizationId, organizationId)));
   };
 }
