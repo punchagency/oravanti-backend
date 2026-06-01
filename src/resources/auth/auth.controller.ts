@@ -37,7 +37,7 @@ export class AuthController {
       const data = await authResponse.json();
 
       res.status(200).json({
-        message: data.message || "Signup successful",
+        message: data.message ?? "Signup successful",
         success: true,
         data,
       });
@@ -65,7 +65,6 @@ export class AuthController {
       res.status(200).json({
         message: "Sign in successful",
         success: true,
-
         data,
       });
     },
@@ -100,7 +99,7 @@ export class AuthController {
     const data = await authResponse.json();
 
     res.status(200).json({
-      message: data.message || "Sign out successful",
+      message: data.message ?? "Sign out successful",
       success: true,
     });
   });
@@ -135,7 +134,7 @@ export class AuthController {
       const data = await authResponse.json();
 
       res.status(200).json({
-        message: data.message || "OTP sent successfully",
+        message: data.message ?? "OTP sent successfully",
         success: true,
       });
     },
@@ -157,7 +156,7 @@ export class AuthController {
     const data = await authResponse.json();
 
     res.status(200).json({
-      message: data.message || "Password reset successful",
+      message: data.message ?? "Password reset successful",
       success: true,
     });
   });
@@ -181,7 +180,7 @@ export class AuthController {
     const data = await authResponse.json();
 
     res.status(200).json({
-      message: data.message || "Password updated successfully",
+      message: data.message ?? "Password updated successfully",
       success: true,
     });
   });
@@ -197,7 +196,7 @@ export class AuthController {
     const data = await authResponse.json();
 
     res.status(200).json({
-      message: data.message || "Session revoked successfully",
+      message: data.message ?? "Session revoked successfully",
       success: true,
     });
   });
@@ -210,7 +209,7 @@ export class AuthController {
     applyAuthHeaders(authResponse.headers, res);
 
     res.status(200).json({
-      message: data.message || "Session retrieved successfully",
+      message: data.message ?? "Session retrieved successfully",
       success: true,
       data,
     });
@@ -224,7 +223,7 @@ export class AuthController {
     const data = await authResponse.json();
 
     res.status(200).json({
-      message: data.message || "Session refreshed successfully",
+      message: data.message ?? "Session refreshed successfully",
       success: true,
       data,
     });
@@ -236,7 +235,7 @@ export class AuthController {
     const data = await authResponse.json();
 
     res.status(200).json({
-      message: data.message || "Active sessions retrieved successfully",
+      message: data.message ?? "Active sessions retrieved successfully",
       success: true,
       data,
     });
@@ -258,7 +257,7 @@ export class AuthController {
     applyAuthHeaders(authResponse.headers, res);
 
     res.status(200).json({
-      message: data.message || "Two-factor authentication enabled successfully",
+      message: data.message ?? "Two-factor authentication enabled successfully",
       success: true,
       data,
     });
@@ -281,7 +280,7 @@ export class AuthController {
 
     res.status(200).json({
       message:
-        data.message || "Two-factor authentication disabled successfully",
+        data.message ?? "Two-factor authentication disabled successfully",
       success: true,
       data,
     });

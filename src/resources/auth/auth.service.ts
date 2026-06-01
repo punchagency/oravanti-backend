@@ -102,8 +102,6 @@ export class AuthService {
         | "VALIDATION_ERROR"
         | "EMAIL_NOT_VERIFIED";
 
-      console.log({ errorData, errorCode });
-
       const message = errorData.message || "Registration failed";
 
       switch (errorCode) {
@@ -152,8 +150,6 @@ export class AuthService {
         | "TOTP_EXPIRED"
         | "MISSING_TOTP_CODE"
         | "VALIDATION_ERROR";
-
-      console.log({ errorCode });
 
       const message = errorData.message || "TOTP verification failed";
       switch (errorCode) {
@@ -316,8 +312,6 @@ export class AuthService {
         | "VALIDATION_ERROR";
 
       const message = errorData.message || "Session revocation failed";
-
-      console.log({ errorCode, errorData });
 
       switch (errorCode) {
         case "INVALID_TOKEN":
