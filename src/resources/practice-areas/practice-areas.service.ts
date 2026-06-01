@@ -181,7 +181,7 @@ export const getAllPracticeAreas = async (filters?: PracticeAreaFilters) => {
 };
 
 export const getFirmPracticeAreas = async (
-  firmId: string,
+  organizationId: string,
   filters?: PracticeAreaFilters,
 ) => {
   const where = getPracticeAreaWhere(filters);
@@ -209,7 +209,7 @@ export const getFirmPracticeAreas = async (
       firmPracticeAreas,
       and(
         eq(firmPracticeAreas.practiceAreaId, practiceAreas.id),
-        eq(firmPracticeAreas.firmId, firmId),
+        eq(firmPracticeAreas.organizationId, organizationId),
         eq(firmPracticeAreas.active, true),
       ),
     )
@@ -249,7 +249,7 @@ export const getFirmPracticeAreas = async (
 };
 
 export const createSubscriptions = async (
-  firmId: string,
+  organizationId: string,
   body: CreateSubscriptionsBody = {},
 ) => {
   const items = normalizeSubscriptionInputs(body);
@@ -280,7 +280,7 @@ export const createSubscriptions = async (
     .from(firmPracticeAreas)
     .where(
       and(
-        eq(firmPracticeAreas.firmId, firmId),
+        eq(firmPracticeAreas.organizationId, organizationId),
         eq(firmPracticeAreas.active, true),
         inArray(firmPracticeAreas.practiceAreaId, requestedPracticeAreaIds),
       ),
@@ -304,7 +304,7 @@ export const createSubscriptions = async (
       const [subscription] = await tx
         .insert(subscriptions)
         .values({
-          firmId,
+          organizationId,
           practiceAreaId: item.practiceAreaId,
           status: SubscriptionStatus.ACTIVE,
           billingCycle: item.billingCycle,
@@ -318,7 +318,7 @@ export const createSubscriptions = async (
       const [firmPracticeArea] = await tx
         .insert(firmPracticeAreas)
         .values({
-          firmId,
+          organizationId,
           practiceAreaId: item.practiceAreaId,
           subscriptionId: subscription.id,
         })
@@ -340,7 +340,7 @@ export const createSubscriptions = async (
 };
 
 export const cancelSubscriptions = async (
-  firmId: string,
+  organizationId: string,
   body: CancelSubscriptionsBody = {},
 ) => {
   const subscriptionIds = uniqueIds(body.subscriptionIds ?? []);
@@ -359,7 +359,7 @@ export const cancelSubscriptions = async (
   }
 
   const firmAreaConditions = [
-    eq(firmPracticeAreas.firmId, firmId),
+    eq(firmPracticeAreas.organizationId, organizationId),
     eq(firmPracticeAreas.active, true),
   ];
 
@@ -401,7 +401,7 @@ export const cancelSubscriptions = async (
       })
       .where(
         and(
-          eq(subscriptions.firmId, firmId),
+          eq(subscriptions.organizationId, organizationId),
           inArray(subscriptions.id, matchedSubscriptionIds),
         ),
       )
@@ -412,7 +412,7 @@ export const cancelSubscriptions = async (
       .set({ active: false })
       .where(
         and(
-          eq(firmPracticeAreas.firmId, firmId),
+          eq(firmPracticeAreas.organizationId, organizationId),
           inArray(firmPracticeAreas.subscriptionId, matchedSubscriptionIds),
         ),
       );

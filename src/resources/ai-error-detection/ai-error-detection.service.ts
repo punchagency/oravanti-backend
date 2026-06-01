@@ -8,7 +8,7 @@ import { db } from "./../../db/client";
 export class AIErrorDetectionService {
   // ─── Stats ────────────────────────────────────────────────────────────────────
 
-  getStats = async (firmId: string) => {
+  getStats = async (organizationId: string) => {
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
@@ -18,7 +18,7 @@ export class AIErrorDetectionService {
       .from(aiErrorFlags)
       .where(
         and(
-          eq(aiErrorFlags.firmId, firmId),
+          eq(aiErrorFlags.organizationId, organizationId),
           gte(aiErrorFlags.createdAt, startOfMonth),
         ),
       );
@@ -28,7 +28,7 @@ export class AIErrorDetectionService {
       .from(aiErrorFlags)
       .where(
         and(
-          eq(aiErrorFlags.firmId, firmId),
+          eq(aiErrorFlags.organizationId, organizationId),
           eq(aiErrorFlags.status, "resolved"),
         ),
       );
@@ -44,7 +44,7 @@ export class AIErrorDetectionService {
   // ─── List Flags ───────────────────────────────────────────────────────────────
 
   getAllFlags = async (
-    firmId: string,
+    organizationId: string,
     filters?: { severity?: string; status?: string },
   ) => {
     const rows = await db
@@ -67,7 +67,7 @@ export class AIErrorDetectionService {
       .from(aiErrorFlags)
       .leftJoin(clients, eq(clients.id, aiErrorFlags.clientId))
       .leftJoin(cases, eq(cases.id, aiErrorFlags.caseId))
-      .where(eq(aiErrorFlags.firmId, firmId))
+      .where(eq(aiErrorFlags.organizationId, organizationId))
       .orderBy(desc(aiErrorFlags.createdAt));
 
     return rows
@@ -94,11 +94,11 @@ export class AIErrorDetectionService {
 
   // ─── Get One ──────────────────────────────────────────────────────────────────
 
-  getFlagById = async (id: string, firmId: string) => {
+  getFlagById = async (id: string, organizationId: string) => {
     const [row] = await db
       .select()
       .from(aiErrorFlags)
-      .where(and(eq(aiErrorFlags.id, id), eq(aiErrorFlags.firmId, firmId)));
+      .where(and(eq(aiErrorFlags.id, id), eq(aiErrorFlags.organizationId, organizationId)));
     return row ?? null;
   };
 
@@ -106,7 +106,7 @@ export class AIErrorDetectionService {
 
   updateFlagStatus = async (
     id: string,
-    firmId: string,
+    organizationId: string,
     status: "pending_review" | "under_review" | "resolved",
     resolvedById?: string,
   ) => {
@@ -118,7 +118,7 @@ export class AIErrorDetectionService {
         resolvedAt: status === "resolved" ? new Date() : null,
         updatedAt: new Date(),
       })
-      .where(and(eq(aiErrorFlags.id, id), eq(aiErrorFlags.firmId, firmId)))
+      .where(and(eq(aiErrorFlags.id, id), eq(aiErrorFlags.organizationId, organizationId)))
       .returning();
     return updated;
   };
@@ -126,7 +126,7 @@ export class AIErrorDetectionService {
   // ─── Create Flag (called by AI service) ──────────────────────────────────────
 
   createFlag = async (
-    firmId: string,
+    organizationId: string,
     data: {
       clientId: string;
       caseId: string;
@@ -141,39 +141,39 @@ export class AIErrorDetectionService {
     // TODO: hook into AI service call here when admin AI is built
     const [flag] = await db
       .insert(aiErrorFlags)
-      .values({ firmId, ...data })
+      .values({ organizationId, ...data })
       .returning();
     return flag;
   };
 
   // ─── System Config ────────────────────────────────────────────────────────────
 
-  getSystemConfig = async (firmId: string) => {
+  getSystemConfig = async (organizationId: string) => {
     const [config] = await db
       .select()
       .from(aiSystemConfig)
-      .where(eq(aiSystemConfig.firmId, firmId));
+      .where(eq(aiSystemConfig.organizationId, organizationId));
 
     if (config) return config;
 
     // seed default config on first access
     const [created] = await db
       .insert(aiSystemConfig)
-      .values({ firmId })
+      .values({ organizationId })
       .returning();
     return created;
   };
 
   updateSystemConfig = async (
-    firmId: string,
+    organizationId: string,
     data: Partial<typeof aiSystemConfig.$inferInsert>,
   ) => {
-    const existing = await this.getSystemConfig(firmId);
+    const existing = await this.getSystemConfig(organizationId);
 
     const [updated] = await db
       .update(aiSystemConfig)
       .set({ ...data, updatedAt: new Date() })
-      .where(eq(aiSystemConfig.firmId, firmId))
+      .where(eq(aiSystemConfig.organizationId, organizationId))
       .returning();
     return updated;
   };

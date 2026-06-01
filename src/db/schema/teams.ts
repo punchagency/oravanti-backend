@@ -7,7 +7,7 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
-import { firms } from "./firm-info";
+import { organization } from './auth-schema';
 import { staff } from "./staff";
 
 export const teamStatusEnum = pgEnum("team_status", [
@@ -20,9 +20,9 @@ export const teams = pgTable(
   "teams",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    firmId: uuid("firm_id")
+    organizationId: text("organization_id")
       .notNull()
-      .references(() => firms.id),
+      .references(() => organization.id),
     name: text("name").notNull(),
     leadId: uuid("lead_id").references(() => staff.id),
     description: text("description"),
@@ -33,7 +33,7 @@ export const teams = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
-  (t) => [unique().on(t.firmId, t.name)],
+  (t) => [unique().on(t.organizationId, t.name)],
 );
 
 export type Team = typeof teams.$inferSelect;

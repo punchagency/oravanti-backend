@@ -18,7 +18,7 @@ export class CasesController {
     }
 
     const caseNumber = await this.casesService.generateCaseNumber(
-      req.firmId!,
+      req.organizationId!,
       practiceAreaId as string,
       caseType as string,
     );
@@ -27,7 +27,7 @@ export class CasesController {
 
   getAllCases = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { search, status, assigneeId, clientId, practiceAreaId } = req.query;
-    const result = await this.casesService.getAllCases(req.firmId!, {
+    const result = await this.casesService.getAllCases(req.organizationId!, {
       search: search as string,
       status: status as string,
       assigneeId: assigneeId as string,
@@ -40,7 +40,7 @@ export class CasesController {
   getCaseById = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.casesService.getCaseById(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Case not found");
@@ -64,7 +64,7 @@ export class CasesController {
       );
     }
 
-    const result = await this.casesService.createCase(req.firmId!, req.body, {
+    const result = await this.casesService.createCase(req.organizationId!, req.body, {
       adminId: req.adminId,
       staffId: req.staffId,
     });
@@ -74,7 +74,7 @@ export class CasesController {
   updateCase = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.casesService.updateCase(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
       req.body,
     );
     if (!result) {
@@ -84,7 +84,7 @@ export class CasesController {
   });
 
   deleteCase = asyncWrap(async (req: AuthRequest, res: Response) => {
-    await this.casesService.deleteCase(req.params.id as string, req.firmId!);
+    await this.casesService.deleteCase(req.params.id as string, req.organizationId!);
     res.status(200).json({ message: "Case deleted" });
   });
 }

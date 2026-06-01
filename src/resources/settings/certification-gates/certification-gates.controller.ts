@@ -19,7 +19,7 @@ export class CertificationGatesController {
 
   getCertificationGates = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.certifcationGatesService.getCertificationGates(
-      req.firmId!,
+      req.organizationId!,
     );
     res.status(200).json(result);
   });
@@ -33,13 +33,13 @@ export class CertificationGatesController {
       }
 
       await this.certifcationGatesService.updateCertificationGates(
-        req.firmId!,
+        req.organizationId!,
         gates,
       );
       await this.permissionAuditLogService.logPermissionChange(
         "Modified paralegal certification requirements",
         req.userId!,
-        req.firmId!,
+        req.organizationId!,
       );
       res.status(200).json({ message: "Certification gates updated" });
     },
@@ -49,7 +49,7 @@ export class CertificationGatesController {
     async (req: AuthRequest, res: Response) => {
       const result =
         await this.certifcationGatesService.getActivationRequirements(
-          req.firmId!,
+          req.organizationId!,
         );
       res.status(200).json(result);
     },
@@ -65,13 +65,13 @@ export class CertificationGatesController {
 
       const result =
         await this.certifcationGatesService.updateActivationRequirements(
-          req.firmId!,
+          req.organizationId!,
           certificationCodes,
         );
       await this.permissionAuditLogService.logPermissionChange(
         "Updated paralegal activation requirements",
         req.userId!,
-        req.firmId!,
+        req.organizationId!,
       );
       res.status(200).json({
         message: `Activation requirements updated. ${result.updated} paralegal(s) re-evaluated.`,

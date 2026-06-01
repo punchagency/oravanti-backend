@@ -1,12 +1,12 @@
-import { pgTable, uuid, boolean, timestamp, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, boolean, timestamp, pgEnum } from 'drizzle-orm/pg-core';
 import { staff } from './staff';
-import { firms } from './firm-info';
+import { organization } from './auth-schema';
 
 export const paralegalTypeEnum = pgEnum('paralegal_type', ['junior', 'senior']);
 
 export const paralegalProfiles = pgTable('paralegal_profiles', {
   id:      uuid('id').primaryKey().defaultRandom(),
-  firmId:  uuid('firm_id').notNull().references(() => firms.id),
+  organizationId:  text('organization_id').notNull().references(() => organization.id),
   staffId: uuid('staff_id').notNull().unique().references(() => staff.id, { onDelete: 'cascade' }),
   type: paralegalTypeEnum('type').notNull().default('junior'),
   isCertified: boolean('is_certified').notNull().default(false),

@@ -3,11 +3,11 @@ import { db } from "../../../db/client";
 import { admins, permissionAuditLog } from "../../../db/schema";
 
 export class PermissionAuditLogService {
-  getPermissionAuditLog = async (firmId: string, limit = 20) => {
+  getPermissionAuditLog = async (organizationId: string, limit = 20) => {
     return db
       .select()
       .from(permissionAuditLog)
-      .where(eq(permissionAuditLog.firmId, firmId))
+      .where(eq(permissionAuditLog.organizationId, organizationId))
       .orderBy(desc(permissionAuditLog.createdAt))
       .limit(limit);
   };
@@ -15,12 +15,12 @@ export class PermissionAuditLogService {
   logPermissionChange = async (
     action: string,
     userId: string,
-    firmId: string,
+    organizationId: string,
   ) => {
     const adminRecord = await db
       .select({ firstName: admins.firstName, lastName: admins.lastName })
       .from(admins)
-      .where(and(eq(admins.userId, userId), eq(admins.firmId, firmId)))
+      .where(and(eq(admins.userId, userId), eq(admins.organizationId, organizationId)))
       .limit(1);
 
     const changedByName = adminRecord.length
@@ -28,7 +28,7 @@ export class PermissionAuditLogService {
       : "Unknown Admin";
 
     await db.insert(permissionAuditLog).values({
-      firmId,
+      organizationId,
       action,
       changedBy: userId,
       changedByName,

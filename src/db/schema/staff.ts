@@ -1,5 +1,5 @@
 import { pgTable, uuid, text, integer, date, timestamp, pgEnum, numeric } from 'drizzle-orm/pg-core';
-import { firms } from './firm-info';
+import { organization } from './auth-schema';
 
 export const staffRoleEnum = pgEnum('staff_role', [
   'admin',
@@ -13,8 +13,8 @@ export const staffStatusEnum = pgEnum('staff_status', ['active', 'inactive', 'on
 
 export const staff = pgTable('staff', {
   id:     uuid('id').primaryKey().defaultRandom(),
-  firmId: uuid('firm_id').notNull().references(() => firms.id),
-  userId: uuid('user_id'),
+  organizationId: text('organization_id').notNull().references(() => organization.id),
+  userId: text('user_id'),
   firstName: text('first_name').notNull(),
   lastName: text('last_name').notNull(),
   email: text('email').notNull().unique(),

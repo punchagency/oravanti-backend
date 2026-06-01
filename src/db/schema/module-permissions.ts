@@ -1,5 +1,5 @@
-import { pgTable, uuid, timestamp, pgEnum, unique } from 'drizzle-orm/pg-core';
-import { firms } from './firm-info';
+import { pgTable, uuid, text, timestamp, pgEnum, unique } from 'drizzle-orm/pg-core';
+import { organization } from './auth-schema';
 
 export const moduleEnum = pgEnum('module', [
   'dashboard',
@@ -40,13 +40,13 @@ export const modulePermissions = pgTable(
   'module_permissions',
   {
     id:         uuid('id').primaryKey().defaultRandom(),
-    firmId:     uuid('firm_id').notNull().references(() => firms.id),
+    organizationId:     text('organization_id').notNull().references(() => organization.id),
     module:     moduleEnum('module').notNull(),
     role:       permissionRoleEnum('role').notNull(),
     permission: permissionLevelEnum('permission').notNull(),
     updatedAt:  timestamp('updated_at').notNull().defaultNow(),
   },
-  (t) => [unique().on(t.firmId, t.module, t.role)]
+  (t) => [unique().on(t.organizationId, t.module, t.role)]
 );
 
 export type ModulePermission = typeof modulePermissions.$inferSelect;

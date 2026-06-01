@@ -1,6 +1,6 @@
-import { pgTable, uuid, timestamp, pgEnum, unique } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, pgEnum, unique } from 'drizzle-orm/pg-core';
 import { permissionRoleEnum, permissionLevelEnum } from './module-permissions';
-import { firms } from './firm-info';
+import { organization } from './auth-schema';
 
 export const dataTypeEnum = pgEnum('data_type', [
   'client_pii',
@@ -15,13 +15,13 @@ export const dataAccessControls = pgTable(
   'data_access_controls',
   {
     id:         uuid('id').primaryKey().defaultRandom(),
-    firmId:     uuid('firm_id').notNull().references(() => firms.id),
+    organizationId:     text('organization_id').notNull().references(() => organization.id),
     dataType:   dataTypeEnum('data_type').notNull(),
     role:       permissionRoleEnum('role').notNull(),
     permission: permissionLevelEnum('permission').notNull(),
     updatedAt:  timestamp('updated_at').notNull().defaultNow(),
   },
-  (t) => [unique().on(t.firmId, t.dataType, t.role)]
+  (t) => [unique().on(t.organizationId, t.dataType, t.role)]
 );
 
 export type DataAccessControl = typeof dataAccessControls.$inferSelect;

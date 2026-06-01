@@ -1,12 +1,12 @@
 import { pgTable, uuid, text, numeric, date, timestamp, pgEnum } from 'drizzle-orm/pg-core';
 import { filingTypeEnum } from './enums';
-import { firms } from './firm-info';
+import { organization } from './auth-schema';
 
 export const contractorStatusEnum = pgEnum('contractor_status', ['active', 'inactive', 'pending']);
 
 export const contractors = pgTable('contractors', {
   id:     uuid('id').primaryKey().defaultRandom(),
-  firmId: uuid('firm_id').notNull().references(() => firms.id),
+  organizationId: text('organization_id').notNull().references(() => organization.id),
   name: text('name').notNull(),
   email: text('email').notNull().unique(),
   specialization: filingTypeEnum('specialization'),

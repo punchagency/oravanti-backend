@@ -1,5 +1,4 @@
 import { describe, expect, it, jest } from "@jest/globals";
-import { NotFoundError } from "../../../src/utils/error/app-error";
 import { PracticeAreasController } from "../../../src/resources/practice-areas/practice-areas.controller";
 
 const createResponse = () => {
@@ -11,7 +10,7 @@ const createResponse = () => {
 };
 
 describe("PracticeAreasController", () => {
-  const firmId = "firm-1";
+  const organizationId = "firm-1";
 
   const createController = (service: Record<string, unknown>) =>
     new PracticeAreasController(service as any);
@@ -26,12 +25,12 @@ describe("PracticeAreasController", () => {
     const next = jest.fn();
 
     await controller.getAllPracticeAreas(
-      { firmId, query: { search: "immi" } } as any,
+      { query: { search: "immi" } } as any,
       res as any,
       next,
     );
 
-    expect(service.getAllPracticeAreas as any).toHaveBeenCalledWith(firmId, {
+    expect(service.getAllPracticeAreas as any).toHaveBeenCalledWith({
       search: "immi",
     });
     expect(res.status).toHaveBeenCalledWith(200);
@@ -39,49 +38,52 @@ describe("PracticeAreasController", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("passes NotFoundError to next when details are missing", async () => {
+  it("fetches organization practice areas with search", async () => {
+    const result = [{ id: "area-1", name: "Immigration", active: true }];
     const service = {
-      getPracticeAreaById: jest.fn(async () => null),
+      getFirmPracticeAreas: jest.fn(async () => result),
     };
     const controller = createController(service);
     const res = createResponse();
     const next = jest.fn();
 
-    await controller.getPracticeAreaById(
-      { firmId, params: { id: "missing-area" } } as any,
+    await controller.getFirmPracticeAreas(
+      { organizationId, query: { search: "immi" } } as any,
       res as any,
       next,
     );
 
-    expect(service.getPracticeAreaById as any).toHaveBeenCalledWith(
-      "missing-area",
-      firmId,
+    expect(service.getFirmPracticeAreas as any).toHaveBeenCalledWith(
+      organizationId,
+      { search: "immi" },
     );
-    expect(next).toHaveBeenCalledWith(expect.any(NotFoundError));
-    expect(res.status).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(result);
+    expect(next).not.toHaveBeenCalled();
   });
 
-  it("creates practice areas with a 201 response", async () => {
+  it("creates subscriptions with a 201 response", async () => {
     const result = { id: "area-1", name: "Immigration" };
-    const body = { name: "Immigration" };
+    const body = { practiceAreaIds: ["area-1"] };
     const service = {
-      createPracticeArea: jest.fn(async () => result),
+      createSubscriptions: jest.fn(async () => result),
     };
     const controller = createController(service);
     const res = createResponse();
     const next = jest.fn();
 
-    await controller.createPracticeArea(
-      { firmId, body } as any,
+    await controller.createSubscriptions(
+      { organizationId, body } as any,
       res as any,
       next,
     );
 
-    expect(service.createPracticeArea as any).toHaveBeenCalledWith(
-      firmId,
+    expect(service.createSubscriptions as any).toHaveBeenCalledWith(
+      organizationId,
       body,
     );
     expect(res.status).toHaveBeenCalledWith(201);
     expect(res.json).toHaveBeenCalledWith(result);
+    expect(next).not.toHaveBeenCalled();
   });
 });

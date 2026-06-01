@@ -21,7 +21,7 @@ export class PracticeAreasController {
   getFirmPracticeAreas = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { search } = req.query;
     const result = await this.practiceAreasService.getFirmPracticeAreas(
-      req.firmId!,
+      req.organizationId!,
       { search: search as string | undefined },
     );
     res.status(200).json(result);
@@ -29,7 +29,7 @@ export class PracticeAreasController {
 
   createSubscriptions = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.practiceAreasService.createSubscriptions(
-      req.firmId!,
+      req.organizationId!,
       req.body,
     );
     res.status(201).json(result);
@@ -37,7 +37,7 @@ export class PracticeAreasController {
 
   cancelSubscriptions = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.practiceAreasService.cancelSubscriptions(
-      req.firmId!,
+      req.organizationId!,
       req.body,
     );
     res.status(200).json(result);

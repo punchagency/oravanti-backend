@@ -18,12 +18,12 @@ export class AccessControlController {
   }
 
   getRoleOverview = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.accessControlService.getRoleOverview(req.firmId!);
+    const result = await this.accessControlService.getRoleOverview(req.organizationId!);
     res.status(200).json(result);
   });
 
   getPermissions = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.accessControlService.getPermissions(req.firmId!);
+    const result = await this.accessControlService.getPermissions(req.organizationId!);
     res.status(200).json(result);
   });
 
@@ -34,14 +34,14 @@ export class AccessControlController {
       throw new BadRequestError("permissions array is required");
     }
 
-    await this.accessControlService.savePermissions(req.firmId!, permissions);
+    await this.accessControlService.savePermissions(req.organizationId!, permissions);
 
     const action =
       permissions.length === 1
         ? `Updated ${permissions[0].module} permissions for ${permissions[0].role} role`
         : "Updated module permissions";
     this.auditLogService
-      .logPermissionChange(action, req.userId!, req.firmId!)
+      .logPermissionChange(action, req.userId!, req.organizationId!)
       .catch(() => {});
 
     res.status(200).json({ message: "Permissions saved" });

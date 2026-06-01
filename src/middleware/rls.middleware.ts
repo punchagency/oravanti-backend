@@ -8,9 +8,9 @@ export const setFirmContext = async (
   res: Response,
   next: NextFunction,
 ) => {
-  if (req.firmId) {
+  if (req.organizationId) {
     await db.execute(
-      sql`SELECT set_config('app.current_firm_id', ${req.firmId}, false)`,
+      sql`SELECT set_config('app.current_organization_id', ${req.organizationId}, false)`,
     );
   }
   next();

@@ -5,28 +5,28 @@ import { teamMembers } from "../../../db/schema/team-members";
 import { AddStaffBody, UpdateStaffBody } from "../../../types/hr.types";
 
 export class StaffService {
-  getAllStaff = async (firmId: string) => {
-    return db.select().from(staff).where(eq(staff.firmId, firmId));
+  getAllStaff = async (organizationId: string) => {
+    return db.select().from(staff).where(eq(staff.organizationId, organizationId));
   };
 
-  getStaffById = async (id: string, firmId: string) => {
+  getStaffById = async (id: string, organizationId: string) => {
     const result = await db
       .select()
       .from(staff)
-      .where(and(eq(staff.id, id), eq(staff.firmId, firmId)));
+      .where(and(eq(staff.id, id), eq(staff.organizationId, organizationId)));
     return result[0] ?? null;
   };
 
-  getStaffByTeam = async (teamId: string, firmId: string) => {
+  getStaffByTeam = async (teamId: string, organizationId: string) => {
     return db
       .select({ staff })
       .from(staff)
       .innerJoin(teamMembers, eq(teamMembers.staffId, staff.id))
-      .where(and(eq(teamMembers.teamId, teamId), eq(staff.firmId, firmId)))
+      .where(and(eq(teamMembers.teamId, teamId), eq(staff.organizationId, organizationId)))
       .then((rows) => rows.map((r) => r.staff));
   };
 
-  addStaff = async (body: AddStaffBody & { firmId: string }) => {
+  addStaff = async (body: AddStaffBody & { organizationId: string }) => {
     const { teamId, ...staffData } = body;
 
     const [newStaff] = await db.insert(staff).values(staffData).returning();
@@ -41,20 +41,20 @@ export class StaffService {
     return newStaff;
   };
 
-  updateStaff = async (id: string, firmId: string, body: UpdateStaffBody) => {
+  updateStaff = async (id: string, organizationId: string, body: UpdateStaffBody) => {
     const [updated] = await db
       .update(staff)
       .set({ ...body, updatedAt: new Date() })
-      .where(and(eq(staff.id, id), eq(staff.firmId, firmId)))
+      .where(and(eq(staff.id, id), eq(staff.organizationId, organizationId)))
       .returning();
 
     return updated ?? null;
   };
 
-  deleteStaff = async (id: string, firmId: string) => {
+  deleteStaff = async (id: string, organizationId: string) => {
     const [deleted] = await db
       .delete(staff)
-      .where(and(eq(staff.id, id), eq(staff.firmId, firmId)))
+      .where(and(eq(staff.id, id), eq(staff.organizationId, organizationId)))
       .returning();
     return deleted ?? null;
   };

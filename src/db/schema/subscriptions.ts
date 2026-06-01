@@ -2,12 +2,13 @@ import { sql } from "drizzle-orm";
 import {
   pgEnum,
   pgTable,
+  text,
   timestamp,
   uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
-import { firms } from "./firm-info";
+import { organization } from './auth-schema';
 import { practiceAreas } from "./practice-areas";
 
 export enum SubscriptionStatus {
@@ -29,8 +30,8 @@ export const subscriptions = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
 
-    firmId: uuid("firm_id")
-      .references(() => firms.id)
+    organizationId: text("organization_id")
+      .references(() => organization.id)
       .notNull(),
 
     practiceAreaId: uuid("practice_area_id")
@@ -61,7 +62,7 @@ export const subscriptions = pgTable(
   },
   (table) => [
     uniqueIndex("subscriptions_active_firm_practice_area_unique")
-      .on(table.firmId, table.practiceAreaId)
+      .on(table.organizationId, table.practiceAreaId)
       .where(sql`${table.status} = 'active'`),
   ],
 );

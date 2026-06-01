@@ -10,27 +10,27 @@ import {
 } from "../../../utils/error/app-error";
 
 export class AssignmentsService {
-  getAvailableContractors = async (filingType: FilingType, firmId: string) => {
+  getAvailableContractors = async (filingType: FilingType, organizationId: string) => {
     return db
       .select()
       .from(contractors)
       .where(
         and(
-          eq(contractors.firmId, firmId),
+          eq(contractors.organizationId, organizationId),
           eq(contractors.specialization, filingType),
           eq(contractors.status, "active"),
         ),
       );
   };
 
-  assignCase = async (body: AssignCaseBody & { firmId: string }) => {
+  assignCase = async (body: AssignCaseBody & { organizationId: string }) => {
     const {
       assignmentType,
       filingType,
       urgencyLevel,
       teamId,
       contractorId,
-      firmId,
+      organizationId,
     } = body;
 
     if (assignmentType === "internal_team" && !teamId) {
@@ -50,7 +50,7 @@ export class AssignmentsService {
         .select()
         .from(contractors)
         .where(
-          and(eq(contractors.id, contractorId), eq(contractors.firmId, firmId)),
+          and(eq(contractors.id, contractorId), eq(contractors.organizationId, organizationId)),
         );
 
       if (!contractor[0]) {
@@ -65,7 +65,7 @@ export class AssignmentsService {
     const [newAssignment] = await db
       .insert(assignments)
       .values({
-        firmId,
+        organizationId,
         assignmentType,
         filingType,
         urgencyLevel,
@@ -79,27 +79,27 @@ export class AssignmentsService {
     return newAssignment;
   };
 
-  getAllAssignments = async (firmId: string) => {
-    return db.select().from(assignments).where(eq(assignments.firmId, firmId));
+  getAllAssignments = async (organizationId: string) => {
+    return db.select().from(assignments).where(eq(assignments.organizationId, organizationId));
   };
 
-  getAssignmentById = async (id: string, firmId: string) => {
+  getAssignmentById = async (id: string, organizationId: string) => {
     const result = await db
       .select()
       .from(assignments)
-      .where(and(eq(assignments.id, id), eq(assignments.firmId, firmId)));
+      .where(and(eq(assignments.id, id), eq(assignments.organizationId, organizationId)));
     return result[0] ?? null;
   };
 
   updateAssignmentStatus = async (
     id: string,
-    firmId: string,
+    organizationId: string,
     status: "pending" | "active" | "completed" | "cancelled",
   ) => {
     const [updated] = await db
       .update(assignments)
       .set({ status, updatedAt: new Date() })
-      .where(and(eq(assignments.id, id), eq(assignments.firmId, firmId)))
+      .where(and(eq(assignments.id, id), eq(assignments.organizationId, organizationId)))
       .returning();
 
     return updated ?? null;

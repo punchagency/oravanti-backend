@@ -16,14 +16,14 @@ export class ClientsController {
   }
 
   getAllCompanies = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.clientsService.getAllCompanies(req.firmId!);
+    const result = await this.clientsService.getAllCompanies(req.organizationId!);
     res.status(200).json(result);
   });
 
   getCompanyById = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.clientsService.getCompanyById(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Company not found");
@@ -51,7 +51,7 @@ export class ClientsController {
       }
 
       const result = await this.clientsService.createCompanyWithClients(
-        req.firmId!,
+        req.organizationId!,
         companyData,
         individuals,
         { adminId: req.adminId, staffId: req.staffId },
@@ -67,7 +67,7 @@ export class ClientsController {
   updateCompany = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.clientsService.updateCompany(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
       req.body,
     );
 
@@ -81,7 +81,7 @@ export class ClientsController {
   deleteCompany = asyncWrap(async (req: AuthRequest, res: Response) => {
     await this.clientsService.deleteCompany(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     res.status(200).json({ message: "Company deleted" });
   });
@@ -95,7 +95,7 @@ export class ClientsController {
 
     const result = await this.clientsService.addClientToCompany(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
       clientData,
       caseData,
       { adminId: req.adminId, staffId: req.staffId },
@@ -111,14 +111,14 @@ export class ClientsController {
   getAllClients = asyncWrap(async (req: AuthRequest, res: Response) => {
     const search = req.query.search as string | undefined;
 
-    const result = await this.clientsService.getAllClients(req.firmId!, search);
+    const result = await this.clientsService.getAllClients(req.organizationId!, search);
     res.status(200).json(result);
   });
 
   getClientById = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.clientsService.getClientById(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Client not found");
@@ -138,7 +138,7 @@ export class ClientsController {
     }
 
     const result = await this.clientsService.createClient(
-      req.firmId!,
+      req.organizationId!,
       clientData,
       caseData,
       { acknowledgeConflict },
@@ -152,7 +152,7 @@ export class ClientsController {
   updateClient = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.clientsService.updateClient(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
       req.body,
     );
     if (!result) {
@@ -164,7 +164,7 @@ export class ClientsController {
   deleteClient = asyncWrap(async (req: AuthRequest, res: Response) => {
     await this.clientsService.deleteClient(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
     res.status(200).json({ message: "Client deleted" });
   });
@@ -172,7 +172,7 @@ export class ClientsController {
   getClientCases = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.clientsService.getClientCases(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
     );
 
     res.status(200).json(result);
@@ -183,7 +183,7 @@ export class ClientsController {
 
     const result = await this.clientsService.addCase(
       req.params.id as string,
-      req.firmId!,
+      req.organizationId!,
       caseData,
       { acknowledgeExistingCase },
     );
@@ -201,7 +201,7 @@ export class ClientsController {
 
     const result = await this.clientsService.updateCaseStatus(
       req.params.caseId as string,
-      req.firmId!,
+      req.organizationId!,
       status,
     );
     res.status(200).json(result);
@@ -210,7 +210,7 @@ export class ClientsController {
   getTeamStaff = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.clientsService.getTeamStaff(
       req.params.teamId as string,
-      req.firmId!,
+      req.organizationId!,
     );
     res.status(200).json(result);
   });
