@@ -336,26 +336,6 @@ export class AuthService {
       asResponse: true,
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const errorCode = errorData.code as
-        | "INVALID_TOKEN"
-        | "MISSING_FIELD"
-        | "VALIDATION_ERROR";
-
-      const message = errorData.message || "Session retrieval failed";
-
-      switch (errorCode) {
-        case "INVALID_TOKEN":
-          throw new AuthenticationError(message, errorData);
-        case "MISSING_FIELD":
-        case "VALIDATION_ERROR":
-          throw new ValidationError(message, errorData);
-        default:
-          throw new Error(message);
-      }
-    }
-
     return response;
   };
 
