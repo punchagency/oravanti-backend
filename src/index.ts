@@ -59,6 +59,7 @@ import { PracticeAreasService } from "./resources/practice-areas/practice-areas.
 import { QuestionnairesController } from "./resources/questionnaires/questionnaires.controller";
 import { QuestionnairesRouter } from "./resources/questionnaires/questionnaires.routes";
 import { QuestionnairesService } from "./resources/questionnaires/questionnaires.service";
+import { QuestionnairesValidation } from "./resources/questionnaires/questionnaires.validation";
 import { ProfileController } from "./resources/settings/profile/profile.controller";
 import { ProfileRouter } from "./resources/settings/profile/profile.routes";
 import { ProfileService } from "./resources/settings/profile/profile.service";
@@ -96,7 +97,11 @@ const questionnairesService = new QuestionnairesService();
 const questionnairesController = new QuestionnairesController(
   questionnairesService,
 );
-const questionnairesRouter = new QuestionnairesRouter(questionnairesController);
+const questionnairesValidation = new QuestionnairesValidation();
+const questionnairesRouter = new QuestionnairesRouter(
+  questionnairesController,
+  questionnairesValidation,
+);
 
 const tasksService = new TasksService();
 const tasksController = new TasksController(tasksService);
