@@ -1,8 +1,8 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
-import { CreateTeamBody, UpdateTeamBody } from "../../../types/hr.types";
+import { UpdateTeamBody } from "../../../types/hr.types";
 import asyncWrap from "../../../utils/asyncWrapper";
-import { BadRequestError, NotFoundError } from "../../../utils/error/app-error";
+import { NotFoundError } from "../../../utils/error/app-error";
 import { TeamsService } from "./teams.service";
 
 export class TeamsController {
@@ -29,12 +29,6 @@ export class TeamsController {
   });
 
   createTeam = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { name } = req.body as CreateTeamBody;
-
-    if (!name) {
-      throw new BadRequestError("Team name is required");
-    }
-
     const result = await this.teamsService.createTeam({
       ...req.body,
       organizationId: req.organizationId!,

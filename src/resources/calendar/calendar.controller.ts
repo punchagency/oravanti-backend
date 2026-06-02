@@ -1,7 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
-import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import { NotFoundError } from "../../utils/error/app-error";
 import { CalendarService } from "./calendar.service";
 
 export class CalendarController {
@@ -87,12 +87,6 @@ export class CalendarController {
         teamId,
       } = req.body;
 
-      if (!clientId || !caseId || !clientName || !formType) {
-        throw new BadRequestError(
-          "clientId, caseId, clientName, and formType are required",
-        );
-      }
-
       const result = await this.calendarService.createServiceRequestEvent(
         req.organizationId!,
         clientId,
@@ -126,12 +120,6 @@ export class CalendarController {
         assignedStaffId,
         teamId,
       } = req.body;
-
-      if (!clientId || !caseId || !clientName || !formType) {
-        throw new BadRequestError(
-          "clientId, caseId, clientName, and formType are required",
-        );
-      }
 
       const result = await this.calendarService.scheduleNextServiceRequest(
         req.organizationId!,

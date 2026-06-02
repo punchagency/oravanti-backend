@@ -32,37 +32,6 @@ export class QuestionnairesController {
   createQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { title, description, firstSectionTitle, caseTypeIds, sections } =
       req.body;
-    if (!title) throw new BadRequestError("title is required");
-    if (caseTypeIds && !Array.isArray(caseTypeIds)) {
-      throw new BadRequestError("caseTypeIds must be an array");
-    }
-    if (sections) {
-      if (!Array.isArray(sections)) {
-        throw new BadRequestError("sections must be an array");
-      }
-
-      for (const section of sections) {
-        if (!section.title) {
-          throw new BadRequestError("Each section requires a title");
-        }
-
-        if (section.questions && !Array.isArray(section.questions)) {
-          throw new BadRequestError("section.questions must be an array");
-        }
-
-        for (const question of section.questions ?? []) {
-          if (!question.label || !question.type) {
-            throw new BadRequestError(
-              "Each initial question requires label and type",
-            );
-          }
-
-          if (question.options && !Array.isArray(question.options)) {
-            throw new BadRequestError("question.options must be an array");
-          }
-        }
-      }
-    }
 
     const result = await this.questionnairesService.createQuestionnaire(
       req.organizationId!,
@@ -90,10 +59,6 @@ export class QuestionnairesController {
   });
 
   updateQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
-    if (req.body.caseTypeIds && !Array.isArray(req.body.caseTypeIds)) {
-      throw new BadRequestError("caseTypeIds must be an array");
-    }
-
     const result = await this.questionnairesService.updateQuestionnaire(
       req.params.id as string,
       req.organizationId!,
@@ -106,9 +71,6 @@ export class QuestionnairesController {
   setQuestionnaireCaseTypes = asyncWrap(
     async (req: AuthRequest, res: Response) => {
       const { caseTypeIds } = req.body;
-      if (!Array.isArray(caseTypeIds)) {
-        throw new BadRequestError("caseTypeIds must be an array");
-      }
 
       const result = await this.questionnairesService.setQuestionnaireCaseTypes(
         req.params.id as string,
@@ -144,7 +106,6 @@ export class QuestionnairesController {
 
   addSection = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { title, description, orderIndex } = req.body;
-    if (!title) throw new BadRequestError("title is required");
 
     const result = await this.questionnairesService.addSection(
       req.params.id as string,
@@ -161,7 +122,6 @@ export class QuestionnairesController {
 
   reorderSections = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { items } = req.body;
-    if (!Array.isArray(items)) throw new BadRequestError("items must be an array");
 
     const result = await this.questionnairesService.reorderSections(
       req.params.id as string,
@@ -173,11 +133,6 @@ export class QuestionnairesController {
   });
 
   addQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { sectionId, label, type } = req.body;
-    if (!sectionId || !label || !type) {
-      throw new BadRequestError("sectionId, label and type are required");
-    }
-
     const result = await this.questionnairesService.addQuestion(
       req.params.id as string,
       req.organizationId!,
@@ -200,7 +155,6 @@ export class QuestionnairesController {
 
   reorderQuestions = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { items } = req.body;
-    if (!Array.isArray(items)) throw new BadRequestError("items must be an array");
 
     const result = await this.questionnairesService.reorderQuestions(
       req.params.id as string,
@@ -212,11 +166,6 @@ export class QuestionnairesController {
   });
 
   addLogicRule = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { condition, actionType, action } = req.body;
-    if (!condition || !actionType || !action) {
-      throw new BadRequestError("condition, actionType and action are required");
-    }
-
     const result = await this.questionnairesService.addLogicRule(
       req.params.id as string,
       req.organizationId!,
@@ -228,9 +177,6 @@ export class QuestionnairesController {
 
   sendToClient = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { clientId, caseTypeId, caseId, expiresAt } = req.body;
-    if (!clientId || !caseTypeId) {
-      throw new BadRequestError("clientId and caseTypeId are required");
-    }
 
     const result = await this.questionnairesService.sendToClient(
       req.params.id as string,
@@ -311,9 +257,6 @@ export class QuestionnairesController {
     if (!file) throw new BadRequestError("File is required");
 
     const { responseId, questionId } = req.body;
-    if (!responseId || !questionId) {
-      throw new BadRequestError("responseId and questionId are required");
-    }
 
     const result =
       await this.questionnairesService.uploadResponseFileByToken(

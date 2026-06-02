@@ -1,7 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
-import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import { NotFoundError } from "../../utils/error/app-error";
 import { AIErrorDetectionService } from "./ai-error-detection.service";
 
 export class AIErrorDetectionController {
@@ -38,9 +38,6 @@ export class AIErrorDetectionController {
 
   updateFlagStatus = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { status } = req.body;
-    if (!status) {
-      throw new BadRequestError("status is required");
-    }
 
     const result = await this.aiService.updateFlagStatus(
       req.params.id as string,
@@ -55,13 +52,6 @@ export class AIErrorDetectionController {
   });
 
   createFlag = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { clientId, caseId, title, description, severity } = req.body;
-    if (!clientId || !caseId || !title || !description || !severity) {
-      throw new BadRequestError(
-        "clientId, caseId, title, description and severity are required",
-      );
-    }
-
     const result = await this.aiService.createFlag(req.organizationId!, req.body);
     res.status(201).json(result);
   });
