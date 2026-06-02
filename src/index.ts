@@ -56,6 +56,9 @@ import { PermissionAuditLogService } from "./resources/settings/permission-audit
 import { PracticeAreasController } from "./resources/practice-areas/practice-areas.controller";
 import { PracticeAreasRouter } from "./resources/practice-areas/practice-areas.routes";
 import { PracticeAreasService } from "./resources/practice-areas/practice-areas.service";
+import { QuestionnairesController } from "./resources/questionnaires/questionnaires.controller";
+import { QuestionnairesRouter } from "./resources/questionnaires/questionnaires.routes";
+import { QuestionnairesService } from "./resources/questionnaires/questionnaires.service";
 import { ProfileController } from "./resources/settings/profile/profile.controller";
 import { ProfileRouter } from "./resources/settings/profile/profile.routes";
 import { ProfileService } from "./resources/settings/profile/profile.service";
@@ -88,6 +91,12 @@ const assignmentsRouter = new AssignmentsRouter(assignmentsController);
 const documentsService = new DocumentsService();
 const documentsController = new DocumentsController(documentsService);
 const documentsRouter = new DocumentsRouter(documentsController);
+
+const questionnairesService = new QuestionnairesService();
+const questionnairesController = new QuestionnairesController(
+  questionnairesService,
+);
+const questionnairesRouter = new QuestionnairesRouter(questionnairesController);
 
 const tasksService = new TasksService();
 const tasksController = new TasksController(tasksService);
@@ -203,6 +212,7 @@ const app = new App(
     teamsRouter,
     assignmentsRouter,
     documentsRouter,
+    questionnairesRouter,
     tasksRouter,
     aiErrorDetectionRouter,
     calendarRouter,
