@@ -12,6 +12,7 @@ const REQUIRED_ENV_KEYS = [
   "BETTER_AUTH_URL",
   "SMTP_EMAIL_ADDRESS",
   "SMTP_PASSWORD",
+  "SUPABASE_STORAGE_BUCKET"
 ] as const;
 
 type RequiredEnvKey = (typeof REQUIRED_ENV_KEYS)[number];

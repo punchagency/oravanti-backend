@@ -1,4 +1,13 @@
-import { and, desc, eq, ilike, or } from "drizzle-orm";
+import {
+  and,
+  count,
+  countDistinct,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  or,
+} from "drizzle-orm";
 import { cases } from "../../db/schema/cases";
 import { certifications } from "../../db/schema/certifications";
 import { clients } from "../../db/schema/clients";
@@ -10,6 +19,11 @@ import {
   ConflictError,
   NotFoundError,
 } from "../../utils/error/app-error";
+import {
+  buildPaginatedResponse,
+  getPaginationOffset,
+  PaginationParams,
+} from "../../utils/pagination";
 import { generateCaseNumber } from "../cases/cases.service";
 import { ensureCaseTypeBelongsToPracticeArea } from "../practice-areas/practice-areas.utils";
 import { db } from "./../../db/client";
@@ -493,17 +507,32 @@ export const getCertifications = async () => {
 
 // ─── Clients ──────────────────────────────────────────────────────────────────
 
-export const getAllClients = async (organizationId: string, search?: string) => {
-  const rows = await db
+type ClientListOptions = Partial<PaginationParams> & {
+  search?: string;
+  all?: boolean;
+};
+
+type ClientListRow = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  countryOfOrigin: string;
+  status: string;
+};
+
+const mapClientListRows = async (
+  organizationId: string,
+  clientRows: ClientListRow[],
+) => {
+  const clientIds = clientRows.map((client) => client.id);
+  if (!clientIds.length) return [];
+
+  const caseRows = await db
     .select({
-      id: clients.id,
-      firstName: clients.firstName,
-      lastName: clients.lastName,
-      email: clients.email,
-      phone: clients.phone,
-      countryOfOrigin: clients.countryOfOrigin,
-      status: clients.status,
       caseId: cases.id,
+      clientId: cases.clientId,
       caseType: cases.caseType,
       practiceAreaId: practiceAreas.id,
       practiceAreaName: practiceAreas.name,
@@ -513,50 +542,112 @@ export const getAllClients = async (organizationId: string, search?: string) => 
       assignedStaffFirstName: staff.firstName,
       assignedStaffLastName: staff.lastName,
     })
-    .from(clients)
-    .leftJoin(cases, eq(cases.clientId, clients.id))
+    .from(cases)
     .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
     .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
     .where(
-      search
-        ? and(
-            eq(clients.organizationId, organizationId),
-            or(
-              ilike(clients.firstName, `%${search}%`),
-              ilike(clients.lastName, `%${search}%`),
-              ilike(clients.email, `%${search}%`),
-              ilike(cases.caseType, `%${search}%`),
-            ),
-          )
-        : eq(clients.organizationId, organizationId),
+      and(
+        eq(cases.organizationId, organizationId),
+        inArray(cases.clientId, clientIds),
+      ),
     )
-    .orderBy(desc(clients.createdAt));
+    .orderBy(desc(cases.createdAt));
 
-  return rows.map((r) => ({
-    id: r.id,
-    firstName: r.firstName,
-    lastName: r.lastName,
-    email: r.email,
-    phone: r.phone,
-    countryOfOrigin: r.countryOfOrigin,
-    status: r.status,
-    activeCase: r.caseId
-      ? {
-          id: r.caseId,
-          caseType: r.caseType,
-          practiceArea: {
-            id: r.practiceAreaId,
-            name: r.practiceAreaName,
-          },
-          status: r.caseStatus,
-          caseProgress: r.caseProgress,
-          nextAppointment: r.nextAppointment,
-          assignedTo: r.assignedStaffFirstName
-            ? `${r.assignedStaffFirstName} ${r.assignedStaffLastName}`
-            : null,
-        }
-      : null,
-  }));
+  const activeCaseByClientId = new Map<string, (typeof caseRows)[number]>();
+  for (const caseRow of caseRows) {
+    if (!activeCaseByClientId.has(caseRow.clientId)) {
+      activeCaseByClientId.set(caseRow.clientId, caseRow);
+    }
+  }
+
+  return clientRows.map((client) => {
+    const activeCase = activeCaseByClientId.get(client.id);
+
+    return {
+      id: client.id,
+      firstName: client.firstName,
+      lastName: client.lastName,
+      email: client.email,
+      phone: client.phone,
+      countryOfOrigin: client.countryOfOrigin,
+      status: client.status,
+      activeCase: activeCase
+        ? {
+            id: activeCase.caseId,
+            caseType: activeCase.caseType,
+            practiceArea: {
+              id: activeCase.practiceAreaId,
+              name: activeCase.practiceAreaName,
+            },
+            status: activeCase.caseStatus,
+            caseProgress: activeCase.caseProgress,
+            nextAppointment: activeCase.nextAppointment,
+            assignedTo: activeCase.assignedStaffFirstName
+              ? `${activeCase.assignedStaffFirstName} ${activeCase.assignedStaffLastName}`
+              : null,
+          }
+        : null,
+    };
+  });
+};
+
+export const getAllClients = async (
+  organizationId: string,
+  options: ClientListOptions = {},
+) => {
+  const search = options.search?.trim();
+  const where = search
+    ? and(
+        eq(clients.organizationId, organizationId),
+        or(
+          ilike(clients.firstName, `%${search}%`),
+          ilike(clients.lastName, `%${search}%`),
+          ilike(clients.email, `%${search}%`),
+          ilike(cases.caseType, `%${search}%`),
+        ),
+      )
+    : eq(clients.organizationId, organizationId);
+
+  const selectMatchingClients = () =>
+    db
+      .selectDistinct({
+        id: clients.id,
+        firstName: clients.firstName,
+        lastName: clients.lastName,
+        email: clients.email,
+        phone: clients.phone,
+        countryOfOrigin: clients.countryOfOrigin,
+        status: clients.status,
+        createdAt: clients.createdAt,
+      })
+      .from(clients)
+      .leftJoin(cases, eq(cases.clientId, clients.id))
+      .where(where)
+      .orderBy(desc(clients.createdAt));
+
+  if (options.all) {
+    const rows = await selectMatchingClients();
+    return mapClientListRows(organizationId, rows);
+  }
+
+  const page = options.page ?? 1;
+  const limit = options.limit ?? 20;
+  const offset = getPaginationOffset({ page, limit });
+
+  const [{ total }] = await db
+    .select({ total: countDistinct(clients.id) })
+    .from(clients)
+    .leftJoin(cases, eq(cases.clientId, clients.id))
+    .where(where);
+
+  const rows = await selectMatchingClients().limit(limit).offset(offset);
+  const data = await mapClientListRows(organizationId, rows);
+
+  return buildPaginatedResponse(data, {
+    page,
+    limit,
+    total: Number(total),
+  });
 };
 
 export const getClientById = async (id: string, organizationId: string) => {
@@ -711,11 +802,40 @@ export const deleteClient = async (id: string, organizationId: string) => {
 
 // ─── Cases ────────────────────────────────────────────────────────────────────
 
-export const getClientCases = async (clientId: string, organizationId: string) => {
-  return db
-    .select()
+export const getClientCases = async (
+  clientId: string,
+  organizationId: string,
+  options: (Partial<PaginationParams> & { all?: boolean }) = {},
+) => {
+  const where = and(eq(cases.clientId, clientId), eq(cases.organizationId, organizationId));
+
+  const selectClientCases = () =>
+    db
+      .select()
+      .from(cases)
+      .where(where)
+      .orderBy(desc(cases.createdAt));
+
+  if (options.all) {
+    return selectClientCases();
+  }
+
+  const page = options.page ?? 1;
+  const limit = options.limit ?? 20;
+  const offset = getPaginationOffset({ page, limit });
+
+  const [{ total }] = await db
+    .select({ total: count() })
     .from(cases)
-    .where(and(eq(cases.clientId, clientId), eq(cases.organizationId, organizationId)));
+    .where(where);
+
+  const rows = await selectClientCases().limit(limit).offset(offset);
+
+  return buildPaginatedResponse(rows, {
+    page,
+    limit,
+    total: Number(total),
+  });
 };
 
 export const addCase = async (

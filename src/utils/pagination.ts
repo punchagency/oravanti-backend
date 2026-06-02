@@ -32,6 +32,19 @@ export const parsePositiveIntegerQuery = (
   return parsed;
 };
 
+export const parseBooleanQuery = (
+  value: unknown,
+  field: string,
+  fallback = false,
+) => {
+  if (value === undefined) return fallback;
+  if (typeof value === "boolean") return value;
+  if (value === "true") return true;
+  if (value === "false") return false;
+
+  throw new BadRequestError(`${field} must be true or false`);
+};
+
 export const parsePaginationQuery = (
   query: { page?: unknown; limit?: unknown },
   defaults: PaginationParams = { page: 1, limit: 20 },
