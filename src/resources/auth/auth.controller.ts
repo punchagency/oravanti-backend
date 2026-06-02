@@ -2,7 +2,6 @@ import { Request, Response } from "express";
 import { SignInBody } from "../../types/auth.types";
 import { applyAuthHeaders } from "../../utils/applyAuthHeaders";
 import asyncWrap from "../../utils/asyncWrapper";
-import { BadRequestError } from "../../utils/error/app-error";
 import { AuthService } from "./auth.service";
 
 export class AuthController {
@@ -22,10 +21,6 @@ export class AuthController {
       res: Response,
     ) => {
       const { email, password, rememberMe = false } = req.body;
-
-      if (!email || !password) {
-        throw new BadRequestError("Email and password are required");
-      }
 
       const authResponse = await this.authService.signUpWithEmail(
         req.body,
@@ -48,10 +43,6 @@ export class AuthController {
     async (req: Request<{}, {}, SignInBody>, res: Response) => {
       const { email, password } = req.body;
 
-      if (!email || !password) {
-        throw new BadRequestError("Email and password are required");
-      }
-
       const authResponse = await this.authService.signInWithEmail(
         email,
         password,
@@ -72,10 +63,6 @@ export class AuthController {
 
   verifyTOTP = asyncWrap(async (req: Request, res: Response) => {
     const { code } = req.body;
-
-    if (!code) {
-      throw new BadRequestError("Code is required");
-    }
 
     const authResponse = await this.authService.verifyTOTP(code, req);
 
@@ -122,10 +109,6 @@ export class AuthController {
     ) => {
       const { email, type } = req.body;
 
-      if (!email || !type) {
-        throw new BadRequestError("Email and type are required");
-      }
-
       const authResponse = await this.authService.sendVerificationOTP({
         email,
         type,
@@ -143,10 +126,6 @@ export class AuthController {
   resetPasswordWithOTP = asyncWrap(async (req: Request, res: Response) => {
     const { email, otp, password } = req.body;
 
-    if (!email || !otp || !password) {
-      throw new BadRequestError("Email, OTP, and password are required");
-    }
-
     const authResponse = await this.authService.resetPasswordWithOTP({
       email,
       otp,
@@ -163,11 +142,6 @@ export class AuthController {
 
   changePassword = asyncWrap(async (req: Request, res: Response) => {
     const { currentPassword, newPassword } = req.body;
-    if (!currentPassword || !newPassword) {
-      throw new BadRequestError(
-        "Current password and new password are required",
-      );
-    }
 
     const authResponse = await this.authService.changePassword(
       {
@@ -187,9 +161,6 @@ export class AuthController {
 
   revokeSession = asyncWrap(async (req: Request, res: Response) => {
     const { token } = req.body;
-    if (!token) {
-      throw new BadRequestError("Token is required");
-    }
 
     const authResponse = await this.authService.revokeSession(token, req);
 
@@ -243,9 +214,6 @@ export class AuthController {
 
   enableTwoFactorAuth = asyncWrap(async (req, res) => {
     const { password } = req.body;
-    if (!password) {
-      throw new BadRequestError("Password is required");
-    }
 
     const authResponse = await this.authService.enableTwoFactorAuth(
       password,
@@ -265,9 +233,6 @@ export class AuthController {
 
   disableTwoFactorAuth = asyncWrap(async (req, res) => {
     const { password } = req.body;
-    if (!password) {
-      throw new BadRequestError("Password is required");
-    }
 
     const authResponse = await this.authService.disableTwoFactorAuth(
       password,

@@ -52,11 +52,6 @@ export class DocumentsController {
     }
 
     const { clientId, caseId, name, category } = req.body;
-    if (!clientId || !caseId || !name || !category) {
-      throw new BadRequestError(
-        "clientId, caseId, name and category are required",
-      );
-    }
 
     const result = await this.documentsService.uploadDocument(req.organizationId!, {
       clientId,
@@ -74,9 +69,6 @@ export class DocumentsController {
 
   updateDocumentStatus = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { status } = req.body;
-    if (!status) {
-      throw new BadRequestError("status is required");
-    }
 
     const result = await this.documentsService.updateDocumentStatus(
       req.params.id as string,

@@ -2,7 +2,6 @@ import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
 import {
-  BadRequestError,
   ConflictError,
   NotFoundError,
 } from "../../utils/error/app-error";
@@ -43,17 +42,6 @@ export class ClientsController {
         acknowledgeConflict,
       } = req.body;
 
-      if (
-        !companyData ||
-        !individuals ||
-        !Array.isArray(individuals) ||
-        !individuals.length
-      ) {
-        throw new BadRequestError(
-          "company and at least one individual are required",
-        );
-      }
-
       const result = await this.clientsService.createCompanyWithClients(
         req.organizationId!,
         companyData,
@@ -92,10 +80,6 @@ export class ClientsController {
 
   addClientToCompany = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { clientData, caseData } = req.body;
-
-    if (!clientData || !caseData) {
-      throw new BadRequestError("clientData and caseData are required");
-    }
 
     const result = await this.clientsService.addClientToCompany(
       req.params.id as string,
@@ -141,10 +125,6 @@ export class ClientsController {
       case: caseData,
       acknowledgeConflict,
     } = req.body;
-
-    if (!clientData || !caseData) {
-      throw new BadRequestError("client and case data are required");
-    }
 
     const result = await this.clientsService.createClient(
       req.organizationId!,
@@ -211,9 +191,6 @@ export class ClientsController {
 
   updateCaseStatus = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { status } = req.body;
-    if (!status) {
-      throw new BadRequestError("status is required");
-    }
 
     const result = await this.clientsService.updateCaseStatus(
       req.params.caseId as string,

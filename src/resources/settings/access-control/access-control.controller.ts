@@ -1,7 +1,6 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import asyncWrap from "../../../utils/asyncWrapper";
-import { BadRequestError } from "../../../utils/error/app-error";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
 import { AccessControlService } from "./access-control.service";
 
@@ -29,10 +28,6 @@ export class AccessControlController {
 
   savePermissions = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { permissions } = req.body;
-
-    if (!Array.isArray(permissions) || permissions.length === 0) {
-      throw new BadRequestError("permissions array is required");
-    }
 
     await this.accessControlService.savePermissions(req.organizationId!, permissions);
 

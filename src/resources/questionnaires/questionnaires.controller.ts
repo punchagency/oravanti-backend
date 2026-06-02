@@ -257,9 +257,6 @@ export class QuestionnairesController {
     if (!file) throw new BadRequestError("File is required");
 
     const { responseId, questionId } = req.body;
-    if (!responseId || !questionId) {
-      throw new BadRequestError("responseId and questionId are required");
-    }
 
     const result =
       await this.questionnairesService.uploadResponseFileByToken(

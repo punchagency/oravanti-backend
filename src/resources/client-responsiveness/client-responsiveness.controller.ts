@@ -1,7 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
-import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import { NotFoundError } from "../../utils/error/app-error";
 import { ClientResponsivenessService } from "./client-responsiveness.service";
 
 export class ClientResponsivenessController {
@@ -33,10 +33,6 @@ export class ClientResponsivenessController {
 
   addRequests = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { caseId, items, requestedAt } = req.body;
-
-    if (!caseId || !items || !Array.isArray(items) || items.length === 0) {
-      throw new BadRequestError("caseId and items[] are required");
-    }
 
     const result = await this.clientResponsivenessService.addRequests(
       req.params.clientId as string,

@@ -2,7 +2,7 @@ import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import { UpsertFirmInfoBody } from "../../../types/settings.types";
 import asyncWrap from "../../../utils/asyncWrapper";
-import { BadRequestError, NotFoundError } from "../../../utils/error/app-error";
+import { NotFoundError } from "../../../utils/error/app-error";
 import { FirmInfoService } from "./firm-info.service";
 
 export class FirmInfoController {
@@ -22,12 +22,6 @@ export class FirmInfoController {
 
   upsertFirmInfo = asyncWrap(
     async (req: AuthRequest & { body: UpsertFirmInfoBody }, res: Response) => {
-      const { firmName, firmEmail } = req.body;
-
-      if (!firmName || !firmEmail) {
-        throw new BadRequestError("Firm name and firm email are required");
-      }
-
       const result = await this.firmInfoService.upsertFirmInfo(
         req.organizationId!,
         req.body,
