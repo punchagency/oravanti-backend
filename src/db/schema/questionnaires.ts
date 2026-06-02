@@ -13,6 +13,7 @@ import {
 import { organization } from "./auth-schema";
 import { cases } from "./cases";
 import { clients } from "./clients";
+import { practiceAreaCaseTypes } from "./practice-area-case-types";
 import { staff } from "./staff";
 
 export const questionnaireStatusEnum = pgEnum("questionnaire_status", [
@@ -115,6 +116,62 @@ export const questionnaireVersions = pgTable(
     ),
     index("questionnaire_versions_questionnaire_idx").on(table.questionnaireId),
     index("questionnaire_versions_organization_idx").on(table.organizationId),
+  ],
+);
+
+export const questionnaireCaseTypes = pgTable(
+  "questionnaire_case_types",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    questionnaireId: uuid("questionnaire_id")
+      .notNull()
+      .references(() => questionnaires.id),
+    caseTypeId: uuid("case_type_id")
+      .notNull()
+      .references(() => practiceAreaCaseTypes.id),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    unique("questionnaire_case_types_unique").on(
+      table.questionnaireId,
+      table.caseTypeId,
+    ),
+    index("questionnaire_case_types_questionnaire_idx").on(
+      table.questionnaireId,
+    ),
+    index("questionnaire_case_types_case_type_idx").on(table.caseTypeId),
+  ],
+);
+
+export const questionnaireVersionCaseTypes = pgTable(
+  "questionnaire_version_case_types",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    questionnaireVersionId: uuid("questionnaire_version_id")
+      .notNull()
+      .references(() => questionnaireVersions.id),
+    questionnaireId: uuid("questionnaire_id")
+      .notNull()
+      .references(() => questionnaires.id),
+    caseTypeId: uuid("case_type_id")
+      .notNull()
+      .references(() => practiceAreaCaseTypes.id),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    unique("questionnaire_version_case_types_unique").on(
+      table.questionnaireVersionId,
+      table.caseTypeId,
+    ),
+    index("questionnaire_version_case_types_version_idx").on(
+      table.questionnaireVersionId,
+    ),
+    index("questionnaire_version_case_types_questionnaire_idx").on(
+      table.questionnaireId,
+    ),
+    index("questionnaire_version_case_types_case_type_idx").on(
+      table.caseTypeId,
+    ),
   ],
 );
 
@@ -231,6 +288,9 @@ export const questionnaireSends = pgTable(
       .notNull()
       .references(() => clients.id),
     caseId: uuid("case_id").references(() => cases.id),
+    caseTypeId: uuid("case_type_id")
+      .notNull()
+      .references(() => practiceAreaCaseTypes.id),
     sentById: uuid("sent_by_id").references(() => staff.id),
     status: questionnaireSendStatusEnum("status").notNull().default("sent"),
     accessTokenHash: text("access_token_hash").notNull().unique(),
@@ -245,6 +305,7 @@ export const questionnaireSends = pgTable(
     index("questionnaire_sends_organization_idx").on(table.organizationId),
     index("questionnaire_sends_questionnaire_idx").on(table.questionnaireId),
     index("questionnaire_sends_client_idx").on(table.clientId),
+    index("questionnaire_sends_case_type_idx").on(table.caseTypeId),
   ],
 );
 
@@ -267,6 +328,10 @@ export const questionnaireResponses = pgTable(
     clientId: uuid("client_id")
       .notNull()
       .references(() => clients.id),
+    caseId: uuid("case_id").references(() => cases.id),
+    caseTypeId: uuid("case_type_id")
+      .notNull()
+      .references(() => practiceAreaCaseTypes.id),
     status: questionnaireResponseStatusEnum("status").notNull().default("draft"),
     currentSectionId: uuid("current_section_id").references(
       () => questionnaireSections.id,
@@ -287,6 +352,7 @@ export const questionnaireResponses = pgTable(
       table.questionnaireId,
     ),
     index("questionnaire_responses_send_idx").on(table.questionnaireSendId),
+    index("questionnaire_responses_case_type_idx").on(table.caseTypeId),
   ],
 );
 
@@ -346,6 +412,9 @@ export const questionnaireResponseFiles = pgTable(
 export type Questionnaire = typeof questionnaires.$inferSelect;
 export type NewQuestionnaire = typeof questionnaires.$inferInsert;
 export type QuestionnaireVersion = typeof questionnaireVersions.$inferSelect;
+export type QuestionnaireCaseType = typeof questionnaireCaseTypes.$inferSelect;
+export type QuestionnaireVersionCaseType =
+  typeof questionnaireVersionCaseTypes.$inferSelect;
 export type QuestionnaireSection = typeof questionnaireSections.$inferSelect;
 export type QuestionnaireQuestion = typeof questionnaireQuestions.$inferSelect;
 export type QuestionnaireQuestionOption =
