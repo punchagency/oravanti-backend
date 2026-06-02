@@ -56,8 +56,7 @@ type QuestionOptionInput = {
   orderIndex?: number;
 };
 
-type QuestionInput = {
-  sectionId: string;
+type BaseQuestionInput = {
   label: string;
   description?: string | null;
   type:
@@ -80,6 +79,17 @@ type QuestionInput = {
   isRequired?: boolean;
   config?: JsonObject;
   options?: QuestionOptionInput[];
+};
+
+type QuestionInput = BaseQuestionInput & {
+  sectionId: string;
+};
+
+type InitialSectionInput = {
+  title: string;
+  description?: string | null;
+  orderIndex?: number;
+  questions?: BaseQuestionInput[];
 };
 
 type ReorderItem = {
@@ -293,6 +303,7 @@ export class QuestionnairesService {
       createdById?: string | null;
       firstSectionTitle?: string;
       caseTypeIds?: string[];
+      sections?: InitialSectionInput[];
     },
   ) => {
     return db.transaction(async (tx) => {
@@ -310,12 +321,38 @@ export class QuestionnairesService {
         })
         .returning();
 
-      await tx.insert(questionnaireSections).values({
-        questionnaireId: created.id,
-        title: data.firstSectionTitle || "Section 1",
-        description: null,
-        orderIndex: 0,
-      });
+      if (data.sections?.length) {
+        for (const [sectionIndex, section] of data.sections.entries()) {
+          const [createdSection] = await tx
+            .insert(questionnaireSections)
+            .values({
+              questionnaireId: created.id,
+              title: section.title,
+              description: section.description,
+              orderIndex: section.orderIndex ?? sectionIndex,
+            })
+            .returning();
+
+          for (const [questionIndex, question] of (
+            section.questions ?? []
+          ).entries()) {
+            await this.insertQuestionWithOptions(
+              tx,
+              created.id,
+              createdSection.id,
+              question,
+              question.orderIndex ?? questionIndex,
+            );
+          }
+        }
+      } else {
+        await tx.insert(questionnaireSections).values({
+          questionnaireId: created.id,
+          title: data.firstSectionTitle || "Section 1",
+          description: null,
+          orderIndex: 0,
+        });
+      }
 
       if (data.caseTypeIds?.length) {
         await this.insertQuestionnaireCaseTypes(
@@ -658,30 +695,13 @@ export class QuestionnairesService {
       (await this.getNextQuestionOrderIndex(questionnaireId, data.sectionId, null));
 
     return db.transaction(async (tx) => {
-      const [created] = await tx
-        .insert(questionnaireQuestions)
-        .values({
-          questionnaireId,
-          sectionId: data.sectionId,
-          label: data.label,
-          description: data.description,
-          type: data.type,
-          orderIndex,
-          isRequired: data.isRequired ?? false,
-          config: (data.config ?? {}) as any,
-        })
-        .returning();
-
-      if (data.options?.length) {
-        await tx.insert(questionnaireQuestionOptions).values(
-          data.options.map((option, index) => ({
-            questionId: created.id,
-            label: option.label,
-            value: option.value,
-            orderIndex: option.orderIndex ?? index,
-          })),
-        );
-      }
+      const created = await this.insertQuestionWithOptions(
+        tx,
+        questionnaireId,
+        data.sectionId,
+        data,
+        orderIndex,
+      );
 
       return this.getQuestionById(created.id, tx);
     });
@@ -1435,6 +1455,41 @@ export class QuestionnairesService {
       .orderBy(asc(questionnaireQuestionOptions.orderIndex));
 
     return { ...question, options };
+  };
+
+  private insertQuestionWithOptions = async (
+    database: any,
+    questionnaireId: string,
+    sectionId: string,
+    data: BaseQuestionInput,
+    orderIndex: number,
+  ) => {
+    const [created] = await database
+      .insert(questionnaireQuestions)
+      .values({
+        questionnaireId,
+        sectionId,
+        label: data.label,
+        description: data.description,
+        type: data.type,
+        orderIndex,
+        isRequired: data.isRequired ?? false,
+        config: (data.config ?? {}) as any,
+      })
+      .returning();
+
+    if (data.options?.length) {
+      await database.insert(questionnaireQuestionOptions).values(
+        data.options.map((option, index) => ({
+          questionId: created.id,
+          label: option.label,
+          value: option.value,
+          orderIndex: option.orderIndex ?? index,
+        })),
+      );
+    }
+
+    return created;
   };
 
   private getNextSectionOrderIndex = async (

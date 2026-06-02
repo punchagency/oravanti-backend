@@ -30,10 +30,38 @@ export class QuestionnairesController {
   });
 
   createQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { title, description, firstSectionTitle, caseTypeIds } = req.body;
+    const { title, description, firstSectionTitle, caseTypeIds, sections } =
+      req.body;
     if (!title) throw new BadRequestError("title is required");
     if (caseTypeIds && !Array.isArray(caseTypeIds)) {
       throw new BadRequestError("caseTypeIds must be an array");
+    }
+    if (sections) {
+      if (!Array.isArray(sections)) {
+        throw new BadRequestError("sections must be an array");
+      }
+
+      for (const section of sections) {
+        if (!section.title) {
+          throw new BadRequestError("Each section requires a title");
+        }
+
+        if (section.questions && !Array.isArray(section.questions)) {
+          throw new BadRequestError("section.questions must be an array");
+        }
+
+        for (const question of section.questions ?? []) {
+          if (!question.label || !question.type) {
+            throw new BadRequestError(
+              "Each initial question requires label and type",
+            );
+          }
+
+          if (question.options && !Array.isArray(question.options)) {
+            throw new BadRequestError("question.options must be an array");
+          }
+        }
+      }
     }
 
     const result = await this.questionnairesService.createQuestionnaire(
@@ -43,6 +71,7 @@ export class QuestionnairesController {
         description,
         firstSectionTitle,
         caseTypeIds,
+        sections,
         createdById: req.staffId,
       },
     );
