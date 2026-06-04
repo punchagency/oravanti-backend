@@ -1,8 +1,8 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
-import { AddStaffBody, UpdateStaffBody } from "../../../types/hr.types";
+import { UpdateStaffBody } from "../../../types/hr.types";
 import asyncWrap from "../../../utils/asyncWrapper";
-import { BadRequestError, NotFoundError } from "../../../utils/error/app-error";
+import { NotFoundError } from "../../../utils/error/app-error";
 import { StaffService } from "./staffs.service";
 
 export class StaffController {
@@ -29,21 +29,6 @@ export class StaffController {
   });
 
   addStaff = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { firstName, lastName, email, phone, role, teamId, startDate } =
-      req.body as AddStaffBody;
-
-    if (
-      !firstName ||
-      !lastName ||
-      !email ||
-      !phone ||
-      !role ||
-      !teamId ||
-      !startDate
-    ) {
-      throw new BadRequestError("All fields are required");
-    }
-
     const result = await this.staffService.addStaff({
       ...req.body,
       organizationId: req.organizationId!,

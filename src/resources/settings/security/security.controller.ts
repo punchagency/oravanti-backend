@@ -1,7 +1,6 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import asyncWrap from "../../../utils/asyncWrapper";
-import { BadRequestError } from "../../../utils/error/app-error";
 import { SecurityService } from "./security.service";
 
 export class SecurityController {
@@ -15,10 +14,6 @@ export class SecurityController {
 
   changePassword = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { currentPassword, newPassword } = req.body;
-
-    if (!currentPassword || !newPassword) {
-      throw new BadRequestError("currentPassword and newPassword are required");
-    }
 
     await this.securityService.changePassword(
       req,
@@ -38,10 +33,6 @@ export class SecurityController {
   enroll2FA = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { password } = req.body;
 
-    if (!password) {
-      throw new BadRequestError("password is required");
-    }
-
     const data = await this.securityService.enroll2FA(req, password);
     res.status(200).json(data);
   });
@@ -49,20 +40,12 @@ export class SecurityController {
   verify2FA = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { code } = req.body;
 
-    if (!code) {
-      throw new BadRequestError("code is required");
-    }
-
     await this.securityService.verify2FA(req, code);
     res.status(200).json({ message: "2FA enabled successfully" });
   });
 
   unenroll2FA = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { password } = req.body;
-
-    if (!password) {
-      throw new BadRequestError("password is required");
-    }
 
     await this.securityService.unenroll2FA(req, password);
     res.status(200).json({ message: "2FA disabled successfully" });
