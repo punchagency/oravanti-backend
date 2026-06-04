@@ -567,33 +567,35 @@ export class DocumentsService {
   ) => {
     await this.ensurePermission(id, organizationId, userId, "ADMIN");
 
-    const now = new Date();
-    const [updated] = await db
-      .update(documents)
-      .set({
-        status,
-        archivedAt: status === "archived" ? now : null,
-        deletedAt: status === "deleted" ? now : null,
-        updatedAt: now,
-      })
-      .where(eq(documents.id, id))
-      .returning();
+    return db.transaction(async (tx) => {
+      const now = new Date();
+      const [updated] = await tx
+        .update(documents)
+        .set({
+          status,
+          archivedAt: status === "archived" ? now : null,
+          deletedAt: status === "deleted" ? now : null,
+          updatedAt: now,
+        })
+        .where(eq(documents.id, id))
+        .returning();
 
-    if (!updated) return null;
+      if (!updated) return null;
 
-    await this.logActivity({
-      documentId: id,
-      actorUserId: userId,
-      action:
-        status === "archived"
-          ? "ARCHIVED"
-          : status === "deleted"
-            ? "SOFT_DELETED"
-            : "RESTORED",
-      metadata: { status },
+      await tx.insert(documentActivityLogs).values({
+        documentId: id,
+        actorUserId: userId,
+        action:
+          status === "archived"
+            ? "ARCHIVED"
+            : status === "deleted"
+              ? "SOFT_DELETED"
+              : "RESTORED",
+        metadata: { status },
+      });
+
+      return updated;
     });
-
-    return updated;
   };
 
   updateDocument = async (
@@ -673,23 +675,25 @@ export class DocumentsService {
     await this.ensurePermission(id, organizationId, userId, "EDIT");
     await this.getCaseForFirm(caseId, organizationId);
 
-    const [link] = await db
-      .insert(documentCaseLinks)
-      .values({ documentId: id, caseId, linkedByUserId: userId })
-      .onConflictDoUpdate({
-        target: [documentCaseLinks.documentId, documentCaseLinks.caseId],
-        set: { archivedAt: null, updatedAt: new Date() },
-      })
-      .returning();
+    return db.transaction(async (tx) => {
+      const [link] = await tx
+        .insert(documentCaseLinks)
+        .values({ documentId: id, caseId, linkedByUserId: userId })
+        .onConflictDoUpdate({
+          target: [documentCaseLinks.documentId, documentCaseLinks.caseId],
+          set: { archivedAt: null, updatedAt: new Date() },
+        })
+        .returning();
 
-    await this.logActivity({
-      documentId: id,
-      actorUserId: userId,
-      action: "ACCESS_GRANTED",
-      metadata: { caseId, scope: "case_link" },
+      await tx.insert(documentActivityLogs).values({
+        documentId: id,
+        actorUserId: userId,
+        action: "ACCESS_GRANTED",
+        metadata: { caseId, scope: "case_link" },
+      });
+
+      return link;
     });
-
-    return link;
   };
 
   grantUserAccess = async (
@@ -707,33 +711,35 @@ export class DocumentsService {
       .limit(1);
     if (!targetUser) throw new NotFoundError("User not found");
 
-    const [grant] = await db
-      .insert(documentAccess)
-      .values({
-        documentId: id,
-        userId: data.targetUserId,
-        permission: data.permission,
-        grantedByUserId: userId,
-      })
-      .onConflictDoUpdate({
-        target: [documentAccess.documentId, documentAccess.userId],
-        set: {
+    return db.transaction(async (tx) => {
+      const [grant] = await tx
+        .insert(documentAccess)
+        .values({
+          documentId: id,
+          userId: data.targetUserId,
           permission: data.permission,
           grantedByUserId: userId,
-          revokedAt: null,
-          updatedAt: new Date(),
-        },
-      })
-      .returning();
+        })
+        .onConflictDoUpdate({
+          target: [documentAccess.documentId, documentAccess.userId],
+          set: {
+            permission: data.permission,
+            grantedByUserId: userId,
+            revokedAt: null,
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
 
-    await this.logActivity({
-      documentId: id,
-      actorUserId: userId,
-      action: "ACCESS_GRANTED",
-      metadata: { userId: data.targetUserId, permission: data.permission },
+      await tx.insert(documentActivityLogs).values({
+        documentId: id,
+        actorUserId: userId,
+        action: "ACCESS_GRANTED",
+        metadata: { userId: data.targetUserId, permission: data.permission },
+      });
+
+      return grant;
     });
-
-    return grant;
   };
 
   grantFirmAccess = async (
@@ -751,33 +757,35 @@ export class DocumentsService {
       .limit(1);
     if (!targetFirm) throw new NotFoundError("Firm not found");
 
-    const [grant] = await db
-      .insert(documentFirmAccess)
-      .values({
-        documentId: id,
-        firmId: data.firmId,
-        permission: data.permission,
-        grantedByUserId: userId,
-      })
-      .onConflictDoUpdate({
-        target: [documentFirmAccess.documentId, documentFirmAccess.firmId],
-        set: {
+    return db.transaction(async (tx) => {
+      const [grant] = await tx
+        .insert(documentFirmAccess)
+        .values({
+          documentId: id,
+          firmId: data.firmId,
           permission: data.permission,
           grantedByUserId: userId,
-          revokedAt: null,
-          updatedAt: new Date(),
-        },
-      })
-      .returning();
+        })
+        .onConflictDoUpdate({
+          target: [documentFirmAccess.documentId, documentFirmAccess.firmId],
+          set: {
+            permission: data.permission,
+            grantedByUserId: userId,
+            revokedAt: null,
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
 
-    await this.logActivity({
-      documentId: id,
-      actorUserId: userId,
-      action: "ACCESS_GRANTED",
-      metadata: { firmId: data.firmId, permission: data.permission },
+      await tx.insert(documentActivityLogs).values({
+        documentId: id,
+        actorUserId: userId,
+        action: "ACCESS_GRANTED",
+        metadata: { firmId: data.firmId, permission: data.permission },
+      });
+
+      return grant;
     });
-
-    return grant;
   };
 
   revokeUserAccess = async (
@@ -788,27 +796,29 @@ export class DocumentsService {
   ) => {
     await this.ensurePermission(id, organizationId, userId, "ADMIN");
 
-    const [grant] = await db
-      .update(documentAccess)
-      .set({ revokedAt: new Date(), updatedAt: new Date() })
-      .where(
-        and(
-          eq(documentAccess.documentId, id),
-          eq(documentAccess.userId, targetUserId),
-        ),
-      )
-      .returning();
+    return db.transaction(async (tx) => {
+      const [grant] = await tx
+        .update(documentAccess)
+        .set({ revokedAt: new Date(), updatedAt: new Date() })
+        .where(
+          and(
+            eq(documentAccess.documentId, id),
+            eq(documentAccess.userId, targetUserId),
+          ),
+        )
+        .returning();
 
-    if (!grant) throw new NotFoundError("Document access not found");
+      if (!grant) throw new NotFoundError("Document access not found");
 
-    await this.logActivity({
-      documentId: id,
-      actorUserId: userId,
-      action: "ACCESS_REVOKED",
-      metadata: { userId: targetUserId },
+      await tx.insert(documentActivityLogs).values({
+        documentId: id,
+        actorUserId: userId,
+        action: "ACCESS_REVOKED",
+        metadata: { userId: targetUserId },
+      });
+
+      return grant;
     });
-
-    return grant;
   };
 
   revokeFirmAccess = async (
@@ -819,27 +829,29 @@ export class DocumentsService {
   ) => {
     await this.ensurePermission(id, organizationId, userId, "ADMIN");
 
-    const [grant] = await db
-      .update(documentFirmAccess)
-      .set({ revokedAt: new Date(), updatedAt: new Date() })
-      .where(
-        and(
-          eq(documentFirmAccess.documentId, id),
-          eq(documentFirmAccess.firmId, firmId),
-        ),
-      )
-      .returning();
+    return db.transaction(async (tx) => {
+      const [grant] = await tx
+        .update(documentFirmAccess)
+        .set({ revokedAt: new Date(), updatedAt: new Date() })
+        .where(
+          and(
+            eq(documentFirmAccess.documentId, id),
+            eq(documentFirmAccess.firmId, firmId),
+          ),
+        )
+        .returning();
 
-    if (!grant) throw new NotFoundError("Document firm access not found");
+      if (!grant) throw new NotFoundError("Document firm access not found");
 
-    await this.logActivity({
-      documentId: id,
-      actorUserId: userId,
-      action: "ACCESS_REVOKED",
-      metadata: { firmId },
+      await tx.insert(documentActivityLogs).values({
+        documentId: id,
+        actorUserId: userId,
+        action: "ACCESS_REVOKED",
+        metadata: { firmId },
+      });
+
+      return grant;
     });
-
-    return grant;
   };
 
   createTransfer = async (
@@ -856,33 +868,35 @@ export class DocumentsService {
   ) => {
     await this.ensurePermission(id, organizationId, userId, "ADMIN");
 
-    const [transfer] = await db
-      .insert(documentTransfers)
-      .values({
+    return db.transaction(async (tx) => {
+      const [transfer] = await tx
+        .insert(documentTransfers)
+        .values({
+          documentId: id,
+          fromFirmId: organizationId,
+          toFirmId: data.toFirmId,
+          fromUserId: userId,
+          toUserId: data.toUserId,
+          permission: data.permission,
+          message: data.message,
+          revokeSenderAccess: data.revokeSenderAccess ?? false,
+        })
+        .returning();
+
+      await tx.insert(documentActivityLogs).values({
         documentId: id,
-        fromFirmId: organizationId,
-        toFirmId: data.toFirmId,
-        fromUserId: userId,
-        toUserId: data.toUserId,
-        permission: data.permission,
-        message: data.message,
-        revokeSenderAccess: data.revokeSenderAccess ?? false,
-      })
-      .returning();
+        actorUserId: userId,
+        action: "TRANSFER_REQUESTED",
+        metadata: {
+          transferId: transfer.id,
+          toFirmId: data.toFirmId,
+          toUserId: data.toUserId,
+          permission: data.permission,
+        },
+      });
 
-    await this.logActivity({
-      documentId: id,
-      actorUserId: userId,
-      action: "TRANSFER_REQUESTED",
-      metadata: {
-        transferId: transfer.id,
-        toFirmId: data.toFirmId,
-        toUserId: data.toUserId,
-        permission: data.permission,
-      },
+      return transfer;
     });
-
-    return transfer;
   };
 
   acceptTransfer = async (
@@ -911,8 +925,18 @@ export class DocumentsService {
       const [updatedTransfer] = await tx
         .update(documentTransfers)
         .set({ status: "ACCEPTED", acceptedAt: now, updatedAt: now })
-        .where(eq(documentTransfers.id, transferId))
+        .where(
+          and(
+            eq(documentTransfers.id, transferId),
+            eq(documentTransfers.toFirmId, organizationId),
+            eq(documentTransfers.status, "PENDING"),
+          ),
+        )
         .returning();
+
+      if (!updatedTransfer) {
+        throw new ConflictError("Document transfer is no longer pending");
+      }
 
       await tx
         .insert(documentFirmAccess)
@@ -980,28 +1004,30 @@ export class DocumentsService {
     organizationId: string,
     userId: string,
   ) => {
-    const [transfer] = await db
-      .update(documentTransfers)
-      .set({ status: "REJECTED", updatedAt: new Date() })
-      .where(
-        and(
-          eq(documentTransfers.id, transferId),
-          eq(documentTransfers.toFirmId, organizationId),
-          eq(documentTransfers.status, "PENDING"),
-        ),
-      )
-      .returning();
+    return db.transaction(async (tx) => {
+      const [transfer] = await tx
+        .update(documentTransfers)
+        .set({ status: "REJECTED", updatedAt: new Date() })
+        .where(
+          and(
+            eq(documentTransfers.id, transferId),
+            eq(documentTransfers.toFirmId, organizationId),
+            eq(documentTransfers.status, "PENDING"),
+          ),
+        )
+        .returning();
 
-    if (!transfer) throw new NotFoundError("Pending document transfer not found");
+      if (!transfer) throw new NotFoundError("Pending document transfer not found");
 
-    await this.logActivity({
-      documentId: transfer.documentId,
-      actorUserId: userId,
-      action: "TRANSFER_REJECTED",
-      metadata: { transferId },
+      await tx.insert(documentActivityLogs).values({
+        documentId: transfer.documentId,
+        actorUserId: userId,
+        action: "TRANSFER_REJECTED",
+        metadata: { transferId },
+      });
+
+      return transfer;
     });
-
-    return transfer;
   };
 
   createExternalRequest = async (
@@ -1019,29 +1045,33 @@ export class DocumentsService {
     await this.getCaseForFirm(data.caseId, organizationId);
 
     const token = randomBytes(32).toString("hex");
-    const [request] = await db
-      .insert(documentRequests)
-      .values({
-        caseId: data.caseId,
-        requestedByFirmId: organizationId,
-        requestedByUserId: userId,
-        recipientEmail: data.recipientEmail,
-        recipientName: data.recipientName,
-        recipientFirmName: data.recipientFirmName,
-        message: data.message,
-        tokenHash: hashToken(token),
-        expiresAt: data.expiresAt,
-      })
-      .returning();
+    const request = await db.transaction(async (tx) => {
+      const [createdRequest] = await tx
+        .insert(documentRequests)
+        .values({
+          caseId: data.caseId,
+          requestedByFirmId: organizationId,
+          requestedByUserId: userId,
+          recipientEmail: data.recipientEmail,
+          recipientName: data.recipientName,
+          recipientFirmName: data.recipientFirmName,
+          message: data.message,
+          tokenHash: hashToken(token),
+          expiresAt: data.expiresAt,
+        })
+        .returning();
 
-    await this.logActivity({
-      actorUserId: userId,
-      action: "EXTERNAL_REQUEST_CREATED",
-      metadata: {
-        requestId: request.id,
-        caseId: data.caseId,
-        recipientEmail: data.recipientEmail,
-      },
+      await tx.insert(documentActivityLogs).values({
+        actorUserId: userId,
+        action: "EXTERNAL_REQUEST_CREATED",
+        metadata: {
+          requestId: createdRequest.id,
+          caseId: data.caseId,
+          recipientEmail: data.recipientEmail,
+        },
+      });
+
+      return createdRequest;
     });
 
     return { ...request, token };
@@ -1224,7 +1254,7 @@ export class DocumentsService {
         documentId: id,
         actorUserId: userId,
         action: "DOWNLOADED",
-      });
+      }).catch(() => undefined);
     }
 
     return data.signedUrl;
@@ -1268,26 +1298,28 @@ export class DocumentsService {
     organizationId: string,
     userId: string,
   ) => {
-    const [request] = await db
-      .update(documentRequests)
-      .set({ status: "CANCELLED", updatedAt: new Date() })
-      .where(
-        and(
-          eq(documentRequests.id, id),
-          eq(documentRequests.requestedByFirmId, organizationId),
-          inArray(documentRequests.status, ["PENDING", "PARTIALLY_SUBMITTED"]),
-        ),
-      )
-      .returning();
+    return db.transaction(async (tx) => {
+      const [request] = await tx
+        .update(documentRequests)
+        .set({ status: "CANCELLED", updatedAt: new Date() })
+        .where(
+          and(
+            eq(documentRequests.id, id),
+            eq(documentRequests.requestedByFirmId, organizationId),
+            inArray(documentRequests.status, ["PENDING", "PARTIALLY_SUBMITTED"]),
+          ),
+        )
+        .returning();
 
-    if (!request) throw new NotFoundError("Open document request not found");
+      if (!request) throw new NotFoundError("Open document request not found");
 
-    await this.logActivity({
-      actorUserId: userId,
-      action: "ACCESS_REVOKED",
-      metadata: { requestId: id, scope: "external_request" },
+      await tx.insert(documentActivityLogs).values({
+        actorUserId: userId,
+        action: "ACCESS_REVOKED",
+        metadata: { requestId: id, scope: "external_request" },
+      });
+
+      return request;
     });
-
-    return request;
   };
 }
