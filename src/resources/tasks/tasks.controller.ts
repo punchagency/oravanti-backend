@@ -1,7 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
-import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import { NotFoundError } from "../../utils/error/app-error";
 import * as tasksService from "./tasks.service";
 
 export class TasksController {
@@ -40,14 +40,6 @@ export class TasksController {
   });
 
   createTask = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { title, description, caseId, assignedToId, dueDate } = req.body;
-
-    if (!title || !description || !caseId || !assignedToId || !dueDate) {
-      throw new BadRequestError(
-        "title, description, caseId, assignedToId and dueDate are required",
-      );
-    }
-
     const result = await this.tasksService.createTask({
       ...req.body,
       organizationId: req.organizationId!,

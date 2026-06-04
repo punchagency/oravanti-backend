@@ -1,7 +1,6 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import asyncWrap from "../../../utils/asyncWrapper";
-import { BadRequestError } from "../../../utils/error/app-error";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
 import { DataAccessService } from "./data-access.service";
 
@@ -27,10 +26,6 @@ export class DataAccessController {
   updateDataAccessControls = asyncWrap(
     async (req: AuthRequest, res: Response) => {
       const { controls } = req.body;
-
-      if (!Array.isArray(controls) || controls.length === 0) {
-        throw new BadRequestError("controls array is required");
-      }
 
       await this.dataAccessService.updateDataAccessControls(
         req.organizationId!,

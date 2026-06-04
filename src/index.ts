@@ -36,6 +36,10 @@ import { OrganizationService } from "./resources/organization/organization.servi
 import { PracticeAreasController } from "./resources/practice-areas/practice-areas.controller";
 import { PracticeAreasRouter } from "./resources/practice-areas/practice-areas.routes";
 import { PracticeAreasService } from "./resources/practice-areas/practice-areas.service";
+import { QuestionnairesController } from "./resources/questionnaires/questionnaires.controller";
+import { QuestionnairesRouter } from "./resources/questionnaires/questionnaires.routes";
+import { QuestionnairesService } from "./resources/questionnaires/questionnaires.service";
+import { QuestionnairesValidation } from "./resources/questionnaires/questionnaires.validation";
 import { RevenueAnalyticsController } from "./resources/revenue-analytics/revenue-analytics.controller";
 import { RevenueAnalyticsRouter } from "./resources/revenue-analytics/revenue-analytics.routes";
 import { RevenueAnalyticsService } from "./resources/revenue-analytics/revenue-analytics.service";
@@ -68,33 +72,52 @@ import { SecurityService } from "./resources/settings/security/security.service"
 import { TasksController } from "./resources/tasks/tasks.controller";
 import { TasksRouter } from "./resources/tasks/tasks.routes";
 import { TasksService } from "./resources/tasks/tasks.service";
+import { CommonValidation } from "./validation/common.validation";
 
 const PORT = Number(process.env.PORT || 3000);
 
 // Instantiate services and controllers for routers with dependency injection
+const commonValidation = new CommonValidation();
+
 const authService = new AuthService();
 const authController = new AuthController(authService);
-const authRouter = new AuthRouter(authController);
+const authRouter = new AuthRouter(authController, commonValidation);
 
 const staffService = new StaffService();
 const staffController = new StaffController(staffService);
-const staffRouter = new StaffRouter(staffController);
+const staffRouter = new StaffRouter(staffController, commonValidation);
 
 const teamsService = new TeamsService();
 const teamsController = new TeamsController(teamsService);
-const teamsRouter = new TeamsRouter(teamsController);
+const teamsRouter = new TeamsRouter(teamsController, commonValidation);
 
 const assignmentsService = new AssignmentsService();
 const assignmentsController = new AssignmentsController(assignmentsService);
-const assignmentsRouter = new AssignmentsRouter(assignmentsController);
+const assignmentsRouter = new AssignmentsRouter(
+  assignmentsController,
+  commonValidation,
+);
 
 const documentsService = new DocumentsService();
 const documentsController = new DocumentsController(documentsService);
-const documentsRouter = new DocumentsRouter(documentsController);
+const documentsRouter = new DocumentsRouter(
+  documentsController,
+  commonValidation,
+);
+
+const questionnairesService = new QuestionnairesService();
+const questionnairesController = new QuestionnairesController(
+  questionnairesService,
+);
+const questionnairesValidation = new QuestionnairesValidation();
+const questionnairesRouter = new QuestionnairesRouter(
+  questionnairesController,
+  questionnairesValidation,
+);
 
 const tasksService = new TasksService();
 const tasksController = new TasksController(tasksService);
-const tasksRouter = new TasksRouter(tasksController);
+const tasksRouter = new TasksRouter(tasksController, commonValidation);
 
 const aiErrorDetectionService = new AIErrorDetectionService();
 const aiErrorDetectionController = new AIErrorDetectionController(
@@ -102,21 +125,25 @@ const aiErrorDetectionController = new AIErrorDetectionController(
 );
 const aiErrorDetectionRouter = new AIErrorDetectionRouter(
   aiErrorDetectionController,
+  commonValidation,
 );
 
 const calendarService = new CalendarService();
 const calendarController = new CalendarController(calendarService);
-const calendarRouter = new CalendarRouter(calendarController);
+const calendarRouter = new CalendarRouter(calendarController, commonValidation);
 
 const casesService = new CasesService();
 const casesController = new CasesController(casesService);
-const casesRouter = new CasesRouter(casesController);
+const casesRouter = new CasesRouter(casesController, commonValidation);
 
 const practiceAreasService = new PracticeAreasService();
 const practiceAreasController = new PracticeAreasController(
   practiceAreasService,
 );
-const practiceAreasRouter = new PracticeAreasRouter(practiceAreasController);
+const practiceAreasRouter = new PracticeAreasRouter(
+  practiceAreasController,
+  commonValidation,
+);
 
 const clientResponsivenessService = new ClientResponsivenessService();
 const clientResponsivenessController = new ClientResponsivenessController(
@@ -124,11 +151,12 @@ const clientResponsivenessController = new ClientResponsivenessController(
 );
 const clientResponsivenessRouter = new ClientResponsivenessRouter(
   clientResponsivenessController,
+  commonValidation,
 );
 
 const clientsService = new ClientsService();
 const clientsController = new ClientsController(clientsService);
-const clientsRouter = new ClientsRouter(clientsController);
+const clientsRouter = new ClientsRouter(clientsController, commonValidation);
 
 const revenueAnalyticsService = new RevenueAnalyticsService();
 const revenueAnalyticsController = new RevenueAnalyticsController(
@@ -136,6 +164,7 @@ const revenueAnalyticsController = new RevenueAnalyticsController(
 );
 const revenueAnalyticsRouter = new RevenueAnalyticsRouter(
   revenueAnalyticsController,
+  commonValidation,
 );
 
 const permissionAuditLogService = new PermissionAuditLogService();
@@ -144,15 +173,16 @@ const permissionAuditLogController = new PermissionAuditLogController(
 );
 const permissionAuditLogRouter = new PermissionAuditLogRouter(
   permissionAuditLogController,
+  commonValidation,
 );
 
 const profileService = new ProfileService();
 const profileController = new ProfileController(profileService);
-const profileRouter = new ProfileRouter(profileController);
+const profileRouter = new ProfileRouter(profileController, commonValidation);
 
 const firmInfoService = new FirmInfoService();
 const firmInfoController = new FirmInfoController(firmInfoService);
-const firmInfoRouter = new FirmInfoRouter(firmInfoController);
+const firmInfoRouter = new FirmInfoRouter(firmInfoController, commonValidation);
 
 const accessControlService = new AccessControlService();
 const accessControlController = new AccessControlController(
@@ -168,6 +198,7 @@ const certificationGatesController = new CertificationGatesController(
 const accessControlRouter = new AccessControlRouter(
   accessControlController,
   certificationGatesController,
+  commonValidation,
 );
 
 const financialAccessService = new FinancialAccessService();
@@ -177,6 +208,7 @@ const financialAccessController = new FinancialAccessController(
 );
 const financialAccessRouter = new FinancialAccessRouter(
   financialAccessController,
+  commonValidation,
 );
 
 const approvalWorkflowsService = new ApprovalWorkflowsService();
@@ -186,6 +218,7 @@ const approvalWorkflowsController = new ApprovalWorkflowsController(
 );
 const approvalWorkflowsRouter = new ApprovalWorkflowsRouter(
   approvalWorkflowsController,
+  commonValidation,
 );
 
 const dataAccessService = new DataAccessService();
@@ -193,11 +226,14 @@ const dataAccessController = new DataAccessController(
   dataAccessService,
   permissionAuditLogService,
 );
-const dataAccessRouter = new DataAccessRouter(dataAccessController);
+const dataAccessRouter = new DataAccessRouter(
+  dataAccessController,
+  commonValidation,
+);
 
 const securityService = new SecurityService();
 const securityController = new SecurityController(securityService);
-const securityRouter = new SecurityRouter(securityController);
+const securityRouter = new SecurityRouter(securityController, commonValidation);
 
 const organizationService = new OrganizationService();
 const organizationController = new OrganizationController(organizationService);
@@ -210,6 +246,7 @@ const app = new App(
     teamsRouter,
     assignmentsRouter,
     documentsRouter,
+    questionnairesRouter,
     tasksRouter,
     aiErrorDetectionRouter,
     calendarRouter,

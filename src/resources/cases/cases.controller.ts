@@ -1,7 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
-import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import { NotFoundError } from "../../utils/error/app-error";
 import { CasesService } from "./cases.service";
 
 export class CasesController {
@@ -13,9 +13,6 @@ export class CasesController {
 
   generateCaseNumber = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { practiceAreaId, caseType } = req.query;
-    if (!practiceAreaId || !caseType) {
-      throw new BadRequestError("practiceAreaId and caseType are required");
-    }
 
     const caseNumber = await this.casesService.generateCaseNumber(
       req.organizationId!,
@@ -49,21 +46,6 @@ export class CasesController {
   });
 
   createCase = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { clientId, practiceAreaId, caseType, filingDate, description } =
-      req.body;
-
-    if (
-      !clientId ||
-      !practiceAreaId ||
-      !caseType ||
-      !filingDate ||
-      !description
-    ) {
-      throw new BadRequestError(
-        "clientId, practiceAreaId, caseType, filingDate and description are required",
-      );
-    }
-
     const result = await this.casesService.createCase(req.organizationId!, req.body, {
       adminId: req.adminId,
       staffId: req.staffId,

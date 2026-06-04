@@ -1,7 +1,6 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import asyncWrap from "../../../utils/asyncWrapper";
-import { BadRequestError } from "../../../utils/error/app-error";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
 import { ApprovalWorkflowsService } from "./approval-workflows.service";
 
@@ -27,10 +26,6 @@ export class ApprovalWorkflowsController {
   updateApprovalWorkflows = asyncWrap(
     async (req: AuthRequest, res: Response) => {
       const { workflows } = req.body;
-
-      if (!Array.isArray(workflows) || workflows.length === 0) {
-        throw new BadRequestError("workflows array is required");
-      }
 
       await this.approvalWorkflowsService.updateApprovalWorkflows(
         req.organizationId!,

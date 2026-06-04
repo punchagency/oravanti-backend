@@ -1,7 +1,6 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import asyncWrap from "../../../utils/asyncWrapper";
-import { BadRequestError } from "../../../utils/error/app-error";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
 import { CertificationGatesService } from "./certification-gates.service";
 
@@ -27,10 +26,6 @@ export class CertificationGatesController {
   updateCertificationGates = asyncWrap(
     async (req: AuthRequest, res: Response) => {
       const { gates } = req.body;
-
-      if (!Array.isArray(gates) || gates.length === 0) {
-        throw new BadRequestError("gates array is required");
-      }
 
       await this.certifcationGatesService.updateCertificationGates(
         req.organizationId!,
@@ -58,10 +53,6 @@ export class CertificationGatesController {
   updateActivationRequirements = asyncWrap(
     async (req: AuthRequest, res: Response) => {
       const { certificationCodes } = req.body;
-
-      if (!Array.isArray(certificationCodes)) {
-        throw new BadRequestError("certificationCodes array is required");
-      }
 
       const result =
         await this.certifcationGatesService.updateActivationRequirements(
