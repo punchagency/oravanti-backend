@@ -115,11 +115,18 @@ export class DocumentsRouter {
       this.documentsController.getActivityLogs,
     );
 
+    this.router.patch(
+      "/:id",
+      this.upload.single("file"),
+      validateRequest({ params: this.validation.idParams }),
+      this.documentsController.updateDocument,
+    );
+
     this.router.post(
       "/:id/versions",
       this.upload.single("file"),
       validateRequest({ params: this.validation.idParams }),
-      this.documentsController.addDocumentVersion,
+      this.documentsController.updateDocument,
     );
 
     this.router.post(

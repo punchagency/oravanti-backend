@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "crypto";
+import { createHash, randomBytes, randomUUID } from "crypto";
 import {
   and,
   count,
@@ -28,7 +28,6 @@ import {
 import { organization, user } from "../../db/schema/auth-schema";
 import {
   AuthorizationError,
-  BadRequestError,
   ConflictError,
   ExternalServiceError,
   NotFoundError,
@@ -220,6 +219,12 @@ export class DocumentsService {
     return urlData.publicUrl;
   };
 
+  private removeFromStorage = async (storagePath: string) => {
+    await supabaseAdmin.storage
+      .from(SUPABASE_STORAGE_BUCKET)
+      .remove([storagePath]);
+  };
+
   uploadDocument = async (
     organizationId: string,
     data: {
@@ -235,22 +240,12 @@ export class DocumentsService {
   ) => {
     await this.getCaseForFirm(data.caseId, organizationId);
 
-    const [doc] = await db
-      .insert(documents)
-      .values({
-        title: data.title,
-        category: data.category,
-        originFirmId: organizationId,
-        currentOwnerFirmId: organizationId,
-        createdByUserId: data.uploadedByUserId,
-      })
-      .returning();
-
+    const documentId = randomUUID();
     const versionNumber = 1;
     const safeFilename = safeStorageName(data.title, data.originalFilename);
     const storagePath = buildStoragePath(
       organizationId,
-      doc.id,
+      documentId,
       versionNumber,
       safeFilename,
     );
@@ -260,59 +255,74 @@ export class DocumentsService {
       mimeType: data.mimeType,
     });
 
-    const result = await db.transaction(async (tx) => {
-      const [version] = await tx
-        .insert(documentVersions)
-        .values({
+    try {
+      return await db.transaction(async (tx) => {
+        const [doc] = await tx
+          .insert(documents)
+          .values({
+            id: documentId,
+            title: data.title,
+            category: data.category,
+            originFirmId: organizationId,
+            currentOwnerFirmId: organizationId,
+            createdByUserId: data.uploadedByUserId,
+          })
+          .returning();
+
+        const [version] = await tx
+          .insert(documentVersions)
+          .values({
+            documentId: doc.id,
+            filePath: storagePath,
+            fileUrl,
+            originalFileName: data.originalFilename,
+            mimeType: data.mimeType,
+            fileSize: data.fileSize,
+            versionNumber,
+            uploadedByUserId: data.uploadedByUserId,
+            scanStatus: "SKIPPED",
+          })
+          .returning();
+
+        const [updatedDocument] = await tx
+          .update(documents)
+          .set({ currentVersionId: version.id, updatedAt: new Date() })
+          .where(eq(documents.id, doc.id))
+          .returning();
+
+        await tx.insert(documentCaseLinks).values({
           documentId: doc.id,
-          filePath: storagePath,
-          fileUrl,
-          originalFileName: data.originalFilename,
-          mimeType: data.mimeType,
-          fileSize: data.fileSize,
-          versionNumber,
-          uploadedByUserId: data.uploadedByUserId,
-          scanStatus: "SKIPPED",
-        })
-        .returning();
+          caseId: data.caseId,
+          linkedByUserId: data.uploadedByUserId,
+        });
 
-      const [updatedDocument] = await tx
-        .update(documents)
-        .set({ currentVersionId: version.id, updatedAt: new Date() })
-        .where(eq(documents.id, doc.id))
-        .returning();
+        await tx.insert(documentFirmAccess).values({
+          documentId: doc.id,
+          firmId: organizationId,
+          permission: "ADMIN",
+          grantedByUserId: data.uploadedByUserId,
+        });
 
-      await tx.insert(documentCaseLinks).values({
-        documentId: doc.id,
-        caseId: data.caseId,
-        linkedByUserId: data.uploadedByUserId,
+        await tx.insert(documentAccess).values({
+          documentId: doc.id,
+          userId: data.uploadedByUserId,
+          permission: "ADMIN",
+          grantedByUserId: data.uploadedByUserId,
+        });
+
+        await tx.insert(documentActivityLogs).values({
+          documentId: doc.id,
+          actorUserId: data.uploadedByUserId,
+          action: "CREATED",
+          metadata: { caseId: data.caseId, versionId: version.id },
+        });
+
+        return { ...updatedDocument, currentVersion: version };
       });
-
-      await tx.insert(documentFirmAccess).values({
-        documentId: doc.id,
-        firmId: organizationId,
-        permission: "ADMIN",
-        grantedByUserId: data.uploadedByUserId,
-      });
-
-      await tx.insert(documentAccess).values({
-        documentId: doc.id,
-        userId: data.uploadedByUserId,
-        permission: "ADMIN",
-        grantedByUserId: data.uploadedByUserId,
-      });
-
-      await tx.insert(documentActivityLogs).values({
-        documentId: doc.id,
-        actorUserId: data.uploadedByUserId,
-        action: "CREATED",
-        metadata: { caseId: data.caseId, versionId: version.id },
-      });
-
-      return { ...updatedDocument, currentVersion: version };
-    });
-
-    return result;
+    } catch (error) {
+      await this.removeFromStorage(storagePath).catch(() => undefined);
+      throw error;
+    }
   };
 
   getAllDocuments = async (
@@ -586,7 +596,7 @@ export class DocumentsService {
     return updated;
   };
 
-  addDocumentVersion = async (
+  updateDocument = async (
     id: string,
     organizationId: string,
     data: {
@@ -617,36 +627,41 @@ export class DocumentsService {
       mimeType: data.mimeType,
     });
 
-    return db.transaction(async (tx) => {
-      const [version] = await tx
-        .insert(documentVersions)
-        .values({
+    try {
+      return await db.transaction(async (tx) => {
+        const [version] = await tx
+          .insert(documentVersions)
+          .values({
+            documentId: id,
+            filePath: storagePath,
+            fileUrl,
+            originalFileName: data.originalFilename,
+            mimeType: data.mimeType,
+            fileSize: data.fileSize,
+            versionNumber,
+            uploadedByUserId: data.uploadedByUserId,
+            scanStatus: "SKIPPED",
+          })
+          .returning();
+
+        await tx
+          .update(documents)
+          .set({ currentVersionId: version.id, updatedAt: new Date() })
+          .where(eq(documents.id, id));
+
+        await tx.insert(documentActivityLogs).values({
           documentId: id,
-          filePath: storagePath,
-          fileUrl,
-          originalFileName: data.originalFilename,
-          mimeType: data.mimeType,
-          fileSize: data.fileSize,
-          versionNumber,
-          uploadedByUserId: data.uploadedByUserId,
-          scanStatus: "SKIPPED",
-        })
-        .returning();
+          actorUserId: data.uploadedByUserId,
+          action: "VERSION_UPLOADED",
+          metadata: { versionId: version.id, versionNumber },
+        });
 
-      await tx
-        .update(documents)
-        .set({ currentVersionId: version.id, updatedAt: new Date() })
-        .where(eq(documents.id, id));
-
-      await tx.insert(documentActivityLogs).values({
-        documentId: id,
-        actorUserId: data.uploadedByUserId,
-        action: "VERSION_UPLOADED",
-        metadata: { versionId: version.id, versionNumber },
+        return version;
       });
-
-      return version;
-    });
+    } catch (error) {
+      await this.removeFromStorage(storagePath).catch(() => undefined);
+      throw error;
+    }
   };
 
   linkDocumentToCase = async (
@@ -1063,15 +1078,7 @@ export class DocumentsService {
     }
 
     const title = data.title ?? data.originalFilename;
-    const [doc] = await db
-      .insert(documents)
-      .values({
-        title,
-        originFirmId: request.requestedByFirmId,
-        currentOwnerFirmId: request.requestedByFirmId,
-      })
-      .returning();
-
+    const documentId = randomUUID();
     const storagePath = buildExternalStoragePath(
       request.id,
       safeStorageName(title, data.originalFilename),
@@ -1082,72 +1089,88 @@ export class DocumentsService {
       mimeType: data.mimeType,
     });
 
-    return db.transaction(async (tx) => {
-      const [version] = await tx
-        .insert(documentVersions)
-        .values({
+    try {
+      return await db.transaction(async (tx) => {
+        const [doc] = await tx
+          .insert(documents)
+          .values({
+            id: documentId,
+            title,
+            originFirmId: request.requestedByFirmId,
+            currentOwnerFirmId: request.requestedByFirmId,
+          })
+          .returning();
+
+        const [version] = await tx
+          .insert(documentVersions)
+          .values({
+            documentId: doc.id,
+            filePath: storagePath,
+            fileUrl,
+            originalFileName: data.originalFilename,
+            mimeType: data.mimeType,
+            fileSize: data.fileSize,
+            versionNumber: 1,
+            scanStatus: "SKIPPED",
+          })
+          .returning();
+
+        const [updatedDocument] = await tx
+          .update(documents)
+          .set({ currentVersionId: version.id, updatedAt: new Date() })
+          .where(eq(documents.id, doc.id))
+          .returning();
+
+        const [submission] = await tx
+          .insert(externalSubmissions)
+          .values({
+            requestId: request.id,
+            documentId: doc.id,
+            documentVersionId: version.id,
+            uploadedByName: data.uploadedByName,
+            uploadedByEmail: data.uploadedByEmail,
+            originalFileName: data.originalFilename,
+            filePath: storagePath,
+            mimeType: data.mimeType,
+            fileSize: data.fileSize,
+            scanStatus: "SKIPPED",
+          })
+          .returning();
+
+        await tx.insert(documentCaseLinks).values({
           documentId: doc.id,
-          filePath: storagePath,
-          fileUrl,
-          originalFileName: data.originalFilename,
-          mimeType: data.mimeType,
-          fileSize: data.fileSize,
-          versionNumber: 1,
-          scanStatus: "SKIPPED",
-        })
-        .returning();
+          caseId: request.caseId,
+        });
 
-      await tx
-        .update(documents)
-        .set({ currentVersionId: version.id, updatedAt: new Date() })
-        .where(eq(documents.id, doc.id));
-
-      const [submission] = await tx
-        .insert(externalSubmissions)
-        .values({
-          requestId: request.id,
+        await tx.insert(documentFirmAccess).values({
           documentId: doc.id,
-          documentVersionId: version.id,
-          uploadedByName: data.uploadedByName,
-          uploadedByEmail: data.uploadedByEmail,
-          originalFileName: data.originalFilename,
-          filePath: storagePath,
-          mimeType: data.mimeType,
-          fileSize: data.fileSize,
-          scanStatus: "SKIPPED",
-        })
-        .returning();
+          firmId: request.requestedByFirmId,
+          permission: "ADMIN",
+          grantedByUserId: request.requestedByUserId,
+        });
 
-      await tx.insert(documentCaseLinks).values({
-        documentId: doc.id,
-        caseId: request.caseId,
+        await tx
+          .update(documentRequests)
+          .set({ status: "SUBMITTED", updatedAt: new Date() })
+          .where(eq(documentRequests.id, request.id));
+
+        await tx.insert(documentActivityLogs).values({
+          documentId: doc.id,
+          actorEmail: data.uploadedByEmail,
+          action: "EXTERNAL_SUBMISSION_UPLOADED",
+          metadata: {
+            requestId: request.id,
+            submissionId: submission.id,
+            versionId: version.id,
+          },
+        });
+
+        return { document: updatedDocument, version, submission };
       });
-
-      await tx.insert(documentFirmAccess).values({
-        documentId: doc.id,
-        firmId: request.requestedByFirmId,
-        permission: "ADMIN",
-        grantedByUserId: request.requestedByUserId,
-      });
-
-      await tx
-        .update(documentRequests)
-        .set({ status: "SUBMITTED", updatedAt: new Date() })
-        .where(eq(documentRequests.id, request.id));
-
-      await tx.insert(documentActivityLogs).values({
-        documentId: doc.id,
-        actorEmail: data.uploadedByEmail,
-        action: "EXTERNAL_SUBMISSION_UPLOADED",
-        metadata: {
-          requestId: request.id,
-          submissionId: submission.id,
-          versionId: version.id,
-        },
-      });
-
-      return { document: doc, version, submission };
-    });
+    } catch (error) {
+      await this.removeFromStorage(storagePath).catch(() => undefined);
+      throw error;
+    }
   };
 
   archiveDocument = async (

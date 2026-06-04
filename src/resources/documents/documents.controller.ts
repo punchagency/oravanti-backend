@@ -68,13 +68,13 @@ export class DocumentsController {
     res.status(201).json(result);
   });
 
-  addDocumentVersion = asyncWrap(async (req: AuthRequest, res: Response) => {
+  updateDocument = asyncWrap(async (req: AuthRequest, res: Response) => {
     const file = req.file;
     if (!file) {
       throw new BadRequestError("File is required");
     }
 
-    const result = await this.documentsService.addDocumentVersion(
+    const result = await this.documentsService.updateDocument(
       req.params.id as string,
       req.organizationId!,
       {
