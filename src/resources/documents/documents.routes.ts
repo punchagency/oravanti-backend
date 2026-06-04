@@ -2,16 +2,20 @@
  * @openapi
  * tags:
  *   - name: Documents
- *     description: Document management & file uploads
+ *     description: Document resources, versions, access, transfers, and external requests
  */
 import { Router } from "express";
 import multer from "multer";
+import { z } from "zod";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
-import { CommonValidation } from "../../validation/common.validation";
 import { setFirmContext } from "../../middleware/rls.middleware";
 import { validateRequest } from "../../middleware/validate.middleware";
+import { CommonValidation } from "../../validation/common.validation";
 import { DocumentsController } from "./documents.controller";
+
+const documentPermission = z.enum(["VIEW", "COMMENT", "EDIT", "ADMIN"]);
+const documentStatus = z.enum(["active", "archived", "deleted"]);
 
 export class DocumentsRouter {
   public router: Router;
@@ -34,7 +38,48 @@ export class DocumentsRouter {
   }
 
   private initializeRoutes() {
-    this.router.use(this.path, this.router);
+    /**
+     * @openapi
+     * /documents/requests/{token}/submissions:
+     *   post:
+     *     tags: [Documents]
+     *     summary: Submit files for an external document request
+     *     parameters:
+     *       - in: path
+     *         name: token
+     *         required: true
+     *         schema: { type: string }
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         multipart/form-data:
+     *           schema:
+     *             type: object
+     *             required: [uploadedByName, uploadedByEmail, file]
+     *             properties:
+     *               uploadedByName: { type: string }
+     *               uploadedByEmail: { type: string, format: email }
+     *               title: { type: string }
+     *               file: { type: string, format: binary }
+     *     responses:
+     *       201:
+     *         description: External submission uploaded
+     *       404: { description: Document request not found }
+     *       409: { description: Document request is not open or has expired }
+     */
+    this.router.post(
+      "/requests/:token/submissions",
+      this.upload.single("file"),
+      validateRequest({
+        params: this.validation.tokenParams("token"),
+        body: this.validation.requiredBody(
+          "uploadedByName",
+          "uploadedByEmail",
+        ),
+      }),
+      this.documentsController.submitExternalDocument,
+    );
+
     this.router.use(requireAuth, requireAdmin, setFirmContext);
 
     /**
@@ -50,16 +95,52 @@ export class DocumentsRouter {
      *         content:
      *           application/json:
      *             schema:
-     *               $ref: "#/components/schemas/TaskStats"
+     *               type: object
      */
     this.router.get("/stats", this.documentsController.getDocumentStats);
+
+    /**
+     * @openapi
+     * /documents/transfers:
+     *   get:
+     *     tags: [Documents]
+     *     summary: List incoming and outgoing document transfers
+     *     security: [{ bearerAuth: [] }]
+     *     responses:
+     *       200:
+     *         description: Document transfers
+     *         content:
+     *           application/json:
+     *             schema:
+     *               type: array
+     *               items: { type: object }
+     */
+    this.router.get("/transfers", this.documentsController.getTransfers);
+
+    /**
+     * @openapi
+     * /documents/requests:
+     *   get:
+     *     tags: [Documents]
+     *     summary: List external document requests
+     *     security: [{ bearerAuth: [] }]
+     *     responses:
+     *       200:
+     *         description: External document requests
+     *         content:
+     *           application/json:
+     *             schema:
+     *               type: array
+     *               items: { type: object }
+     */
+    this.router.get("/requests", this.documentsController.getExternalRequests);
 
     /**
      * @openapi
      * /documents/:
      *   get:
      *     tags: [Documents]
-     *     summary: List documents (paginated, filterable)
+     *     summary: List documents
      *     security: [{ bearerAuth: [] }]
      *     parameters:
      *       - in: query
@@ -67,16 +148,13 @@ export class DocumentsRouter {
      *         schema: { type: string }
      *       - in: query
      *         name: category
-     *         schema: { type: string }
-     *       - in: query
-     *         name: clientId
-     *         schema: { type: string }
+     *         schema: { type: string, enum: [application, supporting, identity, uscis_response] }
      *       - in: query
      *         name: caseId
-     *         schema: { type: string }
+     *         schema: { type: string, format: uuid }
      *       - in: query
      *         name: status
-     *         schema: { type: string }
+     *         schema: { type: string, enum: [active, archived, deleted] }
      *       - in: query
      *         name: page
      *         schema: { type: integer }
@@ -95,16 +173,160 @@ export class DocumentsRouter {
 
     /**
      * @openapi
+     * /documents/:
+     *   post:
+     *     tags: [Documents]
+     *     summary: Upload a new document
+     *     security: [{ bearerAuth: [] }]
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         multipart/form-data:
+     *           schema:
+     *             type: object
+     *             required: [caseId, title, file]
+     *             properties:
+     *               caseId: { type: string, format: uuid }
+     *               title: { type: string }
+     *               category: { type: string, enum: [application, supporting, identity, uscis_response] }
+     *               file: { type: string, format: binary }
+     *     responses:
+     *       201:
+     *         description: Document uploaded
+     */
+    this.router.post(
+      "/",
+      this.upload.single("file"),
+      validateRequest({
+        body: this.validation.requiredBody("caseId", "title"),
+      }),
+      this.documentsController.uploadDocument,
+    );
+
+    /**
+     * @openapi
+     * /documents/requests:
+     *   post:
+     *     tags: [Documents]
+     *     summary: Create an external document request
+     *     security: [{ bearerAuth: [] }]
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [caseId, recipientEmail, expiresAt]
+     *             properties:
+     *               caseId: { type: string, format: uuid }
+     *               recipientEmail: { type: string, format: email }
+     *               recipientName: { type: string }
+     *               recipientFirmName: { type: string }
+     *               message: { type: string }
+     *               expiresAt: { type: string, format: date-time }
+     *     responses:
+     *       201:
+     *         description: External document request created
+     */
+    this.router.post(
+      "/requests",
+      validateRequest({
+        body: this.validation
+          .requiredBody("caseId", "recipientEmail", "expiresAt")
+          .extend({
+            expiresAt: z.string().datetime("expiresAt must be a valid ISO date"),
+          }),
+      }),
+      this.documentsController.createExternalRequest,
+    );
+
+    /**
+     * @openapi
+     * /documents/requests/{requestId}/cancel:
+     *   patch:
+     *     tags: [Documents]
+     *     summary: Cancel an external document request
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: requestId
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *     responses:
+     *       200:
+     *         description: Request cancelled
+     *       404: { description: Open document request not found }
+     */
+    this.router.patch(
+      "/requests/:requestId/cancel",
+      validateRequest({
+        params: z.object({ requestId: this.validation.uuid }),
+      }),
+      this.documentsController.cancelExternalRequest,
+    );
+
+    /**
+     * @openapi
+     * /documents/transfers/{transferId}/accept:
+     *   patch:
+     *     tags: [Documents]
+     *     summary: Accept a document transfer
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: transferId
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *     responses:
+     *       200:
+     *         description: Transfer accepted
+     *       409: { description: Transfer is no longer pending }
+     */
+    this.router.patch(
+      "/transfers/:transferId/accept",
+      validateRequest({
+        params: z.object({ transferId: this.validation.uuid }),
+      }),
+      this.documentsController.acceptTransfer,
+    );
+
+    /**
+     * @openapi
+     * /documents/transfers/{transferId}/reject:
+     *   patch:
+     *     tags: [Documents]
+     *     summary: Reject a document transfer
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: transferId
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *     responses:
+     *       200:
+     *         description: Transfer rejected
+     *       404: { description: Pending document transfer not found }
+     */
+    this.router.patch(
+      "/transfers/:transferId/reject",
+      validateRequest({
+        params: z.object({ transferId: this.validation.uuid }),
+      }),
+      this.documentsController.rejectTransfer,
+    );
+
+    /**
+     * @openapi
      * /documents/{id}:
      *   get:
      *     tags: [Documents]
-     *     summary: Get document metadata by ID
+     *     summary: Get document by ID
      *     security: [{ bearerAuth: [] }]
      *     parameters:
      *       - in: path
      *         name: id
      *         required: true
-     *         schema: { type: string }
+     *         schema: { type: string, format: uuid }
      *     responses:
      *       200:
      *         description: Document data
@@ -125,13 +347,13 @@ export class DocumentsRouter {
      * /documents/{id}/download:
      *   get:
      *     tags: [Documents]
-     *     summary: Get a signed download URL for a document
+     *     summary: Create a signed download URL
      *     security: [{ bearerAuth: [] }]
      *     parameters:
      *       - in: path
      *         name: id
      *         required: true
-     *         schema: { type: string }
+     *         schema: { type: string, format: uuid }
      *     responses:
      *       200:
      *         description: Signed download URL
@@ -148,46 +370,304 @@ export class DocumentsRouter {
 
     /**
      * @openapi
-     * /documents/:
-     *   post:
+     * /documents/{id}/activity:
+     *   get:
      *     tags: [Documents]
-     *     summary: Upload a document
+     *     summary: List document activity logs
      *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *     responses:
+     *       200:
+     *         description: Document activity logs
+     */
+    this.router.get(
+      "/:id/activity",
+      validateRequest({ params: this.validation.idParams }),
+      this.documentsController.getActivityLogs,
+    );
+
+    /**
+     * @openapi
+     * /documents/{id}:
+     *   patch:
+     *     tags: [Documents]
+     *     summary: Upload a new current version for a document
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string, format: uuid }
      *     requestBody:
      *       required: true
      *       content:
      *         multipart/form-data:
      *           schema:
      *             type: object
-     *             required: [file, clientId, caseId, name, category]
+     *             required: [file]
      *             properties:
-     *               file:
-     *                 type: string
-     *                 format: binary
-     *               clientId: { type: string }
-     *               caseId: { type: string }
-     *               name: { type: string }
-     *               category: { type: string }
+     *               file: { type: string, format: binary }
      *     responses:
      *       201:
-     *         description: Document uploaded
-     *         content:
-     *           application/json:
-     *             schema:
-     *               $ref: "#/components/schemas/Document"
+     *         description: Document version uploaded
+     */
+    this.router.patch(
+      "/:id",
+      this.upload.single("file"),
+      validateRequest({ params: this.validation.idParams }),
+      this.documentsController.updateDocument,
+    );
+
+    /**
+     * @openapi
+     * /documents/{id}/versions:
+     *   post:
+     *     tags: [Documents]
+     *     summary: Upload a new document version
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         multipart/form-data:
+     *           schema:
+     *             type: object
+     *             required: [file]
+     *             properties:
+     *               file: { type: string, format: binary }
+     *     responses:
+     *       201:
+     *         description: Document version uploaded
      */
     this.router.post(
-      "/",
+      "/:id/versions",
       this.upload.single("file"),
+      validateRequest({ params: this.validation.idParams }),
+      this.documentsController.updateDocument,
+    );
+
+    /**
+     * @openapi
+     * /documents/{id}/cases:
+     *   post:
+     *     tags: [Documents]
+     *     summary: Link a document to a case
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [caseId]
+     *             properties:
+     *               caseId: { type: string, format: uuid }
+     *     responses:
+     *       201:
+     *         description: Document linked to case
+     */
+    this.router.post(
+      "/:id/cases",
       validateRequest({
-        body: this.validation.requiredBody(
-          "clientId",
-          "caseId",
-          "name",
-          "category",
-        ),
+        params: this.validation.idParams,
+        body: this.validation.requiredBody("caseId"),
       }),
-      this.documentsController.uploadDocument,
+      this.documentsController.linkDocumentToCase,
+    );
+
+    /**
+     * @openapi
+     * /documents/{id}/access/users:
+     *   post:
+     *     tags: [Documents]
+     *     summary: Grant document access to a user
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [userId, permission]
+     *             properties:
+     *               userId: { type: string }
+     *               permission: { type: string, enum: [VIEW, COMMENT, EDIT, ADMIN] }
+     *     responses:
+     *       201:
+     *         description: User access granted
+     */
+    this.router.post(
+      "/:id/access/users",
+      validateRequest({
+        params: this.validation.idParams,
+        body: z.object({
+          userId: z.string().min(1, "userId is required"),
+          permission: documentPermission,
+        }),
+      }),
+      this.documentsController.grantUserAccess,
+    );
+
+    /**
+     * @openapi
+     * /documents/{id}/access/firms:
+     *   post:
+     *     tags: [Documents]
+     *     summary: Grant document access to a firm
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [firmId, permission]
+     *             properties:
+     *               firmId: { type: string }
+     *               permission: { type: string, enum: [VIEW, COMMENT, EDIT, ADMIN] }
+     *     responses:
+     *       201:
+     *         description: Firm access granted
+     */
+    this.router.post(
+      "/:id/access/firms",
+      validateRequest({
+        params: this.validation.idParams,
+        body: z.object({
+          firmId: z.string().min(1, "firmId is required"),
+          permission: documentPermission,
+        }),
+      }),
+      this.documentsController.grantFirmAccess,
+    );
+
+    /**
+     * @openapi
+     * /documents/{id}/access/users/{userId}:
+     *   delete:
+     *     tags: [Documents]
+     *     summary: Revoke user access to a document
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *       - in: path
+     *         name: userId
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200:
+     *         description: User access revoked
+     */
+    this.router.delete(
+      "/:id/access/users/:userId",
+      validateRequest({
+        params: z.object({
+          id: this.validation.uuid,
+          userId: z.string().min(1, "userId is required"),
+        }),
+      }),
+      this.documentsController.revokeUserAccess,
+    );
+
+    /**
+     * @openapi
+     * /documents/{id}/access/firms/{firmId}:
+     *   delete:
+     *     tags: [Documents]
+     *     summary: Revoke firm access to a document
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *       - in: path
+     *         name: firmId
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200:
+     *         description: Firm access revoked
+     */
+    this.router.delete(
+      "/:id/access/firms/:firmId",
+      validateRequest({
+        params: z.object({
+          id: this.validation.uuid,
+          firmId: z.string().min(1, "firmId is required"),
+        }),
+      }),
+      this.documentsController.revokeFirmAccess,
+    );
+
+    /**
+     * @openapi
+     * /documents/{id}/transfers:
+     *   post:
+     *     tags: [Documents]
+     *     summary: Request a document transfer to another firm
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [toFirmId, permission]
+     *             properties:
+     *               toFirmId: { type: string }
+     *               toUserId: { type: string }
+     *               permission: { type: string, enum: [VIEW, COMMENT, EDIT, ADMIN] }
+     *               message: { type: string }
+     *               revokeSenderAccess: { type: boolean }
+     *     responses:
+     *       201:
+     *         description: Transfer requested
+     */
+    this.router.post(
+      "/:id/transfers",
+      validateRequest({
+        params: this.validation.idParams,
+        body: z.object({
+          toFirmId: z.string().min(1, "toFirmId is required"),
+          toUserId: z.string().min(1).optional(),
+          permission: documentPermission,
+          message: z.string().optional(),
+          revokeSenderAccess: z.boolean().optional(),
+        }),
+      }),
+      this.documentsController.createTransfer,
     );
 
     /**
@@ -195,35 +675,77 @@ export class DocumentsRouter {
      * /documents/{id}/status:
      *   patch:
      *     tags: [Documents]
-     *     summary: Update document review status
+     *     summary: Update document status
      *     security: [{ bearerAuth: [] }]
      *     parameters:
      *       - in: path
      *         name: id
      *         required: true
-     *         schema: { type: string }
+     *         schema: { type: string, format: uuid }
      *     requestBody:
      *       required: true
      *       content:
      *         application/json:
      *           schema:
-     *             $ref: "#/components/schemas/UpdateDocumentStatusRequest"
+     *             type: object
+     *             required: [status]
+     *             properties:
+     *               status: { type: string, enum: [active, archived, deleted] }
      *     responses:
      *       200:
      *         description: Document status updated
-     *         content:
-     *           application/json:
-     *             schema:
-     *               $ref: "#/components/schemas/Document"
-     *       404: { description: Document not found }
      */
     this.router.patch(
       "/:id/status",
       validateRequest({
         params: this.validation.idParams,
-        body: this.validation.requiredBody("status"),
+        body: z.object({ status: documentStatus }),
       }),
       this.documentsController.updateDocumentStatus,
+    );
+
+    /**
+     * @openapi
+     * /documents/{id}/archive:
+     *   patch:
+     *     tags: [Documents]
+     *     summary: Archive a document
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *     responses:
+     *       200:
+     *         description: Document archived
+     */
+    this.router.patch(
+      "/:id/archive",
+      validateRequest({ params: this.validation.idParams }),
+      this.documentsController.archiveDocument,
+    );
+
+    /**
+     * @openapi
+     * /documents/{id}/restore:
+     *   patch:
+     *     tags: [Documents]
+     *     summary: Restore an archived or deleted document
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *     responses:
+     *       200:
+     *         description: Document restored
+     */
+    this.router.patch(
+      "/:id/restore",
+      validateRequest({ params: this.validation.idParams }),
+      this.documentsController.restoreDocument,
     );
 
     /**
@@ -231,13 +753,13 @@ export class DocumentsRouter {
      * /documents/{id}:
      *   delete:
      *     tags: [Documents]
-     *     summary: Delete a document
+     *     summary: Soft delete a document
      *     security: [{ bearerAuth: [] }]
      *     parameters:
      *       - in: path
      *         name: id
      *         required: true
-     *         schema: { type: string }
+     *         schema: { type: string, format: uuid }
      *     responses:
      *       200:
      *         description: Document deleted

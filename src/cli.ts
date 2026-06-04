@@ -12,7 +12,7 @@ import {
 } from "@clack/prompts";
 import { Command } from "commander";
 import { randomUUID } from "crypto";
-import { and, asc, eq, inArray, ilike } from "drizzle-orm";
+import { and, asc, eq, inArray, ilike, or } from "drizzle-orm";
 import { closeDb, db } from "./db/client";
 import { admins } from "./db/schema/admins";
 import { aiErrorFlags } from "./db/schema/ai-error-flags";
@@ -26,7 +26,17 @@ import { clientRequests } from "./db/schema/client-requests";
 import { clients } from "./db/schema/clients";
 import { companies } from "./db/schema/companies";
 import { contractors } from "./db/schema/contractors";
-import { documents } from "./db/schema/documents";
+import {
+  documentAccess,
+  documentActivityLogs,
+  documentCaseLinks,
+  documentFirmAccess,
+  documentRequests,
+  documentTransfers,
+  documents,
+  documentVersions,
+  externalSubmissions,
+} from "./db/schema/documents";
 import { firmPracticeAreas } from "./db/schema/firm-practice-areas";
 import { leaveRequests } from "./db/schema/leave-requests";
 import { paralegalProfiles } from "./db/schema/paralegal-profiles";
@@ -117,6 +127,11 @@ type NewClientRow = typeof clients.$inferInsert;
 type NewCompanyRow = typeof companies.$inferInsert;
 type NewContractorRow = typeof contractors.$inferInsert;
 type NewDocumentRow = typeof documents.$inferInsert;
+type NewDocumentAccessRow = typeof documentAccess.$inferInsert;
+type NewDocumentActivityLogRow = typeof documentActivityLogs.$inferInsert;
+type NewDocumentCaseLinkRow = typeof documentCaseLinks.$inferInsert;
+type NewDocumentFirmAccessRow = typeof documentFirmAccess.$inferInsert;
+type NewDocumentVersionRow = typeof documentVersions.$inferInsert;
 type NewLeaveRequestRow = typeof leaveRequests.$inferInsert;
 type NewParalegalProfileRow = typeof paralegalProfiles.$inferInsert;
 type NewTaskRow = typeof tasks.$inferInsert;
@@ -797,7 +812,7 @@ const filingTypes = ["I-130", "I-485", "I-765", "I-140", "N-400", "I-131"] as co
 const caseStatuses = ["active", "pending_review", "on_hold", "completed"] as const;
 const casePriorities = ["low", "medium", "high", "critical"] as const;
 const documentCategories = ["application", "supporting", "identity", "uscis_response"] as const;
-const documentStatuses = ["approved", "review_needed", "processing"] as const;
+const documentStatuses = ["active", "archived"] as const;
 const taskStatuses = ["pending", "in_progress", "completed", "cancelled"] as const;
 const eventTypes = [
   "client_meeting",
@@ -1448,25 +1463,97 @@ const seedDemoData = async (organizationId?: string) => {
 
     const documentValues: NewDocumentRow[] = range(DEMO_TARGETS.documents).map((index) => {
       const currentCase = pick(createdCases, index);
+      const uploader = pick(createdStaff, index);
       return {
-        organizationId: firm.id,
-        clientId: currentCase.clientId,
-        caseId: currentCase.id,
-        uploadedById: pick(createdStaff, index).id,
-        name: `Demo ${pick(documentCategories, index)} document ${pad(index + 1)}.pdf`,
+        title: `Demo ${pick(documentCategories, index)} document ${pad(index + 1)}.pdf`,
         category: pick(documentCategories, index),
-        fileUrl: `https://${DEMO_EMAIL_DOMAIN}/documents/${suffix}/${pad(index + 1)}.pdf`,
-        storagePath: `${firm.id}/${currentCase.clientId}/${currentCase.id}/demo-${pad(index + 1)}.pdf`,
-        fileSize: 128000 + index * 1536,
-        mimeType: "application/pdf",
+        createdByUserId: uploader.userId,
+        originFirmId: firm.id,
+        currentOwnerFirmId: firm.id,
         status: pick(documentStatuses, index),
-        aiChecked: index % 3 !== 0,
       };
     });
     const createdDocuments = await tx
       .insert(documents)
       .values(documentValues)
       .returning();
+
+    const documentVersionValues: NewDocumentVersionRow[] = createdDocuments.map((document, index) => {
+      const uploader = pick(createdStaff, index);
+      return {
+        documentId: document.id,
+        filePath: `${firm.id}/documents/${document.id}/v1/demo-${pad(index + 1)}.pdf`,
+        fileUrl: `https://${DEMO_EMAIL_DOMAIN}/documents/${suffix}/${pad(index + 1)}.pdf`,
+        originalFileName: document.title,
+        mimeType: "application/pdf",
+        fileSize: 128000 + index * 1536,
+        versionNumber: 1,
+        uploadedByUserId: uploader.userId,
+        scanStatus: index % 3 !== 0 ? "CLEAN" : "SKIPPED",
+        scanProvider: "demo",
+        scanResult: "Generated demo document",
+        scannedAt: index % 3 !== 0 ? timestampFromNow(-index) : undefined,
+        createdAt: document.createdAt,
+        updatedAt: document.updatedAt,
+      };
+    });
+    const createdDocumentVersions = await tx
+      .insert(documentVersions)
+      .values(documentVersionValues)
+      .returning();
+
+    for (const [index, document] of createdDocuments.entries()) {
+      await tx
+        .update(documents)
+        .set({ currentVersionId: createdDocumentVersions[index].id })
+        .where(eq(documents.id, document.id));
+    }
+
+    const documentCaseLinkValues: NewDocumentCaseLinkRow[] = createdDocuments.map((document, index) => {
+      const currentCase = pick(createdCases, index);
+      const uploader = pick(createdStaff, index);
+      return {
+        documentId: document.id,
+        caseId: currentCase.id,
+        linkedByUserId: uploader.userId,
+      };
+    });
+    await tx.insert(documentCaseLinks).values(documentCaseLinkValues);
+
+    const documentFirmAccessValues: NewDocumentFirmAccessRow[] = createdDocuments.map((document, index) => ({
+      documentId: document.id,
+      firmId: firm.id,
+      permission: "ADMIN",
+      grantedByUserId: pick(createdStaff, index).userId,
+    }));
+    await tx.insert(documentFirmAccess).values(documentFirmAccessValues);
+
+    const documentAccessValues: NewDocumentAccessRow[] = [];
+    for (const [index, document] of createdDocuments.entries()) {
+      const uploader = pick(createdStaff, index);
+      if (!uploader.userId) continue;
+      documentAccessValues.push({
+        documentId: document.id,
+        userId: uploader.userId,
+        permission: "ADMIN",
+        grantedByUserId: uploader.userId,
+      });
+    }
+    if (documentAccessValues.length) {
+      await tx.insert(documentAccess).values(documentAccessValues);
+    }
+
+    const documentActivityValues: NewDocumentActivityLogRow[] = createdDocuments.map((document, index) => ({
+      documentId: document.id,
+      actorUserId: pick(createdStaff, index).userId,
+      action: "CREATED",
+      metadata: {
+        source: "demo_seed",
+        versionId: createdDocumentVersions[index].id,
+        caseId: pick(createdCases, index).id,
+      },
+    }));
+    await tx.insert(documentActivityLogs).values(documentActivityValues);
 
     const taskValues: NewTaskRow[] = range(DEMO_TARGETS.tasks).map((index) => ({
       organizationId: firm.id,
@@ -1608,7 +1695,7 @@ const seedDemoData = async (organizationId?: string) => {
             severity: pick(errorSeverities, index),
             status: pick(errorStatuses, index),
             affectedField: pick(["name", "date_of_birth", "address", "signature"] as const, index),
-            documentRef: document.name,
+            documentRef: document.title,
             resolvedById: isResolved ? firmAdmin.id : undefined,
             resolvedAt: isResolved ? timestampFromNow(-index) : undefined,
           };
@@ -1707,10 +1794,20 @@ const dropDemoData = async (organizationId?: string) => {
           ilike(user.email, `%@${DEMO_EMAIL_DOMAIN}`),
         ),
       );
+    const orgDocuments = await tx
+      .select({ id: documents.id })
+      .from(documents)
+      .where(eq(documents.originFirmId, firm.id));
+    const orgDocumentRequests = await tx
+      .select({ id: documentRequests.id })
+      .from(documentRequests)
+      .where(eq(documentRequests.requestedByFirmId, firm.id));
 
     const staffIds = orgStaff.map((row) => row.id);
     const teamIds = orgTeams.map((row) => row.id);
     const demoUserIds = demoUsers.map((row) => row.id);
+    const documentIds = orgDocuments.map((row) => row.id);
+    const documentRequestIds = orgDocumentRequests.map((row) => row.id);
 
     const deleted: Record<string, number> = {};
     const record = (key: string, rows: unknown[]) => {
@@ -1724,9 +1821,98 @@ const dropDemoData = async (organizationId?: string) => {
         .where(eq(aiErrorFlags.organizationId, firm.id))
         .returning(),
     );
+
+    if (documentRequestIds.length || documentIds.length) {
+      const externalSubmissionConditions = [];
+      if (documentRequestIds.length) {
+        externalSubmissionConditions.push(
+          inArray(externalSubmissions.requestId, documentRequestIds),
+        );
+      }
+      if (documentIds.length) {
+        externalSubmissionConditions.push(
+          inArray(externalSubmissions.documentId, documentIds),
+        );
+      }
+
+      record(
+        "externalSubmissions",
+        await tx
+          .delete(externalSubmissions)
+          .where(or(...externalSubmissionConditions))
+          .returning(),
+      );
+    } else {
+      deleted.externalSubmissions = 0;
+    }
+
+    if (documentIds.length) {
+      record(
+        "documentActivityLogs",
+        await tx
+          .delete(documentActivityLogs)
+          .where(inArray(documentActivityLogs.documentId, documentIds))
+          .returning(),
+      );
+      record(
+        "documentTransfers",
+        await tx
+          .delete(documentTransfers)
+          .where(inArray(documentTransfers.documentId, documentIds))
+          .returning(),
+      );
+      record(
+        "documentAccess",
+        await tx
+          .delete(documentAccess)
+          .where(inArray(documentAccess.documentId, documentIds))
+          .returning(),
+      );
+      record(
+        "documentFirmAccess",
+        await tx
+          .delete(documentFirmAccess)
+          .where(inArray(documentFirmAccess.documentId, documentIds))
+          .returning(),
+      );
+      record(
+        "documentCaseLinks",
+        await tx
+          .delete(documentCaseLinks)
+          .where(inArray(documentCaseLinks.documentId, documentIds))
+          .returning(),
+      );
+      record(
+        "documentVersions",
+        await tx
+          .delete(documentVersions)
+          .where(inArray(documentVersions.documentId, documentIds))
+          .returning(),
+      );
+    } else {
+      deleted.documentActivityLogs = 0;
+      deleted.documentTransfers = 0;
+      deleted.documentAccess = 0;
+      deleted.documentFirmAccess = 0;
+      deleted.documentCaseLinks = 0;
+      deleted.documentVersions = 0;
+    }
+
+    if (documentRequestIds.length) {
+      record(
+        "documentRequests",
+        await tx
+          .delete(documentRequests)
+          .where(inArray(documentRequests.id, documentRequestIds))
+          .returning(),
+      );
+    } else {
+      deleted.documentRequests = 0;
+    }
+
     record(
       "documents",
-      await tx.delete(documents).where(eq(documents.organizationId, firm.id)).returning(),
+      await tx.delete(documents).where(eq(documents.originFirmId, firm.id)).returning(),
     );
     record(
       "tasks",
