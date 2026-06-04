@@ -1,3 +1,9 @@
+/**
+ * @openapi
+ * tags:
+ *   - name: Cases
+ *     description: Case management
+ */
 import { Router } from "express";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
@@ -25,6 +31,30 @@ export class CasesRouter {
   private initializeRoutes() {
     this.router.use(this.path, this.router);
 
+    /**
+     * @openapi
+     * /cases/generate-number:
+     *   get:
+     *     tags: [Cases]
+     *     summary: Generate a case number for a given practice area & type
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: query
+     *         name: practiceAreaId
+     *         required: true
+     *         schema: { type: string }
+     *       - in: query
+     *         name: caseType
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200:
+     *         description: Generated case number
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: "#/components/schemas/CaseNumberResponse"
+     */
     this.router.get(
       "/generate-number",
       requireAuth,
@@ -38,6 +68,44 @@ export class CasesRouter {
       }),
       this.casesController.generateCaseNumber,
     );
+
+    /**
+     * @openapi
+     * /cases/:
+     *   get:
+     *     tags: [Cases]
+     *     summary: List all cases (paginated, filterable)
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: query
+     *         name: search
+     *         schema: { type: string }
+     *       - in: query
+     *         name: status
+     *         schema: { type: string }
+     *       - in: query
+     *         name: assigneeId
+     *         schema: { type: string }
+     *       - in: query
+     *         name: clientId
+     *         schema: { type: string }
+     *       - in: query
+     *         name: practiceAreaId
+     *         schema: { type: string }
+     *       - in: query
+     *         name: page
+     *         schema: { type: integer }
+     *       - in: query
+     *         name: limit
+     *         schema: { type: integer }
+     *     responses:
+     *       200:
+     *         description: Paginated list of cases
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: "#/components/schemas/Pagination"
+     */
     this.router.get(
       "/",
       requireAuth,
@@ -45,6 +113,28 @@ export class CasesRouter {
       setFirmContext,
       this.casesController.getAllCases,
     );
+
+    /**
+     * @openapi
+     * /cases/{id}:
+     *   get:
+     *     tags: [Cases]
+     *     summary: Get case by ID
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200:
+     *         description: Case data
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: "#/components/schemas/Case"
+     *       404: { description: Case not found }
+     */
     this.router.get(
       "/:id",
       requireAuth,
@@ -53,6 +143,28 @@ export class CasesRouter {
       validateRequest({ params: this.validation.idParams }),
       this.casesController.getCaseById,
     );
+
+    /**
+     * @openapi
+     * /cases/:
+     *   post:
+     *     tags: [Cases]
+     *     summary: Create a new case
+     *     security: [{ bearerAuth: [] }]
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             $ref: "#/components/schemas/CreateCaseRequest"
+     *     responses:
+     *       201:
+     *         description: Case created
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: "#/components/schemas/Case"
+     */
     this.router.post(
       "/",
       requireAuth,
@@ -69,6 +181,34 @@ export class CasesRouter {
       }),
       this.casesController.createCase,
     );
+
+    /**
+     * @openapi
+     * /cases/{id}:
+     *   patch:
+     *     tags: [Cases]
+     *     summary: Update a case
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string }
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             $ref: "#/components/schemas/UpdateCaseRequest"
+     *     responses:
+     *       200:
+     *         description: Case updated
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: "#/components/schemas/Case"
+     *       404: { description: Case not found }
+     */
     this.router.patch(
       "/:id",
       requireAuth,
@@ -80,6 +220,27 @@ export class CasesRouter {
       }),
       this.casesController.updateCase,
     );
+
+    /**
+     * @openapi
+     * /cases/{id}:
+     *   delete:
+     *     tags: [Cases]
+     *     summary: Delete a case
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200:
+     *         description: Case deleted
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: "#/components/schemas/MessageResponse"
+     */
     this.router.delete(
       "/:id",
       requireAuth,

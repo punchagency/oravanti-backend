@@ -1,3 +1,9 @@
+/**
+ * @openapi
+ * tags:
+ *   - name: Settings - Data Access
+ *     description: Data access control settings
+ */
 import { Router } from "express";
 import { requireAdmin } from "../../../middleware/admin.middleware";
 import { requireAuth } from "../../../middleware/auth.middleware";
@@ -28,7 +34,46 @@ export class DataAccessRouter {
     this.router.use(this.path, this.router);
     this.router.use(requireAuth, requireAdmin, setFirmContext);
 
+    /**
+     * @openapi
+     * /settings/data-access/:
+     *   get:
+     *     tags: [Settings - Data Access]
+     *     summary: Get data access controls
+     *     security: [{ bearerAuth: [] }]
+     *     responses:
+     *       200:
+     *         description: Data access controls grouped by data type & role
+     *         content:
+     *           application/json:
+     *             schema:
+     *               type: array
+     *               items:
+     *                 $ref: "#/components/schemas/DataAccessControl"
+     */
     this.router.get("/", this.dataAccessController.getDataAccessControls);
+
+    /**
+     * @openapi
+     * /settings/data-access/:
+     *   patch:
+     *     tags: [Settings - Data Access]
+     *     summary: Update data access controls
+     *     security: [{ bearerAuth: [] }]
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             $ref: "#/components/schemas/UpdateDataAccessRequest"
+     *     responses:
+     *       200:
+     *         description: Controls updated
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: "#/components/schemas/MessageResponse"
+     */
     this.router.patch(
       "/",
       validateRequest({ body: this.validation.requiredArrayBody("controls") }),
