@@ -3,39 +3,6 @@
  * tags:
  *   - name: Settings - Approval Workflows
  *     description: Approval workflow configuration
- *
- * paths:
- *   /settings/approval-workflows/:
- *     get:
- *       tags: [Settings - Approval Workflows]
- *       summary: Get approval workflow configurations
- *       security: [{ bearerAuth: [] }]
- *       responses:
- *         200:
- *           description: Workflow configurations
- *           content:
- *             application/json:
- *               schema:
- *                 type: array
- *                 items:
- *                   $ref: "#/components/schemas/ApprovalWorkflow"
- *     patch:
- *       tags: [Settings - Approval Workflows]
- *       summary: Update approval workflow configurations
- *       security: [{ bearerAuth: [] }]
- *       requestBody:
- *         required: true
- *         content:
- *           application/json:
- *             schema:
- *               $ref: "#/components/schemas/UpdateApprovalWorkflowRequest"
- *       responses:
- *         200:
- *           description: Workflows updated
- *           content:
- *             application/json:
- *               schema:
- *                 $ref: "#/components/schemas/MessageResponse"
  */
 import { Router } from "express";
 import { requireAdmin } from "../../../middleware/admin.middleware";
@@ -67,7 +34,46 @@ export class ApprovalWorkflowsRouter {
     this.router.use(this.path, this.router);
     this.router.use(requireAuth, requireAdmin, setFirmContext);
 
+    /**
+     * @openapi
+     * /settings/approval-workflows/:
+     *   get:
+     *     tags: [Settings - Approval Workflows]
+     *     summary: Get approval workflow configurations
+     *     security: [{ bearerAuth: [] }]
+     *     responses:
+     *       200:
+     *         description: Workflow configurations
+     *         content:
+     *           application/json:
+     *             schema:
+     *               type: array
+     *               items:
+     *                 $ref: "#/components/schemas/ApprovalWorkflow"
+     */
     this.router.get("/", this.approvalWorkflowsController.getApprovalWorkflows);
+
+    /**
+     * @openapi
+     * /settings/approval-workflows/:
+     *   patch:
+     *     tags: [Settings - Approval Workflows]
+     *     summary: Update approval workflow configurations
+     *     security: [{ bearerAuth: [] }]
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             $ref: "#/components/schemas/UpdateApprovalWorkflowRequest"
+     *     responses:
+     *       200:
+     *         description: Workflows updated
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: "#/components/schemas/MessageResponse"
+     */
     this.router.patch(
       "/",
       validateRequest({ body: this.validation.requiredArrayBody("workflows") }),

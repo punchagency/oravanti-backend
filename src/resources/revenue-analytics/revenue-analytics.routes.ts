@@ -3,51 +3,6 @@
  * tags:
  *   - name: Revenue Analytics
  *     description: Revenue analytics & reporting
- *
- * paths:
- *   /revenue-analytics/:
- *     get:
- *       tags: [Revenue Analytics]
- *       summary: Get revenue analytics data
- *       security: [{ bearerAuth: [] }]
- *       parameters:
- *         - in: query
- *           name: period
- *           schema:
- *             type: string
- *             enum: [month, quarter, year, all]
- *         - in: query
- *           name: teamId
- *           schema: { type: string }
- *       responses:
- *         200:
- *           description: Revenue analytics data
- *           content:
- *             application/json:
- *               schema:
- *                 $ref: "#/components/schemas/RevenueAnalyticsResponse"
- *
- *   /revenue-analytics/export:
- *     get:
- *       tags: [Revenue Analytics]
- *       summary: Export revenue analytics report
- *       security: [{ bearerAuth: [] }]
- *       parameters:
- *         - in: query
- *           name: period
- *           schema:
- *             type: string
- *             enum: [month, quarter, year, all]
- *         - in: query
- *           name: teamId
- *           schema: { type: string }
- *       responses:
- *         200:
- *           description: Exported report with timestamp
- *           content:
- *             application/json:
- *               schema:
- *                 $ref: "#/components/schemas/MessageResponse"
  */
 import { Router } from "express";
 import { requireAdmin } from "../../middleware/admin.middleware";
@@ -79,6 +34,30 @@ export class RevenueAnalyticsRouter {
     this.router.use(this.path, this.router);
     this.router.use(requireAuth, requireAdmin, setFirmContext);
 
+    /**
+     * @openapi
+     * /revenue-analytics/:
+     *   get:
+     *     tags: [Revenue Analytics]
+     *     summary: Get revenue analytics data
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: query
+     *         name: period
+     *         schema:
+     *           type: string
+     *           enum: [month, quarter, year, all]
+     *       - in: query
+     *         name: teamId
+     *         schema: { type: string }
+     *     responses:
+     *       200:
+     *         description: Revenue analytics data
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: "#/components/schemas/RevenueAnalyticsResponse"
+     */
     this.router.get(
       "/",
       validateRequest({
@@ -91,6 +70,31 @@ export class RevenueAnalyticsRouter {
       }),
       this.revenueAnalyticsController.getAnalytics,
     );
+
+    /**
+     * @openapi
+     * /revenue-analytics/export:
+     *   get:
+     *     tags: [Revenue Analytics]
+     *     summary: Export revenue analytics report
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: query
+     *         name: period
+     *         schema:
+     *           type: string
+     *           enum: [month, quarter, year, all]
+     *       - in: query
+     *         name: teamId
+     *         schema: { type: string }
+     *     responses:
+     *       200:
+     *         description: Exported report with timestamp
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: "#/components/schemas/MessageResponse"
+     */
     this.router.get(
       "/export",
       validateRequest({
