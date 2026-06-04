@@ -1,5 +1,6 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { createAuthMiddleware } from "better-auth/api";
 import {
   emailOTP,
   openAPI,
@@ -7,8 +8,9 @@ import {
   twoFactor,
 } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
-import { env } from "./config/env";
-import { db } from "./db/client";
+import { env } from "../config/env";
+import { db } from "../db/client";
+import { admins } from "../db/schema/admins";
 import {
   account,
   invitation,
@@ -18,10 +20,10 @@ import {
   twoFactor as twoFactorSchema,
   user,
   verification,
-} from "./db/schema/auth-schema";
-import { admins } from "./db/schema/admins";
-import { staff } from "./db/schema/staff";
-import { emailService } from "./utils/email/email.service";
+} from "../db/schema/auth-schema";
+import { staff } from "../db/schema/staff";
+import { emailService } from "../utils/email/email.service";
+import { ac, admin, attorney, owner } from "./permissions";
 
 const { isProduction } = env;
 
@@ -73,7 +75,11 @@ const createDefaultAdminStaff = async ({
   image?: string | null;
 }) => {
   const memberRoles = role.split(",").map((currentRole) => currentRole.trim());
-  if (!memberRoles.some((currentRole) => currentRole === "owner" || currentRole === "admin")) {
+  if (
+    !memberRoles.some(
+      (currentRole) => currentRole === "owner" || currentRole === "admin",
+    )
+  ) {
     return;
   }
 
@@ -162,8 +168,55 @@ export const auth = betterAuth({
       location: { type: "string", required: false, input: true },
     },
   },
+
+  hooks: {
+    after: createAuthMiddleware(async (ctx) => {
+      // Target the email sign-up endpoint specifically
+      if (ctx.path === "/sign-up/email") {
+        const newSession = ctx.context.newSession;
+
+        // Ensure a session and user were actually successfully created
+        if (newSession && newSession.user) {
+          const { user } = newSession;
+
+          try {
+            await db
+              .update(staff)
+              .set({ userId: user.id })
+              .where(eq(staff.email, user.email.toLowerCase().trim()));
+
+            console.log(
+              `[STITCH SUCCESS] Bound user ID ${user.id} to profile matching email: ${user.email}`,
+            );
+          } catch (error) {
+            console.error(
+              "[STITCH ERROR] Profiling synchronization crash:",
+              error,
+            );
+          }
+        }
+      }
+    }),
+  },
   plugins: [
     organization({
+      async sendInvitationEmail(data) {
+        const inviteLink = `http://localhost:5137/accept-invitation?id=${data.id}`;
+
+        await emailService.sendOrganizationInvitationEmail({
+          email: data.email,
+          invitedByUsername: data.inviter.user.name,
+          invitedByEmail: data.inviter.user.email,
+          teamName: data.organization.name,
+          inviteLink,
+        });
+      },
+      ac,
+      roles: {
+        owner,
+        admin,
+        attorney,
+      },
       organizationHooks: {
         afterAddMember: async ({ organization, user, member }) => {
           await createDefaultAdminStaff({
