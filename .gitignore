@@ -7,3 +7,4 @@ dist/
 drizzle/migrations/
 
 admin_requests.http
+AGENTS.md

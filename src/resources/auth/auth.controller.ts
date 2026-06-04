@@ -180,7 +180,7 @@ export class AuthController {
     applyAuthHeaders(authResponse.headers, res);
 
     res.status(200).json({
-      message: data.message ?? "Session retrieved successfully",
+      message: data?.message ?? "Session retrieved successfully",
       success: true,
       data,
     });
