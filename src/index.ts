@@ -30,6 +30,12 @@ import { StaffService } from "./resources/hr-management/staffs/staffs.service";
 import { TeamsController } from "./resources/hr-management/teams/teams.controller";
 import { TeamsRouter } from "./resources/hr-management/teams/teams.routes";
 import { TeamsService } from "./resources/hr-management/teams/teams.service";
+import { OrganizationController } from "./resources/organization/organization.controller";
+import { OrganizationRouter } from "./resources/organization/organization.routes";
+import { OrganizationService } from "./resources/organization/organization.service";
+import { PracticeAreasController } from "./resources/practice-areas/practice-areas.controller";
+import { PracticeAreasRouter } from "./resources/practice-areas/practice-areas.routes";
+import { PracticeAreasService } from "./resources/practice-areas/practice-areas.service";
 import { RevenueAnalyticsController } from "./resources/revenue-analytics/revenue-analytics.controller";
 import { RevenueAnalyticsRouter } from "./resources/revenue-analytics/revenue-analytics.routes";
 import { RevenueAnalyticsService } from "./resources/revenue-analytics/revenue-analytics.service";
@@ -53,9 +59,6 @@ import { FirmInfoService } from "./resources/settings/firm-info/firm-info.servic
 import { PermissionAuditLogController } from "./resources/settings/permission-audit-log/permission-audit-log.controller";
 import { PermissionAuditLogRouter } from "./resources/settings/permission-audit-log/permission-audit-log.routes";
 import { PermissionAuditLogService } from "./resources/settings/permission-audit-log/permission-audit-log.service";
-import { PracticeAreasController } from "./resources/practice-areas/practice-areas.controller";
-import { PracticeAreasRouter } from "./resources/practice-areas/practice-areas.routes";
-import { PracticeAreasService } from "./resources/practice-areas/practice-areas.service";
 import { ProfileController } from "./resources/settings/profile/profile.controller";
 import { ProfileRouter } from "./resources/settings/profile/profile.routes";
 import { ProfileService } from "./resources/settings/profile/profile.service";
@@ -196,6 +199,10 @@ const securityService = new SecurityService();
 const securityController = new SecurityController(securityService);
 const securityRouter = new SecurityRouter(securityController);
 
+const organizationService = new OrganizationService();
+const organizationController = new OrganizationController(organizationService);
+const organizationRouter = new OrganizationRouter(organizationController);
+
 const app = new App(
   [
     authRouter,
@@ -219,6 +226,7 @@ const app = new App(
     approvalWorkflowsRouter,
     dataAccessRouter,
     securityRouter,
+    organizationRouter,
   ],
   PORT,
 );
