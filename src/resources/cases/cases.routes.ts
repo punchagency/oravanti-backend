@@ -1,3 +1,142 @@
+/**
+ * @openapi
+ * tags:
+ *   - name: Cases
+ *     description: Case management
+ *
+ * paths:
+ *   /cases/generate-number:
+ *     get:
+ *       tags: [Cases]
+ *       summary: Generate a case number for a given practice area & type
+ *       security: [{ bearerAuth: [] }]
+ *       parameters:
+ *         - in: query
+ *           name: practiceAreaId
+ *           required: true
+ *           schema: { type: string }
+ *         - in: query
+ *           name: caseType
+ *           required: true
+ *           schema: { type: string }
+ *       responses:
+ *         200:
+ *           description: Generated case number
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/CaseNumberResponse"
+ *
+ *   /cases/:
+ *     get:
+ *       tags: [Cases]
+ *       summary: List all cases (paginated, filterable)
+ *       security: [{ bearerAuth: [] }]
+ *       parameters:
+ *         - in: query
+ *           name: search
+ *           schema: { type: string }
+ *         - in: query
+ *           name: status
+ *           schema: { type: string }
+ *         - in: query
+ *           name: assigneeId
+ *           schema: { type: string }
+ *         - in: query
+ *           name: clientId
+ *           schema: { type: string }
+ *         - in: query
+ *           name: practiceAreaId
+ *           schema: { type: string }
+ *         - in: query
+ *           name: page
+ *           schema: { type: integer }
+ *         - in: query
+ *           name: limit
+ *           schema: { type: integer }
+ *       responses:
+ *         200:
+ *           description: Paginated list of cases
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/Pagination"
+ *     post:
+ *       tags: [Cases]
+ *       summary: Create a new case
+ *       security: [{ bearerAuth: [] }]
+ *       requestBody:
+ *         required: true
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: "#/components/schemas/CreateCaseRequest"
+ *       responses:
+ *         201:
+ *           description: Case created
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/Case"
+ *
+ *   /cases/{id}:
+ *     get:
+ *       tags: [Cases]
+ *       summary: Get case by ID
+ *       security: [{ bearerAuth: [] }]
+ *       parameters:
+ *         - in: path
+ *           name: id
+ *           required: true
+ *           schema: { type: string }
+ *       responses:
+ *         200:
+ *           description: Case data
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/Case"
+ *         404: { description: Case not found }
+ *     patch:
+ *       tags: [Cases]
+ *       summary: Update a case
+ *       security: [{ bearerAuth: [] }]
+ *       parameters:
+ *         - in: path
+ *           name: id
+ *           required: true
+ *           schema: { type: string }
+ *       requestBody:
+ *         required: true
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: "#/components/schemas/UpdateCaseRequest"
+ *       responses:
+ *         200:
+ *           description: Case updated
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/Case"
+ *         404: { description: Case not found }
+ *     delete:
+ *       tags: [Cases]
+ *       summary: Delete a case
+ *       security: [{ bearerAuth: [] }]
+ *       parameters:
+ *         - in: path
+ *           name: id
+ *           required: true
+ *           schema: { type: string }
+ *       responses:
+ *         200:
+ *           description: Case deleted
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/MessageResponse"
+ */
 import { Router } from "express";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";

@@ -1,3 +1,101 @@
+/**
+ * @openapi
+ * tags:
+ *   - name: HR - Staff
+ *     description: Staff management
+ *
+ * paths:
+ *   /hr/staff/:
+ *     get:
+ *       tags: [HR - Staff]
+ *       summary: List all staff members
+ *       security: [{ bearerAuth: [] }]
+ *       responses:
+ *         200:
+ *           description: Staff list
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 type: array
+ *                 items:
+ *                   $ref: "#/components/schemas/Staff"
+ *     post:
+ *       tags: [HR - Staff]
+ *       summary: Add a new staff member
+ *       security: [{ bearerAuth: [] }]
+ *       requestBody:
+ *         required: true
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: "#/components/schemas/CreateStaffRequest"
+ *       responses:
+ *         201:
+ *           description: Staff created
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/Staff"
+ *
+ *   /hr/staff/{id}:
+ *     get:
+ *       tags: [HR - Staff]
+ *       summary: Get staff by ID
+ *       security: [{ bearerAuth: [] }]
+ *       parameters:
+ *         - in: path
+ *           name: id
+ *           required: true
+ *           schema: { type: string }
+ *       responses:
+ *         200:
+ *           description: Staff data
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/Staff"
+ *         404: { description: Staff not found }
+ *     patch:
+ *       tags: [HR - Staff]
+ *       summary: Update a staff member
+ *       security: [{ bearerAuth: [] }]
+ *       parameters:
+ *         - in: path
+ *           name: id
+ *           required: true
+ *           schema: { type: string }
+ *       requestBody:
+ *         required: true
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: "#/components/schemas/UpdateStaffRequest"
+ *       responses:
+ *         200:
+ *           description: Staff updated
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/Staff"
+ *         404: { description: Staff not found }
+ *     delete:
+ *       tags: [HR - Staff]
+ *       summary: Delete a staff member
+ *       security: [{ bearerAuth: [] }]
+ *       parameters:
+ *         - in: path
+ *           name: id
+ *           required: true
+ *           schema: { type: string }
+ *       responses:
+ *         200:
+ *           description: Staff deleted
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/MessageResponse"
+ *         404: { description: Staff not found }
+ */
 import { Router } from "express";
 import { requireAdmin } from "../../../middleware/admin.middleware";
 import { requireAuth } from "../../../middleware/auth.middleware";

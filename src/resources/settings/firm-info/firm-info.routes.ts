@@ -1,3 +1,41 @@
+/**
+ * @openapi
+ * tags:
+ *   - name: Settings - Firm Info
+ *     description: Law firm information & settings
+ *
+ * paths:
+ *   /settings/firm-info/:
+ *     get:
+ *       tags: [Settings - Firm Info]
+ *       summary: Get firm information
+ *       security: [{ bearerAuth: [] }]
+ *       responses:
+ *         200:
+ *           description: Firm info data
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/FirmInfo"
+ *         404: { description: Firm info not found }
+ *     post:
+ *       tags: [Settings - Firm Info]
+ *       summary: Create or update firm information
+ *       security: [{ bearerAuth: [] }]
+ *       requestBody:
+ *         required: true
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: "#/components/schemas/UpdateFirmInfoRequest"
+ *       responses:
+ *         200:
+ *           description: Firm info saved
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/FirmInfo"
+ */
 import { Router } from "express";
 import { requireAdmin } from "../../../middleware/admin.middleware";
 import { requireAuth } from "../../../middleware/auth.middleware";

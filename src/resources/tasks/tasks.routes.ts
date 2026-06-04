@@ -1,3 +1,130 @@
+/**
+ * @openapi
+ * tags:
+ *   - name: Tasks
+ *     description: Task management
+ *
+ * paths:
+ *   /tasks/stats:
+ *     get:
+ *       tags: [Tasks]
+ *       summary: Get task statistics
+ *       security: [{ bearerAuth: [] }]
+ *       responses:
+ *         200:
+ *           description: Task stats
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/TaskStats"
+ *
+ *   /tasks/:
+ *     get:
+ *       tags: [Tasks]
+ *       summary: List all tasks (filterable)
+ *       security: [{ bearerAuth: [] }]
+ *       parameters:
+ *         - in: query
+ *           name: search
+ *           schema: { type: string }
+ *         - in: query
+ *           name: status
+ *           schema: { type: string }
+ *         - in: query
+ *           name: priority
+ *           schema: { type: string, enum: [low, medium, high] }
+ *         - in: query
+ *           name: assignedToId
+ *           schema: { type: string }
+ *         - in: query
+ *           name: page
+ *           schema: { type: integer }
+ *         - in: query
+ *           name: limit
+ *           schema: { type: integer }
+ *       responses:
+ *         200:
+ *           description: Paginated task list
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/Pagination"
+ *     post:
+ *       tags: [Tasks]
+ *       summary: Create a new task
+ *       security: [{ bearerAuth: [] }]
+ *       requestBody:
+ *         required: true
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: "#/components/schemas/CreateTaskRequest"
+ *       responses:
+ *         201:
+ *           description: Task created
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/Task"
+ *
+ *   /tasks/{id}:
+ *     get:
+ *       tags: [Tasks]
+ *       summary: Get task by ID
+ *       security: [{ bearerAuth: [] }]
+ *       parameters:
+ *         - in: path
+ *           name: id
+ *           required: true
+ *           schema: { type: string }
+ *       responses:
+ *         200:
+ *           description: Task data
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/Task"
+ *         404: { description: Task not found }
+ *     patch:
+ *       tags: [Tasks]
+ *       summary: Update a task
+ *       security: [{ bearerAuth: [] }]
+ *       parameters:
+ *         - in: path
+ *           name: id
+ *           required: true
+ *           schema: { type: string }
+ *       requestBody:
+ *         required: true
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: "#/components/schemas/UpdateTaskRequest"
+ *       responses:
+ *         200:
+ *           description: Task updated
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/Task"
+ *         404: { description: Task not found }
+ *     delete:
+ *       tags: [Tasks]
+ *       summary: Delete a task
+ *       security: [{ bearerAuth: [] }]
+ *       parameters:
+ *         - in: path
+ *           name: id
+ *           required: true
+ *           schema: { type: string }
+ *       responses:
+ *         200:
+ *           description: Task deleted
+ *           content:
+ *             application/json:
+ *               schema:
+ *                 $ref: "#/components/schemas/MessageResponse"
+ */
 import { Router } from "express";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";

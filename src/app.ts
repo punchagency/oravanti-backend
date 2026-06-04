@@ -3,11 +3,13 @@ import cors from "cors";
 import { sql } from "drizzle-orm";
 import express, { Application, Request, Response, Router } from "express";
 import morgan from "morgan";
+import swaggerUi from "swagger-ui-express";
 import { auth } from "./auth";
 import { db } from "./db/client";
 
 import { errorMiddleware } from "./middleware/error.middleware";
 import { notFoundMiddleware } from "./middleware/notFound.middleware";
+import { swaggerSpec } from "./swagger";
 
 export interface RouterEntry {
   router: Router;
@@ -31,39 +33,52 @@ export class App {
 
   private initiatializeMiddlewares() {
     const allowedOrigins = process.env.CORS_ORIGIN;
+    const betterAuthUrl = process.env.BETTER_AUTH_URL;
 
-    const origin = (
-      requestOrigin: string | undefined,
-      callback: (
-        err: Error | null,
-        origin?: boolean | string | RegExp | Array<boolean | string | RegExp>,
-      ) => void,
-    ) => {
-      if (!requestOrigin || requestOrigin === "null") {
-        return callback(null, true);
-      }
+    const makeCorsOrigin =
+      (serverOrigin: string) =>
+      (
+        requestOrigin: string | undefined,
+        callback: (
+          err: Error | null,
+          origin?: boolean | string | RegExp | Array<boolean | string | RegExp>,
+        ) => void,
+      ) => {
+        if (!requestOrigin || requestOrigin === "null") {
+          return callback(null, true);
+        }
 
-      if (!allowedOrigins) {
-        return callback(new Error("Not allowed by CORS"));
-      }
+        const origins: string[] = [serverOrigin];
 
-      const origins = allowedOrigins.split(",").map((origin) => origin.trim());
+        if (allowedOrigins) {
+          origins.push(...allowedOrigins.split(",").map((o) => o.trim()));
+        }
 
-      if (origins.includes(requestOrigin as string) || origins.includes("*")) {
-        callback(null, true);
-      } else {
+        if (betterAuthUrl) {
+          origins.push(betterAuthUrl);
+        }
+
+        if (origins.includes(requestOrigin) || origins.includes("*")) {
+          return callback(null, true);
+        }
+
         callback(new Error("Not allowed by CORS"));
-      }
-    };
+      };
 
-    const corsOptions = {
-      origin,
-      methods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
-      credentials: true,
-    };
-
-    this.express.use(morgan("dev"));
-    this.express.use(cors(corsOptions));
+    this.express.use(
+      (
+        req: express.Request,
+        res: express.Response,
+        next: express.NextFunction,
+      ) => {
+        const serverOrigin = `${req.protocol}://${req.get("host")}`;
+        cors({
+          origin: makeCorsOrigin(serverOrigin),
+          methods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
+          credentials: true,
+        })(req, res, next);
+      },
+    );
     /**
      * Better Auth Initialization
      */
@@ -87,6 +102,18 @@ export class App {
     this.express.get("/api", (_req: Request, res: Response) => {
       res.redirect("/");
     });
+
+    this.express.use(
+      "/api-docs",
+      swaggerUi.serve,
+      swaggerUi.setup(swaggerSpec, {
+        customSiteTitle: "Oravanti API Docs",
+        swaggerOptions: {
+          filter: true,
+          displayRequestDuration: true,
+        },
+      }),
+    );
 
     this.routers.forEach((entry: RouterEntry) => {
       this.express.use(entry.path, entry.router);
