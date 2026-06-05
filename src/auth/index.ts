@@ -23,7 +23,7 @@ import {
 } from "../db/schema/auth-schema";
 import { staff } from "../db/schema/staff";
 import { emailService } from "../utils/email/email.service";
-import { ac, admin, attorney, owner } from "./permissions";
+import { ac, admin, attorney, owner, paralegal } from "./permissions";
 
 const { isProduction } = env;
 
@@ -216,6 +216,7 @@ export const auth = betterAuth({
         owner,
         admin,
         attorney,
+        paralegal,
       },
       organizationHooks: {
         afterAddMember: async ({ organization, user, member }) => {

@@ -15,6 +15,13 @@ const statement = {
 
 export const ac = createAccessControl(statement);
 
+export const paralegal = ac.newRole({
+  cases: [],
+  clients: [],
+  staffs: [],
+  ...memberAc.statements,
+});
+
 export const attorney = ac.newRole({
   cases: [],
   clients: [],
