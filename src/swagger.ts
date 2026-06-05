@@ -902,7 +902,7 @@ const options: swaggerJsdoc.Options = {
             lastName: { type: "string" },
             email: { type: "string", format: "email" },
             phoneNumber: { type: "string" },
-            role: { type: "string", enum: ["admin", "attorney", "paralegal", "contractor"] },
+            role: { type: "string", enum: ["owner", "admin", "attorney", "paralegal"] },
             maxCaseLoad: { type: "integer" },
             startDate: { type: "string", format: "date" },
           },
@@ -919,9 +919,66 @@ const options: swaggerJsdoc.Options = {
           properties: {
             id: { type: "string", format: "uuid" },
             email: { type: "string", format: "email" },
-            role: { type: "string" },
-            status: { type: "string" },
+            role: { type: "string", enum: ["owner", "admin", "attorney", "paralegal"] },
+            status: { type: "string", enum: ["pending", "accepted", "rejected", "canceled"] },
+            inviterId: { type: "string" },
+            organizationId: { type: "string" },
+            expiresAt: { type: "string", format: "date-time" },
             createdAt: { type: "string", format: "date-time" },
+          },
+        },
+        OrgMember: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            organizationId: { type: "string" },
+            role: { type: "string", enum: ["owner", "admin", "attorney", "paralegal"] },
+            createdAt: { type: "string", format: "date-time" },
+            user: {
+              type: "object",
+              properties: {
+                id: { type: "string" },
+                name: { type: "string" },
+                email: { type: "string", format: "email" },
+                image: { type: "string" },
+                firstName: { type: "string" },
+                lastName: { type: "string" },
+              },
+            },
+          },
+        },
+        InviteMemberRequest: {
+          type: "object",
+          required: ["email", "role"],
+          properties: {
+            email: { type: "string", format: "email" },
+            role: { type: "string", enum: ["owner", "admin", "attorney", "paralegal"] },
+            organizationId: { type: "string" },
+            resend: { type: "boolean" },
+          },
+        },
+        CancelInvitationRequest: {
+          type: "object",
+          required: ["invitationId"],
+          properties: {
+            invitationId: { type: "string" },
+          },
+        },
+        RemoveMemberRequest: {
+          type: "object",
+          required: ["memberIdOrEmail"],
+          properties: {
+            memberIdOrEmail: { type: "string" },
+            organizationId: { type: "string" },
+          },
+        },
+        UpdateMemberRoleRequest: {
+          type: "object",
+          required: ["memberId", "role"],
+          properties: {
+            memberId: { type: "string" },
+            role: { type: "string", enum: ["owner", "admin", "attorney", "paralegal"] },
+            organizationId: { type: "string" },
           },
         },
 
@@ -1032,8 +1089,182 @@ const options: swaggerJsdoc.Options = {
   apis: ["./src/resources/**/*.routes.ts"],
 };
 
+const customPaths = {
+  "/api/auth/organization/invite-member": {
+    post: {
+      tags: ["Organization"],
+      summary: "Invite a member to the organization",
+      description:
+        "Sends an invitation email to the specified email address with the given role. Requires admin or owner role.",
+      security: [{ bearerAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/InviteMemberRequest" },
+          },
+        },
+      },
+      responses: {
+        "201": {
+          description: "Invitation created successfully",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  email: { type: "string" },
+                  role: { type: "string" },
+                  status: { type: "string" },
+                  expiresAt: { type: "string", format: "date-time" },
+                  createdAt: { type: "string", format: "date-time" },
+                },
+              },
+            },
+          },
+        },
+        "400": { description: "Validation error - invalid email or role" },
+        "401": { description: "Unauthorized - not authenticated" },
+        "403": { description: "Forbidden - insufficient permissions" },
+      },
+    },
+  },
+  "/api/auth/organization/list-members": {
+    get: {
+      tags: ["Organization"],
+      summary: "List organization members",
+      description: "Returns all members of the active organization.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        {
+          in: "query",
+          name: "organizationId",
+          required: false,
+          schema: { type: "string" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "List of members",
+          content: {
+            "application/json": {
+              schema: {
+                type: "array",
+                items: { $ref: "#/components/schemas/OrgMember" },
+              },
+            },
+          },
+        },
+        "401": { description: "Unauthorized" },
+      },
+    },
+  },
+  "/api/auth/organization/list-invitations": {
+    get: {
+      tags: ["Organization"],
+      summary: "List organization invitations",
+      description: "Returns all invitations sent by the organization.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        {
+          in: "query",
+          name: "organizationId",
+          required: false,
+          schema: { type: "string" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "List of invitations",
+          content: {
+            "application/json": {
+              schema: {
+                type: "array",
+                items: { $ref: "#/components/schemas/Invitation" },
+              },
+            },
+          },
+        },
+        "401": { description: "Unauthorized" },
+      },
+    },
+  },
+  "/api/auth/organization/cancel-invitation": {
+    post: {
+      tags: ["Organization"],
+      summary: "Cancel a pending invitation",
+      description: "Cancels a pending invitation by its ID.",
+      security: [{ bearerAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/CancelInvitationRequest" },
+          },
+        },
+      },
+      responses: {
+        "200": { description: "Invitation cancelled" },
+        "400": { description: "Invitation not found or already processed" },
+        "401": { description: "Unauthorized" },
+      },
+    },
+  },
+  "/api/auth/organization/remove-member": {
+    post: {
+      tags: ["Organization"],
+      summary: "Remove a member from the organization",
+      description: "Removes a member by their ID or email.",
+      security: [{ bearerAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/RemoveMemberRequest" },
+          },
+        },
+      },
+      responses: {
+        "200": { description: "Member removed" },
+        "400": { description: "Member not found" },
+        "401": { description: "Unauthorized" },
+        "403": { description: "Forbidden - cannot remove owner" },
+      },
+    },
+  },
+  "/api/auth/organization/update-member-role": {
+    post: {
+      tags: ["Organization"],
+      summary: "Update a member's role",
+      description: "Changes the role of an organization member.",
+      security: [{ bearerAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/UpdateMemberRoleRequest" },
+          },
+        },
+      },
+      responses: {
+        "200": { description: "Role updated" },
+        "400": { description: "Invalid role or member not found" },
+        "401": { description: "Unauthorized" },
+        "403": { description: "Forbidden - insufficient permissions" },
+      },
+    },
+  },
+};
+
 const spec = swaggerJsdoc(options) as {
   paths?: Record<string, Record<string, { operationId?: string }>>;
 };
+
+// Merge custom better-auth paths into the spec
+spec.paths = { ...spec.paths, ...customPaths } as Record<
+  string,
+  Record<string, { operationId?: string }>
+>;
 
 export const swaggerSpec = spec;
