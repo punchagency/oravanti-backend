@@ -30,9 +30,7 @@ import {
   documentAccess,
   documentActivityLogs,
   documentCaseLinks,
-  documentFirmAccess,
   documentRequests,
-  documentTransfers,
   documents,
   documentVersions,
   externalSubmissions,
@@ -130,7 +128,6 @@ type NewDocumentRow = typeof documents.$inferInsert;
 type NewDocumentAccessRow = typeof documentAccess.$inferInsert;
 type NewDocumentActivityLogRow = typeof documentActivityLogs.$inferInsert;
 type NewDocumentCaseLinkRow = typeof documentCaseLinks.$inferInsert;
-type NewDocumentFirmAccessRow = typeof documentFirmAccess.$inferInsert;
 type NewDocumentVersionRow = typeof documentVersions.$inferInsert;
 type NewLeaveRequestRow = typeof leaveRequests.$inferInsert;
 type NewParalegalProfileRow = typeof paralegalProfiles.$inferInsert;
@@ -1468,8 +1465,6 @@ const seedDemoData = async (organizationId?: string) => {
         title: `Demo ${pick(documentCategories, index)} document ${pad(index + 1)}.pdf`,
         category: pick(documentCategories, index),
         createdByUserId: uploader.userId,
-        originFirmId: firm.id,
-        currentOwnerFirmId: firm.id,
         status: pick(documentStatuses, index),
       };
     });
@@ -1519,14 +1514,6 @@ const seedDemoData = async (organizationId?: string) => {
       };
     });
     await tx.insert(documentCaseLinks).values(documentCaseLinkValues);
-
-    const documentFirmAccessValues: NewDocumentFirmAccessRow[] = createdDocuments.map((document, index) => ({
-      documentId: document.id,
-      firmId: firm.id,
-      permission: "ADMIN",
-      grantedByUserId: pick(createdStaff, index).userId,
-    }));
-    await tx.insert(documentFirmAccess).values(documentFirmAccessValues);
 
     const documentAccessValues: NewDocumentAccessRow[] = [];
     for (const [index, document] of createdDocuments.entries()) {
@@ -1796,12 +1783,16 @@ const dropDemoData = async (organizationId?: string) => {
       );
     const orgDocuments = await tx
       .select({ id: documents.id })
-      .from(documents)
-      .where(eq(documents.originFirmId, firm.id));
+      .from(documentCaseLinks)
+      .innerJoin(cases, eq(cases.id, documentCaseLinks.caseId))
+      .innerJoin(documents, eq(documents.id, documentCaseLinks.documentId))
+      .where(eq(cases.organizationId, firm.id));
     const orgDocumentRequests = await tx
       .select({ id: documentRequests.id })
       .from(documentRequests)
-      .where(eq(documentRequests.requestedByFirmId, firm.id));
+      .innerJoin(user, eq(user.id, documentRequests.requestedByUserId))
+      .innerJoin(member, eq(member.userId, user.id))
+      .where(eq(member.organizationId, firm.id));
 
     const staffIds = orgStaff.map((row) => row.id);
     const teamIds = orgTeams.map((row) => row.id);
@@ -1855,24 +1846,10 @@ const dropDemoData = async (organizationId?: string) => {
           .returning(),
       );
       record(
-        "documentTransfers",
-        await tx
-          .delete(documentTransfers)
-          .where(inArray(documentTransfers.documentId, documentIds))
-          .returning(),
-      );
-      record(
         "documentAccess",
         await tx
           .delete(documentAccess)
           .where(inArray(documentAccess.documentId, documentIds))
-          .returning(),
-      );
-      record(
-        "documentFirmAccess",
-        await tx
-          .delete(documentFirmAccess)
-          .where(inArray(documentFirmAccess.documentId, documentIds))
           .returning(),
       );
       record(
@@ -1891,9 +1868,7 @@ const dropDemoData = async (organizationId?: string) => {
       );
     } else {
       deleted.documentActivityLogs = 0;
-      deleted.documentTransfers = 0;
       deleted.documentAccess = 0;
-      deleted.documentFirmAccess = 0;
       deleted.documentCaseLinks = 0;
       deleted.documentVersions = 0;
     }
@@ -1912,7 +1887,9 @@ const dropDemoData = async (organizationId?: string) => {
 
     record(
       "documents",
-      await tx.delete(documents).where(eq(documents.originFirmId, firm.id)).returning(),
+      documentIds.length
+        ? await tx.delete(documents).where(inArray(documents.id, documentIds)).returning()
+        : [],
     );
     record(
       "tasks",
