@@ -1424,16 +1424,34 @@ const seedDemoData = async (organizationId?: string) => {
       )
       .returning();
 
-    const contractorValues: NewContractorRow[] = range(DEMO_TARGETS.contractors).map((index) => ({
-      organizationId: firm.id,
-      name: `Demo Contractor ${pad(index + 1)}`,
-      email: `contractor.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
-      specialization: pick(filingTypes, index),
-      status: index % 5 === 0 ? "pending" : "active",
-      rate: `${85 + index * 5}`,
-      contractStart: isoDateFromNow(-180 + index),
-      contractEnd: isoDateFromNow(180 + index),
-    }));
+    const contractorValues: NewContractorRow[] = [];
+    for (const index of range(DEMO_TARGETS.contractors)) {
+      const contractorNumber = pad(index + 1);
+      const email = `contractor.${suffix}.${contractorNumber}@${DEMO_EMAIL_DOMAIN}`;
+      const authUser = await ensureAuthUser(tx, {
+        id: `demo-contractor-user-${suffix}-${contractorNumber}`,
+        firstName: "Demo",
+        lastName: `Contractor ${contractorNumber}`,
+        email,
+        phone: `+1-555-${pad(3100 + index, 4)}`,
+        jobTitle: "Contractor",
+      });
+
+      createdUsers.push(authUser);
+      contractorValues.push({
+        userId: authUser.id,
+        email,
+        firstName: "Demo",
+        lastName: `Contractor ${contractorNumber}`,
+        phoneNumber: `+1-555-${pad(3100 + index, 4)}`,
+        desiredHourlyRate: `${85 + index * 5}`,
+        consentedToBackgroundCheck: true,
+        recognizedDirectoryListingVerificationAccepted: true,
+        bio: `Demo contractor profile ${contractorNumber} for marketplace coverage.`,
+        availability: pick(["full-time", "part-time", "project-based"] as const, index),
+        status: index % 5 === 0 ? "pending" : "active",
+      });
+    }
     const createdContractors = await tx
       .insert(contractors)
       .values(contractorValues)
@@ -1969,7 +1987,10 @@ const dropDemoData = async (organizationId?: string) => {
     );
     record(
       "contractors",
-      await tx.delete(contractors).where(eq(contractors.organizationId, firm.id)).returning(),
+      await tx
+        .delete(contractors)
+        .where(ilike(contractors.email, `contractor.%@${DEMO_EMAIL_DOMAIN}`))
+        .returning(),
     );
     record("teams", await tx.delete(teams).where(eq(teams.organizationId, firm.id)).returning());
     record("staff", await tx.delete(staff).where(eq(staff.organizationId, firm.id)).returning());
