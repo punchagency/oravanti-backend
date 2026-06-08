@@ -18,14 +18,12 @@ import {
   documentAccess,
   documentActivityLogs,
   documentCaseLinks,
-  documentFirmAccess,
   documentRequests,
   documents,
-  documentTransfers,
   documentVersions,
   externalSubmissions,
 } from "../../db/schema/documents";
-import { organization, user } from "../../db/schema/auth-schema";
+import { user } from "../../db/schema/auth-schema";
 import {
   AuthorizationError,
   ConflictError,
@@ -69,11 +67,11 @@ const safeStorageName = (name: string, originalFilename: string) => {
 };
 
 const buildStoragePath = (
-  organizationId: string,
+  ownerKey: string,
   documentId: string,
   versionNumber: number,
   filename: string,
-) => `${organizationId}/documents/${documentId}/v${versionNumber}/${filename}`;
+) => `${ownerKey}/documents/${documentId}/v${versionNumber}/${filename}`;
 
 const buildExternalStoragePath = (
   requestId: string,
@@ -95,9 +93,6 @@ export class DocumentsService {
       | "VERSION_UPLOADED"
       | "ACCESS_GRANTED"
       | "ACCESS_REVOKED"
-      | "TRANSFER_REQUESTED"
-      | "TRANSFER_ACCEPTED"
-      | "TRANSFER_REJECTED"
       | "EXTERNAL_REQUEST_CREATED"
       | "EXTERNAL_SUBMISSION_UPLOADED"
       | "ARCHIVED"
@@ -120,42 +115,23 @@ export class DocumentsService {
 
   private getEffectivePermission = async (
     documentId: string,
-    organizationId: string,
-    userId?: string,
+    userId: string,
   ): Promise<DocumentPermission | null> => {
-    const [firmGrant] = await db
-      .select({ permission: documentFirmAccess.permission })
-      .from(documentFirmAccess)
+    const permissions: DocumentPermission[] = [];
+    const [userGrant] = await db
+      .select({ permission: documentAccess.permission })
+      .from(documentAccess)
       .where(
         and(
-          eq(documentFirmAccess.documentId, documentId),
-          eq(documentFirmAccess.firmId, organizationId),
-          isNull(documentFirmAccess.revokedAt),
+          eq(documentAccess.documentId, documentId),
+          eq(documentAccess.userId, userId),
+          isNull(documentAccess.revokedAt),
         ),
       )
       .limit(1);
 
-    const permissions: DocumentPermission[] = [];
-    if (firmGrant?.permission) {
-      permissions.push(firmGrant.permission as DocumentPermission);
-    }
-
-    if (userId) {
-      const [userGrant] = await db
-        .select({ permission: documentAccess.permission })
-        .from(documentAccess)
-        .where(
-          and(
-            eq(documentAccess.documentId, documentId),
-            eq(documentAccess.userId, userId),
-            isNull(documentAccess.revokedAt),
-          ),
-        )
-        .limit(1);
-
-      if (userGrant?.permission) {
-        permissions.push(userGrant.permission as DocumentPermission);
-      }
+    if (userGrant?.permission) {
+      permissions.push(userGrant.permission as DocumentPermission);
     }
 
     return permissions.reduce<DocumentPermission | null>((highest, current) => {
@@ -168,15 +144,10 @@ export class DocumentsService {
 
   private ensurePermission = async (
     documentId: string,
-    organizationId: string,
-    userId: string | undefined,
+    userId: string,
     required: DocumentPermission,
   ) => {
-    const permission = await this.getEffectivePermission(
-      documentId,
-      organizationId,
-      userId,
-    );
+    const permission = await this.getEffectivePermission(documentId, userId);
 
     if (!hasPermission(permission, required)) {
       throw new AuthorizationError("Insufficient document permission");
@@ -244,7 +215,7 @@ export class DocumentsService {
     const versionNumber = 1;
     const safeFilename = safeStorageName(data.title, data.originalFilename);
     const storagePath = buildStoragePath(
-      organizationId,
+      data.uploadedByUserId,
       documentId,
       versionNumber,
       safeFilename,
@@ -263,8 +234,6 @@ export class DocumentsService {
             id: documentId,
             title: data.title,
             category: data.category,
-            originFirmId: organizationId,
-            currentOwnerFirmId: organizationId,
             createdByUserId: data.uploadedByUserId,
           })
           .returning();
@@ -296,13 +265,6 @@ export class DocumentsService {
           linkedByUserId: data.uploadedByUserId,
         });
 
-        await tx.insert(documentFirmAccess).values({
-          documentId: doc.id,
-          firmId: organizationId,
-          permission: "ADMIN",
-          grantedByUserId: data.uploadedByUserId,
-        });
-
         await tx.insert(documentAccess).values({
           documentId: doc.id,
           userId: data.uploadedByUserId,
@@ -326,7 +288,7 @@ export class DocumentsService {
   };
 
   getAllDocuments = async (
-    organizationId: string,
+    userId: string,
     filters?: {
       search?: string;
       category?: string;
@@ -341,8 +303,8 @@ export class DocumentsService {
     const offset = getPaginationOffset({ page, limit });
 
     const conditions = [
-      eq(documentFirmAccess.firmId, organizationId),
-      isNull(documentFirmAccess.revokedAt),
+      eq(documentAccess.userId, userId),
+      isNull(documentAccess.revokedAt),
     ];
 
     if (filters?.category) {
@@ -377,8 +339,8 @@ export class DocumentsService {
       .select({ total: count() })
       .from(documents)
       .innerJoin(
-        documentFirmAccess,
-        eq(documentFirmAccess.documentId, documents.id),
+        documentAccess,
+        eq(documentAccess.documentId, documents.id),
       )
       .leftJoin(
         documentVersions,
@@ -400,7 +362,7 @@ export class DocumentsService {
         status: documents.status,
         createdAt: documents.createdAt,
         updatedAt: documents.updatedAt,
-        permission: documentFirmAccess.permission,
+        permission: documentAccess.permission,
         versionId: documentVersions.id,
         fileUrl: documentVersions.fileUrl,
         fileSize: documentVersions.fileSize,
@@ -416,8 +378,8 @@ export class DocumentsService {
       })
       .from(documents)
       .innerJoin(
-        documentFirmAccess,
-        eq(documentFirmAccess.documentId, documents.id),
+        documentAccess,
+        eq(documentAccess.documentId, documents.id),
       )
       .leftJoin(
         documentVersions,
@@ -473,18 +435,18 @@ export class DocumentsService {
     );
   };
 
-  getDocumentStats = async (organizationId: string) => {
+  getDocumentStats = async (userId: string) => {
     const rows = await db
       .select({ category: documents.category, total: count() })
       .from(documents)
       .innerJoin(
-        documentFirmAccess,
-        eq(documentFirmAccess.documentId, documents.id),
+        documentAccess,
+        eq(documentAccess.documentId, documents.id),
       )
       .where(
         and(
-          eq(documentFirmAccess.firmId, organizationId),
-          isNull(documentFirmAccess.revokedAt),
+          eq(documentAccess.userId, userId),
+          isNull(documentAccess.revokedAt),
           eq(documents.status, "active"),
         ),
       )
@@ -507,10 +469,9 @@ export class DocumentsService {
 
   getDocumentById = async (
     id: string,
-    organizationId: string,
-    userId?: string,
+    userId: string,
   ) => {
-    await this.ensurePermission(id, organizationId, userId, "VIEW");
+    await this.ensurePermission(id, userId, "VIEW");
 
     const [row] = await db
       .select()
@@ -561,11 +522,10 @@ export class DocumentsService {
 
   updateDocumentStatus = async (
     id: string,
-    organizationId: string,
     userId: string,
     status: DocumentStatus,
   ) => {
-    await this.ensurePermission(id, organizationId, userId, "ADMIN");
+    await this.ensurePermission(id, userId, "ADMIN");
 
     return db.transaction(async (tx) => {
       const now = new Date();
@@ -600,7 +560,6 @@ export class DocumentsService {
 
   updateDocument = async (
     id: string,
-    organizationId: string,
     data: {
       uploadedByUserId: string;
       fileBuffer: Buffer;
@@ -609,7 +568,7 @@ export class DocumentsService {
       originalFilename: string;
     },
   ) => {
-    await this.ensurePermission(id, organizationId, data.uploadedByUserId, "EDIT");
+    await this.ensurePermission(id, data.uploadedByUserId, "EDIT");
 
     const [versionInfo] = await db
       .select({ latest: max(documentVersions.versionNumber) })
@@ -618,7 +577,7 @@ export class DocumentsService {
 
     const versionNumber = Number(versionInfo?.latest ?? 0) + 1;
     const storagePath = buildStoragePath(
-      organizationId,
+      data.uploadedByUserId,
       id,
       versionNumber,
       safeStorageName(`version-${versionNumber}`, data.originalFilename),
@@ -672,7 +631,7 @@ export class DocumentsService {
     userId: string,
     caseId: string,
   ) => {
-    await this.ensurePermission(id, organizationId, userId, "EDIT");
+    await this.ensurePermission(id, userId, "EDIT");
     await this.getCaseForFirm(caseId, organizationId);
 
     return db.transaction(async (tx) => {
@@ -698,11 +657,10 @@ export class DocumentsService {
 
   grantUserAccess = async (
     id: string,
-    organizationId: string,
     userId: string,
     data: { targetUserId: string; permission: DocumentPermission },
   ) => {
-    await this.ensurePermission(id, organizationId, userId, "ADMIN");
+    await this.ensurePermission(id, userId, "ADMIN");
 
     const [targetUser] = await db
       .select({ id: user.id })
@@ -742,59 +700,12 @@ export class DocumentsService {
     });
   };
 
-  grantFirmAccess = async (
-    id: string,
-    organizationId: string,
-    userId: string,
-    data: { firmId: string; permission: DocumentPermission },
-  ) => {
-    await this.ensurePermission(id, organizationId, userId, "ADMIN");
-
-    const [targetFirm] = await db
-      .select({ id: organization.id })
-      .from(organization)
-      .where(eq(organization.id, data.firmId))
-      .limit(1);
-    if (!targetFirm) throw new NotFoundError("Firm not found");
-
-    return db.transaction(async (tx) => {
-      const [grant] = await tx
-        .insert(documentFirmAccess)
-        .values({
-          documentId: id,
-          firmId: data.firmId,
-          permission: data.permission,
-          grantedByUserId: userId,
-        })
-        .onConflictDoUpdate({
-          target: [documentFirmAccess.documentId, documentFirmAccess.firmId],
-          set: {
-            permission: data.permission,
-            grantedByUserId: userId,
-            revokedAt: null,
-            updatedAt: new Date(),
-          },
-        })
-        .returning();
-
-      await tx.insert(documentActivityLogs).values({
-        documentId: id,
-        actorUserId: userId,
-        action: "ACCESS_GRANTED",
-        metadata: { firmId: data.firmId, permission: data.permission },
-      });
-
-      return grant;
-    });
-  };
-
   revokeUserAccess = async (
     id: string,
-    organizationId: string,
     userId: string,
     targetUserId: string,
   ) => {
-    await this.ensurePermission(id, organizationId, userId, "ADMIN");
+    await this.ensurePermission(id, userId, "ADMIN");
 
     return db.transaction(async (tx) => {
       const [grant] = await tx
@@ -821,215 +732,6 @@ export class DocumentsService {
     });
   };
 
-  revokeFirmAccess = async (
-    id: string,
-    organizationId: string,
-    userId: string,
-    firmId: string,
-  ) => {
-    await this.ensurePermission(id, organizationId, userId, "ADMIN");
-
-    return db.transaction(async (tx) => {
-      const [grant] = await tx
-        .update(documentFirmAccess)
-        .set({ revokedAt: new Date(), updatedAt: new Date() })
-        .where(
-          and(
-            eq(documentFirmAccess.documentId, id),
-            eq(documentFirmAccess.firmId, firmId),
-          ),
-        )
-        .returning();
-
-      if (!grant) throw new NotFoundError("Document firm access not found");
-
-      await tx.insert(documentActivityLogs).values({
-        documentId: id,
-        actorUserId: userId,
-        action: "ACCESS_REVOKED",
-        metadata: { firmId },
-      });
-
-      return grant;
-    });
-  };
-
-  createTransfer = async (
-    id: string,
-    organizationId: string,
-    userId: string,
-    data: {
-      toFirmId: string;
-      toUserId?: string;
-      permission: DocumentPermission;
-      message?: string;
-      revokeSenderAccess?: boolean;
-    },
-  ) => {
-    await this.ensurePermission(id, organizationId, userId, "ADMIN");
-
-    return db.transaction(async (tx) => {
-      const [transfer] = await tx
-        .insert(documentTransfers)
-        .values({
-          documentId: id,
-          fromFirmId: organizationId,
-          toFirmId: data.toFirmId,
-          fromUserId: userId,
-          toUserId: data.toUserId,
-          permission: data.permission,
-          message: data.message,
-          revokeSenderAccess: data.revokeSenderAccess ?? false,
-        })
-        .returning();
-
-      await tx.insert(documentActivityLogs).values({
-        documentId: id,
-        actorUserId: userId,
-        action: "TRANSFER_REQUESTED",
-        metadata: {
-          transferId: transfer.id,
-          toFirmId: data.toFirmId,
-          toUserId: data.toUserId,
-          permission: data.permission,
-        },
-      });
-
-      return transfer;
-    });
-  };
-
-  acceptTransfer = async (
-    transferId: string,
-    organizationId: string,
-    userId: string,
-  ) => {
-    const [transfer] = await db
-      .select()
-      .from(documentTransfers)
-      .where(
-        and(
-          eq(documentTransfers.id, transferId),
-          eq(documentTransfers.toFirmId, organizationId),
-        ),
-      )
-      .limit(1);
-
-    if (!transfer) throw new NotFoundError("Document transfer not found");
-    if (transfer.status !== "PENDING") {
-      throw new ConflictError("Document transfer is no longer pending");
-    }
-
-    return db.transaction(async (tx) => {
-      const now = new Date();
-      const [updatedTransfer] = await tx
-        .update(documentTransfers)
-        .set({ status: "ACCEPTED", acceptedAt: now, updatedAt: now })
-        .where(
-          and(
-            eq(documentTransfers.id, transferId),
-            eq(documentTransfers.toFirmId, organizationId),
-            eq(documentTransfers.status, "PENDING"),
-          ),
-        )
-        .returning();
-
-      if (!updatedTransfer) {
-        throw new ConflictError("Document transfer is no longer pending");
-      }
-
-      await tx
-        .insert(documentFirmAccess)
-        .values({
-          documentId: transfer.documentId,
-          firmId: transfer.toFirmId,
-          permission: transfer.permission,
-          grantedByUserId: transfer.fromUserId,
-        })
-        .onConflictDoUpdate({
-          target: [documentFirmAccess.documentId, documentFirmAccess.firmId],
-          set: {
-            permission: transfer.permission,
-            grantedByUserId: transfer.fromUserId,
-            revokedAt: null,
-            updatedAt: now,
-          },
-        });
-
-      if (transfer.toUserId) {
-        await tx
-          .insert(documentAccess)
-          .values({
-            documentId: transfer.documentId,
-            userId: transfer.toUserId,
-            permission: transfer.permission,
-            grantedByUserId: transfer.fromUserId,
-          })
-          .onConflictDoUpdate({
-            target: [documentAccess.documentId, documentAccess.userId],
-            set: {
-              permission: transfer.permission,
-              grantedByUserId: transfer.fromUserId,
-              revokedAt: null,
-              updatedAt: now,
-            },
-          });
-      }
-
-      if (transfer.revokeSenderAccess) {
-        await tx
-          .update(documentFirmAccess)
-          .set({ revokedAt: now, updatedAt: now })
-          .where(
-            and(
-              eq(documentFirmAccess.documentId, transfer.documentId),
-              eq(documentFirmAccess.firmId, transfer.fromFirmId),
-            ),
-          );
-      }
-
-      await tx.insert(documentActivityLogs).values({
-        documentId: transfer.documentId,
-        actorUserId: userId,
-        action: "TRANSFER_ACCEPTED",
-        metadata: { transferId },
-      });
-
-      return updatedTransfer;
-    });
-  };
-
-  rejectTransfer = async (
-    transferId: string,
-    organizationId: string,
-    userId: string,
-  ) => {
-    return db.transaction(async (tx) => {
-      const [transfer] = await tx
-        .update(documentTransfers)
-        .set({ status: "REJECTED", updatedAt: new Date() })
-        .where(
-          and(
-            eq(documentTransfers.id, transferId),
-            eq(documentTransfers.toFirmId, organizationId),
-            eq(documentTransfers.status, "PENDING"),
-          ),
-        )
-        .returning();
-
-      if (!transfer) throw new NotFoundError("Pending document transfer not found");
-
-      await tx.insert(documentActivityLogs).values({
-        documentId: transfer.documentId,
-        actorUserId: userId,
-        action: "TRANSFER_REJECTED",
-        metadata: { transferId },
-      });
-
-      return transfer;
-    });
-  };
-
   createExternalRequest = async (
     organizationId: string,
     userId: string,
@@ -1037,7 +739,6 @@ export class DocumentsService {
       caseId: string;
       recipientEmail: string;
       recipientName?: string;
-      recipientFirmName?: string;
       message?: string;
       expiresAt: Date;
     },
@@ -1050,11 +751,9 @@ export class DocumentsService {
         .insert(documentRequests)
         .values({
           caseId: data.caseId,
-          requestedByFirmId: organizationId,
           requestedByUserId: userId,
           recipientEmail: data.recipientEmail,
           recipientName: data.recipientName,
-          recipientFirmName: data.recipientFirmName,
           message: data.message,
           tokenHash: hashToken(token),
           expiresAt: data.expiresAt,
@@ -1126,8 +825,7 @@ export class DocumentsService {
           .values({
             id: documentId,
             title,
-            originFirmId: request.requestedByFirmId,
-            currentOwnerFirmId: request.requestedByFirmId,
+            createdByUserId: request.requestedByUserId,
           })
           .returning();
 
@@ -1172,9 +870,9 @@ export class DocumentsService {
           caseId: request.caseId,
         });
 
-        await tx.insert(documentFirmAccess).values({
+        await tx.insert(documentAccess).values({
           documentId: doc.id,
-          firmId: request.requestedByFirmId,
+          userId: request.requestedByUserId,
           permission: "ADMIN",
           grantedByUserId: request.requestedByUserId,
         });
@@ -1205,28 +903,24 @@ export class DocumentsService {
 
   archiveDocument = async (
     id: string,
-    organizationId: string,
     userId: string,
-  ) => this.updateDocumentStatus(id, organizationId, userId, "archived");
+  ) => this.updateDocumentStatus(id, userId, "archived");
 
   restoreDocument = async (
     id: string,
-    organizationId: string,
     userId: string,
-  ) => this.updateDocumentStatus(id, organizationId, userId, "active");
+  ) => this.updateDocumentStatus(id, userId, "active");
 
   deleteDocument = async (
     id: string,
-    organizationId: string,
     userId: string,
-  ) => this.updateDocumentStatus(id, organizationId, userId, "deleted");
+  ) => this.updateDocumentStatus(id, userId, "deleted");
 
   getDownloadUrl = async (
     id: string,
-    organizationId: string,
-    userId?: string,
+    userId: string,
   ) => {
-    await this.ensurePermission(id, organizationId, userId, "VIEW");
+    await this.ensurePermission(id, userId, "VIEW");
 
     const [doc] = await db
       .select({
@@ -1249,23 +943,20 @@ export class DocumentsService {
 
     if (error) throw new ExternalServiceError(error.message);
 
-    if (userId) {
-      await this.logActivity({
-        documentId: id,
-        actorUserId: userId,
-        action: "DOWNLOADED",
-      }).catch(() => undefined);
-    }
+    await this.logActivity({
+      documentId: id,
+      actorUserId: userId,
+      action: "DOWNLOADED",
+    }).catch(() => undefined);
 
     return data.signedUrl;
   };
 
   getActivityLogs = async (
     id: string,
-    organizationId: string,
     userId: string,
   ) => {
-    await this.ensurePermission(id, organizationId, userId, "ADMIN");
+    await this.ensurePermission(id, userId, "ADMIN");
 
     return db
       .select()
@@ -1274,28 +965,15 @@ export class DocumentsService {
       .orderBy(desc(documentActivityLogs.createdAt));
   };
 
-  getTransfers = async (organizationId: string) =>
-    db
-      .select()
-      .from(documentTransfers)
-      .where(
-        or(
-          eq(documentTransfers.fromFirmId, organizationId),
-          eq(documentTransfers.toFirmId, organizationId),
-        ),
-      )
-      .orderBy(desc(documentTransfers.createdAt));
-
-  getExternalRequests = async (organizationId: string) =>
+  getExternalRequests = async (userId: string) =>
     db
       .select()
       .from(documentRequests)
-      .where(eq(documentRequests.requestedByFirmId, organizationId))
+      .where(eq(documentRequests.requestedByUserId, userId))
       .orderBy(desc(documentRequests.createdAt));
 
   cancelExternalRequest = async (
     id: string,
-    organizationId: string,
     userId: string,
   ) => {
     return db.transaction(async (tx) => {
@@ -1305,7 +983,7 @@ export class DocumentsService {
         .where(
           and(
             eq(documentRequests.id, id),
-            eq(documentRequests.requestedByFirmId, organizationId),
+            eq(documentRequests.requestedByUserId, userId),
             inArray(documentRequests.status, ["PENDING", "PARTIALLY_SUBMITTED"]),
           ),
         )

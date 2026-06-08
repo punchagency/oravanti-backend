@@ -161,6 +161,7 @@ export const auth = betterAuth({
       phoneNumber: { type: "string", required: false, input: true },
       jobTitle: { type: "string", required: false, input: true },
       barNumber: { type: "string", required: false, input: true },
+      userType: { type: "string", required: false, input: true },
     },
   },
   session: {
@@ -178,6 +179,10 @@ export const auth = betterAuth({
         // Ensure a session and user were actually successfully created
         if (newSession && newSession.user) {
           const { user } = newSession;
+
+          if (user.userType === "contractor") {
+            return;
+          }
 
           try {
             await db

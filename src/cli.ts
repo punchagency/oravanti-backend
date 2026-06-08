@@ -30,9 +30,7 @@ import {
   documentAccess,
   documentActivityLogs,
   documentCaseLinks,
-  documentFirmAccess,
   documentRequests,
-  documentTransfers,
   documents,
   documentVersions,
   externalSubmissions,
@@ -130,7 +128,6 @@ type NewDocumentRow = typeof documents.$inferInsert;
 type NewDocumentAccessRow = typeof documentAccess.$inferInsert;
 type NewDocumentActivityLogRow = typeof documentActivityLogs.$inferInsert;
 type NewDocumentCaseLinkRow = typeof documentCaseLinks.$inferInsert;
-type NewDocumentFirmAccessRow = typeof documentFirmAccess.$inferInsert;
 type NewDocumentVersionRow = typeof documentVersions.$inferInsert;
 type NewLeaveRequestRow = typeof leaveRequests.$inferInsert;
 type NewParalegalProfileRow = typeof paralegalProfiles.$inferInsert;
@@ -1427,16 +1424,34 @@ const seedDemoData = async (organizationId?: string) => {
       )
       .returning();
 
-    const contractorValues: NewContractorRow[] = range(DEMO_TARGETS.contractors).map((index) => ({
-      organizationId: firm.id,
-      name: `Demo Contractor ${pad(index + 1)}`,
-      email: `contractor.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
-      specialization: pick(filingTypes, index),
-      status: index % 5 === 0 ? "pending" : "active",
-      rate: `${85 + index * 5}`,
-      contractStart: isoDateFromNow(-180 + index),
-      contractEnd: isoDateFromNow(180 + index),
-    }));
+    const contractorValues: NewContractorRow[] = [];
+    for (const index of range(DEMO_TARGETS.contractors)) {
+      const contractorNumber = pad(index + 1);
+      const email = `contractor.${suffix}.${contractorNumber}@${DEMO_EMAIL_DOMAIN}`;
+      const authUser = await ensureAuthUser(tx, {
+        id: `demo-contractor-user-${suffix}-${contractorNumber}`,
+        firstName: "Demo",
+        lastName: `Contractor ${contractorNumber}`,
+        email,
+        phone: `+1-555-${pad(3100 + index, 4)}`,
+        jobTitle: "Contractor",
+      });
+
+      createdUsers.push(authUser);
+      contractorValues.push({
+        userId: authUser.id,
+        email,
+        firstName: "Demo",
+        lastName: `Contractor ${contractorNumber}`,
+        phoneNumber: `+1-555-${pad(3100 + index, 4)}`,
+        desiredHourlyRate: `${85 + index * 5}`,
+        consentedToBackgroundCheck: true,
+        recognizedDirectoryListingVerificationAccepted: true,
+        bio: `Demo contractor profile ${contractorNumber} for marketplace coverage.`,
+        availability: pick(["full-time", "part-time", "project-based"] as const, index),
+        status: index % 5 === 0 ? "pending" : "active",
+      });
+    }
     const createdContractors = await tx
       .insert(contractors)
       .values(contractorValues)
@@ -1468,8 +1483,6 @@ const seedDemoData = async (organizationId?: string) => {
         title: `Demo ${pick(documentCategories, index)} document ${pad(index + 1)}.pdf`,
         category: pick(documentCategories, index),
         createdByUserId: uploader.userId,
-        originFirmId: firm.id,
-        currentOwnerFirmId: firm.id,
         status: pick(documentStatuses, index),
       };
     });
@@ -1519,14 +1532,6 @@ const seedDemoData = async (organizationId?: string) => {
       };
     });
     await tx.insert(documentCaseLinks).values(documentCaseLinkValues);
-
-    const documentFirmAccessValues: NewDocumentFirmAccessRow[] = createdDocuments.map((document, index) => ({
-      documentId: document.id,
-      firmId: firm.id,
-      permission: "ADMIN",
-      grantedByUserId: pick(createdStaff, index).userId,
-    }));
-    await tx.insert(documentFirmAccess).values(documentFirmAccessValues);
 
     const documentAccessValues: NewDocumentAccessRow[] = [];
     for (const [index, document] of createdDocuments.entries()) {
@@ -1796,12 +1801,16 @@ const dropDemoData = async (organizationId?: string) => {
       );
     const orgDocuments = await tx
       .select({ id: documents.id })
-      .from(documents)
-      .where(eq(documents.originFirmId, firm.id));
+      .from(documentCaseLinks)
+      .innerJoin(cases, eq(cases.id, documentCaseLinks.caseId))
+      .innerJoin(documents, eq(documents.id, documentCaseLinks.documentId))
+      .where(eq(cases.organizationId, firm.id));
     const orgDocumentRequests = await tx
       .select({ id: documentRequests.id })
       .from(documentRequests)
-      .where(eq(documentRequests.requestedByFirmId, firm.id));
+      .innerJoin(user, eq(user.id, documentRequests.requestedByUserId))
+      .innerJoin(member, eq(member.userId, user.id))
+      .where(eq(member.organizationId, firm.id));
 
     const staffIds = orgStaff.map((row) => row.id);
     const teamIds = orgTeams.map((row) => row.id);
@@ -1855,24 +1864,10 @@ const dropDemoData = async (organizationId?: string) => {
           .returning(),
       );
       record(
-        "documentTransfers",
-        await tx
-          .delete(documentTransfers)
-          .where(inArray(documentTransfers.documentId, documentIds))
-          .returning(),
-      );
-      record(
         "documentAccess",
         await tx
           .delete(documentAccess)
           .where(inArray(documentAccess.documentId, documentIds))
-          .returning(),
-      );
-      record(
-        "documentFirmAccess",
-        await tx
-          .delete(documentFirmAccess)
-          .where(inArray(documentFirmAccess.documentId, documentIds))
           .returning(),
       );
       record(
@@ -1891,9 +1886,7 @@ const dropDemoData = async (organizationId?: string) => {
       );
     } else {
       deleted.documentActivityLogs = 0;
-      deleted.documentTransfers = 0;
       deleted.documentAccess = 0;
-      deleted.documentFirmAccess = 0;
       deleted.documentCaseLinks = 0;
       deleted.documentVersions = 0;
     }
@@ -1912,7 +1905,9 @@ const dropDemoData = async (organizationId?: string) => {
 
     record(
       "documents",
-      await tx.delete(documents).where(eq(documents.originFirmId, firm.id)).returning(),
+      documentIds.length
+        ? await tx.delete(documents).where(inArray(documents.id, documentIds)).returning()
+        : [],
     );
     record(
       "tasks",
@@ -1992,7 +1987,10 @@ const dropDemoData = async (organizationId?: string) => {
     );
     record(
       "contractors",
-      await tx.delete(contractors).where(eq(contractors.organizationId, firm.id)).returning(),
+      await tx
+        .delete(contractors)
+        .where(ilike(contractors.email, `contractor.%@${DEMO_EMAIL_DOMAIN}`))
+        .returning(),
     );
     record("teams", await tx.delete(teams).where(eq(teams.organizationId, firm.id)).returning());
     record("staff", await tx.delete(staff).where(eq(staff.organizationId, firm.id)).returning());

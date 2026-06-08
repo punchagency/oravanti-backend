@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { SignInBody } from "../../types/auth.types";
+import { ContractorSignUpBody, SignInBody } from "../../types/auth.types";
 import { applyAuthHeaders } from "../../utils/applyAuthHeaders";
 import asyncWrap from "../../utils/asyncWrapper";
 import { AuthService } from "./auth.service";
@@ -35,6 +35,30 @@ export class AuthController {
         message: data.message ?? "Signup successful",
         success: true,
         data,
+      });
+    },
+  );
+
+  signUpContractorWithEmail = asyncWrap(
+    async (
+      req: Request<{}, {}, ContractorSignUpBody>,
+      res: Response,
+    ) => {
+      const result = await this.authService.signUpContractorWithEmail(
+        req.body,
+        (req.files as Express.Multer.File[]) ?? [],
+        req,
+      );
+
+      applyAuthHeaders(result.headers, res);
+
+      res.status(200).json({
+        message: "Contractor signup successful",
+        success: true,
+        data: {
+          auth: result.authData,
+          contractor: result.contractor,
+        },
       });
     },
   );

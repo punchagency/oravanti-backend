@@ -2,7 +2,7 @@
  * @openapi
  * tags:
  *   - name: Documents
- *     description: Document resources, versions, access, transfers, and external requests
+ *     description: Document resources, versions, user access, and external requests
  */
 import { Router } from "express";
 import multer from "multer";
@@ -98,24 +98,6 @@ export class DocumentsRouter {
      *               type: object
      */
     this.router.get("/stats", this.documentsController.getDocumentStats);
-
-    /**
-     * @openapi
-     * /documents/transfers:
-     *   get:
-     *     tags: [Documents]
-     *     summary: List incoming and outgoing document transfers
-     *     security: [{ bearerAuth: [] }]
-     *     responses:
-     *       200:
-     *         description: Document transfers
-     *         content:
-     *           application/json:
-     *             schema:
-     *               type: array
-     *               items: { type: object }
-     */
-    this.router.get("/transfers", this.documentsController.getTransfers);
 
     /**
      * @openapi
@@ -221,7 +203,6 @@ export class DocumentsRouter {
      *               caseId: { type: string, format: uuid }
      *               recipientEmail: { type: string, format: email }
      *               recipientName: { type: string }
-     *               recipientFirmName: { type: string }
      *               message: { type: string }
      *               expiresAt: { type: string, format: date-time }
      *     responses:
@@ -263,56 +244,6 @@ export class DocumentsRouter {
         params: z.object({ requestId: this.validation.uuid }),
       }),
       this.documentsController.cancelExternalRequest,
-    );
-
-    /**
-     * @openapi
-     * /documents/transfers/{transferId}/accept:
-     *   patch:
-     *     tags: [Documents]
-     *     summary: Accept a document transfer
-     *     security: [{ bearerAuth: [] }]
-     *     parameters:
-     *       - in: path
-     *         name: transferId
-     *         required: true
-     *         schema: { type: string, format: uuid }
-     *     responses:
-     *       200:
-     *         description: Transfer accepted
-     *       409: { description: Transfer is no longer pending }
-     */
-    this.router.patch(
-      "/transfers/:transferId/accept",
-      validateRequest({
-        params: z.object({ transferId: this.validation.uuid }),
-      }),
-      this.documentsController.acceptTransfer,
-    );
-
-    /**
-     * @openapi
-     * /documents/transfers/{transferId}/reject:
-     *   patch:
-     *     tags: [Documents]
-     *     summary: Reject a document transfer
-     *     security: [{ bearerAuth: [] }]
-     *     parameters:
-     *       - in: path
-     *         name: transferId
-     *         required: true
-     *         schema: { type: string, format: uuid }
-     *     responses:
-     *       200:
-     *         description: Transfer rejected
-     *       404: { description: Pending document transfer not found }
-     */
-    this.router.patch(
-      "/transfers/:transferId/reject",
-      validateRequest({
-        params: z.object({ transferId: this.validation.uuid }),
-      }),
-      this.documentsController.rejectTransfer,
     );
 
     /**
@@ -528,44 +459,6 @@ export class DocumentsRouter {
 
     /**
      * @openapi
-     * /documents/{id}/access/firms:
-     *   post:
-     *     tags: [Documents]
-     *     summary: Grant document access to a firm
-     *     security: [{ bearerAuth: [] }]
-     *     parameters:
-     *       - in: path
-     *         name: id
-     *         required: true
-     *         schema: { type: string, format: uuid }
-     *     requestBody:
-     *       required: true
-     *       content:
-     *         application/json:
-     *           schema:
-     *             type: object
-     *             required: [firmId, permission]
-     *             properties:
-     *               firmId: { type: string }
-     *               permission: { type: string, enum: [VIEW, COMMENT, EDIT, ADMIN] }
-     *     responses:
-     *       201:
-     *         description: Firm access granted
-     */
-    this.router.post(
-      "/:id/access/firms",
-      validateRequest({
-        params: this.validation.idParams,
-        body: z.object({
-          firmId: z.string().min(1, "firmId is required"),
-          permission: documentPermission,
-        }),
-      }),
-      this.documentsController.grantFirmAccess,
-    );
-
-    /**
-     * @openapi
      * /documents/{id}/access/users/{userId}:
      *   delete:
      *     tags: [Documents]
@@ -593,81 +486,6 @@ export class DocumentsRouter {
         }),
       }),
       this.documentsController.revokeUserAccess,
-    );
-
-    /**
-     * @openapi
-     * /documents/{id}/access/firms/{firmId}:
-     *   delete:
-     *     tags: [Documents]
-     *     summary: Revoke firm access to a document
-     *     security: [{ bearerAuth: [] }]
-     *     parameters:
-     *       - in: path
-     *         name: id
-     *         required: true
-     *         schema: { type: string, format: uuid }
-     *       - in: path
-     *         name: firmId
-     *         required: true
-     *         schema: { type: string }
-     *     responses:
-     *       200:
-     *         description: Firm access revoked
-     */
-    this.router.delete(
-      "/:id/access/firms/:firmId",
-      validateRequest({
-        params: z.object({
-          id: this.validation.uuid,
-          firmId: z.string().min(1, "firmId is required"),
-        }),
-      }),
-      this.documentsController.revokeFirmAccess,
-    );
-
-    /**
-     * @openapi
-     * /documents/{id}/transfers:
-     *   post:
-     *     tags: [Documents]
-     *     summary: Request a document transfer to another firm
-     *     security: [{ bearerAuth: [] }]
-     *     parameters:
-     *       - in: path
-     *         name: id
-     *         required: true
-     *         schema: { type: string, format: uuid }
-     *     requestBody:
-     *       required: true
-     *       content:
-     *         application/json:
-     *           schema:
-     *             type: object
-     *             required: [toFirmId, permission]
-     *             properties:
-     *               toFirmId: { type: string }
-     *               toUserId: { type: string }
-     *               permission: { type: string, enum: [VIEW, COMMENT, EDIT, ADMIN] }
-     *               message: { type: string }
-     *               revokeSenderAccess: { type: boolean }
-     *     responses:
-     *       201:
-     *         description: Transfer requested
-     */
-    this.router.post(
-      "/:id/transfers",
-      validateRequest({
-        params: this.validation.idParams,
-        body: z.object({
-          toFirmId: z.string().min(1, "toFirmId is required"),
-          toUserId: z.string().min(1).optional(),
-          permission: documentPermission,
-          message: z.string().optional(),
-          revokeSenderAccess: z.boolean().optional(),
-        }),
-      }),
-      this.documentsController.createTransfer,
     );
 
     /**

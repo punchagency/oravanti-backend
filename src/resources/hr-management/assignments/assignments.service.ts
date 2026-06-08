@@ -10,17 +10,11 @@ import {
 } from "../../../utils/error/app-error";
 
 export class AssignmentsService {
-  getAvailableContractors = async (filingType: FilingType, organizationId: string) => {
+  getAvailableContractors = async (_filingType: FilingType, _organizationId: string) => {
     return db
       .select()
       .from(contractors)
-      .where(
-        and(
-          eq(contractors.organizationId, organizationId),
-          eq(contractors.specialization, filingType),
-          eq(contractors.status, "active"),
-        ),
-      );
+      .where(eq(contractors.status, "active"));
   };
 
   assignCase = async (body: AssignCaseBody & { organizationId: string }) => {
@@ -49,9 +43,7 @@ export class AssignmentsService {
       const contractor = await db
         .select()
         .from(contractors)
-        .where(
-          and(eq(contractors.id, contractorId), eq(contractors.organizationId, organizationId)),
-        );
+        .where(eq(contractors.id, contractorId));
 
       if (!contractor[0]) {
         throw new NotFoundError("Contractor not found");
