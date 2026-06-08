@@ -25,6 +25,7 @@ export const user = pgTable("user", {
   phoneNumber: text("phone_number"),
   jobTitle: text("job_title"),
   barNumber: text("bar_number"),
+  userType: text("user_type").notNull().default("firm_user"),
 });
 
 export const session = pgTable(

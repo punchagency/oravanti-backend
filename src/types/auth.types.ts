@@ -22,3 +22,41 @@ export interface SignUpBody {
   website?: string;
   taxId?: string;
 }
+
+export type ContractorAvailability = "full-time" | "part-time" | "project-based";
+
+export type ContractorPaymentDetailsInput =
+  | {
+      paymentMethod: "paypal";
+      paypalEmail: string;
+    }
+  | {
+      paymentMethod: "bank_account";
+      accountHolderName: string;
+      routingNumber: string;
+      accountNumber: string;
+    };
+
+export interface ContractorCertificationDocumentInput {
+  certificationName: string;
+  issuingOrganization?: string;
+  issuedAt?: string;
+  expiresAt?: string;
+}
+
+export interface ContractorSignUpBody {
+  email: string;
+  password: string;
+  firstName: string;
+  lastName: string;
+  phoneNumber: string;
+  desiredHourlyRate: string | number;
+  consentedToBackgroundCheck: boolean;
+  recognizedDirectoryListingVerificationAccepted: boolean;
+  bio: string;
+  availability: ContractorAvailability;
+  specialtyIds: string[];
+  paymentDetails: ContractorPaymentDetailsInput;
+  certificationDocuments: ContractorCertificationDocumentInput[];
+  rememberMe?: boolean;
+}
