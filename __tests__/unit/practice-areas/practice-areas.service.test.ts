@@ -107,9 +107,11 @@ describe("practice area utilities", () => {
         buildSelectChain([
           {
             id: "case-type-1",
+            subcategoryId: "subcategory-1",
             code: "h1b_visa",
             name: "H-1B Visa",
             caseNumberPrefix: "H1B",
+            jurisdiction: "federal",
           },
         ]),
       );
@@ -123,9 +125,11 @@ describe("practice area utilities", () => {
       practiceArea: { id: "area-1" },
       caseType: {
         id: "case-type-1",
+        subcategoryId: "subcategory-1",
         code: "h1b_visa",
         name: "H-1B Visa",
         caseNumberPrefix: "H1B",
+        jurisdiction: "federal",
       },
     });
   });
