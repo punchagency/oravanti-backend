@@ -196,11 +196,16 @@ export const createCompanyWithClients = async (
       return { type: "conflict_warning" as const, conflicts: allConflicts };
   }
 
+  const resolvedCaseTypeIds = new Map<string, string>();
   for (const { caseData } of individuals) {
-    await ensureCaseTypeBelongsToPracticeArea(
+    const resolvedCaseType = await ensureCaseTypeBelongsToPracticeArea(
       organizationId,
       caseData.practiceAreaId,
       caseData.caseType,
+    );
+    resolvedCaseTypeIds.set(
+      `${caseData.practiceAreaId}:${caseData.caseType}`,
+      resolvedCaseType.caseType.id,
     );
   }
 
@@ -241,6 +246,9 @@ export const createCompanyWithClients = async (
           caseNumber,
           clientId: newClient.id,
           practiceAreaId: caseData.practiceAreaId,
+          caseTypeId: resolvedCaseTypeIds.get(
+            `${caseData.practiceAreaId}:${caseData.caseType}`,
+          )!,
           caseType: caseData.caseType as any,
           description: caseData.description,
           filingDate: caseData.filingDate,
@@ -300,7 +308,7 @@ export const addClientToCompany = async (
 
   if (!company) throw new NotFoundError("Company not found");
 
-  await ensureCaseTypeBelongsToPracticeArea(
+  const resolvedCaseType = await ensureCaseTypeBelongsToPracticeArea(
     organizationId,
     caseData.practiceAreaId,
     caseData.caseType,
@@ -332,6 +340,7 @@ export const addClientToCompany = async (
         caseNumber,
         clientId: newClient.id,
         practiceAreaId: caseData.practiceAreaId,
+        caseTypeId: resolvedCaseType.caseType.id,
         caseType: caseData.caseType as any,
         description: caseData.description,
         filingDate: caseData.filingDate,
@@ -694,7 +703,7 @@ export const createClient = async (
   },
   options?: { acknowledgeConflict?: boolean },
 ) => {
-  await ensureCaseTypeBelongsToPracticeArea(
+  const resolvedCaseType = await ensureCaseTypeBelongsToPracticeArea(
     organizationId,
     caseData.practiceAreaId,
     caseData.caseType,
@@ -727,6 +736,7 @@ export const createClient = async (
         caseNumber,
         clientId: newClient.id,
         practiceAreaId: caseData.practiceAreaId,
+        caseTypeId: resolvedCaseType.caseType.id,
         caseType: caseData.caseType as any,
         description: caseData.description,
         filingDate: caseData.filingDate,
@@ -854,7 +864,7 @@ export const addCase = async (
   },
   options?: { acknowledgeExistingCase?: boolean },
 ) => {
-  await ensureCaseTypeBelongsToPracticeArea(
+  const resolvedCaseType = await ensureCaseTypeBelongsToPracticeArea(
     organizationId,
     caseData.practiceAreaId,
     caseData.caseType,
@@ -905,6 +915,7 @@ export const addCase = async (
       caseNumber,
       clientId,
       practiceAreaId: caseData.practiceAreaId,
+      caseTypeId: resolvedCaseType.caseType.id,
       caseType: caseData.caseType as any,
       description: caseData.description,
       filingDate: caseData.filingDate,
