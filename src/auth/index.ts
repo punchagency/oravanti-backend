@@ -103,15 +103,22 @@ const createDefaultAdminStaff = async ({
   await db
     .insert(staff)
     .values({
-      organizationId,
-      userId,
+      // organizationId,
+      // userId,
+      // firstName: adminFirstName,
+      // lastName: adminLastName,
+      // email,
+      // phone: phoneNumber || "",
+      // role: "admin",
+      // status: "active",
+      // startDate,
       firstName: adminFirstName,
       lastName: adminLastName,
-      email,
       phone: phoneNumber || "",
-      role: "admin",
+      organizationId,
+      userId,
+      jobTitle: "Firm Administrator",
       status: "active",
-      startDate,
     })
     .onConflictDoNothing();
 };
@@ -156,11 +163,31 @@ export const auth = betterAuth({
   },
   user: {
     additionalFields: {
-      firstName: { type: "string", required: false, input: true },
-      lastName: { type: "string", required: false, input: true },
-      phoneNumber: { type: "string", required: false, input: true },
-      jobTitle: { type: "string", required: false, input: true },
-      barNumber: { type: "string", required: false, input: true },
+      accountType: {
+        type: "string",
+        required: false,
+        input: true,
+      },
+      onboardingState: {
+        type: "string",
+        required: false,
+        input: true,
+      },
+      tosAccepted: {
+        type: "boolean",
+        required: false,
+        input: true,
+      },
+      tosAcceptedAt: {
+        type: "date",
+        required: false,
+        input: true,
+      },
+      // firstName: { type: "string", required: false, input: true },
+      // lastName: { type: "string", required: false, input: true },
+      // phoneNumber: { type: "string", required: false, input: true },
+      // jobTitle: { type: "string", required: false, input: true },
+      // barNumber: { type: "string", required: false, input: true },
     },
   },
   session: {
@@ -172,30 +199,31 @@ export const auth = betterAuth({
   hooks: {
     after: createAuthMiddleware(async (ctx) => {
       // Target the email sign-up endpoint specifically
-      if (ctx.path === "/sign-up/email") {
-        const newSession = ctx.context.newSession;
-
-        // Ensure a session and user were actually successfully created
-        if (newSession && newSession.user) {
-          const { user } = newSession;
-
-          try {
-            await db
-              .update(staff)
-              .set({ userId: user.id })
-              .where(eq(staff.email, user.email.toLowerCase().trim()));
-
-            console.log(
-              `[STITCH SUCCESS] Bound user ID ${user.id} to profile matching email: ${user.email}`,
-            );
-          } catch (error) {
-            console.error(
-              "[STITCH ERROR] Profiling synchronization crash:",
-              error,
-            );
-          }
-        }
-      }
+      //       // Target the email sign-up endpoint specifically
+      //       if (ctx.path === "/sign-up/email") {
+      //         const newSession = ctx.context.newSession;
+      //
+      //         // Ensure a session and user were actually successfully created
+      //         if (newSession && newSession.user) {
+      //           const { user } = newSession;
+      //
+      //           try {
+      //             await db
+      //               .update(staff)
+      //               .set({ userId: user.id })
+      //               .where(eq(staff.email, user.email.toLowerCase().trim()));
+      //
+      //             console.log(
+      //               `[STITCH SUCCESS] Bound user ID ${user.id} to profile matching email: ${user.email}`,
+      //             );
+      //           } catch (error) {
+      //             console.error(
+      //               "[STITCH ERROR] Profiling synchronization crash:",
+      //               error,
+      //             );
+      //           }
+      //         }
+      //       }
     }),
   },
   plugins: [
@@ -220,17 +248,17 @@ export const auth = betterAuth({
       },
       organizationHooks: {
         afterAddMember: async ({ organization, user, member }) => {
-          await createDefaultAdminStaff({
-            organizationId: organization.id,
-            userId: user.id,
-            role: member.role,
-            name: user.name,
-            email: user.email,
-            firstName: user.firstName,
-            lastName: user.lastName,
-            phoneNumber: user.phoneNumber,
-            image: user.image,
-          });
+          // await createDefaultAdminStaff({
+          //   organizationId: organization.id,
+          //   userId: user.id,
+          //   role: member.role,
+          //   name: user.name,
+          //   email: user.email,
+          //   firstName: user.firstName,
+          //   lastName: user.lastName,
+          //   phoneNumber: user.phoneNumber,
+          //   image: user.image,
+          // });
         },
       },
       schema: {
