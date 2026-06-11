@@ -2,6 +2,7 @@ import {
   boolean,
   date,
   index,
+  integer,
   numeric,
   pgEnum,
   pgTable,
@@ -158,6 +159,44 @@ export const contractorCertificationDocuments = pgTable(
   ],
 );
 
+export const contractorIdentificationDocuments = pgTable(
+  "contractor_identification_documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    contractorId: uuid("contractor_id")
+      .notNull()
+      .references(() => contractors.id, { onDelete: "cascade" }),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => documents.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    verificationStatus:
+      contractorCertificationVerificationStatusEnum("verification_status")
+        .notNull()
+        .default("pending"),
+    reviewedByUserId: text("reviewed_by_user_id").references(() => user.id),
+    reviewedAt: timestamp("reviewed_at"),
+    rejectionReason: text("rejection_reason"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("contractor_identification_documents_document_uidx").on(
+      table.documentId,
+    ),
+    uniqueIndex("contractor_identification_documents_position_uidx").on(
+      table.contractorId,
+      table.position,
+    ),
+    index("contractor_identification_documents_contractor_idx").on(
+      table.contractorId,
+    ),
+    index("contractor_identification_documents_status_idx").on(
+      table.verificationStatus,
+    ),
+  ],
+);
+
 export type Contractor = typeof contractors.$inferSelect;
 export type NewContractor = typeof contractors.$inferInsert;
 export type ContractorSpecialty = typeof contractorSpecialties.$inferSelect;
@@ -170,3 +209,7 @@ export type ContractorCertificationDocument =
   typeof contractorCertificationDocuments.$inferSelect;
 export type NewContractorCertificationDocument =
   typeof contractorCertificationDocuments.$inferInsert;
+export type ContractorIdentificationDocument =
+  typeof contractorIdentificationDocuments.$inferSelect;
+export type NewContractorIdentificationDocument =
+  typeof contractorIdentificationDocuments.$inferInsert;
