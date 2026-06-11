@@ -161,7 +161,10 @@ export class AuthRouter {
      */
     this.router.post(
       "/contractors/sign-up/email",
-      this.upload.array("certificationFiles"),
+      this.upload.fields([
+        { name: "certificationFiles" },
+        { name: "identificationFiles", maxCount: 2 },
+      ]),
       validateRequest({ body: contractorSignUpBody }),
       this.authController.signUpContractorWithEmail,
     );

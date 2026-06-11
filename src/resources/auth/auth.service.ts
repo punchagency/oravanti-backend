@@ -8,6 +8,7 @@ import { supabaseAdmin } from "../../config/supabase";
 import { db } from "../../db/client";
 import {
   contractorCertificationDocuments,
+  contractorIdentificationDocuments,
   contractorPaymentDetails,
   contractorSpecialties,
   contractors,
@@ -118,6 +119,12 @@ const buildContractorCertificationStoragePath = (
   filename: string,
 ) => `${userId}/contractor-certifications/${documentId}/v1/${filename}`;
 
+const buildContractorIdentificationStoragePath = (
+  userId: string,
+  documentId: string,
+  filename: string,
+) => `${userId}/contractor-identifications/${documentId}/v1/${filename}`;
+
 export class AuthService {
   private uploadToStorage = async (data: {
     storagePath: string;
@@ -197,6 +204,7 @@ export class AuthService {
   signUpContractorWithEmail = async (
     body: ContractorSignUpBody,
     certificationFiles: Express.Multer.File[],
+    identificationFiles: Express.Multer.File[],
     req: Request,
   ) => {
     const email = normalizeEmail(body.email);
@@ -238,6 +246,12 @@ export class AuthService {
     if (certificationFiles.length !== certificationDocuments.length) {
       throw new ValidationError(
         "certificationFiles must match certificationDocuments by array order",
+      );
+    }
+
+    if (identificationFiles.length !== 2) {
+      throw new ValidationError(
+        "Exactly two identification files must be uploaded",
       );
     }
 
@@ -329,6 +343,18 @@ export class AuthService {
       verificationStatus: "pending";
     }> = [];
 
+    const uploadedIdentificationDocuments: Array<{
+      documentId: string;
+      title: string;
+      storagePath: string;
+      fileUrl: string;
+      originalFilename: string;
+      mimeType: string;
+      fileSize: number;
+      position: number;
+      verificationStatus: "pending";
+    }> = [];
+
     try {
       for (const [index, file] of certificationFiles.entries()) {
         const certification = preparedCertificationDocuments[index];
@@ -354,6 +380,34 @@ export class AuthService {
           mimeType: file.mimetype,
           fileSize: file.size,
           ...certification,
+        });
+      }
+
+      for (const [index, file] of identificationFiles.entries()) {
+        const documentId = randomUUID();
+        const position = index + 1;
+        const title = `Identification document ${position}`;
+        const storagePath = buildContractorIdentificationStoragePath(
+          userId,
+          documentId,
+          safeStorageName(title, file.originalname),
+        );
+        const fileUrl = await this.uploadToStorage({
+          storagePath,
+          fileBuffer: file.buffer,
+          mimeType: file.mimetype,
+        });
+
+        uploadedIdentificationDocuments.push({
+          documentId,
+          title,
+          storagePath,
+          fileUrl,
+          originalFilename: file.originalname,
+          mimeType: file.mimetype,
+          fileSize: file.size,
+          position,
+          verificationStatus: "pending",
         });
       }
 
@@ -398,6 +452,45 @@ export class AuthService {
               preparedPaymentDetails.encryptedRoutingNumber,
             encryptedAccountNumber:
               preparedPaymentDetails.encryptedAccountNumber,
+          });
+        }
+
+        for (const identification of uploadedIdentificationDocuments) {
+          const [document] = await tx
+            .insert(documents)
+            .values({
+              id: identification.documentId,
+              title: identification.title,
+              category: "identity",
+              createdByUserId: userId,
+            })
+            .returning();
+
+          const [version] = await tx
+            .insert(documentVersions)
+            .values({
+              documentId: document.id,
+              filePath: identification.storagePath,
+              fileUrl: identification.fileUrl,
+              originalFileName: identification.originalFilename,
+              mimeType: identification.mimeType,
+              fileSize: identification.fileSize,
+              versionNumber: 1,
+              uploadedByUserId: userId,
+              scanStatus: "SKIPPED",
+            })
+            .returning();
+
+          await tx
+            .update(documents)
+            .set({ currentVersionId: version.id, updatedAt: new Date() })
+            .where(inArray(documents.id, [document.id]));
+
+          await tx.insert(documentAccess).values({
+            documentId: document.id,
+            userId,
+            permission: "ADMIN",
+            grantedByUserId: userId,
           });
         }
 
@@ -452,6 +545,15 @@ export class AuthService {
           })),
         );
 
+        await tx.insert(contractorIdentificationDocuments).values(
+          uploadedIdentificationDocuments.map((identification) => ({
+            contractorId: createdContractor.id,
+            documentId: identification.documentId,
+            position: identification.position,
+            verificationStatus: identification.verificationStatus,
+          })),
+        );
+
         return createdContractor;
       });
 
@@ -462,7 +564,10 @@ export class AuthService {
       };
     } catch (error) {
       await this.removeFromStorage(
-        uploadedCertificationDocuments.map((document) => document.storagePath),
+        [
+          ...uploadedCertificationDocuments,
+          ...uploadedIdentificationDocuments,
+        ].map((document) => document.storagePath),
       ).catch(() => undefined);
       throw error;
     }
