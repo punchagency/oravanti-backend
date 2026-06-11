@@ -20,12 +20,9 @@ export const accountTypeEnum = pgEnum("user_account_type", [
 ]);
 
 export const onboardingStatusEnum = pgEnum("onboarding_status", [
-  "email_unverified", // Sent confirmation email
-  "email_verified", // Email confirmed. Step 1: Input & Verify Domain
-  "domain_verified", // Domain verified live. Step 2: Input Profile Data
-  "profile_completed", // Profile built. Step 3: Input Entity/Firm Details
-  "org_created", // Firm/Entity created. Step 4: Accept Terms of Service
-  "completed", // Onboarding clear! Granted full dashboard access
+  "email_unverified",
+  "email_verified",
+  "completed",
 ]);
 
 export const user = pgTable("user", {
@@ -67,11 +64,6 @@ export const organization = pgTable(
     logo: text("logo"),
     createdAt: timestamp("created_at").notNull(),
     metadata: text("metadata"),
-
-    // --- Step 1: Domain Verification Additions ---
-    domain: text("domain"),
-    isDomainVerified: boolean("is_domain_verified").default(false).notNull(),
-    verificationToken: text("verification_token"),
 
     emailAddress: text("email_address"),
     phoneNumber: text("phone_number"),

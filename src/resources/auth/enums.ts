@@ -12,9 +12,6 @@ export const accountTypeEnum = pgEnum("account_type_enum", accountTypeValues);
 // 2. Onboarding Lifecycle States
 export const onboardingStateValues = [
   "email_unverified",
-  "domain_verified",
-  "profile_completed",
-  "org_created",
   "completed",
 ] as const;
 export type OnboardingState = (typeof onboardingStateValues)[number];

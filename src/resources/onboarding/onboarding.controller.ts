@@ -10,27 +10,9 @@ export class OnboardingController {
     this.onboardingService = onboardingService;
   }
 
-  initiateDomainVerification = asyncWrap(
-    async (req: Request, res: Response) => {
-      const result = await this.onboardingService.initiateDomainVerification(
-        fromNodeHeaders(req.headers),
-        (req as any).userId,
-        req.body.domain,
-      );
-      res.json(result);
-    },
-  );
-
-  verifyDomainDnsLive = asyncWrap(async (req: Request, res: Response) => {
-    const result = await this.onboardingService.verifyDomainDnsLive(
-      (req as any).userId,
-      req.body.organizationId,
-    );
-    res.json(result);
-  });
-
   submitOnboardingData = asyncWrap(async (req: Request, res: Response) => {
     const result = await this.onboardingService.submitOnboardingData(
+      fromNodeHeaders(req.headers),
       (req as any).userId,
       req.body,
     );

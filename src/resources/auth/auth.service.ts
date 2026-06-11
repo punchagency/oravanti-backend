@@ -9,7 +9,6 @@ import {
   ExternalServiceError,
   ValidationError,
 } from "../../utils/error/app-error";
-import { validateCustomerDomain } from "../../utils/domain-validator";
 import { AccountType } from "./enums";
 
 type AuthServiceError = {
@@ -51,18 +50,6 @@ export class AuthService {
       throw new BadRequestError(
         "Invalid or missing account_type context query parameter.",
       );
-    }
-
-    if (accountType === "firm_admin") {
-      const emailDomain = body.email.split("@")[1];
-      if (!emailDomain) {
-        throw new BadRequestError("Invalid email address format.");
-      }
-
-      const domainResult = validateCustomerDomain(emailDomain);
-      if (!domainResult.valid) {
-        throw new BadRequestError(domainResult.reason);
-      }
     }
 
     const response = await auth.api.signUpEmail({

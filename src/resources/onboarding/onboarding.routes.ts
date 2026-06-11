@@ -2,7 +2,7 @@
  * @openapi
  * tags:
  * - name: Onboarding
- *   description: Multi-step tenant and administrator onboarding flows
+ *   description: Tenant and administrator onboarding flows
  */
 import { Router } from "express";
 import { requireAuth } from "../../middleware/auth.middleware";
@@ -24,16 +24,6 @@ export class OnboardingRouter {
   private initializeRoutes() {
     this.router.use(this.path, this.router);
     this.router.use(requireAuth);
-
-    this.router.post(
-      "/step1a-submit-domain",
-      this.onboardingController.initiateDomainVerification,
-    );
-
-    this.router.post(
-      "/step1b-verify-dns",
-      this.onboardingController.verifyDomainDnsLive,
-    );
 
     this.router.post(
       "/submit",
