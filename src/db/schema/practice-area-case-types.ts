@@ -1,25 +1,33 @@
-import { pgTable, timestamp, unique, uuid, varchar } from "drizzle-orm/pg-core";
-import { practiceAreas } from "./practice-areas";
+import { pgEnum, pgTable, timestamp, unique, uuid, varchar } from "drizzle-orm/pg-core";
+import { practiceAreaSubcategories } from "./practice-area-subcategories";
+
+export const caseTypeJurisdictionEnum = pgEnum("case_type_jurisdiction", [
+  "federal",
+  "state",
+  "federal & state",
+  "varies",
+]);
 
 export const practiceAreaCaseTypes = pgTable(
   "practice_area_case_types",
   {
     id: uuid("id").primaryKey().defaultRandom(),
 
-    practiceAreaId: uuid("practice_area_id")
-      .references(() => practiceAreas.id, { onDelete: "cascade" })
+    subcategoryId: uuid("subcategory_id")
+      .references(() => practiceAreaSubcategories.id, { onDelete: "cascade" })
       .notNull(),
 
     code: varchar("code", { length: 100 }).notNull(),
     name: varchar("name", { length: 255 }).notNull(),
     caseNumberPrefix: varchar("case_number_prefix", { length: 20 }).notNull(),
+    jurisdiction: caseTypeJurisdictionEnum("jurisdiction").notNull(),
 
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (table) => [
-    unique("practice_area_case_types_practice_area_code_unique").on(
-      table.practiceAreaId,
+    unique("practice_area_case_types_subcategory_code_unique").on(
+      table.subcategoryId,
       table.code,
     ),
   ],
@@ -27,3 +35,5 @@ export const practiceAreaCaseTypes = pgTable(
 
 export type PracticeAreaCaseType = typeof practiceAreaCaseTypes.$inferSelect;
 export type NewPracticeAreaCaseType = typeof practiceAreaCaseTypes.$inferInsert;
+export type CaseTypeJurisdiction =
+  (typeof caseTypeJurisdictionEnum.enumValues)[number];

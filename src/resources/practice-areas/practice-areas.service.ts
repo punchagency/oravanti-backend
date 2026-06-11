@@ -2,6 +2,7 @@ import { and, asc, eq, ilike, inArray } from "drizzle-orm";
 import { db } from "../../db/client";
 import { firmPracticeAreas } from "../../db/schema/firm-practice-areas";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
+import { practiceAreaSubcategories } from "../../db/schema/practice-area-subcategories";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import {
   SubscriptionStatus,
@@ -75,34 +76,70 @@ const getPracticeAreaWhere = (filters?: PracticeAreaFilters) => {
   return search ? ilike(practiceAreas.name, `%${search}%`) : undefined;
 };
 
-const getCaseTypesByPracticeArea = async (practiceAreaIds: string[]) => {
+const getSubcategoriesByPracticeArea = async (practiceAreaIds: string[]) => {
   if (!practiceAreaIds.length) return new Map<string, unknown[]>();
 
-  const rows = await db
+  const subcategoryRows = await db
+    .select({
+      id: practiceAreaSubcategories.id,
+      practiceAreaId: practiceAreaSubcategories.practiceAreaId,
+      code: practiceAreaSubcategories.code,
+      name: practiceAreaSubcategories.name,
+      createdAt: practiceAreaSubcategories.createdAt,
+      updatedAt: practiceAreaSubcategories.updatedAt,
+    })
+    .from(practiceAreaSubcategories)
+    .where(inArray(practiceAreaSubcategories.practiceAreaId, practiceAreaIds))
+    .orderBy(asc(practiceAreaSubcategories.name));
+
+  if (!subcategoryRows.length) return new Map<string, unknown[]>();
+
+  const caseTypeRows = await db
     .select({
       id: practiceAreaCaseTypes.id,
-      practiceAreaId: practiceAreaCaseTypes.practiceAreaId,
+      subcategoryId: practiceAreaCaseTypes.subcategoryId,
       code: practiceAreaCaseTypes.code,
       name: practiceAreaCaseTypes.name,
       caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
+      jurisdiction: practiceAreaCaseTypes.jurisdiction,
       createdAt: practiceAreaCaseTypes.createdAt,
       updatedAt: practiceAreaCaseTypes.updatedAt,
     })
     .from(practiceAreaCaseTypes)
-    .where(inArray(practiceAreaCaseTypes.practiceAreaId, practiceAreaIds))
+    .where(
+      inArray(
+        practiceAreaCaseTypes.subcategoryId,
+        subcategoryRows.map((subcategory) => subcategory.id),
+      ),
+    )
     .orderBy(asc(practiceAreaCaseTypes.name));
 
-  return rows.reduce((acc, row) => {
-    const caseTypes = acc.get(row.practiceAreaId) ?? [];
+  const caseTypesBySubcategory = caseTypeRows.reduce((acc, row) => {
+    const caseTypes = acc.get(row.subcategoryId) ?? [];
     caseTypes.push({
       id: row.id,
       code: row.code,
       name: row.name,
       caseNumberPrefix: row.caseNumberPrefix,
+      jurisdiction: row.jurisdiction,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     });
-    acc.set(row.practiceAreaId, caseTypes);
+    acc.set(row.subcategoryId, caseTypes);
+    return acc;
+  }, new Map<string, unknown[]>());
+
+  return subcategoryRows.reduce((acc, row) => {
+    const subcategories = acc.get(row.practiceAreaId) ?? [];
+    subcategories.push({
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      caseTypes: caseTypesBySubcategory.get(row.id) ?? [],
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+    acc.set(row.practiceAreaId, subcategories);
     return acc;
   }, new Map<string, unknown[]>());
 };
@@ -170,13 +207,13 @@ export const getAllPracticeAreas = async (filters?: PracticeAreaFilters) => {
     .where(where)
     .orderBy(asc(practiceAreas.name));
 
-  const caseTypesByPracticeArea = await getCaseTypesByPracticeArea(
+  const subcategoriesByPracticeArea = await getSubcategoriesByPracticeArea(
     areas.map((area) => area.id),
   );
 
   return areas.map((area) => ({
     ...area,
-    caseTypes: caseTypesByPracticeArea.get(area.id) ?? [],
+    subcategories: subcategoriesByPracticeArea.get(area.id) ?? [],
   }));
 };
 
@@ -220,7 +257,7 @@ export const getFirmPracticeAreas = async (
     .where(where)
     .orderBy(asc(practiceAreas.name));
 
-  const caseTypesByPracticeArea = await getCaseTypesByPracticeArea(
+  const subcategoriesByPracticeArea = await getSubcategoriesByPracticeArea(
     rows.map((row) => row.id),
   );
 
@@ -229,7 +266,7 @@ export const getFirmPracticeAreas = async (
     name: row.name,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    caseTypes: caseTypesByPracticeArea.get(row.id) ?? [],
+    subcategories: subcategoriesByPracticeArea.get(row.id) ?? [],
     subscription: row.subscriptionId
       ? {
           id: row.subscriptionId,

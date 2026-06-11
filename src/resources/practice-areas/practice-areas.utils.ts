@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../../db/client";
 import { firmPracticeAreas } from "../../db/schema/firm-practice-areas";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
+import { practiceAreaSubcategories } from "../../db/schema/practice-area-subcategories";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import {
   SubscriptionStatus,
@@ -62,14 +63,20 @@ export const ensureCaseTypeBelongsToPracticeArea = async (
   const [practiceAreaCaseType] = await db
     .select({
       id: practiceAreaCaseTypes.id,
+      subcategoryId: practiceAreaCaseTypes.subcategoryId,
       code: practiceAreaCaseTypes.code,
       name: practiceAreaCaseTypes.name,
       caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
+      jurisdiction: practiceAreaCaseTypes.jurisdiction,
     })
     .from(practiceAreaCaseTypes)
+    .innerJoin(
+      practiceAreaSubcategories,
+      eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
+    )
     .where(
       and(
-        eq(practiceAreaCaseTypes.practiceAreaId, practiceArea.id),
+        eq(practiceAreaSubcategories.practiceAreaId, practiceArea.id),
         eq(practiceAreaCaseTypes.code, caseType.trim()),
       ),
     );

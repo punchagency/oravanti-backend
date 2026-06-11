@@ -3,6 +3,7 @@ import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { clients } from "../../db/schema/clients";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
+import { practiceAreaSubcategories } from "../../db/schema/practice-area-subcategories";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
 import { ensureCaseTypeBelongsToPracticeArea } from "../practice-areas/practice-areas.utils";
@@ -53,9 +54,14 @@ export const getAllCases = async (
       caseNumber: cases.caseNumber,
       practiceAreaId: practiceAreas.id,
       practiceAreaName: practiceAreas.name,
+      caseTypeId: practiceAreaCaseTypes.id,
       caseType: cases.caseType,
       caseTypeName: practiceAreaCaseTypes.name,
       caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
+      caseTypeJurisdiction: practiceAreaCaseTypes.jurisdiction,
+      subcategoryId: practiceAreaSubcategories.id,
+      subcategoryCode: practiceAreaSubcategories.code,
+      subcategoryName: practiceAreaSubcategories.name,
       status: cases.status,
       priority: cases.priority,
       filingDate: cases.filingDate,
@@ -73,10 +79,11 @@ export const getAllCases = async (
     .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
     .leftJoin(
       practiceAreaCaseTypes,
-      and(
-        eq(practiceAreaCaseTypes.practiceAreaId, cases.practiceAreaId),
-        eq(practiceAreaCaseTypes.code, cases.caseType),
-      ),
+      eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+    )
+    .leftJoin(
+      practiceAreaSubcategories,
+      eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
     )
     .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
     .where(eq(cases.organizationId, organizationId))
@@ -114,9 +121,18 @@ export const getAllCases = async (
         name: r.practiceAreaName,
       },
       caseType: {
+        id: r.caseTypeId,
         code: r.caseType,
         name: r.caseTypeName,
         caseNumberPrefix: r.caseNumberPrefix,
+        jurisdiction: r.caseTypeJurisdiction,
+        subcategory: r.subcategoryId
+          ? {
+              id: r.subcategoryId,
+              code: r.subcategoryCode,
+              name: r.subcategoryName,
+            }
+          : null,
       },
       status: r.status,
       priority: r.priority,
@@ -143,10 +159,11 @@ export const getCaseById = async (id: string, organizationId: string) => {
     .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
     .leftJoin(
       practiceAreaCaseTypes,
-      and(
-        eq(practiceAreaCaseTypes.practiceAreaId, cases.practiceAreaId),
-        eq(practiceAreaCaseTypes.code, cases.caseType),
-      ),
+      eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+    )
+    .leftJoin(
+      practiceAreaSubcategories,
+      eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
     )
     .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
     .where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)));
@@ -173,7 +190,7 @@ export const createCase = async (
   },
   creator?: { adminId?: string; staffId?: string },
 ) => {
-  await ensureCaseTypeBelongsToPracticeArea(
+  const resolvedCaseType = await ensureCaseTypeBelongsToPracticeArea(
     organizationId,
     data.practiceAreaId,
     data.caseType,
@@ -190,6 +207,7 @@ export const createCase = async (
       caseNumber,
       clientId: data.clientId,
       practiceAreaId: data.practiceAreaId,
+      caseTypeId: resolvedCaseType.caseType.id,
       caseType: data.caseType as any,
       priority: (data.priority ?? "medium") as any,
       assignmentType: data.assignmentType ?? "internal_team",
@@ -226,11 +244,12 @@ export const updateCase = async (
 
     if (!existing) return null;
 
-    await ensureCaseTypeBelongsToPracticeArea(
+    const resolvedCaseType = await ensureCaseTypeBelongsToPracticeArea(
       organizationId,
       data.practiceAreaId ?? existing.practiceAreaId,
       data.caseType ?? existing.caseType,
     );
+    data.caseTypeId = resolvedCaseType.caseType.id;
   }
 
   const [updated] = await db
