@@ -188,6 +188,8 @@ export const auth = betterAuth({
       // phoneNumber: { type: "string", required: false, input: true },
       // jobTitle: { type: "string", required: false, input: true },
       // barNumber: { type: "string", required: false, input: true },
+
+      userType: { type: "string", required: false, input: true },
     },
   },
   session: {

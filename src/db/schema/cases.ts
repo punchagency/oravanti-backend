@@ -4,6 +4,7 @@ import { teams } from './teams';
 import { staff } from './staff';
 import { admins } from './admins';
 import { organization } from './auth-schema';
+import { practiceAreaCaseTypes } from './practice-area-case-types';
 import { practiceAreas } from './practice-areas';
 
 export const caseStatusEnum = pgEnum('case_status', [
@@ -22,6 +23,7 @@ export const cases = pgTable('cases', {
   caseNumber:              text('case_number').notNull().unique(),
   clientId:                uuid('client_id').notNull().references(() => clients.id),
   practiceAreaId:          uuid('practice_area_id').notNull().references(() => practiceAreas.id),
+  caseTypeId:              uuid('case_type_id').notNull().references(() => practiceAreaCaseTypes.id),
   caseType:                varchar('case_type', { length: 100 }).notNull(),
   status:                  caseStatusEnum('status').notNull().default('active'),
   priority:                casePriorityEnum('priority').notNull().default('medium'),

@@ -55,6 +55,7 @@ const options: swaggerJsdoc.Options = {
             caseNumber: { type: "string" },
             clientId: { type: "string", format: "uuid" },
             practiceAreaId: { type: "string", format: "uuid" },
+            caseTypeId: { type: "string", format: "uuid" },
             caseType: { type: "string" },
             status: { type: "string", enum: ["active", "pending_review", "on_hold", "completed", "cancelled"] },
             priority: { type: "string", enum: ["low", "medium", "high", "critical"] },
@@ -410,18 +411,39 @@ const options: swaggerJsdoc.Options = {
           properties: {
             id: { type: "string", format: "uuid" },
             name: { type: "string" },
+            subcategories: {
+              type: "array",
+              items: { $ref: "#/components/schemas/PracticeAreaSubcategory" },
+            },
             createdAt: { type: "string", format: "date-time" },
             updatedAt: { type: "string", format: "date-time" },
           },
         },
-        PracticeAreaCaseType: {
+        PracticeAreaSubcategory: {
           type: "object",
           properties: {
             id: { type: "string", format: "uuid" },
             practiceAreaId: { type: "string", format: "uuid" },
             code: { type: "string" },
             name: { type: "string" },
+            caseTypes: {
+              type: "array",
+              items: { $ref: "#/components/schemas/PracticeAreaCaseType" },
+            },
+          },
+        },
+        PracticeAreaCaseType: {
+          type: "object",
+          properties: {
+            id: { type: "string", format: "uuid" },
+            subcategoryId: { type: "string", format: "uuid" },
+            code: { type: "string" },
+            name: { type: "string" },
             caseNumberPrefix: { type: "string" },
+            jurisdiction: {
+              type: "string",
+              enum: ["federal", "state", "federal & state", "varies"],
+            },
           },
         },
         Subscription: {

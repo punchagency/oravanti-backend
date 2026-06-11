@@ -11,7 +11,7 @@ import {
   text,
 } from "@clack/prompts";
 import { Command } from "commander";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { and, asc, eq, inArray, ilike, or } from "drizzle-orm";
 import { closeDb, db } from "./db/client";
 import { admins } from "./db/schema/admins";
@@ -30,9 +30,7 @@ import {
   documentAccess,
   documentActivityLogs,
   documentCaseLinks,
-  documentFirmAccess,
   documentRequests,
-  documentTransfers,
   documents,
   documentVersions,
   externalSubmissions,
@@ -41,7 +39,9 @@ import { firmPracticeAreas } from "./db/schema/firm-practice-areas";
 import { leaveRequests } from "./db/schema/leave-requests";
 import { paralegalProfiles } from "./db/schema/paralegal-profiles";
 import { practiceAreaCaseTypes } from "./db/schema/practice-area-case-types";
+import { practiceAreaSubcategories } from "./db/schema/practice-area-subcategories";
 import { practiceAreas } from "./db/schema/practice-areas";
+import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
 import { profiles } from "./db/schema/profiles";
 import { staff } from "./db/schema/staff";
 import { staffCertifications } from "./db/schema/staff-certifications";
@@ -114,9 +114,10 @@ const DEFAULT_IMMIGRATION_CASE_TYPES = [
   { code: "travel_document", name: "Travel Document", caseNumberPrefix: "TRV" },
   { code: "naturalization", name: "Naturalization", caseNumberPrefix: "NAT" },
   { code: "other", name: "Other", caseNumberPrefix: "OTH" },
-] as const;
+].map((caseType) => ({ ...caseType, jurisdiction: "federal" as const }));
 
 type PracticeAreaRow = typeof practiceAreas.$inferSelect;
+type PracticeAreaSubcategoryRow = typeof practiceAreaSubcategories.$inferSelect;
 type PracticeAreaCaseTypeRow = typeof practiceAreaCaseTypes.$inferSelect;
 type CertificationRow = typeof certifications.$inferSelect;
 type StaffRow = typeof staff.$inferSelect;
@@ -130,7 +131,6 @@ type NewDocumentRow = typeof documents.$inferInsert;
 type NewDocumentAccessRow = typeof documentAccess.$inferInsert;
 type NewDocumentActivityLogRow = typeof documentActivityLogs.$inferInsert;
 type NewDocumentCaseLinkRow = typeof documentCaseLinks.$inferInsert;
-type NewDocumentFirmAccessRow = typeof documentFirmAccess.$inferInsert;
 type NewDocumentVersionRow = typeof documentVersions.$inferInsert;
 type NewLeaveRequestRow = typeof leaveRequests.$inferInsert;
 type NewParalegalProfileRow = typeof paralegalProfiles.$inferInsert;
@@ -149,7 +149,10 @@ type CaseTypeInput = {
   code: string;
   name: string;
   caseNumberPrefix: string;
+  jurisdiction: CaseTypeJurisdictionInput;
 };
+
+type CaseTypeJurisdictionInput = "federal" | "state" | "federal & state" | "varies";
 
 type DemoSeedResult = {
   firm: Pick<FirmRow, "id" | "firmName">;
@@ -197,12 +200,46 @@ const normalizeName = (name: string) => name.trim();
 const normalizeKey = (name: string) => normalizeName(name).toLocaleLowerCase();
 const normalizeCode = (code: string) => code.trim().toLowerCase();
 const normalizePrefix = (prefix: string) => prefix.trim().toUpperCase();
+const normalizeJurisdiction = (
+  value?: string,
+): CaseTypeJurisdictionInput | null => {
+  const normalized = value?.trim().toLowerCase().replace(/\s+/g, " ");
+
+  if (!normalized) return null;
+  if (normalized === "federal") return "federal";
+  if (normalized === "state") return "state";
+  if (normalized === "federal & state" || normalized === "federal and state") {
+    return "federal & state";
+  }
+  if (normalized === "varies") return "varies";
+
+  return null;
+};
 const slugify = (value: string) =>
   value
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "");
+const hashSuffix = (value: string, length = 8) =>
+  createHash("sha1").update(value).digest("hex").slice(0, length);
+const codeFromParts = (...parts: string[]) => {
+  const base = parts.map(slugify).filter(Boolean).join("_").slice(0, 90);
+  return `${base}_${hashSuffix(parts.join("|"))}`.slice(0, 100);
+};
+const prefixFromName = (name: string) => {
+  const words = name.match(/[A-Za-z0-9]+/g) ?? [];
+  const initials = words
+    .slice(0, 4)
+    .map((word) => word[0])
+    .join("")
+    .toUpperCase();
+  const fallback = slugify(name).replace(/-/g, "").slice(0, 4).toUpperCase();
+  return `${initials || fallback || "CASE"}${hashSuffix(name, 4).toUpperCase()}`.slice(
+    0,
+    20,
+  );
+};
 
 const isoDateFromNow = (days: number) => {
   const date = new Date();
@@ -265,11 +302,18 @@ const getFirms = () =>
     .from(organizations)
     .orderBy(asc(organizations.name));
 
-const getCaseTypes = (practiceAreaId: string) =>
+const getSubcategories = (practiceAreaId: string) =>
+  db
+    .select()
+    .from(practiceAreaSubcategories)
+    .where(eq(practiceAreaSubcategories.practiceAreaId, practiceAreaId))
+    .orderBy(asc(practiceAreaSubcategories.name));
+
+const getCaseTypes = (subcategoryId: string) =>
   db
     .select()
     .from(practiceAreaCaseTypes)
-    .where(eq(practiceAreaCaseTypes.practiceAreaId, practiceAreaId))
+    .where(eq(practiceAreaCaseTypes.subcategoryId, subcategoryId))
     .orderBy(asc(practiceAreaCaseTypes.name));
 
 const printPracticeAreas = (areas: PracticeAreaRow[]) => {
@@ -331,12 +375,31 @@ const printCaseTypes = (caseTypes: PracticeAreaCaseTypeRow[]) => {
   console.table(
     caseTypes.map((caseType) => ({
       id: caseType.id,
-      practiceAreaId: caseType.practiceAreaId,
+      subcategoryId: caseType.subcategoryId,
       code: caseType.code,
       name: caseType.name,
       caseNumberPrefix: caseType.caseNumberPrefix,
+      jurisdiction: caseType.jurisdiction,
       createdAt: caseType.createdAt.toISOString(),
       updatedAt: caseType.updatedAt.toISOString(),
+    })),
+  );
+};
+
+const printSubcategories = (subcategories: PracticeAreaSubcategoryRow[]) => {
+  if (!subcategories.length) {
+    note("No practice area subcategories found.");
+    return;
+  }
+
+  console.table(
+    subcategories.map((subcategory) => ({
+      id: subcategory.id,
+      practiceAreaId: subcategory.practiceAreaId,
+      code: subcategory.code,
+      name: subcategory.name,
+      createdAt: subcategory.createdAt.toISOString(),
+      updatedAt: subcategory.updatedAt.toISOString(),
     })),
   );
 };
@@ -350,7 +413,7 @@ const parseCaseTypeDefinitions = (
       : input.map((item) =>
           typeof item === "string"
             ? item
-            : `${item.code}|${item.name}|${item.caseNumberPrefix}`,
+            : `${item.code}|${item.name}|${item.caseNumberPrefix}|${item.jurisdiction}`,
         );
 
   const definitions: CaseTypeInput[] = [];
@@ -358,15 +421,16 @@ const parseCaseTypeDefinitions = (
 
   for (const rawDefinition of rawDefinitions) {
     const parts = rawDefinition.split("|").map((part) => part.trim());
-    const [rawCode, rawName, rawPrefix] = parts;
+    const [rawCode, rawName, rawPrefix, rawJurisdiction] = parts;
     const code = normalizeCode(rawCode ?? "");
     const name = normalizeName(rawName ?? "");
     const caseNumberPrefix = normalizePrefix(rawPrefix ?? "");
+    const jurisdiction = normalizeJurisdiction(rawJurisdiction) ?? "varies";
 
     if (!code || !name || !caseNumberPrefix || seen.has(code)) continue;
 
     seen.add(code);
-    definitions.push({ code, name, caseNumberPrefix });
+    definitions.push({ code, name, caseNumberPrefix, jurisdiction });
   }
 
   return definitions;
@@ -487,11 +551,51 @@ const resolvePracticeAreaByName = async (name: string) => {
   return areas.find((area) => normalizeKey(area.name) === normalizeKey(name)) ?? null;
 };
 
+const resolveSubcategory = async (practiceAreaId?: string, subcategoryId?: string) => {
+  const area = await resolvePracticeArea(practiceAreaId);
+  if (!area) return null;
+
+  const subcategories = await getSubcategories(area.id);
+  if (!subcategories.length) {
+    note(`No subcategories found for ${area.name}.`);
+    return null;
+  }
+
+  if (subcategoryId) {
+    const subcategory = subcategories.find(
+      (currentSubcategory) => currentSubcategory.id === subcategoryId,
+    );
+    if (!subcategory) {
+      note(`Subcategory not found: ${subcategoryId}`);
+      return null;
+    }
+
+    return { area, subcategory };
+  }
+
+  const selectedId = abortIfCancelled(
+    await select({
+      message: "Select a subcategory",
+      options: subcategories.map((subcategory) => ({
+        value: subcategory.id,
+        label: subcategory.name,
+        hint: subcategory.code,
+      })),
+    }),
+  );
+
+  const subcategory =
+    subcategories.find((currentSubcategory) => currentSubcategory.id === selectedId) ??
+    null;
+
+  return subcategory ? { area, subcategory } : null;
+};
+
 const promptForCaseTypeDefinitions = async () => {
   const definitions = abortIfCancelled(
     await text({
       message: "Enter case types as code|Name|PREFIX, one per line",
-      placeholder: "h1b_visa|H-1B Visa|H1B",
+      placeholder: "h1b_visa|H-1B Visa|H1B|federal",
       validate(value) {
         return parseCaseTypeDefinitions(value).length
           ? undefined
@@ -505,10 +609,11 @@ const promptForCaseTypeDefinitions = async () => {
 
 const createCaseTypes = async (
   practiceAreaId: string | undefined,
+  subcategoryId: string | undefined,
   definitions: readonly string[] | readonly CaseTypeInput[],
 ) => {
-  const area = await resolvePracticeArea(practiceAreaId);
-  if (!area) return;
+  const resolved = await resolveSubcategory(practiceAreaId, subcategoryId);
+  if (!resolved) return;
 
   const parsedDefinitions = parseCaseTypeDefinitions(definitions);
   if (!parsedDefinitions.length) {
@@ -516,7 +621,7 @@ const createCaseTypes = async (
     return;
   }
 
-  const existingCaseTypes = await getCaseTypes(area.id);
+  const existingCaseTypes = await getCaseTypes(resolved.subcategory.id);
   const existingCodes = new Set(existingCaseTypes.map((caseType) => caseType.code));
   const skipped = parsedDefinitions.filter((item) => existingCodes.has(item.code));
   const definitionsToCreate = parsedDefinitions.filter(
@@ -532,10 +637,11 @@ const createCaseTypes = async (
     .insert(practiceAreaCaseTypes)
     .values(
       definitionsToCreate.map((item) => ({
-        practiceAreaId: area.id,
+        subcategoryId: resolved.subcategory.id,
         code: item.code,
         name: item.name,
         caseNumberPrefix: item.caseNumberPrefix,
+        jurisdiction: item.jurisdiction,
       })),
     )
     .returning();
@@ -557,16 +663,33 @@ const createDefaultImmigrationCaseTypes = async (practiceAreaId?: string) => {
     return;
   }
 
-  await createCaseTypes(area.id, DEFAULT_IMMIGRATION_CASE_TYPES);
+  const [subcategory] = await db
+    .insert(practiceAreaSubcategories)
+    .values({
+      practiceAreaId: area.id,
+      code: "general",
+      name: "General",
+    })
+    .onConflictDoUpdate({
+      target: [practiceAreaSubcategories.practiceAreaId, practiceAreaSubcategories.code],
+      set: { name: "General", updatedAt: new Date() },
+    })
+    .returning();
+
+  await createCaseTypes(area.id, subcategory.id, DEFAULT_IMMIGRATION_CASE_TYPES);
 };
 
-const resolveCaseType = async (practiceAreaId?: string, caseTypeId?: string) => {
-  const area = await resolvePracticeArea(practiceAreaId);
-  if (!area) return null;
+const resolveCaseType = async (
+  practiceAreaId?: string,
+  subcategoryId?: string,
+  caseTypeId?: string,
+) => {
+  const resolved = await resolveSubcategory(practiceAreaId, subcategoryId);
+  if (!resolved) return null;
 
-  const caseTypes = await getCaseTypes(area.id);
+  const caseTypes = await getCaseTypes(resolved.subcategory.id);
   if (!caseTypes.length) {
-    note(`No case types found for ${area.name}.`);
+    note(`No case types found for ${resolved.subcategory.name}.`);
     return null;
   }
 
@@ -577,7 +700,7 @@ const resolveCaseType = async (practiceAreaId?: string, caseTypeId?: string) => 
       return null;
     }
 
-    return { area, caseType };
+    return { ...resolved, caseType };
   }
 
   const selectedId = abortIfCancelled(
@@ -592,15 +715,16 @@ const resolveCaseType = async (practiceAreaId?: string, caseTypeId?: string) => 
   );
 
   const caseType = caseTypes.find((currentCaseType) => currentCaseType.id === selectedId);
-  return caseType ? { area, caseType } : null;
+  return caseType ? { ...resolved, caseType } : null;
 };
 
 const editCaseType = async (
   practiceAreaId?: string,
+  subcategoryId?: string,
   caseTypeId?: string,
-  options?: { code?: string; name?: string; prefix?: string },
+  options?: { code?: string; name?: string; prefix?: string; jurisdiction?: string },
 ) => {
-  const resolved = await resolveCaseType(practiceAreaId, caseTypeId);
+  const resolved = await resolveCaseType(practiceAreaId, subcategoryId, caseTypeId);
   if (!resolved) return;
 
   const nextCode = options?.code
@@ -647,13 +771,34 @@ const editCaseType = async (
           }),
         ),
       );
+  const nextJurisdiction = options?.jurisdiction
+    ? normalizeJurisdiction(options.jurisdiction)
+    : normalizeJurisdiction(
+        abortIfCancelled(
+          await text({
+            message: `Jurisdiction for "${resolved.caseType.name}"`,
+            placeholder: resolved.caseType.jurisdiction,
+            defaultValue: resolved.caseType.jurisdiction,
+            validate(value) {
+              return normalizeJurisdiction(value)
+                ? undefined
+                : "Enter federal, state, federal & state, or varies.";
+            },
+          }),
+        ),
+      );
+
+  if (!nextJurisdiction) {
+    note("Invalid jurisdiction.");
+    return;
+  }
 
   const [duplicate] = await db
     .select({ id: practiceAreaCaseTypes.id })
     .from(practiceAreaCaseTypes)
     .where(
       and(
-        eq(practiceAreaCaseTypes.practiceAreaId, resolved.area.id),
+        eq(practiceAreaCaseTypes.subcategoryId, resolved.subcategory.id),
         eq(practiceAreaCaseTypes.code, nextCode),
       ),
     )
@@ -670,6 +815,7 @@ const editCaseType = async (
       code: nextCode,
       name: nextName,
       caseNumberPrefix: nextPrefix,
+      jurisdiction: nextJurisdiction,
       updatedAt: new Date(),
     })
     .where(eq(practiceAreaCaseTypes.id, resolved.caseType.id))
@@ -678,13 +824,16 @@ const editCaseType = async (
   if (updated) printCaseTypes([updated]);
 };
 
-const promptForDeleteCaseTypeIds = async (practiceAreaId?: string) => {
-  const area = await resolvePracticeArea(practiceAreaId);
-  if (!area) return [];
+const promptForDeleteCaseTypeIds = async (
+  practiceAreaId?: string,
+  subcategoryId?: string,
+) => {
+  const resolved = await resolveSubcategory(practiceAreaId, subcategoryId);
+  if (!resolved) return [];
 
-  const caseTypes = await getCaseTypes(area.id);
+  const caseTypes = await getCaseTypes(resolved.subcategory.id);
   if (!caseTypes.length) {
-    note(`No case types found for ${area.name}.`);
+    note(`No case types found for ${resolved.subcategory.name}.`);
     return [];
   }
 
@@ -703,8 +852,14 @@ const promptForDeleteCaseTypeIds = async (practiceAreaId?: string) => {
   return selectedIds as string[];
 };
 
-const deleteCaseTypes = async (practiceAreaId?: string, ids: readonly string[] = []) => {
-  const selectedIds = ids.length ? [...ids] : await promptForDeleteCaseTypeIds(practiceAreaId);
+const deleteCaseTypes = async (
+  practiceAreaId?: string,
+  subcategoryId?: string,
+  ids: readonly string[] = [],
+) => {
+  const selectedIds = ids.length
+    ? [...ids]
+    : await promptForDeleteCaseTypeIds(practiceAreaId, subcategoryId);
   if (!selectedIds.length) return;
 
   const caseTypes = await db
@@ -747,6 +902,115 @@ const deleteCaseTypes = async (practiceAreaId?: string, ids: readonly string[] =
     .returning();
 
   printCaseTypes(deleted);
+};
+
+const seedPracticeAreaTaxonomy = async () => {
+  const result = await db.transaction(async (tx) => {
+    let practiceAreaCount = 0;
+    let subcategoryCount = 0;
+    let caseTypeCount = 0;
+
+    for (const taxonomyArea of PRACTICE_AREA_TAXONOMY) {
+      let [area] = await tx
+        .select()
+        .from(practiceAreas)
+        .where(ilike(practiceAreas.name, taxonomyArea.name))
+        .limit(1);
+
+      if (!area) {
+        [area] = await tx
+          .insert(practiceAreas)
+          .values({ name: taxonomyArea.name })
+          .returning();
+      } else if (area.name !== taxonomyArea.name) {
+        [area] = await tx
+          .update(practiceAreas)
+          .set({ name: taxonomyArea.name, updatedAt: new Date() })
+          .where(eq(practiceAreas.id, area.id))
+          .returning();
+      }
+
+      practiceAreaCount += 1;
+
+      for (const taxonomySubcategory of taxonomyArea.subcategories) {
+        const subcategoryCode = codeFromParts(taxonomyArea.name, taxonomySubcategory.name);
+        let [subcategory] = await tx
+          .select()
+          .from(practiceAreaSubcategories)
+          .where(
+            and(
+              eq(practiceAreaSubcategories.practiceAreaId, area.id),
+              eq(practiceAreaSubcategories.code, subcategoryCode),
+            ),
+          )
+          .limit(1);
+
+        if (!subcategory) {
+          [subcategory] = await tx
+            .insert(practiceAreaSubcategories)
+            .values({
+              practiceAreaId: area.id,
+              code: subcategoryCode,
+              name: taxonomySubcategory.name,
+            })
+            .returning();
+        } else if (subcategory.name !== taxonomySubcategory.name) {
+          [subcategory] = await tx
+            .update(practiceAreaSubcategories)
+            .set({ name: taxonomySubcategory.name, updatedAt: new Date() })
+            .where(eq(practiceAreaSubcategories.id, subcategory.id))
+            .returning();
+        }
+
+        subcategoryCount += 1;
+
+        for (const taxonomyCaseType of taxonomySubcategory.caseTypes) {
+          const caseTypeCode = codeFromParts(
+            taxonomyArea.name,
+            taxonomySubcategory.name,
+            taxonomyCaseType.name,
+          );
+          const caseNumberPrefix = prefixFromName(taxonomyCaseType.name);
+          const [existingCaseType] = await tx
+            .select()
+            .from(practiceAreaCaseTypes)
+            .where(
+              and(
+                eq(practiceAreaCaseTypes.subcategoryId, subcategory.id),
+                eq(practiceAreaCaseTypes.code, caseTypeCode),
+              ),
+            )
+            .limit(1);
+
+          if (!existingCaseType) {
+            await tx.insert(practiceAreaCaseTypes).values({
+              subcategoryId: subcategory.id,
+              code: caseTypeCode,
+              name: taxonomyCaseType.name,
+              caseNumberPrefix,
+              jurisdiction: taxonomyCaseType.jurisdiction,
+            });
+          } else {
+            await tx
+              .update(practiceAreaCaseTypes)
+              .set({
+                name: taxonomyCaseType.name,
+                caseNumberPrefix,
+                jurisdiction: taxonomyCaseType.jurisdiction,
+                updatedAt: new Date(),
+              })
+              .where(eq(practiceAreaCaseTypes.id, existingCaseType.id));
+          }
+
+          caseTypeCount += 1;
+        }
+      }
+    }
+
+    return { practiceAreaCount, subcategoryCount, caseTypeCount };
+  });
+
+  console.table([result]);
 };
 
 const DEMO_EMAIL_DOMAIN = "demo.oravanti.test";
@@ -850,16 +1114,19 @@ const caseTypesForPracticeArea = (practiceAreaName: string): CaseTypeInput[] => 
       code: `${slug}_consultation`,
       name: `${practiceAreaName} Consultation`,
       caseNumberPrefix: `${prefix}C`,
+      jurisdiction: "varies",
     },
     {
       code: `${slug}_matter`,
       name: `${practiceAreaName} Matter`,
       caseNumberPrefix: `${prefix}M`,
+      jurisdiction: "varies",
     },
     {
       code: `${slug}_review`,
       name: `${practiceAreaName} Review`,
       caseNumberPrefix: `${prefix}R`,
+      jurisdiction: "varies",
     },
   ];
 };
@@ -1010,15 +1277,37 @@ const seedDemoData = async (organizationId?: string) => {
       practiceAreaRows.push(area);
     }
 
-    const caseTypeRows: PracticeAreaCaseTypeRow[] = [];
+    const caseTypeRows: Array<PracticeAreaCaseTypeRow & { practiceAreaId: string }> = [];
     for (const area of practiceAreaRows) {
+      let [generalSubcategory] = await tx
+        .select()
+        .from(practiceAreaSubcategories)
+        .where(
+          and(
+            eq(practiceAreaSubcategories.practiceAreaId, area.id),
+            eq(practiceAreaSubcategories.code, "general"),
+          ),
+        )
+        .limit(1);
+
+      if (!generalSubcategory) {
+        [generalSubcategory] = await tx
+          .insert(practiceAreaSubcategories)
+          .values({
+            practiceAreaId: area.id,
+            code: "general",
+            name: "General",
+          })
+          .returning();
+      }
+
       for (const caseType of caseTypesForPracticeArea(area.name)) {
         let [caseTypeRow] = await tx
           .select()
           .from(practiceAreaCaseTypes)
           .where(
             and(
-              eq(practiceAreaCaseTypes.practiceAreaId, area.id),
+              eq(practiceAreaCaseTypes.subcategoryId, generalSubcategory.id),
               eq(practiceAreaCaseTypes.code, caseType.code),
             ),
           )
@@ -1028,15 +1317,16 @@ const seedDemoData = async (organizationId?: string) => {
           [caseTypeRow] = await tx
             .insert(practiceAreaCaseTypes)
             .values({
-              practiceAreaId: area.id,
+              subcategoryId: generalSubcategory.id,
               code: caseType.code,
               name: caseType.name,
               caseNumberPrefix: caseType.caseNumberPrefix,
+              jurisdiction: caseType.jurisdiction,
             })
             .returning();
         }
 
-        caseTypeRows.push(caseTypeRow);
+        caseTypeRows.push({ ...caseTypeRow, practiceAreaId: area.id });
       }
     }
 
@@ -1406,6 +1696,7 @@ const seedDemoData = async (organizationId?: string) => {
             caseNumber: `2026-${caseType.caseNumberPrefix}-DEMO-${suffix}-${pad(index + 1)}`,
             clientId: client.id,
             practiceAreaId: practiceArea.id,
+            caseTypeId: caseType.id,
             caseType: caseType.code,
             status: pick(caseStatuses, index),
             priority: pick(casePriorities, index + 1),
@@ -1427,16 +1718,34 @@ const seedDemoData = async (organizationId?: string) => {
       )
       .returning();
 
-    const contractorValues: NewContractorRow[] = range(DEMO_TARGETS.contractors).map((index) => ({
-      organizationId: firm.id,
-      name: `Demo Contractor ${pad(index + 1)}`,
-      email: `contractor.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
-      specialization: pick(filingTypes, index),
-      status: index % 5 === 0 ? "pending" : "active",
-      rate: `${85 + index * 5}`,
-      contractStart: isoDateFromNow(-180 + index),
-      contractEnd: isoDateFromNow(180 + index),
-    }));
+    const contractorValues: NewContractorRow[] = [];
+    for (const index of range(DEMO_TARGETS.contractors)) {
+      const contractorNumber = pad(index + 1);
+      const email = `contractor.${suffix}.${contractorNumber}@${DEMO_EMAIL_DOMAIN}`;
+      const authUser = await ensureAuthUser(tx, {
+        id: `demo-contractor-user-${suffix}-${contractorNumber}`,
+        firstName: "Demo",
+        lastName: `Contractor ${contractorNumber}`,
+        email,
+        phone: `+1-555-${pad(3100 + index, 4)}`,
+        jobTitle: "Contractor",
+      });
+
+      createdUsers.push(authUser);
+      contractorValues.push({
+        userId: authUser.id,
+        email,
+        firstName: "Demo",
+        lastName: `Contractor ${contractorNumber}`,
+        phoneNumber: `+1-555-${pad(3100 + index, 4)}`,
+        desiredHourlyRate: `${85 + index * 5}`,
+        consentedToBackgroundCheck: true,
+        recognizedDirectoryListingVerificationAccepted: true,
+        bio: `Demo contractor profile ${contractorNumber} for marketplace coverage.`,
+        availability: pick(["full-time", "part-time", "project-based"] as const, index),
+        status: index % 5 === 0 ? "pending" : "active",
+      });
+    }
     const createdContractors = await tx
       .insert(contractors)
       .values(contractorValues)
@@ -1468,8 +1777,6 @@ const seedDemoData = async (organizationId?: string) => {
         title: `Demo ${pick(documentCategories, index)} document ${pad(index + 1)}.pdf`,
         category: pick(documentCategories, index),
         createdByUserId: uploader.userId,
-        originFirmId: firm.id,
-        currentOwnerFirmId: firm.id,
         status: pick(documentStatuses, index),
       };
     });
@@ -1519,14 +1826,6 @@ const seedDemoData = async (organizationId?: string) => {
       };
     });
     await tx.insert(documentCaseLinks).values(documentCaseLinkValues);
-
-    const documentFirmAccessValues: NewDocumentFirmAccessRow[] = createdDocuments.map((document, index) => ({
-      documentId: document.id,
-      firmId: firm.id,
-      permission: "ADMIN",
-      grantedByUserId: pick(createdStaff, index).userId,
-    }));
-    await tx.insert(documentFirmAccess).values(documentFirmAccessValues);
 
     const documentAccessValues: NewDocumentAccessRow[] = [];
     for (const [index, document] of createdDocuments.entries()) {
@@ -1796,12 +2095,16 @@ const dropDemoData = async (organizationId?: string) => {
       );
     const orgDocuments = await tx
       .select({ id: documents.id })
-      .from(documents)
-      .where(eq(documents.originFirmId, firm.id));
+      .from(documentCaseLinks)
+      .innerJoin(cases, eq(cases.id, documentCaseLinks.caseId))
+      .innerJoin(documents, eq(documents.id, documentCaseLinks.documentId))
+      .where(eq(cases.organizationId, firm.id));
     const orgDocumentRequests = await tx
       .select({ id: documentRequests.id })
       .from(documentRequests)
-      .where(eq(documentRequests.requestedByFirmId, firm.id));
+      .innerJoin(user, eq(user.id, documentRequests.requestedByUserId))
+      .innerJoin(member, eq(member.userId, user.id))
+      .where(eq(member.organizationId, firm.id));
 
     const staffIds = orgStaff.map((row) => row.id);
     const teamIds = orgTeams.map((row) => row.id);
@@ -1855,24 +2158,10 @@ const dropDemoData = async (organizationId?: string) => {
           .returning(),
       );
       record(
-        "documentTransfers",
-        await tx
-          .delete(documentTransfers)
-          .where(inArray(documentTransfers.documentId, documentIds))
-          .returning(),
-      );
-      record(
         "documentAccess",
         await tx
           .delete(documentAccess)
           .where(inArray(documentAccess.documentId, documentIds))
-          .returning(),
-      );
-      record(
-        "documentFirmAccess",
-        await tx
-          .delete(documentFirmAccess)
-          .where(inArray(documentFirmAccess.documentId, documentIds))
           .returning(),
       );
       record(
@@ -1891,9 +2180,7 @@ const dropDemoData = async (organizationId?: string) => {
       );
     } else {
       deleted.documentActivityLogs = 0;
-      deleted.documentTransfers = 0;
       deleted.documentAccess = 0;
-      deleted.documentFirmAccess = 0;
       deleted.documentCaseLinks = 0;
       deleted.documentVersions = 0;
     }
@@ -1912,7 +2199,9 @@ const dropDemoData = async (organizationId?: string) => {
 
     record(
       "documents",
-      await tx.delete(documents).where(eq(documents.originFirmId, firm.id)).returning(),
+      documentIds.length
+        ? await tx.delete(documents).where(inArray(documents.id, documentIds)).returning()
+        : [],
     );
     record(
       "tasks",
@@ -1992,7 +2281,10 @@ const dropDemoData = async (organizationId?: string) => {
     );
     record(
       "contractors",
-      await tx.delete(contractors).where(eq(contractors.organizationId, firm.id)).returning(),
+      await tx
+        .delete(contractors)
+        .where(ilike(contractors.email, `contractor.%@${DEMO_EMAIL_DOMAIN}`))
+        .returning(),
     );
     record("teams", await tx.delete(teams).where(eq(teams.organizationId, firm.id)).returning());
     record("staff", await tx.delete(staff).where(eq(staff.organizationId, firm.id)).returning());
@@ -2179,6 +2471,7 @@ const runInteractive = async () => {
         { value: "list", label: "Fetch practice areas" },
         { value: "create", label: "Create practice areas" },
         { value: "defaults", label: "Create default practice areas" },
+        { value: "seed-taxonomy", label: "Seed practice area taxonomy" },
         { value: "edit", label: "Edit a practice area" },
         { value: "delete", label: "Delete practice areas" },
         { value: "case-types-list", label: "Fetch case types" },
@@ -2204,6 +2497,10 @@ const runInteractive = async () => {
     await createPracticeAreas(DEFAULT_PRACTICE_AREAS);
   }
 
+  if (action === "seed-taxonomy") {
+    await seedPracticeAreaTaxonomy();
+  }
+
   if (action === "edit") {
     await editPracticeArea();
   }
@@ -2213,13 +2510,19 @@ const runInteractive = async () => {
   }
 
   if (action === "case-types-list") {
-    const area = await resolvePracticeArea();
-    if (area) printCaseTypes(await getCaseTypes(area.id));
+    const resolved = await resolveSubcategory();
+    if (resolved) printCaseTypes(await getCaseTypes(resolved.subcategory.id));
   }
 
   if (action === "case-types-create") {
-    const area = await resolvePracticeArea();
-    if (area) await createCaseTypes(area.id, await promptForCaseTypeDefinitions());
+    const resolved = await resolveSubcategory();
+    if (resolved) {
+      await createCaseTypes(
+        resolved.area.id,
+        resolved.subcategory.id,
+        await promptForCaseTypeDefinitions(),
+      );
+    }
   }
 
   if (action === "case-types-defaults") {
@@ -2288,6 +2591,11 @@ program
   });
 
 program
+  .command("seed-taxonomy")
+  .description("Seed the full practice area taxonomy from the bundled catalog")
+  .action(seedPracticeAreaTaxonomy);
+
+program
   .command("edit")
   .description("Edit a practice area")
   .argument("[id]", "Practice area id")
@@ -2302,29 +2610,37 @@ program
 
 const caseTypesCommand = program
   .command("case-types")
-  .description("Manage case types for a practice area");
+  .description("Manage case types for a practice area subcategory");
 
 caseTypesCommand
   .command("list")
-  .description("Fetch case types for a practice area")
+  .description("Fetch case types for a practice area subcategory")
   .argument("[practiceAreaId]", "Practice area id")
-  .action(async (practiceAreaId?: string) => {
-    const area = await resolvePracticeArea(practiceAreaId);
-    if (area) printCaseTypes(await getCaseTypes(area.id));
+  .argument("[subcategoryId]", "Subcategory id")
+  .action(async (practiceAreaId?: string, subcategoryId?: string) => {
+    const resolved = await resolveSubcategory(practiceAreaId, subcategoryId);
+    if (resolved) printCaseTypes(await getCaseTypes(resolved.subcategory.id));
   });
 
 caseTypesCommand
   .command("add")
-  .description("Add one or more case types as code|Name|PREFIX")
+  .description("Add one or more case types as code|Name|PREFIX|jurisdiction")
   .argument("[practiceAreaId]", "Practice area id")
+  .argument("[subcategoryId]", "Subcategory id")
   .argument("[definitions...]", "Case type definitions")
-  .action(async (practiceAreaId?: string, definitions: string[] = []) => {
+  .action(
+    async (
+      practiceAreaId?: string,
+      subcategoryId?: string,
+      definitions: string[] = [],
+    ) => {
     const definitionsToCreate = definitions.length
       ? definitions
       : await promptForCaseTypeDefinitions();
 
-    await createCaseTypes(practiceAreaId, definitionsToCreate);
-  });
+      await createCaseTypes(practiceAreaId, subcategoryId, definitionsToCreate);
+    },
+  );
 
 caseTypesCommand
   .command("add-immigration-defaults")
@@ -2336,16 +2652,19 @@ caseTypesCommand
   .command("edit")
   .description("Edit a case type")
   .argument("[practiceAreaId]", "Practice area id")
+  .argument("[subcategoryId]", "Subcategory id")
   .argument("[caseTypeId]", "Case type id")
   .option("-c, --code <code>", "Case type code")
   .option("-n, --name <name>", "Case type name")
   .option("-p, --prefix <prefix>", "Case number prefix")
+  .option("-j, --jurisdiction <jurisdiction>", "Case type jurisdiction")
   .action(editCaseType);
 
 caseTypesCommand
   .command("delete")
   .description("Delete one or more case types with confirmation")
   .argument("[practiceAreaId]", "Practice area id")
+  .argument("[subcategoryId]", "Subcategory id")
   .argument("[ids...]", "Case type ids")
   .action(deleteCaseTypes);
 

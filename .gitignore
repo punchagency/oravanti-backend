@@ -11,3 +11,4 @@ AGENTS.md
 .agents/
 openc*
 skills-lock.json
+drop.ts

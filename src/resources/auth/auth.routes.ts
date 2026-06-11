@@ -7,21 +7,112 @@
  *     description: Organization invitations & membership
  */
 import { Router } from "express";
+import multer from "multer";
+import { z } from "zod";
 import { CommonValidation } from "../../validation/common.validation";
 import { validateRequest } from "../../middleware/validate.middleware";
 import { AuthController } from "./auth.controller";
+
+const parseJsonField = (value: unknown) => {
+  if (typeof value !== "string") return value;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+};
+
+const parseBooleanField = (value: unknown) => {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return value;
+};
+
+const contractorSignUpBody = z
+  .object({
+    email: z.string().email("Must be a valid email"),
+    password: z.string().min(8, "Password must be at least 8 characters"),
+    firstName: z.string().trim().min(1, "firstName is required"),
+    lastName: z.string().trim().min(1, "lastName is required"),
+    phoneNumber: z.string().trim().min(1, "phoneNumber is required"),
+    desiredHourlyRate: z
+      .union([z.string(), z.number()])
+      .refine((value) => Number(value) > 0, {
+        message: "desiredHourlyRate must be greater than zero",
+      }),
+    consentedToBackgroundCheck: z.preprocess(
+      parseBooleanField,
+      z.literal(true, {
+        error: "Contractors must consent to a background check",
+      }),
+    ),
+    recognizedDirectoryListingVerificationAccepted: z.preprocess(
+      parseBooleanField,
+      z.literal(true, {
+        error:
+          "Contractors must accept directory listing verification checks",
+      }),
+    ),
+    bio: z.string().trim().min(1, "bio is required"),
+    availability: z.enum(["full-time", "part-time", "project-based"]),
+    specialtyIds: z.preprocess(
+      parseJsonField,
+      z
+        .array(z.string().uuid("specialtyIds must contain valid UUIDs"))
+        .min(1, "At least one specialty is required"),
+    ),
+    paymentDetails: z.preprocess(
+      parseJsonField,
+      z.discriminatedUnion("paymentMethod", [
+        z.object({
+          paymentMethod: z.literal("paypal"),
+          paypalEmail: z.string().email("Must be a valid PayPal email"),
+        }),
+        z.object({
+          paymentMethod: z.literal("bank_account"),
+          accountHolderName: z
+            .string()
+            .trim()
+            .min(1, "accountHolderName is required"),
+          routingNumber: z.string().trim().min(1, "routingNumber is required"),
+          accountNumber: z.string().trim().min(1, "accountNumber is required"),
+        }),
+      ]),
+    ),
+    certificationDocuments: z.preprocess(
+      parseJsonField,
+      z
+        .array(
+          z.object({
+            certificationName: z
+              .string()
+              .trim()
+              .min(1, "certificationName is required"),
+            issuingOrganization: z.string().trim().optional(),
+            issuedAt: z.string().optional(),
+            expiresAt: z.string().optional(),
+          }),
+        )
+        .min(1, "At least one certification document is required"),
+    ),
+    rememberMe: z.preprocess(parseBooleanField, z.boolean().optional()),
+  })
+  .strict();
 
 export class AuthRouter {
   public router: Router;
   public path: string;
   private authController: AuthController;
   private validation: CommonValidation;
+  private upload: multer.Multer;
 
   constructor(authController: AuthController, validation: CommonValidation) {
     this.router = Router();
     this.path = "/auth";
     this.authController = authController;
     this.validation = validation;
+    this.upload = multer({ storage: multer.memoryStorage() });
 
     this.initializeRoutes();
   }
@@ -54,6 +145,28 @@ export class AuthRouter {
       "/sign-up/email",
       validateRequest({ body: this.validation.requiredBody("email", "password") }),
       this.authController.signUpWithEmail,
+    );
+
+    /**
+     * @openapi
+     * /auth/contractors/sign-up/email:
+     *   post:
+     *     tags: [Auth]
+     *     summary: Register a new contractor with email & password
+     *     responses:
+     *       200:
+     *         description: Contractor registered
+     *       400: { description: Invalid contractor signup data }
+     *       409: { description: User already exists }
+     */
+    this.router.post(
+      "/contractors/sign-up/email",
+      this.upload.fields([
+        { name: "certificationFiles" },
+        { name: "identificationFiles", maxCount: 2 },
+      ]),
+      validateRequest({ body: contractorSignUpBody }),
+      this.authController.signUpContractorWithEmail,
     );
 
     /**

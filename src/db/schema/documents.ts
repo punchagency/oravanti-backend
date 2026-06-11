@@ -1,5 +1,4 @@
 import {
-  boolean,
   index,
   integer,
   jsonb,
@@ -10,7 +9,7 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
-import { organization, user } from "./auth-schema";
+import { user } from "./auth-schema";
 import { cases } from "./cases";
 
 export const documentCategoryEnum = pgEnum("document_category", [
@@ -31,14 +30,6 @@ export const documentPermissionEnum = pgEnum("document_permission", [
   "COMMENT",
   "EDIT",
   "ADMIN",
-]);
-
-export const documentTransferStatusEnum = pgEnum("document_transfer_status", [
-  "PENDING",
-  "ACCEPTED",
-  "REJECTED",
-  "CANCELLED",
-  "EXPIRED",
 ]);
 
 export const documentRequestStatusEnum = pgEnum("document_request_status", [
@@ -64,9 +55,6 @@ export const documentActivityActionEnum = pgEnum("document_activity_action", [
   "VERSION_UPLOADED",
   "ACCESS_GRANTED",
   "ACCESS_REVOKED",
-  "TRANSFER_REQUESTED",
-  "TRANSFER_ACCEPTED",
-  "TRANSFER_REJECTED",
   "EXTERNAL_REQUEST_CREATED",
   "EXTERNAL_SUBMISSION_UPLOADED",
   "ARCHIVED",
@@ -82,12 +70,6 @@ export const documents = pgTable(
     status: documentStatusEnum("status").notNull().default("active"),
     category: documentCategoryEnum("category"),
     createdByUserId: text("created_by_user_id").references(() => user.id),
-    originFirmId: text("origin_firm_id")
-      .notNull()
-      .references(() => organization.id),
-    currentOwnerFirmId: text("current_owner_firm_id").references(
-      () => organization.id,
-    ),
     currentVersionId: uuid("current_version_id"),
     archivedAt: timestamp("archived_at"),
     deletedAt: timestamp("deleted_at"),
@@ -95,8 +77,7 @@ export const documents = pgTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
-    index("documents_origin_firm_idx").on(table.originFirmId),
-    index("documents_current_owner_firm_idx").on(table.currentOwnerFirmId),
+    index("documents_created_by_user_idx").on(table.createdByUserId),
     index("documents_status_idx").on(table.status),
     index("documents_current_version_idx").on(table.currentVersionId),
   ],
@@ -162,32 +143,6 @@ export const documentCaseLinks = pgTable(
   ],
 );
 
-export const documentFirmAccess = pgTable(
-  "document_firm_access",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    documentId: uuid("document_id")
-      .notNull()
-      .references(() => documents.id),
-    firmId: text("firm_id")
-      .notNull()
-      .references(() => organization.id),
-    permission: documentPermissionEnum("permission").notNull(),
-    grantedByUserId: text("granted_by_user_id").references(() => user.id),
-    revokedAt: timestamp("revoked_at"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
-  },
-  (table) => [
-    unique("document_firm_access_document_firm_unique").on(
-      table.documentId,
-      table.firmId,
-    ),
-    index("document_firm_access_document_idx").on(table.documentId),
-    index("document_firm_access_firm_idx").on(table.firmId),
-  ],
-);
-
 export const documentAccess = pgTable(
   "document_access",
   {
@@ -214,39 +169,6 @@ export const documentAccess = pgTable(
   ],
 );
 
-export const documentTransfers = pgTable(
-  "document_transfers",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    documentId: uuid("document_id")
-      .notNull()
-      .references(() => documents.id),
-    fromFirmId: text("from_firm_id")
-      .notNull()
-      .references(() => organization.id),
-    toFirmId: text("to_firm_id")
-      .notNull()
-      .references(() => organization.id),
-    fromUserId: text("from_user_id")
-      .notNull()
-      .references(() => user.id),
-    toUserId: text("to_user_id").references(() => user.id),
-    permission: documentPermissionEnum("permission").notNull(),
-    status: documentTransferStatusEnum("status").notNull().default("PENDING"),
-    message: text("message"),
-    revokeSenderAccess: boolean("revoke_sender_access").notNull().default(false),
-    acceptedAt: timestamp("accepted_at"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
-  },
-  (table) => [
-    index("document_transfers_document_idx").on(table.documentId),
-    index("document_transfers_from_firm_idx").on(table.fromFirmId),
-    index("document_transfers_to_firm_idx").on(table.toFirmId),
-    index("document_transfers_status_idx").on(table.status),
-  ],
-);
-
 export const documentRequests = pgTable(
   "document_requests",
   {
@@ -254,13 +176,9 @@ export const documentRequests = pgTable(
     caseId: uuid("case_id")
       .notNull()
       .references(() => cases.id),
-    requestedByFirmId: text("requested_by_firm_id")
-      .notNull()
-      .references(() => organization.id),
     requestedByUserId: text("requested_by_user_id")
       .notNull()
       .references(() => user.id),
-    recipientFirmName: text("recipient_firm_name"),
     recipientName: text("recipient_name"),
     recipientEmail: text("recipient_email").notNull(),
     tokenHash: text("token_hash").notNull().unique(),
@@ -272,7 +190,7 @@ export const documentRequests = pgTable(
   },
   (table) => [
     index("document_requests_case_idx").on(table.caseId),
-    index("document_requests_firm_idx").on(table.requestedByFirmId),
+    index("document_requests_user_idx").on(table.requestedByUserId),
     index("document_requests_status_idx").on(table.status),
   ],
 );
@@ -333,12 +251,8 @@ export type DocumentVersion = typeof documentVersions.$inferSelect;
 export type NewDocumentVersion = typeof documentVersions.$inferInsert;
 export type DocumentCaseLink = typeof documentCaseLinks.$inferSelect;
 export type NewDocumentCaseLink = typeof documentCaseLinks.$inferInsert;
-export type DocumentFirmAccess = typeof documentFirmAccess.$inferSelect;
-export type NewDocumentFirmAccess = typeof documentFirmAccess.$inferInsert;
 export type DocumentAccess = typeof documentAccess.$inferSelect;
 export type NewDocumentAccess = typeof documentAccess.$inferInsert;
-export type DocumentTransfer = typeof documentTransfers.$inferSelect;
-export type NewDocumentTransfer = typeof documentTransfers.$inferInsert;
 export type DocumentRequest = typeof documentRequests.$inferSelect;
 export type NewDocumentRequest = typeof documentRequests.$inferInsert;
 export type ExternalSubmission = typeof externalSubmissions.$inferSelect;

@@ -16,6 +16,7 @@ import { env } from "../../config/env";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
+import { practiceAreaSubcategories } from "../../db/schema/practice-area-subcategories";
 import {
   questionnaireAnswers,
   questionnaireCaseTypes,
@@ -1188,10 +1189,12 @@ export class QuestionnairesService {
       ? await database
           .select({
             id: practiceAreaCaseTypes.id,
-            practiceAreaId: practiceAreaCaseTypes.practiceAreaId,
+            practiceAreaId: practiceAreaSubcategories.practiceAreaId,
+            subcategoryId: practiceAreaCaseTypes.subcategoryId,
             code: practiceAreaCaseTypes.code,
             name: practiceAreaCaseTypes.name,
             caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
+            jurisdiction: practiceAreaCaseTypes.jurisdiction,
             createdAt: practiceAreaCaseTypes.createdAt,
             updatedAt: practiceAreaCaseTypes.updatedAt,
           })
@@ -1203,6 +1206,13 @@ export class QuestionnairesService {
               questionnaireVersionCaseTypes.caseTypeId,
             ),
           )
+          .innerJoin(
+            practiceAreaSubcategories,
+            eq(
+              practiceAreaSubcategories.id,
+              practiceAreaCaseTypes.subcategoryId,
+            ),
+          )
           .where(
             and(
               eq(questionnaireVersionCaseTypes.questionnaireId, questionnaireId),
@@ -1212,10 +1222,12 @@ export class QuestionnairesService {
       : await database
           .select({
             id: practiceAreaCaseTypes.id,
-            practiceAreaId: practiceAreaCaseTypes.practiceAreaId,
+            practiceAreaId: practiceAreaSubcategories.practiceAreaId,
+            subcategoryId: practiceAreaCaseTypes.subcategoryId,
             code: practiceAreaCaseTypes.code,
             name: practiceAreaCaseTypes.name,
             caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
+            jurisdiction: practiceAreaCaseTypes.jurisdiction,
             createdAt: practiceAreaCaseTypes.createdAt,
             updatedAt: practiceAreaCaseTypes.updatedAt,
           })
@@ -1223,6 +1235,13 @@ export class QuestionnairesService {
           .innerJoin(
             practiceAreaCaseTypes,
             eq(practiceAreaCaseTypes.id, questionnaireCaseTypes.caseTypeId),
+          )
+          .innerJoin(
+            practiceAreaSubcategories,
+            eq(
+              practiceAreaSubcategories.id,
+              practiceAreaCaseTypes.subcategoryId,
+            ),
           )
           .where(eq(questionnaireCaseTypes.questionnaireId, questionnaireId));
 
@@ -1309,12 +1328,25 @@ export class QuestionnairesService {
     );
 
     const [caseTypeRow] = await database
-      .select()
+      .select({
+        id: practiceAreaCaseTypes.id,
+        subcategoryId: practiceAreaCaseTypes.subcategoryId,
+        code: practiceAreaCaseTypes.code,
+        name: practiceAreaCaseTypes.name,
+        caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
+        jurisdiction: practiceAreaCaseTypes.jurisdiction,
+        createdAt: practiceAreaCaseTypes.createdAt,
+        updatedAt: practiceAreaCaseTypes.updatedAt,
+      })
       .from(practiceAreaCaseTypes)
+      .innerJoin(
+        practiceAreaSubcategories,
+        eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
+      )
       .where(
         practiceAreaId
           ? and(
-              eq(practiceAreaCaseTypes.practiceAreaId, practiceAreaId),
+              eq(practiceAreaSubcategories.practiceAreaId, practiceAreaId),
               caseTypeCondition,
             )
           : caseTypeCondition,
