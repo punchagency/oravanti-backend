@@ -30,6 +30,9 @@ import { StaffService } from "./resources/hr-management/staffs/staffs.service";
 import { TeamsController } from "./resources/hr-management/teams/teams.controller";
 import { TeamsRouter } from "./resources/hr-management/teams/teams.routes";
 import { TeamsService } from "./resources/hr-management/teams/teams.service";
+import { OnboardingController } from "./resources/onboarding/onboarding.controller";
+import { OnboardingRouter } from "./resources/onboarding/onboarding.routes";
+import { OnboardingService } from "./resources/onboarding/onboarding.service";
 import { OrganizationController } from "./resources/organization/organization.controller";
 import { OrganizationRouter } from "./resources/organization/organization.routes";
 import { OrganizationService } from "./resources/organization/organization.service";
@@ -239,6 +242,10 @@ const organizationService = new OrganizationService();
 const organizationController = new OrganizationController(organizationService);
 const organizationRouter = new OrganizationRouter(organizationController);
 
+const onboardingService = new OnboardingService();
+const onboardingController = new OnboardingController(onboardingService);
+const onboardingRouter = new OnboardingRouter(onboardingController);
+
 const app = new App(
   [
     authRouter,
@@ -264,6 +271,7 @@ const app = new App(
     dataAccessRouter,
     securityRouter,
     organizationRouter,
+    onboardingRouter,
   ],
   PORT,
 );

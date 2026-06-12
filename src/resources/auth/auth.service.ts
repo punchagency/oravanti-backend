@@ -28,6 +28,7 @@ import {
   ExternalServiceError,
   ValidationError,
 } from "../../utils/error/app-error";
+import { AccountType } from "./enums";
 
 const { SUPABASE_STORAGE_BUCKET } = env;
 
@@ -161,43 +162,47 @@ export class AuthService {
       password: string;
       rememberMe?: boolean;
     },
-    req: Request,
+    req: Request<any, any, any, { account_type?: AccountType }>,
   ) => {
     const clientHeaders = fromNodeHeaders(req.headers);
+    const accountType = req.query.account_type;
+
+    if (
+      !accountType ||
+      !["firm_admin", "contractor", "client"].includes(accountType)
+    ) {
+      throw new BadRequestError(
+        "Invalid or missing account_type context query parameter.",
+      );
+    }
 
     const response = await auth.api.signUpEmail({
       headers: clientHeaders,
       body: {
         ...body,
         name: "User",
-        callbackURL: process.env.EMAIL_VERIFICATION_CALLBACK_URL,
+        accountType: accountType,
+        onboardingState: "email_unverified",
+        callbackURL: `${process.env.EMAIL_VERIFICATION_CALLBACK_URL}`,
       },
       asResponse: true,
     });
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-
-      const errorCode = errorData.code as
-        | "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL"
-        | "INVALID_EMAIL"
-        | "PASSWORD_TOO_SHORT";
-
+      const errorCode = errorData.code;
       const message = errorData.message || "Registration failed";
 
       switch (errorCode) {
         case "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL":
           throw new ConflictError(message, errorData);
-
         case "INVALID_EMAIL":
         case "PASSWORD_TOO_SHORT":
           throw new BadRequestError(message, errorData);
-
         default:
           throw new Error(message);
       }
     }
-
     return response;
   };
 
