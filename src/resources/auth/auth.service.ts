@@ -10,8 +10,8 @@ import {
   contractorCertificationDocuments,
   contractorIdentificationDocuments,
   contractorPaymentDetails,
-  contractorSpecialties,
   contractors,
+  contractorSpecialties,
 } from "../../db/schema/contractors";
 import {
   documentAccess,
@@ -60,9 +60,7 @@ const getPaymentEncryptionKey = () => {
     process.env.PAYMENT_ENCRYPTION_KEY;
 
   if (!secret) {
-    throw new ExternalServiceError(
-      "Payment encryption key is not configured",
-    );
+    throw new ExternalServiceError("Payment encryption key is not configured");
   }
 
   return createHash("sha256").update(secret).digest();
@@ -239,7 +237,9 @@ export class AuthService {
       .where(inArray(practiceAreaCaseTypes.id, specialtyIds));
 
     if (existingSpecialties.length !== specialtyIds.length) {
-      throw new ValidationError("One or more contractor specialties are invalid");
+      throw new ValidationError(
+        "One or more contractor specialties are invalid",
+      );
     }
 
     if (!certificationFiles.length) {
@@ -295,10 +295,7 @@ export class AuthService {
         password: body.password,
         rememberMe: body.rememberMe,
         name: `${body.firstName.trim()} ${body.lastName.trim()}`,
-        firstName: body.firstName.trim(),
-        lastName: body.lastName.trim(),
-        phoneNumber: body.phoneNumber.trim(),
-        userType: "contractor",
+        accountType: "contractor",
         callbackURL: process.env.EMAIL_VERIFICATION_CALLBACK_URL,
       },
       asResponse: true,
