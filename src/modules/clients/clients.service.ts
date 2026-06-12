@@ -8,6 +8,7 @@ import {
   inArray,
   or,
 } from "drizzle-orm";
+import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { certifications } from "../../db/schema/certifications";
 import { clients } from "../../db/schema/clients";
@@ -15,10 +16,7 @@ import { companies } from "../../db/schema/companies";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
 import { teamMembers } from "../../db/schema/team-members";
-import {
-  ConflictError,
-  NotFoundError,
-} from "../../utils/error/app-error";
+import { ConflictError, NotFoundError } from "../../utils/error/app-error";
 import {
   buildPaginatedResponse,
   getPaginationOffset,
@@ -26,7 +24,6 @@ import {
 } from "../../utils/pagination";
 import { generateCaseNumber } from "../cases/cases.service";
 import { ensureCaseTypeBelongsToPracticeArea } from "../practice-areas/practice-areas.utils";
-import { db } from "./../../db/client";
 
 // ─── Companies ───────────────────────────────────────────────────────────────
 
@@ -79,7 +76,9 @@ export const getCompanyById = async (id: string, organizationId: string) => {
   const [company] = await db
     .select()
     .from(companies)
-    .where(and(eq(companies.id, id), eq(companies.organizationId, organizationId)));
+    .where(
+      and(eq(companies.id, id), eq(companies.organizationId, organizationId)),
+    );
 
   if (!company) return null;
 
@@ -93,7 +92,12 @@ export const getCompanyById = async (id: string, organizationId: string) => {
       status: clients.status,
     })
     .from(clients)
-    .where(and(eq(clients.companyId, id), eq(clients.organizationId, organizationId)));
+    .where(
+      and(
+        eq(clients.companyId, id),
+        eq(clients.organizationId, organizationId),
+      ),
+    );
 
   return { ...company, clients: companyClients };
 };
@@ -106,7 +110,9 @@ export const updateCompany = async (
   const [updated] = await db
     .update(companies)
     .set({ ...data, updatedAt: new Date() })
-    .where(and(eq(companies.id, id), eq(companies.organizationId, organizationId)))
+    .where(
+      and(eq(companies.id, id), eq(companies.organizationId, organizationId)),
+    )
     .returning();
   return updated;
 };
@@ -117,7 +123,9 @@ export const deleteCompany = async (
 ): Promise<void> => {
   await db
     .delete(companies)
-    .where(and(eq(companies.id, id), eq(companies.organizationId, organizationId)));
+    .where(
+      and(eq(companies.id, id), eq(companies.organizationId, organizationId)),
+    );
 };
 
 export class ClientsService {
@@ -304,7 +312,12 @@ export const addClientToCompany = async (
   const [company] = await db
     .select({ id: companies.id, companyName: companies.companyName })
     .from(companies)
-    .where(and(eq(companies.id, companyId), eq(companies.organizationId, organizationId)));
+    .where(
+      and(
+        eq(companies.id, companyId),
+        eq(companies.organizationId, organizationId),
+      ),
+    );
 
   if (!company) throw new NotFoundError("Company not found");
 
@@ -669,7 +682,9 @@ export const getClientById = async (id: string, organizationId: string) => {
   const clientCases = await db
     .select()
     .from(cases)
-    .where(and(eq(cases.clientId, id), eq(cases.organizationId, organizationId)));
+    .where(
+      and(eq(cases.clientId, id), eq(cases.organizationId, organizationId)),
+    );
   return { ...client, cases: clientCases };
 };
 
@@ -771,7 +786,9 @@ export const updateClient = async (
     const current = await db
       .select()
       .from(clients)
-      .where(and(eq(clients.id, id), eq(clients.organizationId, organizationId)))
+      .where(
+        and(eq(clients.id, id), eq(clients.organizationId, organizationId)),
+      )
       .limit(1);
     if (!current.length) return null;
 
@@ -815,16 +832,15 @@ export const deleteClient = async (id: string, organizationId: string) => {
 export const getClientCases = async (
   clientId: string,
   organizationId: string,
-  options: (Partial<PaginationParams> & { all?: boolean }) = {},
+  options: Partial<PaginationParams> & { all?: boolean } = {},
 ) => {
-  const where = and(eq(cases.clientId, clientId), eq(cases.organizationId, organizationId));
+  const where = and(
+    eq(cases.clientId, clientId),
+    eq(cases.organizationId, organizationId),
+  );
 
   const selectClientCases = () =>
-    db
-      .select()
-      .from(cases)
-      .where(where)
-      .orderBy(desc(cases.createdAt));
+    db.select().from(cases).where(where).orderBy(desc(cases.createdAt));
 
   if (options.all) {
     return selectClientCases();
@@ -954,5 +970,10 @@ export const getTeamStaff = async (teamId: string, organizationId: string) => {
     })
     .from(staff)
     .innerJoin(teamMembers, eq(teamMembers.staffId, staff.id))
-    .where(and(eq(teamMembers.teamId, teamId), eq(staff.organizationId, organizationId)));
+    .where(
+      and(
+        eq(teamMembers.teamId, teamId),
+        eq(staff.organizationId, organizationId),
+      ),
+    );
 };

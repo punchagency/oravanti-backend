@@ -10,8 +10,10 @@ import {
   max,
   or,
 } from "drizzle-orm";
-import { supabaseAdmin } from "../../config/supabase";
 import { env } from "../../config/env";
+import { supabaseAdmin } from "../../config/supabase";
+import { db } from "../../db/client";
+import { user } from "../../db/schema/auth-schema";
 import { cases } from "../../db/schema/cases";
 import { clients } from "../../db/schema/clients";
 import {
@@ -23,7 +25,6 @@ import {
   documentVersions,
   externalSubmissions,
 } from "../../db/schema/documents";
-import { user } from "../../db/schema/auth-schema";
 import {
   AuthorizationError,
   ConflictError,
@@ -34,7 +35,6 @@ import {
   buildPaginatedResponse,
   getPaginationOffset,
 } from "../../utils/pagination";
-import { db } from "./../../db/client";
 
 const { SUPABASE_STORAGE_BUCKET } = env;
 
@@ -73,10 +73,8 @@ const buildStoragePath = (
   filename: string,
 ) => `${ownerKey}/documents/${documentId}/v${versionNumber}/${filename}`;
 
-const buildExternalStoragePath = (
-  requestId: string,
-  filename: string,
-) => `external-document-requests/${requestId}/${Date.now()}-${filename}`;
+const buildExternalStoragePath = (requestId: string, filename: string) =>
+  `external-document-requests/${requestId}/${Date.now()}-${filename}`;
 
 const hashToken = (token: string) =>
   createHash("sha256").update(token).digest("hex");
@@ -160,7 +158,9 @@ export class DocumentsService {
     const [row] = await db
       .select()
       .from(cases)
-      .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)));
+      .where(
+        and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)),
+      );
 
     if (!row) {
       throw new NotFoundError("Case not found");
@@ -338,10 +338,7 @@ export class DocumentsService {
     const [{ total }] = await db
       .select({ total: count() })
       .from(documents)
-      .innerJoin(
-        documentAccess,
-        eq(documentAccess.documentId, documents.id),
-      )
+      .innerJoin(documentAccess, eq(documentAccess.documentId, documents.id))
       .leftJoin(
         documentVersions,
         eq(documentVersions.id, documents.currentVersionId),
@@ -377,10 +374,7 @@ export class DocumentsService {
         clientLast: clients.lastName,
       })
       .from(documents)
-      .innerJoin(
-        documentAccess,
-        eq(documentAccess.documentId, documents.id),
-      )
+      .innerJoin(documentAccess, eq(documentAccess.documentId, documents.id))
       .leftJoin(
         documentVersions,
         eq(documentVersions.id, documents.currentVersionId),
@@ -439,10 +433,7 @@ export class DocumentsService {
     const rows = await db
       .select({ category: documents.category, total: count() })
       .from(documents)
-      .innerJoin(
-        documentAccess,
-        eq(documentAccess.documentId, documents.id),
-      )
+      .innerJoin(documentAccess, eq(documentAccess.documentId, documents.id))
       .where(
         and(
           eq(documentAccess.userId, userId),
@@ -467,10 +458,7 @@ export class DocumentsService {
     return stats;
   };
 
-  getDocumentById = async (
-    id: string,
-    userId: string,
-  ) => {
+  getDocumentById = async (id: string, userId: string) => {
     await this.ensurePermission(id, userId, "VIEW");
 
     const [row] = await db
@@ -901,25 +889,16 @@ export class DocumentsService {
     }
   };
 
-  archiveDocument = async (
-    id: string,
-    userId: string,
-  ) => this.updateDocumentStatus(id, userId, "archived");
+  archiveDocument = async (id: string, userId: string) =>
+    this.updateDocumentStatus(id, userId, "archived");
 
-  restoreDocument = async (
-    id: string,
-    userId: string,
-  ) => this.updateDocumentStatus(id, userId, "active");
+  restoreDocument = async (id: string, userId: string) =>
+    this.updateDocumentStatus(id, userId, "active");
 
-  deleteDocument = async (
-    id: string,
-    userId: string,
-  ) => this.updateDocumentStatus(id, userId, "deleted");
+  deleteDocument = async (id: string, userId: string) =>
+    this.updateDocumentStatus(id, userId, "deleted");
 
-  getDownloadUrl = async (
-    id: string,
-    userId: string,
-  ) => {
+  getDownloadUrl = async (id: string, userId: string) => {
     await this.ensurePermission(id, userId, "VIEW");
 
     const [doc] = await db
@@ -952,10 +931,7 @@ export class DocumentsService {
     return data.signedUrl;
   };
 
-  getActivityLogs = async (
-    id: string,
-    userId: string,
-  ) => {
+  getActivityLogs = async (id: string, userId: string) => {
     await this.ensurePermission(id, userId, "ADMIN");
 
     return db
@@ -972,10 +948,7 @@ export class DocumentsService {
       .where(eq(documentRequests.requestedByUserId, userId))
       .orderBy(desc(documentRequests.createdAt));
 
-  cancelExternalRequest = async (
-    id: string,
-    userId: string,
-  ) => {
+  cancelExternalRequest = async (id: string, userId: string) => {
     return db.transaction(async (tx) => {
       const [request] = await tx
         .update(documentRequests)
@@ -984,7 +957,10 @@ export class DocumentsService {
           and(
             eq(documentRequests.id, id),
             eq(documentRequests.requestedByUserId, userId),
-            inArray(documentRequests.status, ["PENDING", "PARTIALLY_SUBMITTED"]),
+            inArray(documentRequests.status, [
+              "PENDING",
+              "PARTIALLY_SUBMITTED",
+            ]),
           ),
         )
         .returning();

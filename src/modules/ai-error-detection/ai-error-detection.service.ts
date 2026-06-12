@@ -1,9 +1,9 @@
 import { and, count, desc, eq, gte } from "drizzle-orm";
+import { db } from "../../db/client";
 import { aiErrorFlags } from "../../db/schema/ai-error-flags";
 import { aiSystemConfig } from "../../db/schema/ai-system-config";
 import { cases } from "../../db/schema/cases";
 import { clients } from "../../db/schema/clients";
-import { db } from "./../../db/client";
 
 export class AIErrorDetectionService {
   // ─── Stats ────────────────────────────────────────────────────────────────────
@@ -98,7 +98,12 @@ export class AIErrorDetectionService {
     const [row] = await db
       .select()
       .from(aiErrorFlags)
-      .where(and(eq(aiErrorFlags.id, id), eq(aiErrorFlags.organizationId, organizationId)));
+      .where(
+        and(
+          eq(aiErrorFlags.id, id),
+          eq(aiErrorFlags.organizationId, organizationId),
+        ),
+      );
     return row ?? null;
   };
 
@@ -118,7 +123,12 @@ export class AIErrorDetectionService {
         resolvedAt: status === "resolved" ? new Date() : null,
         updatedAt: new Date(),
       })
-      .where(and(eq(aiErrorFlags.id, id), eq(aiErrorFlags.organizationId, organizationId)))
+      .where(
+        and(
+          eq(aiErrorFlags.id, id),
+          eq(aiErrorFlags.organizationId, organizationId),
+        ),
+      )
       .returning();
     return updated;
   };
