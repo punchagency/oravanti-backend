@@ -24,6 +24,7 @@ import {
 import { staff } from "../db/schema/staff";
 import { emailService } from "../utils/email/email.service";
 import { ac, admin, attorney, owner, paralegal } from "./permissions";
+import { cryptoKeyPlugin } from "./plugins/cryptoKeyPlugin";
 
 const { isProduction } = env;
 
@@ -183,6 +184,9 @@ export const auth = betterAuth({
         required: false,
         input: true,
       },
+      encryptedDEK: { type: "string", required: false },
+      dekIv: { type: "string", required: false },
+      dekTag: { type: "string", required: false },
       // firstName: { type: "string", required: false, input: true },
       // lastName: { type: "string", required: false, input: true },
       // phoneNumber: { type: "string", required: false, input: true },
@@ -318,6 +322,7 @@ export const auth = betterAuth({
         await emailService.sendVerificationOTP({ email, otp, type });
       },
     }),
+    cryptoKeyPlugin(),
   ],
   databaseHooks: {
     session: {

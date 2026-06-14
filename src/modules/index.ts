@@ -5,6 +5,7 @@ import { CasesModule } from "./cases/cases.module";
 import { ClientResponsivenessModule } from "./client-responsiveness/client-responsiveness.module";
 import { ClientsModule } from "./clients/clients.module";
 import { DocumentsModule } from "./documents/documents.module";
+import { EmailAccountModule } from "./email-account/email-account.module";
 import { AssignmentsModule } from "./hr-management/assignments/assignments.module";
 import { StaffModule } from "./hr-management/staffs/staffs.module";
 import { TeamsModule } from "./hr-management/teams/teams.module";
@@ -30,6 +31,7 @@ export const modules: Module[] = [
   new TeamsModule(),
   new AssignmentsModule(),
   new DocumentsModule(),
+  new EmailAccountModule(),
   new QuestionnairesModule(),
   new TasksModule(),
   new AIErrorDetectionModule(),
