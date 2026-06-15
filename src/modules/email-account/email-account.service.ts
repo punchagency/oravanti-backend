@@ -1,8 +1,8 @@
 import { and, desc, eq } from "drizzle-orm";
 import imapSimple from "imap-simple";
-import Pop3Command from "node-pop3";
 import nodemailer from "nodemailer";
 import SMTPTransport from "nodemailer/lib/smtp-transport";
+import Pop3Command from "node-pop3";
 import { db } from "../../db/client";
 import {
   connectedEmailAccount,
@@ -11,6 +11,11 @@ import {
 } from "../../db/schema/email";
 import { DnsService } from "../../utils/dns.service";
 import { ConflictError, NotFoundError } from "../../utils/error/app-error";
+
+function getFrontendUrl(): string {
+  const origins = (process.env.CORS_ORIGIN || "").split(",").map((o) => o.trim());
+  return origins[0] || "http://localhost:5137";
+}
 
 export class EmailAccountService {
   private dnsService: DnsService;
@@ -473,6 +478,20 @@ export class EmailAccountService {
       .where(eq(connectedEmailAccount.id, id));
   };
 
+  findEmailAccount = async (id: string, organizationId: string) => {
+    const [row] = await db
+      .select()
+      .from(connectedEmailAccount)
+      .where(
+        and(
+          eq(connectedEmailAccount.id, id),
+          eq(connectedEmailAccount.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    return row || null;
+  };
+
   deleteEmailAccount = async (id: string, organizationId: string) => {
     const existing = await db
       .select({ id: connectedEmailAccount.id })
@@ -493,4 +512,8 @@ export class EmailAccountService {
       .delete(connectedEmailAccount)
       .where(eq(connectedEmailAccount.id, id));
   };
+
+  getFrontendUrl(): string {
+    return getFrontendUrl();
+  }
 }

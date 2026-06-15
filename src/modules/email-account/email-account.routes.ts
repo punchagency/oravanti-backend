@@ -227,5 +227,23 @@ export class EmailAccountRouter {
      *         description: Email account not found
      */
     this.router.delete("/:id", requireAuth, this.emailAccountController.remove);
+
+    /**
+     * @openapi
+     * /email-accounts/oauth/google:
+     *   get:
+     *     tags: [Email Account]
+     *     summary: Initiate Google OAuth via Better Auth to connect a Gmail account
+     *     responses:
+     *       302:
+     *         description: Redirect to Google consent screen via Better Auth
+     */
+    this.router.get(
+      "/oauth/google",
+      requireAuth,
+      this.emailAccountController.initiateGoogleOAuth,
+    );
+
+
   }
 }

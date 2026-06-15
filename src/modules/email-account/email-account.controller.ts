@@ -1,4 +1,6 @@
 import { Request, Response } from "express";
+import { fromNodeHeaders } from "better-auth/node";
+import { auth } from "../../auth";
 import { db } from "../../db/client";
 import { connectedEmailAccount } from "../../db/schema/email";
 import asyncWrap from "../../utils/asyncWrapper";
@@ -197,11 +199,49 @@ export class EmailAccountController {
     const { id } = req.params;
     const organizationId = (req as any).organizationId;
 
+    // Find the account before deleting so we can unlink the social connection
+    const account = await this.emailAccountService.findEmailAccount(String(id), organizationId);
+
+    if (account && account.provider !== "custom" && account.providerAccountId) {
+      try {
+        await auth.api.unlinkAccount({
+          body: {
+            providerId: account.provider,
+            accountId: account.providerAccountId,
+          },
+          headers: fromNodeHeaders(req.headers),
+        });
+      } catch (e) {
+        console.error("Failed to unlink Better Auth social account:", e);
+        // Continue with deletion even if unlink fails
+      }
+    }
+
     await this.emailAccountService.deleteEmailAccount(String(id), organizationId);
 
     res.status(200).json({
       success: true,
       message: "Email account deleted permanently.",
     });
+  });
+
+  initiateGoogleOAuth = asyncWrap(async (req: Request, res: Response) => {
+    const frontendUrl = this.emailAccountService.getFrontendUrl();
+    const callbackURL = new URL("/admin/settings/email-accounts", frontendUrl);
+    callbackURL.searchParams.set("oauth", "success");
+
+    const errorURL = new URL("/admin/settings/email-accounts", frontendUrl);
+    errorURL.searchParams.set("oauth", "error");
+
+    const { url } = await auth.api.linkSocialAccount({
+      body: {
+        provider: "google",
+        callbackURL: callbackURL.toString(),
+        errorCallbackURL: errorURL.toString(),
+      },
+      headers: fromNodeHeaders(req.headers),
+    });
+
+    res.redirect(url);
   });
 }

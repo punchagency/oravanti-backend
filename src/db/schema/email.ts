@@ -55,6 +55,9 @@ export const connectedEmailAccount = pgTable("connected_email_account", {
   refreshToken: text("refresh_token"),
   expiresAt: timestamp("expires_at"),
 
+  // Better Auth providerAccountId (Google sub) so we can unlink on delete
+  providerAccountId: text("provider_account_id"),
+
   // SMTP/IMAP/POP3 Credentials (Route C - Encrypted)
   customSettings: jsonb("custom_settings").$type<{
     protocol: "imap" | "pop3";
