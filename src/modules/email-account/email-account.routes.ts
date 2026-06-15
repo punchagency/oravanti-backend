@@ -244,6 +244,22 @@ export class EmailAccountRouter {
       this.emailAccountController.initiateGoogleOAuth,
     );
 
+    /**
+     * @openapi
+     * /email-accounts/oauth/microsoft:
+     *   get:
+     *     tags: [Email Account]
+     *     summary: Initiate Microsoft OAuth via Better Auth to connect an Outlook account
+     *     responses:
+     *       302:
+     *         description: Redirect to Microsoft consent screen via Better Auth
+     */
+    this.router.get(
+      "/oauth/microsoft",
+      requireAuth,
+      this.emailAccountController.initiateMicrosoftOAuth,
+    );
+
 
   }
 }

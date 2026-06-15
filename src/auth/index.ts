@@ -34,6 +34,11 @@ export const auth = betterAuth({
     skipStateCookieCheck: true,
     accountLinking: {
       allowDifferentEmails: true,
+      // Microsoft must be a trustedProvider because Entra ID never returns
+      // emailVerified:true. Without it, Better Auth rejects the link at
+      // callback.mjs:104 ("unable_to_link_account"). Google works without
+      // this because it does return emailVerified:true.
+      trustedProviders: ["microsoft"],
     },
   },
   trustedOrigins: env.CORS_ORIGIN.split(",").map((origin) => origin.trim()),
@@ -101,6 +106,20 @@ export const auth = betterAuth({
       ],
       prompt: "consent",
       accessType: "offline",
+    },
+    microsoft: {
+      clientId: process.env.MICROSOFT_CLIENT_ID!,
+      clientSecret: process.env.MICROSOFT_CLIENT_SECRET!,
+      scope: [
+        "https://graph.microsoft.com/Mail.Send",
+        "https://graph.microsoft.com/Mail.Read",
+        "https://graph.microsoft.com/User.Read",
+        "openid",
+        "email",
+        "profile",
+        "offline_access",
+      ],
+      prompt: "consent",
     },
   },
   plugins: [
