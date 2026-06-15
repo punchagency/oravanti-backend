@@ -2,6 +2,7 @@ import { relations } from "drizzle-orm";
 import {
   boolean,
   index,
+  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -52,7 +53,18 @@ export const user = pgTable("user", {
   // phoneNumber: text("phone_number"),
   // jobTitle: text("job_title"),
   // barNumber: text("bar_number"),
+
+  // Crypto key management
+  encryptedDEK: text("encrypted_dek"),
+  dekIv: text("dek_iv"),
+  dekTag: text("dek_tag"),
 });
+
+export const domainStatusEnum = pgEnum("domain_status", [
+  "pending",
+  "verified",
+  "failed",
+]);
 
 // // FIRM PROFILES (B2B Hub)
 export const organization = pgTable(
@@ -64,6 +76,15 @@ export const organization = pgTable(
     logo: text("logo"),
     createdAt: timestamp("created_at").notNull(),
     metadata: text("metadata"),
+
+    // Domain Verification Additions ---
+    domain: text("domain"),
+    isDomainVerified: boolean("is_domain_verified").default(false).notNull(),
+    verificationToken: text("verification_token"),
+    // White-labeling
+    espDomainId: text("esp_domain_id"),
+    dnsRecords: jsonb("dns_records"),
+    domainStatus: domainStatusEnum("domain_status").default("pending"),
 
     emailAddress: text("email_address"),
     phoneNumber: text("phone_number"),
