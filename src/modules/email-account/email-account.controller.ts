@@ -225,7 +225,7 @@ export class EmailAccountController {
     });
   });
 
-  initiateGoogleOAuth = asyncWrap(async (req: Request, res: Response) => {
+  private buildOAuthRedirect = async (req: Request, provider: "google" | "microsoft") => {
     const frontendUrl = this.emailAccountService.getFrontendUrl();
     const callbackURL = new URL("/admin/settings/email-accounts", frontendUrl);
     callbackURL.searchParams.set("oauth", "success");
@@ -235,13 +235,23 @@ export class EmailAccountController {
 
     const { url } = await auth.api.linkSocialAccount({
       body: {
-        provider: "google",
+        provider,
         callbackURL: callbackURL.toString(),
         errorCallbackURL: errorURL.toString(),
       },
       headers: fromNodeHeaders(req.headers),
     });
 
+    return url;
+  };
+
+  initiateGoogleOAuth = asyncWrap(async (req: Request, res: Response) => {
+    const url = await this.buildOAuthRedirect(req, "google");
+    res.redirect(url);
+  });
+
+  initiateMicrosoftOAuth = asyncWrap(async (req: Request, res: Response) => {
+    const url = await this.buildOAuthRedirect(req, "microsoft");
     res.redirect(url);
   });
 }

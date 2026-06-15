@@ -1,7 +1,7 @@
+import type { BetterAuthOptions } from "better-auth";
 import { symmetricDecrypt } from "better-auth/crypto";
 import { desc, eq } from "drizzle-orm";
 import { google } from "googleapis";
-import type { BetterAuthOptions } from "better-auth";
 import { db } from "../db/client";
 import { member, session } from "../db/schema/auth-schema";
 import { connectedEmailAccount } from "../db/schema/email";
@@ -9,77 +9,102 @@ import { getActiveOrganization } from "./helpers";
 
 const secret = process.env.BETTER_AUTH_SECRET!;
 
+function extractEmailFromIdToken(idToken: string): string | null {
+  try {
+    const payload = idToken.split(".")[1];
+    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = JSON.parse(Buffer.from(base64, "base64").toString());
+    return decoded.email || decoded.preferred_username || decoded.upn || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getOrgId(userId: string) {
+  const [latestSession] = await db
+    .select({ activeOrganizationId: session.activeOrganizationId })
+    .from(session)
+    .where(eq(session.userId, userId))
+    .orderBy(desc(session.createdAt))
+    .limit(1);
+
+  if (latestSession?.activeOrganizationId) {
+    return latestSession.activeOrganizationId;
+  }
+
+  const [membership] = await db
+    .select({ organizationId: member.organizationId })
+    .from(member)
+    .where(eq(member.userId, userId))
+    .limit(1);
+
+  return membership?.organizationId || null;
+}
+
 export const databaseHooks = {
   account: {
     create: {
       after: async (account: any) => {
-        if (account.providerId !== "google") return;
+        if (
+          account.providerId !== "google" &&
+          account.providerId !== "microsoft"
+        )
+          return;
+
         if (!account.accessToken) return;
 
         try {
+          const provider = account.providerId as "google" | "microsoft";
           let email = "";
 
-          // 1. Decode email from Google ID token
+          // 1. Decode email from ID token
           if (account.idToken) {
-            try {
-              const payload = account.idToken.split(".")[1];
-              const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
-              const decoded = JSON.parse(
-                Buffer.from(base64, "base64").toString(),
-              );
-              email = decoded.email || "";
-            } catch {}
+            email = extractEmailFromIdToken(account.idToken) || "";
           }
 
-          // 2. Fallback: decrypt token and fetch email from Google API
+          // 2. Fallback: decrypt token and fetch email from provider API
           if (!email) {
             try {
               const decryptedToken = await symmetricDecrypt({
                 key: secret,
                 data: account.accessToken,
               }).catch(() => account.accessToken);
-              const auth = new google.auth.OAuth2();
-              auth.setCredentials({ access_token: decryptedToken });
-              const { data } = await auth.request({
-                url: "https://www.googleapis.com/oauth2/v2/userinfo",
-              });
-              email = (data as any).email || "";
+
+              if (provider === "google") {
+                const auth = new google.auth.OAuth2();
+                auth.setCredentials({ access_token: decryptedToken });
+                const { data } = await auth.request({
+                  url: "https://www.googleapis.com/oauth2/v2/userinfo",
+                });
+                email = (data as any).email || "";
+              } else {
+                const response = await fetch(
+                  "https://graph.microsoft.com/v1.0/me",
+                  {
+                    headers: { Authorization: `Bearer ${decryptedToken}` },
+                  },
+                );
+                if (response.ok) {
+                  const data = await response.json();
+                  email = data.mail || data.userPrincipalName || "";
+                }
+              }
             } catch {}
           }
 
           if (!email) return;
 
-          // 3. Get org from user's active session, fall back to first membership
-          let orgId: string | null = null;
-
-          const [latestSession] = await db
-            .select({ activeOrganizationId: session.activeOrganizationId })
-            .from(session)
-            .where(eq(session.userId, account.userId))
-            .orderBy(desc(session.createdAt))
-            .limit(1);
-
-          if (latestSession?.activeOrganizationId) {
-            orgId = latestSession.activeOrganizationId;
-          } else {
-            const [membership] = await db
-              .select({ organizationId: member.organizationId })
-              .from(member)
-              .where(eq(member.userId, account.userId))
-              .limit(1);
-            orgId = membership?.organizationId || null;
-          }
-
+          const orgId = await getOrgId(account.userId);
           if (!orgId) return;
 
-          // 4. Save to connectedEmailAccount
+          // 3. Save to connectedEmailAccount
           await db
             .insert(connectedEmailAccount)
             .values({
               userId: account.userId,
               organizationId: orgId,
               email,
-              provider: "google",
+              provider,
               accessToken: account.accessToken,
               refreshToken: account.refreshToken,
               expiresAt: account.accessTokenExpiresAt,
@@ -95,7 +120,7 @@ export const databaseHooks = {
             });
         } catch (e) {
           console.error(
-            "Failed to connect Google email account via Better Auth hook:",
+            `Failed to connect ${account.providerId} email account via Better Auth hook:`,
             e,
           );
         }
