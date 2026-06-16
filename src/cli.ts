@@ -42,6 +42,7 @@ import { practiceAreaCaseTypes } from "./db/schema/practice-area-case-types";
 import { practiceAreaSubcategories } from "./db/schema/practice-area-subcategories";
 import { practiceAreas } from "./db/schema/practice-areas";
 import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
+import { seedSystemQuestionnaires } from "./db/seeds/system-questionnaires.seed";
 import { profiles } from "./db/schema/profiles";
 import { staff } from "./db/schema/staff";
 import { staffCertifications } from "./db/schema/staff-certifications";
@@ -2475,6 +2476,7 @@ const runInteractive = async () => {
         { value: "case-types-defaults", label: "Create Immigration case types" },
         { value: "case-types-edit", label: "Edit a case type" },
         { value: "case-types-delete", label: "Delete case types" },
+        { value: "seed-questionnaires", label: "Seed system questionnaires (one per case type)" },
         { value: "demo-data", label: "Seed demo data for an organization" },
         { value: "demo-data-drop", label: "Drop demo data for an organization" },
       ],
@@ -2531,6 +2533,10 @@ const runInteractive = async () => {
 
   if (action === "case-types-delete") {
     await deleteCaseTypes();
+  }
+
+  if (action === "seed-questionnaires") {
+    await seedSystemQuestionnaires();
   }
 
   if (action === "demo-data") {
@@ -2590,6 +2596,11 @@ program
   .command("seed-taxonomy")
   .description("Seed the full practice area taxonomy from the bundled catalog")
   .action(seedPracticeAreaTaxonomy);
+
+program
+  .command("seed-questionnaires")
+  .description("Seed system questionnaires (one per case type, idempotent)")
+  .action(seedSystemQuestionnaires);
 
 program
   .command("edit")
