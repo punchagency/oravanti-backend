@@ -1,9 +1,7 @@
 import crypto from "crypto";
+import { env } from "../config/env";
 
-const PRIMARY_KEY = Buffer.from(
-  process.env.SERVER_MASTER_KEY_PRIMARY as string,
-  "hex",
-);
+const PRIMARY_KEY = Buffer.from(env.SERVER_MASTER_KEY_PRIMARY, "hex");
 
 export interface EncryptedPackage {
   ciphertext: string;

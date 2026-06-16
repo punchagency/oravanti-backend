@@ -6,6 +6,7 @@ import morgan from "morgan";
 import swaggerUi from "swagger-ui-express";
 import { auth } from "./auth";
 import { db } from "./db/client";
+import { env } from "./config/env";
 
 import { errorMiddleware } from "./middleware/error.middleware";
 import { notFoundMiddleware } from "./middleware/notFound.middleware";
@@ -34,8 +35,8 @@ export class App {
   private initiatializeMiddlewares() {
     this.express.use(morgan("dev"));
 
-    const allowedOrigins = process.env.CORS_ORIGIN;
-    const betterAuthUrl = process.env.BETTER_AUTH_URL;
+    const allowedOrigins = env.CORS_ORIGIN;
+    const betterAuthUrl = env.BETTER_AUTH_URL;
 
     const makeCorsOrigin =
       (serverOrigin: string) =>

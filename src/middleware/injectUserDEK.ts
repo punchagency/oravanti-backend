@@ -1,15 +1,15 @@
 import { eq } from "drizzle-orm";
 import { NextFunction, Request, Response } from "express";
 import { db } from "../config/db";
+import { env } from "../config/env";
 import { AuthRequest } from "../middleware/auth.middleware";
 import { decryptUserDEK, rotateUserDEK } from "../utils/cryptoUtils";
 import { user } from "./../db/schema/auth-schema";
 
-const PRIMARY_KEY = Buffer.from(
-  process.env.SERVER_MASTER_KEY_PRIMARY as string,
-  "hex",
-);
-const OLD_KEY = Buffer.from(process.env.SERVER_MASTER_KEY_OLD as string, "hex");
+const PRIMARY_KEY = Buffer.from(env.SERVER_MASTER_KEY_PRIMARY, "hex");
+const OLD_KEY = env.SERVER_MASTER_KEY_OLD
+  ? Buffer.from(env.SERVER_MASTER_KEY_OLD, "hex")
+  : null;
 
 export async function injectUserDEK(
   req: AuthRequest,
@@ -45,6 +45,15 @@ export async function injectUserDEK(
       req.rawUserDEK = decryptUserDEK(userKeys, PRIMARY_KEY);
       return next();
     } catch (primaryErr) {
+      if (!OLD_KEY) {
+        console.error(
+          `🚨 CRITICAL CRYPTO_VERIFICATION_FAILURE for user ${userKeys.id}: no old key configured`,
+        );
+        return res.status(500).json({
+          error: "Cryptographic verification failure. Record is unreadable.",
+        });
+      }
+
       try {
         req.rawUserDEK = decryptUserDEK(userKeys, OLD_KEY);
 

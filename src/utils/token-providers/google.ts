@@ -1,13 +1,14 @@
 import { google } from "googleapis";
+import { env } from "../../config/env";
 import { OAuthTokenProvider } from "./base";
 
 export class GoogleTokenProvider extends OAuthTokenProvider {
   protected getClientId(): string {
-    return process.env.GOOGLE_CLIENT_ID!;
+    return env.GOOGLE_CLIENT_ID;
   }
 
   protected getClientSecret(): string {
-    return process.env.GOOGLE_CLIENT_SECRET!;
+    return env.GOOGLE_CLIENT_SECRET;
   }
 
   protected async refreshAccessToken(

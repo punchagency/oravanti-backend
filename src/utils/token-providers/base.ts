@@ -1,9 +1,10 @@
 import { symmetricDecrypt, symmetricEncrypt } from "better-auth/crypto";
 import { eq } from "drizzle-orm";
 import { db } from "../../db/client";
+import { env } from "../../config/env";
 import { connectedEmailAccount } from "../../db/schema/email";
 
-const secret = process.env.BETTER_AUTH_SECRET!;
+const secret = env.BETTER_AUTH_SECRET;
 
 export interface TokenCredentials {
   access_token: string | null | undefined;

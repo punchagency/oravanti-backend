@@ -9,11 +9,12 @@ import {
   emailDiscoveryCache,
   emailDomainCache,
 } from "../../db/schema/email";
+import { env } from "../../config/env";
 import { DnsService } from "../../utils/dns.service";
 import { ConflictError, NotFoundError } from "../../utils/error/app-error";
 
 function getFrontendUrl(): string {
-  const origins = (process.env.CORS_ORIGIN || "").split(",").map((o) => o.trim());
+  const origins = env.CORS_ORIGIN.split(",").map((o) => o.trim());
   return origins[0] || "http://localhost:5137";
 }
 
