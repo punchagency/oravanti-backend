@@ -13,6 +13,7 @@ import {
 import { Command } from "commander";
 import { createHash, randomUUID } from "crypto";
 import { and, asc, eq, inArray, ilike, or } from "drizzle-orm";
+import { env } from "./config/env";
 import { closeDb, db } from "./db/client";
 import { admins } from "./db/schema/admins";
 import { aiErrorFlags } from "./db/schema/ai-error-flags";
@@ -255,7 +256,7 @@ const timestampFromNow = (days: number, hour = 14) => {
 };
 
 const assertDevelopment = () => {
-  if (process.env.NODE_ENV !== "development") {
+  if (env.NODE_ENV !== "development") {
     throw new Error("Demo data seeding is only available in development.");
   }
 };

@@ -3,11 +3,12 @@ import { symmetricDecrypt } from "better-auth/crypto";
 import { desc, eq } from "drizzle-orm";
 import { google } from "googleapis";
 import { db } from "../db/client";
+import { env } from "../config/env";
 import { member, session } from "../db/schema/auth-schema";
 import { connectedEmailAccount } from "../db/schema/email";
 import { getActiveOrganization } from "./helpers";
 
-const secret = process.env.BETTER_AUTH_SECRET!;
+const secret = env.BETTER_AUTH_SECRET;
 
 function extractEmailFromIdToken(idToken: string): string | null {
   try {

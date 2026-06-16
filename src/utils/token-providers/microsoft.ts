@@ -1,3 +1,4 @@
+import { env } from "../../config/env";
 import { OAuthTokenProvider, type TokenCredentials } from "./base";
 
 export class MicrosoftTokenProvider extends OAuthTokenProvider {
@@ -9,11 +10,11 @@ export class MicrosoftTokenProvider extends OAuthTokenProvider {
   }
 
   protected getClientId(): string {
-    return process.env.MICROSOFT_CLIENT_ID!;
+    return env.MICROSOFT_CLIENT_ID;
   }
 
   protected getClientSecret(): string {
-    return process.env.MICROSOFT_CLIENT_SECRET!;
+    return env.MICROSOFT_CLIENT_SECRET;
   }
 
   protected async refreshAccessToken(

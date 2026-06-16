@@ -1,8 +1,8 @@
-import "dotenv/config";
+import { env } from "./config/env";
 import { App } from "./app";
 import { modules } from "./modules";
 
-const PORT = Number(process.env.PORT || 3000);
+const PORT = Number(env.PORT);
 
 const app = new App(modules, PORT);
 

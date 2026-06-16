@@ -1,8 +1,8 @@
 import crypto from "crypto";
+import { env } from "../config/env";
 
 const ALGORITHM = "aes-256-gcm";
-// Ensure this is a 64-character hex string in your .env
-const ENCRYPTION_KEY = process.env.EMAIL_ENCRYPTION_KEY!;
+const ENCRYPTION_KEY = env.EMAIL_ENCRYPTION_KEY;
 
 export function encryptCredential(text: string) {
   const iv = crypto.randomBytes(12);

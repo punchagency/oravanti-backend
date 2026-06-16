@@ -56,8 +56,8 @@ const normalizeEmail = (email: string) => email.toLowerCase().trim();
 
 const getPaymentEncryptionKey = () => {
   const secret =
-    process.env.CONTRACTOR_PAYMENT_ENCRYPTION_KEY ||
-    process.env.PAYMENT_ENCRYPTION_KEY;
+    env.CONTRACTOR_PAYMENT_ENCRYPTION_KEY ||
+    env.PAYMENT_ENCRYPTION_KEY;
 
   if (!secret) {
     throw new ExternalServiceError("Payment encryption key is not configured");
@@ -181,7 +181,7 @@ export class AuthService {
         name: "User",
         accountType: accountType,
         onboardingState: "email_unverified",
-        callbackURL: `${process.env.EMAIL_VERIFICATION_CALLBACK_URL}`,
+        callbackURL: env.EMAIL_VERIFICATION_CALLBACK_URL,
       },
       asResponse: true,
     });
@@ -296,7 +296,7 @@ export class AuthService {
         rememberMe: body.rememberMe,
         name: `${body.firstName.trim()} ${body.lastName.trim()}`,
         accountType: "contractor",
-        callbackURL: process.env.EMAIL_VERIFICATION_CALLBACK_URL,
+        callbackURL: env.EMAIL_VERIFICATION_CALLBACK_URL,
       },
       asResponse: true,
     });

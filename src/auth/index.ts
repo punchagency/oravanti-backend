@@ -95,8 +95,8 @@ export const auth = betterAuth({
   },
   socialProviders: {
     google: {
-      clientId: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      clientId: env.GOOGLE_CLIENT_ID,
+      clientSecret: env.GOOGLE_CLIENT_SECRET,
       scope: [
         "https://www.googleapis.com/auth/gmail.send",
         "https://www.googleapis.com/auth/gmail.readonly",
@@ -108,8 +108,8 @@ export const auth = betterAuth({
       accessType: "offline",
     },
     microsoft: {
-      clientId: process.env.MICROSOFT_CLIENT_ID!,
-      clientSecret: process.env.MICROSOFT_CLIENT_SECRET!,
+      clientId: env.MICROSOFT_CLIENT_ID,
+      clientSecret: env.MICROSOFT_CLIENT_SECRET,
       scope: [
         "https://graph.microsoft.com/Mail.Send",
         "https://graph.microsoft.com/Mail.Read",
