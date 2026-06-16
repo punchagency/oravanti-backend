@@ -72,6 +72,13 @@ import { SecurityService } from "./resources/settings/security/security.service"
 import { TasksController } from "./resources/tasks/tasks.controller";
 import { TasksRouter } from "./resources/tasks/tasks.routes";
 import { TasksService } from "./resources/tasks/tasks.service";
+import { LeadsController } from "./resources/leads/leads.controller";
+import {
+  LeadsRouter,
+  AgreementsRouter,
+  WebhooksRouter,
+  CaseWorkflowRouter,
+} from "./resources/leads/leads.routes";
 import { CommonValidation } from "./validation/common.validation";
 
 const PORT = Number(process.env.PORT || 3000);
@@ -239,6 +246,12 @@ const organizationService = new OrganizationService();
 const organizationController = new OrganizationController(organizationService);
 const organizationRouter = new OrganizationRouter(organizationController);
 
+const leadsController = new LeadsController();
+const leadsRouter = new LeadsRouter(leadsController);
+const agreementsRouter = new AgreementsRouter(leadsController);
+const webhooksRouter = new WebhooksRouter(leadsController);
+const caseWorkflowRouter = new CaseWorkflowRouter(leadsController);
+
 const app = new App(
   [
     authRouter,
@@ -264,6 +277,10 @@ const app = new App(
     dataAccessRouter,
     securityRouter,
     organizationRouter,
+    leadsRouter,
+    agreementsRouter,
+    webhooksRouter,
+    caseWorkflowRouter,
   ],
   PORT,
 );
