@@ -60,8 +60,7 @@ export class AIErrorDetectionService {
         documentId: aiErrorFlags.documentId,
         createdAt: aiErrorFlags.createdAt,
         clientId: clients.id,
-        clientFirst: clients.firstName,
-        clientLast: clients.lastName,
+        clientDisplayName: clients.displayName,
         caseType: cases.caseType,
       })
       .from(aiErrorFlags)
@@ -87,7 +86,7 @@ export class AIErrorDetectionService {
         caseId: r.caseId,
         documentId: r.documentId,
         createdAt: r.createdAt,
-        client: { id: r.clientId, name: `${r.clientFirst} ${r.clientLast}` },
+        client: { id: r.clientId, name: r.clientDisplayName ?? '' },
         caseType: r.caseType,
       }));
   };

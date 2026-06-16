@@ -24,7 +24,7 @@ import { cases } from "./db/schema/cases";
 import { certifications } from "./db/schema/certifications";
 import { clientRequests } from "./db/schema/client-requests";
 import { clients } from "./db/schema/clients";
-import { companies } from "./db/schema/companies";
+import { clientCompanies } from "./db/schema/client-companies";
 import { contractors } from "./db/schema/contractors";
 import {
   documentAccess,
@@ -125,7 +125,7 @@ type NewAssignmentRow = typeof assignments.$inferInsert;
 type NewCalendarEventRow = typeof calendarEvents.$inferInsert;
 type NewClientRequestRow = typeof clientRequests.$inferInsert;
 type NewClientRow = typeof clients.$inferInsert;
-type NewCompanyRow = typeof companies.$inferInsert;
+type NewClientCompanyRow = typeof clientCompanies.$inferInsert;
 type NewContractorRow = typeof contractors.$inferInsert;
 type NewDocumentRow = typeof documents.$inferInsert;
 type NewDocumentAccessRow = typeof documentAccess.$inferInsert;
@@ -1598,9 +1598,22 @@ const seedDemoData = async (organizationId?: string) => {
       "Hospitality",
       "Energy",
     ] as const;
-    const companyValues: NewCompanyRow[] = range(DEMO_TARGETS.companies).map((index) => ({
+    // Create company-type client entities first, then link client_companies
+    const companyClientEntities = await tx
+      .insert(clients)
+      .values(
+        range(DEMO_TARGETS.companies).map((index) => ({
+          organizationId: firm.id,
+          entityType: "company" as const,
+          displayName: `Demo ${pick(industries, index)} Company ${suffix}-${pad(index + 1)}`,
+          status: (index % 13 === 0 ? "inactive" : "active") as "active" | "inactive",
+        })),
+      )
+      .returning();
+    const companyValues: NewClientCompanyRow[] = companyClientEntities.map((clientEntity, index) => ({
       organizationId: firm.id,
-      companyName: `Demo ${pick(industries, index)} Company ${suffix}-${pad(index + 1)}`,
+      clientId: clientEntity.id,
+      companyName: clientEntity.displayName,
       companyType: pick(companyTypes, index),
       ein: `9${index}-${String(Date.now()).slice(-7)}`,
       industry: pick(industries, index),
@@ -1612,12 +1625,8 @@ const seedDemoData = async (organizationId?: string) => {
       country: "United States",
       phone: `+1-555-${pad(2100 + index, 4)}`,
       website: `https://demo-company-${pad(index + 1)}.example`,
-      primaryContactName: `Demo Contact ${pad(index + 1)}`,
-      primaryContactEmail: `company.contact.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
-      primaryContactPhone: `+1-555-${pad(2200 + index, 4)}`,
-      status: index % 13 === 0 ? "inactive" : "active",
     }));
-    const createdCompanies = await tx.insert(companies).values(companyValues).returning();
+    const createdCompanies = await tx.insert(clientCompanies).values(companyValues).returning();
 
     const firstNames = [
       "Sofia",
@@ -1658,23 +1667,11 @@ const seedDemoData = async (organizationId?: string) => {
     const clientValues: NewClientRow[] = range(DEMO_TARGETS.clients).map((index) => {
       const firstName = pick(firstNames, index);
       const lastName = pick(lastNames, index);
-      const isCompanyRepresentative = index < createdCompanies.length || index % 4 === 0;
-      const company = isCompanyRepresentative ? pick(createdCompanies, index) : undefined;
-
       return {
         organizationId: firm.id,
-        firstName,
-        lastName,
-        email: `client.${firstName}.${lastName}.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`.toLowerCase(),
-        phone: `+1-555-${pad(3100 + index, 4)}`,
-        dateOfBirth: `${1975 + (index % 24)}-${pad((index % 12) + 1, 2)}-${pad((index % 27) + 1, 2)}`,
-        nationality: pick(nationalities, index),
-        countryOfOrigin: pick(nationalities, index).replace("South Korean", "South Korea"),
-        passportNumber: `P${pad(index + 1, 6)}${String(Date.now()).slice(-3)}`,
-        currentAddress: `${200 + index} Client Ave, ${pick(["Austin", "Dallas", "Houston"] as const, index)}, TX`,
-        clientType: isCompanyRepresentative ? "company_representative" : "individual",
-        companyId: company?.id,
-        status: index % 17 === 0 ? "pending" : index % 19 === 0 ? "inactive" : "active",
+        entityType: "individual" as const,
+        displayName: `${firstName} ${lastName}`,
+        status: (index % 17 === 0 ? "pending" : index % 19 === 0 ? "inactive" : "active") as "active" | "inactive" | "pending",
       };
     });
     const createdClients = await tx.insert(clients).values(clientValues).returning();
@@ -1708,9 +1705,8 @@ const seedDemoData = async (organizationId?: string) => {
             filingDate: isoDateFromNow(-90 + index),
             estimatedCompletionDate: isoDateFromNow(45 + index),
             nextAppointment: isoDateFromNow(7 + (index % 30)),
-            description: `Demo ${practiceArea.name.toLowerCase()} case for ${client.firstName} ${client.lastName}.`,
+            description: `Demo ${practiceArea.name.toLowerCase()} case for ${client.displayName}.`,
             notes: `Generated demo matter ${pad(index + 1)} for workflow coverage.`,
-            currentEmployer: client.companyId ? pick(createdCompanies, index).companyName : undefined,
             createdByAdminId: firmAdmin.id,
             createdByStaffId: assignedStaff.id,
           };
@@ -2289,8 +2285,8 @@ const dropDemoData = async (organizationId?: string) => {
     record("teams", await tx.delete(teams).where(eq(teams.organizationId, firm.id)).returning());
     record("staff", await tx.delete(staff).where(eq(staff.organizationId, firm.id)).returning());
     record(
-      "companies",
-      await tx.delete(companies).where(eq(companies.organizationId, firm.id)).returning(),
+      "clientCompanies",
+      await tx.delete(clientCompanies).where(eq(clientCompanies.organizationId, firm.id)).returning(),
     );
     record(
       "firmPracticeAreas",

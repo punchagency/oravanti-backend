@@ -324,8 +324,7 @@ export class DocumentsService {
       const searchCondition = or(
         ilike(documents.title, search),
         ilike(documentVersions.originalFileName, search),
-        ilike(clients.firstName, search),
-        ilike(clients.lastName, search),
+        ilike(clients.displayName, search),
       );
 
       if (searchCondition) {
@@ -373,8 +372,7 @@ export class DocumentsService {
         caseId: cases.id,
         caseType: cases.caseType,
         clientId: clients.id,
-        clientFirst: clients.firstName,
-        clientLast: clients.lastName,
+        clientDisplayName: clients.displayName,
       })
       .from(documents)
       .innerJoin(
@@ -424,7 +422,7 @@ export class DocumentsService {
             }
           : null,
         client: row.clientId
-          ? { id: row.clientId, name: `${row.clientFirst} ${row.clientLast}` }
+          ? { id: row.clientId, name: row.clientDisplayName ?? '' }
           : null,
       })),
       {
@@ -491,8 +489,7 @@ export class DocumentsService {
         id: cases.id,
         caseType: cases.caseType,
         clientId: clients.id,
-        clientFirst: clients.firstName,
-        clientLast: clients.lastName,
+        clientDisplayName: clients.displayName,
       })
       .from(documentCaseLinks)
       .innerJoin(cases, eq(cases.id, documentCaseLinks.caseId))
@@ -513,7 +510,7 @@ export class DocumentsService {
         client: linkedCase.clientId
           ? {
               id: linkedCase.clientId,
-              name: `${linkedCase.clientFirst} ${linkedCase.clientLast}`,
+              name: linkedCase.clientDisplayName ?? '',
             }
           : null,
       })),

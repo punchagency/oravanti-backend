@@ -1,12 +1,22 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
+import { clientContacts } from "../../db/schema/client-contacts";
 import { clientRequests } from "../../db/schema/client-requests";
 import { clients } from "../../db/schema/clients";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const TERMINATION_DAYS = 135;
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type ClientSummary = {
+  id: string;
+  displayName: string;
+  email: string | null;
+  phone: string | null;
+};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -42,7 +52,7 @@ const computeRecommendedAction = (status: string, days: number): string => {
 // ─── Build client record ──────────────────────────────────────────────────────
 
 const buildClientRecord = (
-  client: typeof clients.$inferSelect,
+  client: ClientSummary,
   pendingRequests: {
     id: string;
     clientId: string;
@@ -57,8 +67,7 @@ const buildClientRecord = (
     return {
       client: {
         id: client.id,
-        firstName: client.firstName,
-        lastName: client.lastName,
+        displayName: client.displayName,
         email: client.email,
         phone: client.phone,
       },
@@ -106,8 +115,7 @@ const buildClientRecord = (
   return {
     client: {
       id: client.id,
-      firstName: client.firstName,
-      lastName: client.lastName,
+      displayName: client.displayName,
       email: client.email,
       phone: client.phone,
     },
@@ -120,13 +128,37 @@ const buildClientRecord = (
   };
 };
 
+// ─── Fetch clients with primary contact ──────────────────────────────────────
+
+const fetchClientsWithContact = async (
+  organizationId: string,
+): Promise<ClientSummary[]> => {
+  return db
+    .select({
+      id: clients.id,
+      displayName: clients.displayName,
+      email: clientContacts.email,
+      phone: clientContacts.phone,
+    })
+    .from(clients)
+    .leftJoin(
+      clientContacts,
+      and(
+        eq(clientContacts.clientId, clients.id),
+        eq(clientContacts.isPrimary, true),
+      ),
+    )
+    .where(eq(clients.organizationId, organizationId));
+};
+
 // ─── Stats ────────────────────────────────────────────────────────────────────
 
 export const getStats = async (organizationId: string) => {
   const allClients = await db
-    .select()
+    .select({ id: clients.id })
     .from(clients)
     .where(eq(clients.organizationId, organizationId));
+
   const pending = await db
     .select()
     .from(clientRequests)
@@ -164,10 +196,7 @@ export const getAllClientResponsiveness = async (
   organizationId: string,
   filters?: { filter?: string; search?: string },
 ) => {
-  const allClients = await db
-    .select()
-    .from(clients)
-    .where(eq(clients.organizationId, organizationId));
+  const allClients = await fetchClientsWithContact(organizationId);
 
   const pendingRows = await db
     .select({
@@ -202,7 +231,7 @@ export const getAllClientResponsiveness = async (
       return false;
     if (filters?.search) {
       const q = filters.search.toLowerCase();
-      const name = `${r.client.firstName} ${r.client.lastName}`.toLowerCase();
+      const name = r.client.displayName.toLowerCase();
       const caseNum = r.pendingRequests[0]?.caseNumber?.toLowerCase() ?? "";
       if (!name.includes(q) && !caseNum.includes(q)) return false;
     }
@@ -252,9 +281,22 @@ export const getTerminationLetterData = async (
   organizationId: string,
 ) => {
   const [client] = await db
-    .select()
+    .select({
+      id: clients.id,
+      displayName: clients.displayName,
+      email: clientContacts.email,
+      phone: clientContacts.phone,
+    })
     .from(clients)
+    .leftJoin(
+      clientContacts,
+      and(
+        eq(clientContacts.clientId, clients.id),
+        eq(clientContacts.isPrimary, true),
+      ),
+    )
     .where(and(eq(clients.id, clientId), eq(clients.organizationId, organizationId)));
+
   if (!client) return null;
 
   const pending = await db
@@ -287,8 +329,7 @@ export const getTerminationLetterData = async (
     generatedAt: new Date().toISOString(),
     client: {
       id: client.id,
-      firstName: client.firstName,
-      lastName: client.lastName,
+      displayName: client.displayName,
       email: client.email,
       phone: client.phone,
     },
@@ -301,9 +342,22 @@ export const getTerminationLetterData = async (
 
 export const exportClientReport = async (clientId: string, organizationId: string) => {
   const [client] = await db
-    .select()
+    .select({
+      id: clients.id,
+      displayName: clients.displayName,
+      email: clientContacts.email,
+      phone: clientContacts.phone,
+    })
     .from(clients)
+    .leftJoin(
+      clientContacts,
+      and(
+        eq(clientContacts.clientId, clients.id),
+        eq(clientContacts.isPrimary, true),
+      ),
+    )
     .where(and(eq(clients.id, clientId), eq(clients.organizationId, organizationId)));
+
   if (!client) return null;
 
   const allRequests = await db
@@ -338,8 +392,7 @@ export const exportClientReport = async (clientId: string, organizationId: strin
     exportedAt: new Date().toISOString(),
     client: {
       id: client.id,
-      firstName: client.firstName,
-      lastName: client.lastName,
+      displayName: client.displayName,
       email: client.email,
       phone: client.phone,
     },

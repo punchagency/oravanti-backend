@@ -201,8 +201,7 @@ export const getCalendarEvents = async (
       parentEventId: calendarEvents.parentEventId,
       teamId: calendarEvents.teamId,
       clientId: clients.id,
-      clientFirstName: clients.firstName,
-      clientLastName: clients.lastName,
+      clientDisplayName: clients.displayName,
       staffId: staff.id,
       staffFirstName: staff.firstName,
       staffLastName: staff.lastName,
@@ -227,7 +226,7 @@ export const getCalendarEvents = async (
     parentEventId: r.parentEventId,
     teamId: r.teamId,
     client: r.clientId
-      ? { id: r.clientId, name: `${r.clientFirstName} ${r.clientLastName}` }
+      ? { id: r.clientId, name: r.clientDisplayName ?? '' }
       : null,
     assignedStaff: r.staffId
       ? {
