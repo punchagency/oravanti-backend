@@ -56,8 +56,7 @@ const normalizeEmail = (email: string) => email.toLowerCase().trim();
 
 const getPaymentEncryptionKey = () => {
   const secret =
-    env.CONTRACTOR_PAYMENT_ENCRYPTION_KEY ||
-    env.PAYMENT_ENCRYPTION_KEY;
+    env.CONTRACTOR_PAYMENT_ENCRYPTION_KEY || env.PAYMENT_ENCRYPTION_KEY;
 
   if (!secret) {
     throw new ExternalServiceError("Payment encryption key is not configured");
@@ -174,22 +173,29 @@ export class AuthService {
       );
     }
 
-    const response = await auth.api.signUpEmail({
-      headers: clientHeaders,
-      body: {
-        ...body,
-        name: "User",
-        accountType: accountType,
-        onboardingState: "email_unverified",
-        callbackURL: env.EMAIL_VERIFICATION_CALLBACK_URL,
-      },
-      asResponse: true,
-    });
+    let response;
+    try {
+      response = await auth.api.signUpEmail({
+        headers: clientHeaders,
+        body: {
+          ...body,
+          name: "User",
+          accountType: accountType,
+          onboardingState: "email_unverified",
+          callbackURL: env.EMAIL_VERIFICATION_CALLBACK_URL,
+        },
+        asResponse: true,
+      });
+    } catch (e) {
+      console.log(e);
+      throw e;
+    }
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const errorCode = errorData.code;
       const message = errorData.message || "Registration failed";
+      console.log(message);
 
       switch (errorCode) {
         case "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL":
