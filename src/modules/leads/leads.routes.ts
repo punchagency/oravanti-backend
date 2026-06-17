@@ -42,6 +42,14 @@ export class LeadsRouter {
     );
 
     this.router.get(
+      "/stage-counts",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      ctrl.getLeadStageCounts,
+    );
+
+    this.router.get(
       "/:id",
       requireAuth,
       requireStaffOrAdmin,

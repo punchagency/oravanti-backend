@@ -30,6 +30,11 @@ export class LeadsController {
     res.json({ success: true, data: result });
   };
 
+  getLeadStageCounts = async (req: AuthRequest, res: Response) => {
+    const counts = await this.svc.getLeadStageCounts(req.organizationId!);
+    res.json({ success: true, data: counts });
+  };
+
   getLeadById = async (req: AuthRequest, res: Response) => {
     const lead = await this.svc.getLeadById(
       req.params.id as string,

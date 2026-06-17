@@ -403,6 +403,29 @@ const archiveLead = async (id: string, organizationId: string) => {
   return updated;
 };
 
+const getLeadStageCounts = async (organizationId: string) => {
+  const rows = await db
+    .select({ stage: leads.pipelineStage, total: count() })
+    .from(leads)
+    .where(eq(leads.organizationId, organizationId))
+    .groupBy(leads.pipelineStage);
+
+  const result: Record<string, number> = {
+    lead_inbox: 0,
+    conflict_check: 0,
+    questionnaire: 0,
+    consultation: 0,
+    fee_agreement: 0,
+    case_opening: 0,
+  };
+
+  for (const row of rows) {
+    result[row.stage] = Number(row.total);
+  }
+
+  return result;
+};
+
 // Stage transitions are validated here before updating
 const STAGE_ORDER = [
   "lead_inbox",
@@ -1585,6 +1608,7 @@ export class LeadsService {
   getLeadById = getLeadById;
   updateLead = updateLead;
   archiveLead = archiveLead;
+  getLeadStageCounts = getLeadStageCounts;
   advanceLeadStage = advanceLeadStage;
   runConflictCheck = runConflictCheck;
   getConflictCheck = getConflictCheck;
