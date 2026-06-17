@@ -63,7 +63,10 @@ export class LeadsRouter {
       requireAuth,
       requireStaffOrAdmin,
       setFirmContext,
-      validateRequest({ params: v.idParamsSchema, body: v.updateLeadBodySchema }),
+      validateRequest({
+        params: v.idParamsSchema,
+        body: v.updateLeadBodySchema,
+      }),
       ctrl.updateLead,
     );
 
@@ -72,17 +75,23 @@ export class LeadsRouter {
       requireAuth,
       requireStaffOrAdmin,
       setFirmContext,
-      validateRequest({ params: v.idParamsSchema, body: v.advanceStageBodySchema }),
+      validateRequest({
+        params: v.idParamsSchema,
+        body: v.advanceStageBodySchema,
+      }),
       ctrl.advanceLeadStage,
     );
 
     this.router.patch(
-      "/:id/archive",
+      "/:id/status",
       requireAuth,
       requireStaffOrAdmin,
       setFirmContext,
-      validateRequest({ params: v.idParamsSchema }),
-      ctrl.archiveLead,
+      validateRequest({
+        params: v.idParamsSchema,
+        body: v.updateLeadStatusSchema,
+      }),
+      ctrl.updateLeadStatus,
     );
 
     // ── Conflict Check ────────────────────────────────────────────────────────
@@ -144,7 +153,10 @@ export class LeadsRouter {
       requireAuth,
       requireStaffOrAdmin,
       setFirmContext,
-      validateRequest({ params: v.idParamsSchema, body: v.createConsultationBodySchema }),
+      validateRequest({
+        params: v.idParamsSchema,
+        body: v.createConsultationBodySchema,
+      }),
       ctrl.createConsultation,
     );
 
@@ -162,7 +174,10 @@ export class LeadsRouter {
       requireAuth,
       requireStaffOrAdmin,
       setFirmContext,
-      validateRequest({ params: v.idParamsSchema, body: v.updateConsultationBodySchema }),
+      validateRequest({
+        params: v.idParamsSchema,
+        body: v.updateConsultationBodySchema,
+      }),
       ctrl.updateConsultation,
     );
 
@@ -173,7 +188,10 @@ export class LeadsRouter {
       requireAuth,
       requireStaffOrAdmin,
       setFirmContext,
-      validateRequest({ params: v.idParamsSchema, body: v.generateFeeAgreementBodySchema }),
+      validateRequest({
+        params: v.idParamsSchema,
+        body: v.generateFeeAgreementBodySchema,
+      }),
       ctrl.generateFeeAgreement,
     );
 
@@ -304,7 +322,10 @@ export class CaseWorkflowRouter {
       requireAuth,
       requireStaffOrAdmin,
       setFirmContext,
-      validateRequest({ params: v.caseIdParamsSchema, body: v.addAdversePartyBodySchema }),
+      validateRequest({
+        params: v.caseIdParamsSchema,
+        body: v.addAdversePartyBodySchema,
+      }),
       ctrl.addAdverseParty,
     );
 

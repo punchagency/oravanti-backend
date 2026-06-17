@@ -7,9 +7,15 @@ export const idParamsSchema = z.object({ id: uuid });
 
 export const caseIdParamsSchema = z.object({ caseId: uuid });
 
-export const caseIdStepIdParamsSchema = z.object({ caseId: uuid, stepId: uuid });
+export const caseIdStepIdParamsSchema = z.object({
+  caseId: uuid,
+  stepId: uuid,
+});
 
-export const adversePartyParamsSchema = z.object({ caseId: uuid, partyId: uuid });
+export const adversePartyParamsSchema = z.object({
+  caseId: uuid,
+  partyId: uuid,
+});
 
 export const agreementIdParamsSchema = z.object({ agreementId: uuid });
 
@@ -52,6 +58,10 @@ export const updateLeadBodySchema = z.object({
   situationSummary: z.string().optional(),
   notes: z.string().optional(),
   assignedStaffId: optionalUuid,
+});
+
+export const updateLeadStatusSchema = z.object({
+  status: z.enum(["archived", "reviewed"]),
 });
 
 export const advanceStageBodySchema = z.object({

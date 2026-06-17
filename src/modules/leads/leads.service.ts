@@ -392,10 +392,14 @@ const updateLead = async (
   return updated;
 };
 
-const archiveLead = async (id: string, organizationId: string) => {
+const updateLeadStatus = async (
+  id: string,
+  organizationId: string,
+  status: 'archived' | 'reviewed'
+) => {
   const [updated] = await db
     .update(leads)
-    .set({ status: "archived", updatedAt: new Date() })
+    .set({ status, updatedAt: new Date() })
     .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
     .returning();
 
@@ -1607,7 +1611,7 @@ export class LeadsService {
   getAllLeads = getAllLeads;
   getLeadById = getLeadById;
   updateLead = updateLead;
-  archiveLead = archiveLead;
+  updateLeadStatus = updateLeadStatus;
   getLeadStageCounts = getLeadStageCounts;
   advanceLeadStage = advanceLeadStage;
   runConflictCheck = runConflictCheck;

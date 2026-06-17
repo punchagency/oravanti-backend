@@ -54,10 +54,11 @@ export class LeadsController {
     res.json({ success: true, data: lead });
   };
 
-  archiveLead = async (req: AuthRequest, res: Response) => {
-    const lead = await this.svc.archiveLead(
+  updateLeadStatus = async (req: AuthRequest, res: Response) => {
+    const lead = await this.svc.updateLeadStatus(
       req.params.id as string,
       req.organizationId!,
+      req.body.status
     );
     res.json({ success: true, data: lead });
   };
