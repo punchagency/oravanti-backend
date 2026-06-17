@@ -3,7 +3,6 @@ import { and, count, desc, eq, ilike, or } from "drizzle-orm";
 import { emailService } from "../../utils/email/email.service";
 import { db } from "../../db/client";
 import { adverseParties } from "../../db/schema/adverse-parties";
-import { clientCompanies } from "../../db/schema/client-companies";
 import { clientContacts } from "../../db/schema/client-contacts";
 import { clients } from "../../db/schema/clients";
 import { conflictChecks } from "../../db/schema/conflict-checks";
@@ -25,7 +24,11 @@ import {
   questionnaireResponses,
 } from "../../db/schema/questionnaires";
 import { staff } from "../../db/schema/staff";
-import { caseWorkflowSteps, workflowTemplates, workflowTemplateSteps } from "../../db/schema/workflow";
+import {
+  caseWorkflowSteps,
+  workflowTemplates,
+  workflowTemplateSteps,
+} from "../../db/schema/workflow";
 import {
   BadRequestError,
   ConflictError,
@@ -38,6 +41,7 @@ import {
 } from "../../utils/pagination";
 import { stubESignatureProvider } from "./esignature.provider";
 import { generateCaseNumber } from "../cases/cases.service";
+import { user } from "../../db/schema/auth-schema";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -65,17 +69,32 @@ const buildSchemaSnapshot = async (
   const systemSections = await db
     .select()
     .from(caseTypeQuestionnaireSections)
-    .where(eq(caseTypeQuestionnaireSections.questionnaireId, caseTypeQuestionnaireId));
+    .where(
+      eq(
+        caseTypeQuestionnaireSections.questionnaireId,
+        caseTypeQuestionnaireId,
+      ),
+    );
 
   const systemQuestions = await db
     .select()
     .from(caseTypeQuestionnaireQuestions)
-    .where(eq(caseTypeQuestionnaireQuestions.questionnaireId, caseTypeQuestionnaireId));
+    .where(
+      eq(
+        caseTypeQuestionnaireQuestions.questionnaireId,
+        caseTypeQuestionnaireId,
+      ),
+    );
 
   const systemLogicRules = await db
     .select()
     .from(caseTypeQuestionnaireLogicRules)
-    .where(eq(caseTypeQuestionnaireLogicRules.questionnaireId, caseTypeQuestionnaireId));
+    .where(
+      eq(
+        caseTypeQuestionnaireLogicRules.questionnaireId,
+        caseTypeQuestionnaireId,
+      ),
+    );
 
   const firmSections = await db
     .select()
@@ -201,7 +220,7 @@ const buildSchemaSnapshot = async (
 
 // ─── Leads CRUD ───────────────────────────────────────────────────────────────
 
-export const createLead = async (
+const createLead = async (
   organizationId: string,
   data: {
     name: string;
@@ -236,7 +255,7 @@ export const createLead = async (
   return lead;
 };
 
-export const getAllLeads = async (
+const getAllLeads = async (
   organizationId: string,
   filters: Partial<PaginationParams> & {
     stage?: string;
@@ -249,9 +268,11 @@ export const getAllLeads = async (
 ) => {
   const conditions = [eq(leads.organizationId, organizationId)];
 
-  if (filters.stage) conditions.push(eq(leads.pipelineStage, filters.stage as any));
+  if (filters.stage)
+    conditions.push(eq(leads.pipelineStage, filters.stage as any));
   if (filters.status) conditions.push(eq(leads.status, filters.status as any));
-  if (filters.practiceAreaId) conditions.push(eq(leads.practiceAreaId, filters.practiceAreaId));
+  if (filters.practiceAreaId)
+    conditions.push(eq(leads.practiceAreaId, filters.practiceAreaId));
   if (filters.source) conditions.push(eq(leads.source, filters.source as any));
   if (filters.search) {
     const q = `%${filters.search}%`;
@@ -261,11 +282,7 @@ export const getAllLeads = async (
   const where = and(...conditions);
 
   if (filters.all) {
-    return db
-      .select()
-      .from(leads)
-      .where(where)
-      .orderBy(desc(leads.receivedAt));
+    return db.select().from(leads).where(where).orderBy(desc(leads.receivedAt));
   }
 
   const page = filters.page ?? 1;
@@ -285,10 +302,14 @@ export const getAllLeads = async (
     .limit(limit)
     .offset(offset);
 
-  return buildPaginatedResponse(rows, { page, limit, total: Number(countRow?.total ?? 0) });
+  return buildPaginatedResponse(rows, {
+    page,
+    limit,
+    total: Number(countRow?.total ?? 0),
+  });
 };
 
-export const getLeadById = async (id: string, organizationId: string) => {
+const getLeadById = async (id: string, organizationId: string) => {
   const [lead] = await db
     .select()
     .from(leads)
@@ -333,10 +354,16 @@ export const getLeadById = async (id: string, organizationId: string) => {
         : Promise.resolve(null),
     ]);
 
-  return { ...lead, conflictCheck, questionnaireSend, consultation, feeAgreement };
+  return {
+    ...lead,
+    conflictCheck,
+    questionnaireSend,
+    consultation,
+    feeAgreement,
+  };
 };
 
-export const updateLead = async (
+const updateLead = async (
   id: string,
   organizationId: string,
   data: Partial<{
@@ -361,7 +388,7 @@ export const updateLead = async (
   return updated;
 };
 
-export const archiveLead = async (id: string, organizationId: string) => {
+const archiveLead = async (id: string, organizationId: string) => {
   const [updated] = await db
     .update(leads)
     .set({ status: "archived", updatedAt: new Date() })
@@ -382,7 +409,7 @@ const STAGE_ORDER = [
   "case_opening",
 ] as const;
 
-export const advanceLeadStage = async (
+const advanceLeadStage = async (
   id: string,
   organizationId: string,
   newStage: string,
@@ -409,11 +436,7 @@ export const advanceLeadStage = async (
         .where(eq(conflictChecks.id, lead.conflictCheckId))
         .limit(1);
 
-      if (
-        cc &&
-        cc.status === "conflict_found" &&
-        !cc.supervisorOverrideById
-      ) {
+      if (cc && cc.status === "conflict_found" && !cc.supervisorOverrideById) {
         throw new ConflictError(
           "Conflict found — supervisor override required before advancing to questionnaire",
         );
@@ -428,7 +451,9 @@ export const advanceLeadStage = async (
           .where(eq(feeAgreements.id, lead.feeAgreementId))
           .limit(1);
         if (!fa || fa.status !== "signed") {
-          throw new ConflictError("Fee agreement must be signed before opening a case");
+          throw new ConflictError(
+            "Fee agreement must be signed before opening a case",
+          );
         }
       }
     }
@@ -445,7 +470,7 @@ export const advanceLeadStage = async (
 
 // ─── Conflict Check ───────────────────────────────────────────────────────────
 
-export const runConflictCheck = async (
+const runConflictCheck = async (
   leadId: string,
   organizationId: string,
   checkedById?: string,
@@ -520,7 +545,10 @@ export const runConflictCheck = async (
 
     for (const m of nameMatches) {
       const contactName = `${m.firstName} ${m.lastName}`.toLowerCase();
-      if (contactName === normalizedName && !matches.find((x) => x.matchedId === (m.clientId ?? m.id))) {
+      if (
+        contactName === normalizedName &&
+        !matches.find((x) => x.matchedId === (m.clientId ?? m.id))
+      ) {
         matches.push({
           type: "current_client",
           matchedId: m.clientId ?? m.id,
@@ -549,7 +577,8 @@ export const runConflictCheck = async (
       type: "adverse_party",
       matchedId: m.id,
       matchedName: m.name,
-      confidence: normalizeName(m.name) === normalizedName ? "exact_name" : "fuzzy_name",
+      confidence:
+        normalizeName(m.name) === normalizedName ? "exact_name" : "fuzzy_name",
       rule: "ABA_1.7",
       details: `Name matches adverse party on case ${m.caseId}`,
     });
@@ -578,7 +607,10 @@ export const runConflictCheck = async (
     const emailMatch = m.email.toLowerCase() === normalizedEmail;
     const nameMatch = contactName === normalizedName;
 
-    if ((emailMatch || nameMatch) && !matches.find((x) => x.matchedId === (m.clientId ?? m.id))) {
+    if (
+      (emailMatch || nameMatch) &&
+      !matches.find((x) => x.matchedId === (m.clientId ?? m.id))
+    ) {
       matches.push({
         type: "former_client",
         matchedId: m.clientId ?? m.id,
@@ -618,7 +650,14 @@ export const runConflictCheck = async (
   } else {
     const [created] = await db
       .insert(conflictChecks)
-      .values({ organizationId, leadId, status, matches, checkedById, checkedAt: now })
+      .values({
+        organizationId,
+        leadId,
+        status,
+        matches,
+        checkedById,
+        checkedAt: now,
+      })
       .returning();
     checkRecord = created;
 
@@ -644,7 +683,7 @@ export const runConflictCheck = async (
   return checkRecord;
 };
 
-export const getConflictCheck = async (leadId: string, organizationId: string) => {
+const getConflictCheck = async (leadId: string, organizationId: string) => {
   const [lead] = await db
     .select()
     .from(leads)
@@ -663,7 +702,7 @@ export const getConflictCheck = async (leadId: string, organizationId: string) =
   return cc ?? null;
 };
 
-export const resolveConflictCheck = async (
+const resolveConflictCheck = async (
   leadId: string,
   organizationId: string,
   staffId: string,
@@ -680,7 +719,8 @@ export const resolveConflictCheck = async (
     .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)))
     .limit(1);
 
-  if (!lead || !lead.conflictCheckId) throw new NotFoundError("No conflict check found for this lead");
+  if (!lead || !lead.conflictCheckId)
+    throw new NotFoundError("No conflict check found for this lead");
 
   const now = new Date();
 
@@ -699,7 +739,8 @@ export const resolveConflictCheck = async (
   }
 
   // manual_review
-  if (!data.status) throw new BadRequestError("status is required for manual_review action");
+  if (!data.status)
+    throw new BadRequestError("status is required for manual_review action");
   const [updated] = await db
     .update(conflictChecks)
     .set({
@@ -725,7 +766,7 @@ export const resolveConflictCheck = async (
 
 // ─── Questionnaire ────────────────────────────────────────────────────────────
 
-export const sendQuestionnaire = async (
+const sendQuestionnaire = async (
   leadId: string,
   organizationId: string,
   sentById?: string,
@@ -737,7 +778,10 @@ export const sendQuestionnaire = async (
     .limit(1);
 
   if (!lead) throw new NotFoundError("Lead not found");
-  if (!lead.caseTypeId) throw new BadRequestError("Lead must have a case type assigned before sending a questionnaire");
+  if (!lead.caseTypeId)
+    throw new BadRequestError(
+      "Lead must have a case type assigned before sending a questionnaire",
+    );
 
   const [systemQ] = await db
     .select()
@@ -746,11 +790,14 @@ export const sendQuestionnaire = async (
     .limit(1);
 
   if (!systemQ) {
-    throw new NotFoundError("No system questionnaire found for this case type. Contact a platform administrator.");
+    throw new NotFoundError(
+      "No system questionnaire found for this case type. Contact a platform administrator.",
+    );
   }
 
   const schemaSnapshot = await buildSchemaSnapshot(organizationId, systemQ.id);
-  if (!schemaSnapshot) throw new NotFoundError("Could not build questionnaire snapshot");
+  if (!schemaSnapshot)
+    throw new NotFoundError("Could not build questionnaire snapshot");
 
   const accessToken = generateAccessToken();
   const [send] = await db
@@ -769,10 +816,17 @@ export const sendQuestionnaire = async (
   const now = new Date();
   await db
     .update(leads)
-    .set({ questionnaireSendId: send.id, pipelineStage: "questionnaire", updatedAt: now })
+    .set({
+      questionnaireSendId: send.id,
+      pipelineStage: "questionnaire",
+      updatedAt: now,
+    })
     .where(eq(leads.id, leadId));
 
-  const baseUrl = process.env.APP_URL ?? process.env.BETTER_AUTH_URL ?? "http://localhost:3000";
+  const baseUrl =
+    process.env.APP_URL ??
+    process.env.BETTER_AUTH_URL ??
+    "http://localhost:3000";
   const clientLink = `${baseUrl}/questionnaire/${accessToken}`;
 
   // Fire-and-forget email to lead
@@ -790,7 +844,7 @@ export const sendQuestionnaire = async (
   return { send: { ...send, accessToken }, clientLink, sentAt: send.sentAt };
 };
 
-export const getLeadQuestionnaire = async (leadId: string, organizationId: string) => {
+const getLeadQuestionnaire = async (leadId: string, organizationId: string) => {
   const [lead] = await db
     .select()
     .from(leads)
@@ -819,7 +873,7 @@ export const getLeadQuestionnaire = async (leadId: string, organizationId: strin
 
 // ─── Consultation ──────────────────────────────────────────────────────────────
 
-export const createConsultation = async (
+const createConsultation = async (
   leadId: string,
   organizationId: string,
   data: {
@@ -838,7 +892,8 @@ export const createConsultation = async (
     .limit(1);
 
   if (!lead) throw new NotFoundError("Lead not found");
-  if (lead.consultationId) throw new ConflictError("Consultation already exists for this lead");
+  if (lead.consultationId)
+    throw new ConflictError("Consultation already exists for this lead");
 
   const [consultation] = await db
     .insert(consultations)
@@ -857,23 +912,33 @@ export const createConsultation = async (
   const now = new Date();
   await db
     .update(leads)
-    .set({ consultationId: consultation.id, pipelineStage: "consultation", updatedAt: now })
+    .set({
+      consultationId: consultation.id,
+      pipelineStage: "consultation",
+      updatedAt: now,
+    })
     .where(eq(leads.id, leadId));
 
   // Notify attorney and lead
-  const scheduledStr = data.scheduledAt.toLocaleString("en-US", { timeZone: "UTC" });
+  const scheduledStr = data.scheduledAt.toLocaleString("en-US", {
+    timeZone: "UTC",
+  });
 
   if (data.leadAttorneyId) {
     const [attorney] = await db
-      .select({ email: staff.email, firstName: staff.firstName })
+      .select({
+        email: user.email,
+        firstName: staff.firstName,
+      })
       .from(staff)
+      .leftJoin(user, eq(staff.userId, user.id))
       .where(eq(staff.id, data.leadAttorneyId))
       .limit(1);
 
     if (attorney) {
       emailService
         .sendEmail({
-          to: attorney.email,
+          to: attorney.email!,
           subject: `New consultation assigned: ${lead.name}`,
           html: `<p>Hi ${attorney.firstName},</p>
             <p>A consultation has been scheduled with <strong>${lead.name}</strong>.</p>
@@ -901,7 +966,7 @@ export const createConsultation = async (
   return consultation;
 };
 
-export const getConsultation = async (leadId: string, organizationId: string) => {
+const getConsultation = async (leadId: string, organizationId: string) => {
   const [lead] = await db
     .select()
     .from(leads)
@@ -920,7 +985,7 @@ export const getConsultation = async (leadId: string, organizationId: string) =>
   return consultation ?? null;
 };
 
-export const updateConsultation = async (
+const updateConsultation = async (
   leadId: string,
   organizationId: string,
   data: Partial<{
@@ -940,11 +1005,18 @@ export const updateConsultation = async (
     .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)))
     .limit(1);
 
-  if (!lead || !lead.consultationId) throw new NotFoundError("No consultation found for this lead");
+  if (!lead || !lead.consultationId)
+    throw new NotFoundError("No consultation found for this lead");
 
   const [updated] = await db
     .update(consultations)
-    .set({ ...data, mode: data.mode as any, status: data.status as any, outcome: data.outcome as any, updatedAt: new Date() })
+    .set({
+      ...data,
+      mode: data.mode as any,
+      status: data.status as any,
+      outcome: data.outcome as any,
+      updatedAt: new Date(),
+    })
     .where(eq(consultations.id, lead.consultationId))
     .returning();
 
@@ -953,10 +1025,13 @@ export const updateConsultation = async (
 
 // ─── Fee Agreement ─────────────────────────────────────────────────────────────
 
-export const generateFeeAgreement = async (
+const generateFeeAgreement = async (
   leadId: string,
   organizationId: string,
-  data: { agreementType?: string; generatedFrom?: "questionnaire_auto" | "manual" },
+  data: {
+    agreementType?: string;
+    generatedFrom?: "questionnaire_auto" | "manual";
+  },
 ) => {
   const [lead] = await db
     .select()
@@ -965,13 +1040,12 @@ export const generateFeeAgreement = async (
     .limit(1);
 
   if (!lead) throw new NotFoundError("Lead not found");
-  if (lead.feeAgreementId) throw new ConflictError("Fee agreement already exists for this lead");
+  if (lead.feeAgreementId)
+    throw new ConflictError("Fee agreement already exists for this lead");
 
   const documentContent = `Fee Agreement for ${lead.name} — ${data.agreementType ?? "Standard Retainer"}`;
-  const { envelopeId, signingLink } = await stubESignatureProvider.createEnvelope(
-    lead.email,
-    documentContent,
-  );
+  const { envelopeId, signingLink } =
+    await stubESignatureProvider.createEnvelope(lead.email, documentContent);
 
   const [agreement] = await db
     .insert(feeAgreements)
@@ -991,7 +1065,11 @@ export const generateFeeAgreement = async (
   const now = new Date();
   await db
     .update(leads)
-    .set({ feeAgreementId: agreement.id, pipelineStage: "fee_agreement", updatedAt: now })
+    .set({
+      feeAgreementId: agreement.id,
+      pipelineStage: "fee_agreement",
+      updatedAt: now,
+    })
     .where(eq(leads.id, leadId));
 
   // Email signing link to lead
@@ -1009,7 +1087,7 @@ export const generateFeeAgreement = async (
   return { ...agreement, clientSigningLink: signingLink };
 };
 
-export const getFeeAgreement = async (leadId: string, organizationId: string) => {
+const getFeeAgreement = async (leadId: string, organizationId: string) => {
   const [lead] = await db
     .select()
     .from(leads)
@@ -1028,17 +1106,21 @@ export const getFeeAgreement = async (leadId: string, organizationId: string) =>
   return agreement ?? null;
 };
 
-export const nudgeClient = async (agreementId: string, organizationId: string) => {
+const nudgeClient = async (agreementId: string, organizationId: string) => {
   const [agreement] = await db
     .select()
     .from(feeAgreements)
     .where(
-      and(eq(feeAgreements.id, agreementId), eq(feeAgreements.organizationId, organizationId)),
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
     )
     .limit(1);
 
   if (!agreement) throw new NotFoundError("Agreement not found");
-  if (agreement.status === "signed") throw new ConflictError("Agreement is already signed");
+  if (agreement.status === "signed")
+    throw new ConflictError("Agreement is already signed");
 
   const [lead] = await db
     .select()
@@ -1068,7 +1150,7 @@ export const nudgeClient = async (agreementId: string, organizationId: string) =
 
 // ─── eSignature Webhook ────────────────────────────────────────────────────────
 
-export const handleESignatureWebhook = async (data: {
+const handleESignatureWebhook = async (data: {
   envelopeId: string;
   status: string;
   signedAt?: string;
@@ -1080,13 +1162,18 @@ export const handleESignatureWebhook = async (data: {
     .where(eq(feeAgreements.envelopeId, data.envelopeId))
     .limit(1);
 
-  if (!agreement) return { ignored: true, reason: "No agreement found for envelope" };
+  if (!agreement)
+    return { ignored: true, reason: "No agreement found for envelope" };
 
   // Idempotent: already processed
-  if (agreement.status === "signed") return { ignored: true, reason: "Already signed" };
+  if (agreement.status === "signed")
+    return { ignored: true, reason: "Already signed" };
 
   if (data.status !== "completed") {
-    return { ignored: true, reason: `Envelope status ${data.status} not actionable` };
+    return {
+      ignored: true,
+      reason: `Envelope status ${data.status} not actionable`,
+    };
   }
 
   const now = new Date();
@@ -1110,7 +1197,7 @@ export const handleESignatureWebhook = async (data: {
 
 // ─── Case Opening ──────────────────────────────────────────────────────────────
 
-export const openCase = async (
+const openCase = async (
   leadId: string,
   organizationId: string,
   data: {
@@ -1127,7 +1214,8 @@ export const openCase = async (
     .limit(1);
 
   if (!lead) throw new NotFoundError("Lead not found");
-  if (lead.convertedCaseId) throw new ConflictError("This lead has already been converted to a case");
+  if (lead.convertedCaseId)
+    throw new ConflictError("This lead has already been converted to a case");
 
   // Validate prerequisites
   if (lead.conflictCheckId) {
@@ -1138,7 +1226,9 @@ export const openCase = async (
       .limit(1);
 
     if (cc && cc.status === "conflict_found" && !cc.supervisorOverrideById) {
-      throw new ConflictError("Conflict check must be resolved before opening a case");
+      throw new ConflictError(
+        "Conflict check must be resolved before opening a case",
+      );
     }
   }
 
@@ -1150,12 +1240,16 @@ export const openCase = async (
       .limit(1);
 
     if (!fa || fa.status !== "signed") {
-      throw new ConflictError("Fee agreement must be signed before opening a case");
+      throw new ConflictError(
+        "Fee agreement must be signed before opening a case",
+      );
     }
   }
 
   if (!lead.practiceAreaId || !lead.caseTypeId) {
-    throw new BadRequestError("Lead must have a practice area and case type before opening a case");
+    throw new BadRequestError(
+      "Lead must have a practice area and case type before opening a case",
+    );
   }
 
   return db.transaction(async (tx) => {
@@ -1220,7 +1314,8 @@ export const openCase = async (
         priority: "medium",
         assignmentType: "internal_team",
         teamId: data.teamId,
-        assignedStaffId: data.assignedStaffId ?? lead.assignedStaffId ?? undefined,
+        assignedStaffId:
+          data.assignedStaffId ?? lead.assignedStaffId ?? undefined,
         requiredCertifications: [],
         filingDate: new Date().toISOString().split("T")[0],
         description: lead.situationSummary ?? `Case for ${lead.name}`,
@@ -1292,22 +1387,28 @@ export const openCase = async (
       await tx
         .update(questionnaireResponses)
         .set({ clientId: client.id, caseId: newCase.id, updatedAt: now })
-        .where(eq(questionnaireResponses.questionnaireSendId, lead.questionnaireSendId));
+        .where(
+          eq(
+            questionnaireResponses.questionnaireSendId,
+            lead.questionnaireSendId,
+          ),
+        );
     }
 
     // 7. Notify
     const assignedStaffId = data.assignedStaffId ?? lead.assignedStaffId;
     if (assignedStaffId) {
       const [assignedStaff] = await tx
-        .select({ email: staff.email, firstName: staff.firstName })
+        .select({ email: user.email, firstName: staff.firstName })
         .from(staff)
+        .leftJoin(user, eq(staff.userId, user.id))
         .where(eq(staff.id, assignedStaffId))
         .limit(1);
 
       if (assignedStaff) {
         emailService
           .sendEmail({
-            to: assignedStaff.email,
+            to: assignedStaff.email!,
             subject: `New case opened: ${newCase.caseNumber}`,
             html: `<p>Hi ${assignedStaff.firstName},</p>
               <p>A new case has been opened for ${lead.name}.</p>
@@ -1340,7 +1441,7 @@ export const openCase = async (
 
 // ─── Case Workflow Steps ──────────────────────────────────────────────────────
 
-export const getCaseWorkflowSteps = async (caseId: string, organizationId: string) => {
+const getCaseWorkflowSteps = async (caseId: string, organizationId: string) => {
   return db
     .select()
     .from(caseWorkflowSteps)
@@ -1352,7 +1453,7 @@ export const getCaseWorkflowSteps = async (caseId: string, organizationId: strin
     );
 };
 
-export const updateCaseWorkflowStep = async (
+const updateCaseWorkflowStep = async (
   caseId: string,
   stepId: string,
   organizationId: string,
@@ -1386,16 +1487,19 @@ export const updateCaseWorkflowStep = async (
 
 // ─── Adverse Parties ──────────────────────────────────────────────────────────
 
-export const getAdverseParties = async (caseId: string, organizationId: string) => {
+const getAdverseParties = async (caseId: string, organizationId: string) => {
   return db
     .select()
     .from(adverseParties)
     .where(
-      and(eq(adverseParties.caseId, caseId), eq(adverseParties.organizationId, organizationId)),
+      and(
+        eq(adverseParties.caseId, caseId),
+        eq(adverseParties.organizationId, organizationId),
+      ),
     );
 };
 
-export const addAdverseParty = async (
+const addAdverseParty = async (
   caseId: string,
   organizationId: string,
   data: {
@@ -1422,15 +1526,26 @@ export const addAdverseParty = async (
   return created;
 };
 
-export const updateAdverseParty = async (
+const updateAdverseParty = async (
   caseId: string,
   partyId: string,
   organizationId: string,
-  data: Partial<{ name: string; email: string; entityType: string; relationship: string; notes: string }>,
+  data: Partial<{
+    name: string;
+    email: string;
+    entityType: string;
+    relationship: string;
+    notes: string;
+  }>,
 ) => {
   const [updated] = await db
     .update(adverseParties)
-    .set({ ...data, entityType: data.entityType as any, relationship: data.relationship as any, updatedAt: new Date() })
+    .set({
+      ...data,
+      entityType: data.entityType as any,
+      relationship: data.relationship as any,
+      updatedAt: new Date(),
+    })
     .where(
       and(
         eq(adverseParties.id, partyId),
@@ -1444,7 +1559,7 @@ export const updateAdverseParty = async (
   return updated;
 };
 
-export const deleteAdverseParty = async (
+const deleteAdverseParty = async (
   caseId: string,
   partyId: string,
   organizationId: string,

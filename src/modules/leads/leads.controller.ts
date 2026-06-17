@@ -1,46 +1,24 @@
 import { Request, Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import { parsePaginationQuery } from "../../utils/pagination";
-import {
-  createLead,
-  getAllLeads,
-  getLeadById,
-  updateLead,
-  archiveLead,
-  advanceLeadStage,
-  runConflictCheck,
-  getConflictCheck,
-  resolveConflictCheck,
-  sendQuestionnaire,
-  getLeadQuestionnaire,
-  createConsultation,
-  getConsultation,
-  updateConsultation,
-  generateFeeAgreement,
-  getFeeAgreement,
-  nudgeClient,
-  handleESignatureWebhook,
-  openCase,
-  getCaseWorkflowSteps,
-  updateCaseWorkflowStep,
-  getAdverseParties,
-  addAdverseParty,
-  updateAdverseParty,
-  deleteAdverseParty,
-} from "./leads.service";
+import { LeadsService } from "./leads.service";
 
 export class LeadsController {
-  // ─── Leads CRUD ───────────────────────────────────────────────────────────────
+  private svc: LeadsService;
+
+  constructor(leadsService: LeadsService) {
+    this.svc = leadsService;
+  }
 
   createLead = async (req: AuthRequest, res: Response) => {
-    const lead = await createLead(req.organizationId!, req.body);
+    const lead = await this.svc.createLead(req.organizationId!, req.body);
     res.status(201).json({ success: true, data: lead });
   };
 
   getAllLeads = async (req: AuthRequest, res: Response) => {
     const { stage, status, practiceAreaId, source, search, all } = req.query;
     const pagination = all ? {} : parsePaginationQuery(req.query);
-    const result = await getAllLeads(req.organizationId!, {
+    const result = await this.svc.getAllLeads(req.organizationId!, {
       ...pagination,
       stage: stage as string | undefined,
       status: status as string | undefined,
@@ -53,23 +31,34 @@ export class LeadsController {
   };
 
   getLeadById = async (req: AuthRequest, res: Response) => {
-    const lead = await getLeadById(req.params.id as string, req.organizationId!);
-    if (!lead) return res.status(404).json({ success: false, error: "Lead not found" });
+    const lead = await this.svc.getLeadById(
+      req.params.id as string,
+      req.organizationId!,
+    );
+    if (!lead)
+      return res.status(404).json({ success: false, error: "Lead not found" });
     res.json({ success: true, data: lead });
   };
 
   updateLead = async (req: AuthRequest, res: Response) => {
-    const lead = await updateLead(req.params.id as string, req.organizationId!, req.body);
+    const lead = await this.svc.updateLead(
+      req.params.id as string,
+      req.organizationId!,
+      req.body,
+    );
     res.json({ success: true, data: lead });
   };
 
   archiveLead = async (req: AuthRequest, res: Response) => {
-    const lead = await archiveLead(req.params.id as string, req.organizationId!);
+    const lead = await this.svc.archiveLead(
+      req.params.id as string,
+      req.organizationId!,
+    );
     res.json({ success: true, data: lead });
   };
 
   advanceLeadStage = async (req: AuthRequest, res: Response) => {
-    const lead = await advanceLeadStage(
+    const lead = await this.svc.advanceLeadStage(
       req.params.id as string,
       req.organizationId!,
       req.body.stage,
@@ -80,7 +69,7 @@ export class LeadsController {
   // ─── Conflict Check ──────────────────────────────────────────────────────────
 
   runConflictCheck = async (req: AuthRequest, res: Response) => {
-    const result = await runConflictCheck(
+    const result = await this.svc.runConflictCheck(
       req.params.id as string,
       req.organizationId!,
       req.staffId,
@@ -89,13 +78,16 @@ export class LeadsController {
   };
 
   getConflictCheck = async (req: AuthRequest, res: Response) => {
-    const result = await getConflictCheck(req.params.id as string, req.organizationId!);
+    const result = await this.svc.getConflictCheck(
+      req.params.id as string,
+      req.organizationId!,
+    );
     res.json({ success: true, data: result });
   };
 
   resolveConflictCheck = async (req: AuthRequest, res: Response) => {
     const staffId = req.staffId ?? req.adminId;
-    const result = await resolveConflictCheck(
+    const result = await this.svc.resolveConflictCheck(
       req.params.id as string,
       req.organizationId!,
       staffId!,
@@ -107,7 +99,7 @@ export class LeadsController {
   // ─── Questionnaire ───────────────────────────────────────────────────────────
 
   sendQuestionnaire = async (req: AuthRequest, res: Response) => {
-    const result = await sendQuestionnaire(
+    const result = await this.svc.sendQuestionnaire(
       req.params.id as string,
       req.organizationId!,
       req.staffId,
@@ -116,36 +108,50 @@ export class LeadsController {
   };
 
   getLeadQuestionnaire = async (req: AuthRequest, res: Response) => {
-    const result = await getLeadQuestionnaire(req.params.id as string, req.organizationId!);
+    const result = await this.svc.getLeadQuestionnaire(
+      req.params.id as string,
+      req.organizationId!,
+    );
     res.json({ success: true, data: result });
   };
 
   // ─── Consultation ────────────────────────────────────────────────────────────
 
   createConsultation = async (req: AuthRequest, res: Response) => {
-    const result = await createConsultation(req.params.id as string, req.organizationId!, {
-      ...req.body,
-      scheduledAt: new Date(req.body.scheduledAt),
-    });
+    const result = await this.svc.createConsultation(
+      req.params.id as string,
+      req.organizationId!,
+      {
+        ...req.body,
+        scheduledAt: new Date(req.body.scheduledAt),
+      },
+    );
     res.status(201).json({ success: true, data: result });
   };
 
   getConsultation = async (req: AuthRequest, res: Response) => {
-    const result = await getConsultation(req.params.id as string, req.organizationId!);
+    const result = await this.svc.getConsultation(
+      req.params.id as string,
+      req.organizationId!,
+    );
     res.json({ success: true, data: result });
   };
 
   updateConsultation = async (req: AuthRequest, res: Response) => {
     const body = { ...req.body };
     if (body.scheduledAt) body.scheduledAt = new Date(body.scheduledAt);
-    const result = await updateConsultation(req.params.id as string, req.organizationId!, body);
+    const result = await this.svc.updateConsultation(
+      req.params.id as string,
+      req.organizationId!,
+      body,
+    );
     res.json({ success: true, data: result });
   };
 
   // ─── Fee Agreement ───────────────────────────────────────────────────────────
 
   generateFeeAgreement = async (req: AuthRequest, res: Response) => {
-    const result = await generateFeeAgreement(
+    const result = await this.svc.generateFeeAgreement(
       req.params.id as string,
       req.organizationId!,
       req.body,
@@ -154,26 +160,32 @@ export class LeadsController {
   };
 
   getFeeAgreement = async (req: AuthRequest, res: Response) => {
-    const result = await getFeeAgreement(req.params.id as string, req.organizationId!);
+    const result = await this.svc.getFeeAgreement(
+      req.params.id as string,
+      req.organizationId!,
+    );
     res.json({ success: true, data: result });
   };
 
   nudgeClient = async (req: AuthRequest, res: Response) => {
-    const result = await nudgeClient(req.params.agreementId as string, req.organizationId!);
+    const result = await this.svc.nudgeClient(
+      req.params.agreementId as string,
+      req.organizationId!,
+    );
     res.json({ success: true, data: result });
   };
 
   // ─── eSignature Webhook (public) ─────────────────────────────────────────────
 
   handleESignatureWebhook = async (req: Request, res: Response) => {
-    const result = await handleESignatureWebhook(req.body);
+    const result = await this.svc.handleESignatureWebhook(req.body);
     res.json({ success: true, data: result });
   };
 
   // ─── Case Opening ─────────────────────────────────────────────────────────────
 
   openCase = async (req: AuthRequest, res: Response) => {
-    const result = await openCase(
+    const result = await this.svc.openCase(
       req.params.id as string,
       req.organizationId!,
       req.body,
@@ -185,12 +197,15 @@ export class LeadsController {
   // ─── Case Workflow Steps ─────────────────────────────────────────────────────
 
   getCaseWorkflowSteps = async (req: AuthRequest, res: Response) => {
-    const steps = await getCaseWorkflowSteps(req.params.caseId as string, req.organizationId!);
+    const steps = await this.svc.getCaseWorkflowSteps(
+      req.params.caseId as string,
+      req.organizationId!,
+    );
     res.json({ success: true, data: steps });
   };
 
   updateCaseWorkflowStep = async (req: AuthRequest, res: Response) => {
-    const step = await updateCaseWorkflowStep(
+    const step = await this.svc.updateCaseWorkflowStep(
       req.params.caseId as string,
       req.params.stepId as string,
       req.organizationId!,
@@ -202,17 +217,24 @@ export class LeadsController {
   // ─── Adverse Parties ─────────────────────────────────────────────────────────
 
   getAdverseParties = async (req: AuthRequest, res: Response) => {
-    const parties = await getAdverseParties(req.params.caseId as string, req.organizationId!);
+    const parties = await this.svc.getAdverseParties(
+      req.params.caseId as string,
+      req.organizationId!,
+    );
     res.json({ success: true, data: parties });
   };
 
   addAdverseParty = async (req: AuthRequest, res: Response) => {
-    const party = await addAdverseParty(req.params.caseId as string, req.organizationId!, req.body);
+    const party = await this.svc.addAdverseParty(
+      req.params.caseId as string,
+      req.organizationId!,
+      req.body,
+    );
     res.status(201).json({ success: true, data: party });
   };
 
   updateAdverseParty = async (req: AuthRequest, res: Response) => {
-    const party = await updateAdverseParty(
+    const party = await this.svc.updateAdverseParty(
       req.params.caseId as string,
       req.params.partyId as string,
       req.organizationId!,
@@ -222,7 +244,11 @@ export class LeadsController {
   };
 
   deleteAdverseParty = async (req: AuthRequest, res: Response) => {
-    await deleteAdverseParty(req.params.caseId as string, req.params.partyId as string, req.organizationId!);
+    await this.svc.deleteAdverseParty(
+      req.params.caseId as string,
+      req.params.partyId as string,
+      req.organizationId!,
+    );
     res.json({ success: true });
   };
 }
