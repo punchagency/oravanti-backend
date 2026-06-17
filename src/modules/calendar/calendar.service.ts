@@ -205,7 +205,7 @@ export const getCalendarEvents = async (
       staffId: staff.id,
       staffFirstName: staff.firstName,
       staffLastName: staff.lastName,
-      staffRole: staff.role,
+      staffRole: staff.jobTitle,
     })
     .from(calendarEvents)
     .leftJoin(clients, eq(clients.id, calendarEvents.clientId))

@@ -72,7 +72,7 @@ export const getAllCases = async (
       assignedStaffId: staff.id,
       assigneeFirstName: staff.firstName,
       assigneeLastName: staff.lastName,
-      assigneeRole: staff.role,
+      assigneeRole: staff.jobTitle,
     })
     .from(cases)
     .leftJoin(clients, eq(clients.id, cases.clientId))

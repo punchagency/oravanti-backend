@@ -28,8 +28,6 @@ const ensureAdminRecord = async (userId: string, organizationId: string) => {
     .select({
       name: user.name,
       email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
       image: user.image,
     })
     .from(user)
@@ -43,8 +41,8 @@ const ensureAdminRecord = async (userId: string, organizationId: string) => {
     .values({
       userId,
       organizationId,
-      firstName: authUser.firstName || authUser.name.split(" ")[0] || "Admin",
-      lastName: authUser.lastName || authUser.name.split(" ").slice(1).join(" ") || "User",
+      firstName: authUser.name.split(" ")[0] || "Admin",
+      lastName: authUser.name.split(" ").slice(1).join(" ") || "User",
       email: authUser.email,
       avatarUrl: authUser.image,
     })

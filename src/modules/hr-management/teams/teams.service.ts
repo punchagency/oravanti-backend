@@ -36,7 +36,7 @@ export class TeamsService {
         throw new NotFoundError("Team lead not found");
       }
 
-      if (!ELIGIBLE_LEAD_ROLES.includes(lead[0].role as any)) {
+      if (!ELIGIBLE_LEAD_ROLES.includes(lead[0].jobTitle as any)) {
         throw new BadRequestError(
           "Only Senior Paralegals and Attorneys can be team leads",
         );
@@ -65,7 +65,7 @@ export class TeamsService {
         throw new NotFoundError("Team lead not found");
       }
 
-      if (!ELIGIBLE_LEAD_ROLES.includes(lead[0].role as any)) {
+      if (!ELIGIBLE_LEAD_ROLES.includes(lead[0].jobTitle as any)) {
         throw new BadRequestError(
           "Only Senior Paralegals and Attorneys can be team leads",
         );
@@ -93,12 +93,12 @@ export class TeamsService {
     return db
       .select()
       .from(staff)
-      .where(and(eq(staff.organizationId, organizationId), eq(staff.role, "senior_paralegal")))
+      .where(and(eq(staff.organizationId, organizationId), eq(staff.jobTitle, "senior_paralegal")))
       .union(
         db
           .select()
           .from(staff)
-          .where(and(eq(staff.organizationId, organizationId), eq(staff.role, "attorney"))),
+          .where(and(eq(staff.organizationId, organizationId), eq(staff.jobTitle, "attorney"))),
       );
   };
 }
