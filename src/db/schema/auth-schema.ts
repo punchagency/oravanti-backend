@@ -1,12 +1,30 @@
 import { relations } from "drizzle-orm";
 import {
+  boolean,
+  index,
+  jsonb,
+  pgEnum,
   pgTable,
   text,
   timestamp,
-  boolean,
-  index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+
+// ==========================================
+// 1. SYSTEM ENUMS
+// ==========================================
+export const accountTypeEnum = pgEnum("user_account_type", [
+  "firm_admin",
+  "staff",
+  "contractor",
+  "client",
+]);
+
+export const onboardingStatusEnum = pgEnum("onboarding_status", [
+  "email_unverified",
+  "email_verified",
+  "completed",
+]);
 
 export const user = pgTable("user", {
   id: text("id").primaryKey(),
@@ -20,13 +38,92 @@ export const user = pgTable("user", {
     .$onUpdate(() => /* @__PURE__ */ new Date())
     .notNull(),
   twoFactorEnabled: boolean("two_factor_enabled").default(false),
-  firstName: text("first_name"),
-  lastName: text("last_name"),
-  phoneNumber: text("phone_number"),
-  jobTitle: text("job_title"),
-  barNumber: text("bar_number"),
-  userType: text("user_type").notNull().default("firm_user"),
+
+  // Custom App Extensions
+  accountType: accountTypeEnum("user_account_type"),
+  onboardingState: onboardingStatusEnum("onboarding_state")
+    .default("email_unverified")
+    .notNull(),
+  tosAccepted: boolean("tos_accepted").default(false).notNull(),
+  tosAcceptedAt: timestamp("tos_accepted_at"),
+
+  // // To be removed later
+  // firstName: text("first_name"),
+  // lastName: text("last_name"),
+  // phoneNumber: text("phone_number"),
+  // jobTitle: text("job_title"),
+  // barNumber: text("bar_number"),
+
+  // Crypto key management
+  encryptedDEK: text("encrypted_dek"),
+  dekIv: text("dek_iv"),
+  dekTag: text("dek_tag"),
 });
+
+export const domainStatusEnum = pgEnum("domain_status", [
+  "pending",
+  "verified",
+  "failed",
+]);
+
+// // FIRM PROFILES (B2B Hub)
+export const organization = pgTable(
+  "organization",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    slug: text("slug").notNull().unique(),
+    logo: text("logo"),
+    createdAt: timestamp("created_at").notNull(),
+    metadata: text("metadata"),
+
+    // Domain Verification Additions ---
+    domain: text("domain"),
+    isDomainVerified: boolean("is_domain_verified").default(false).notNull(),
+    verificationToken: text("verification_token"),
+    // White-labeling
+    espDomainId: text("esp_domain_id"),
+    dnsRecords: jsonb("dns_records"),
+    domainStatus: domainStatusEnum("domain_status").default("pending"),
+
+    emailAddress: text("email_address"),
+    phoneNumber: text("phone_number"),
+    address: text("address"),
+    city: text("city"),
+    state: text("state"),
+    zipCode: text("zip_code"),
+    website: text("website"),
+    taxId: text("tax_id"),
+  },
+  (table) => [uniqueIndex("organization_slug_uidx").on(table.slug)],
+);
+
+// // FIRM PROFILES (B2B Hub)
+// export const firmProfiles = pgTable("firm_profiles", {
+//   id: uuid("id").defaultRandom().primaryKey(),
+//   creatorId: text("creator_id")
+//     .references(() => user.id)
+//     .notNull(),
+//
+//   // Step 1: Domain Check Data
+//   domain: text("domain").unique(),
+//   isDomainVerified: boolean("is_domain_verified").default(false).notNull(),
+//   verificationToken: text("verification_token"),
+//
+//   // Step 3: Full Firm Details
+//   firmName: text("firm_name"),
+//   firmEmail: text("firm_email"),
+//   firmPhoneNumber: text("firm_phone_number"),
+//   address: text("address"),
+//   city: text("city"),
+//   state: text("state"),
+//   zipcode: text("zipcode"),
+//   website: text("website"),
+//   taxId: text("tax_id"),
+//
+//   createdAt: timestamp("created_at").defaultNow().notNull(),
+//   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+// });
 
 export const session = pgTable(
   "session",
@@ -87,27 +184,6 @@ export const verification = pgTable(
       .notNull(),
   },
   (table) => [index("verification_identifier_idx").on(table.identifier)],
-);
-
-export const organization = pgTable(
-  "organization",
-  {
-    id: text("id").primaryKey(),
-    name: text("name").notNull(),
-    slug: text("slug").notNull().unique(),
-    logo: text("logo"),
-    createdAt: timestamp("created_at").notNull(),
-    metadata: text("metadata"),
-    emailAddress: text("email_address"),
-    phoneNumber: text("phone_number"),
-    address: text("address"),
-    city: text("city"),
-    state: text("state"),
-    zipCode: text("zip_code"),
-    website: text("website"),
-    taxId: text("tax_id"),
-  },
-  (table) => [uniqueIndex("organization_slug_uidx").on(table.slug)],
 );
 
 export const member = pgTable(

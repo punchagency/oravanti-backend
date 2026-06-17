@@ -6,25 +6,26 @@ import morgan from "morgan";
 import swaggerUi from "swagger-ui-express";
 import { auth } from "./auth";
 import { db } from "./db/client";
+import { env } from "./config/env";
 
 import { errorMiddleware } from "./middleware/error.middleware";
 import { notFoundMiddleware } from "./middleware/notFound.middleware";
 import { swaggerSpec } from "./swagger";
 
-export interface RouterEntry {
+export interface Module {
   router: Router;
   path: string;
 }
 
 export class App {
   public express: Application;
-  private routers: RouterEntry[];
+  private modules: Module[];
   private port: number;
 
-  constructor(routers: RouterEntry[], port: number) {
+  constructor(modules: Module[], port: number) {
     this.express = express();
     this.port = port;
-    this.routers = routers;
+    this.modules = modules;
 
     this.initiatializeMiddlewares();
     this.initializeRoutes();
@@ -32,8 +33,10 @@ export class App {
   }
 
   private initiatializeMiddlewares() {
-    const allowedOrigins = process.env.CORS_ORIGIN;
-    const betterAuthUrl = process.env.BETTER_AUTH_URL;
+    this.express.use(morgan("dev"));
+
+    const allowedOrigins = env.CORS_ORIGIN;
+    const betterAuthUrl = env.BETTER_AUTH_URL;
 
     const makeCorsOrigin =
       (serverOrigin: string) =>
@@ -115,8 +118,8 @@ export class App {
       }),
     );
 
-    this.routers.forEach((entry: RouterEntry) => {
-      this.express.use(entry.path, entry.router);
+    this.modules.forEach((module: Module) => {
+      this.express.use(module.path, module.router);
     });
   }
 

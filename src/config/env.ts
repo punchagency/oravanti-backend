@@ -12,13 +12,23 @@ const REQUIRED_ENV_KEYS = [
   "BETTER_AUTH_URL",
   "SMTP_EMAIL_ADDRESS",
   "SMTP_PASSWORD",
-  "SUPABASE_STORAGE_BUCKET"
+  "SUPABASE_STORAGE_BUCKET",
+  "SERVER_MASTER_KEY_PRIMARY",
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "MICROSOFT_CLIENT_ID",
+  "MICROSOFT_CLIENT_SECRET",
+  "EMAIL_ENCRYPTION_KEY",
+  "PAYMENT_ENCRYPTION_KEY",
+  "EMAIL_VERIFICATION_CALLBACK_URL"
 ] as const;
 
 type RequiredEnvKey = (typeof REQUIRED_ENV_KEYS)[number];
 
 type AppEnv = Record<RequiredEnvKey, string> & {
   PROD_DATABASE_URL?: string;
+  SERVER_MASTER_KEY_OLD?: string;
+  CONTRACTOR_PAYMENT_ENCRYPTION_KEY?: string;
   databaseUrl: string;
   isProduction: boolean;
 };
@@ -58,6 +68,8 @@ const validateEnv = (): AppEnv => {
 
   const isProduction = values.NODE_ENV === "production";
   const prodDatabaseUrl = readEnv("PROD_DATABASE_URL");
+  const serverMasterKeyOld = readEnv("SERVER_MASTER_KEY_OLD");
+  const contractorPaymentEncryptionKey = readEnv("CONTRACTOR_PAYMENT_ENCRYPTION_KEY");
 
   if (isProduction && !prodDatabaseUrl) {
     throw new Error("Missing required environment variable: PROD_DATABASE_URL");
@@ -66,6 +78,8 @@ const validateEnv = (): AppEnv => {
   return {
     ...values,
     ...(prodDatabaseUrl ? { PROD_DATABASE_URL: prodDatabaseUrl } : {}),
+    ...(serverMasterKeyOld ? { SERVER_MASTER_KEY_OLD: serverMasterKeyOld } : {}),
+    ...(contractorPaymentEncryptionKey ? { CONTRACTOR_PAYMENT_ENCRYPTION_KEY: contractorPaymentEncryptionKey } : {}),
     databaseUrl: isProduction ? prodDatabaseUrl! : values.DATABASE_URL,
     isProduction,
   };

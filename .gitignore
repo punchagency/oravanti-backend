@@ -8,4 +8,7 @@ drizzle/migrations/
 
 admin_requests.http
 AGENTS.md
+.agents/
+openc*
+skills-lock.json
 drop.ts
