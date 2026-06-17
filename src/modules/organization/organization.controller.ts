@@ -38,12 +38,11 @@ export class OrganizationController {
       // 1. Stage profile tracking metrics via email unique constraint
       await db.insert(staff).values({
         organizationId: activeOrgId!,
+        userId: session.session.userId,
         firstName,
         lastName,
-        email: formattedEmail,
         phone: phoneNumber,
-        role,
-        startDate,
+        jobTitle: role
       });
 
       // 2. Correct Better Auth core API invocation

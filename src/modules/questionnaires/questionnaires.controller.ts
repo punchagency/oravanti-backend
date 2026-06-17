@@ -6,249 +6,145 @@ import { parsePaginationQuery } from "../../utils/pagination";
 import { QuestionnairesService } from "./questionnaires.service";
 
 export class QuestionnairesController {
-  private questionnairesService: QuestionnairesService;
+  private svc: QuestionnairesService;
 
   constructor(questionnairesService: QuestionnairesService) {
-    this.questionnairesService = questionnairesService;
+    this.svc = questionnairesService;
   }
 
-  getAllQuestionnaires = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { search, status, caseTypeId, page, limit } = req.query;
-    const pagination = parsePaginationQuery({ page, limit });
+  // ── System Questionnaire Read ──────────────────────────────────────────────
 
-    const result = await this.questionnairesService.getAllQuestionnaires(
-      req.organizationId!,
-      {
-        search: search as string,
-        status: status as string,
-        caseTypeId: caseTypeId as string,
-        ...pagination,
-      },
-    );
+  getSystemQuestionnaires = asyncWrap(async (_req: AuthRequest, res: Response) => {
+    res.status(200).json(await this.svc.getSystemQuestionnaires());
+  });
 
+  getSystemQuestionnaireByCaseType = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.getSystemQuestionnaireByCaseType(req.params.caseTypeId as string);
+    if (!result) throw new NotFoundError("Questionnaire not found for this case type");
     res.status(200).json(result);
   });
 
-  createQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { title, description, firstSectionTitle, caseTypeIds, sections } =
-      req.body;
-
-    const result = await this.questionnairesService.createQuestionnaire(
-      req.organizationId!,
-      {
-        title,
-        description,
-        firstSectionTitle,
-        caseTypeIds,
-        sections,
-        createdById: req.staffId,
-      },
-    );
-
-    res.status(201).json(result);
-  });
-
-  getQuestionnaireById = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.questionnairesService.getQuestionnaireById(
-      req.params.id as string,
-      req.organizationId!,
-    );
-
+  getSystemQuestionnaireById = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.getSystemQuestionnaireById(req.params.id as string);
     if (!result) throw new NotFoundError("Questionnaire not found");
     res.status(200).json(result);
   });
 
-  updateQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.questionnairesService.updateQuestionnaire(
-      req.params.id as string,
-      req.organizationId!,
-      req.body,
-    );
+  // ── System Questionnaire Management (admin only) ─────────────────────────
 
-    res.status(200).json(result);
-  });
-
-  setQuestionnaireCaseTypes = asyncWrap(
-    async (req: AuthRequest, res: Response) => {
-      const { caseTypeIds } = req.body;
-
-      const result = await this.questionnairesService.setQuestionnaireCaseTypes(
-        req.params.id as string,
-        req.organizationId!,
-        caseTypeIds,
-      );
-
-      res.status(200).json(result);
-    },
-  );
-
-  publishQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.questionnairesService.publishQuestionnaire(
-      req.params.id as string,
-      req.organizationId!,
-    );
-
-    res.status(200).json(result);
-  });
-
-  duplicateQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.questionnairesService.duplicateQuestionnaire(
-      req.params.id as string,
-      req.organizationId!,
-      {
-        title: req.body.title,
-        createdById: req.staffId,
-      },
-    );
-
+  createSystemQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const { caseTypeId, title, description, sections } = req.body;
+    const result = await this.svc.createSystemQuestionnaire({ caseTypeId, title, description, sections });
     res.status(201).json(result);
   });
 
-  addSection = asyncWrap(async (req: AuthRequest, res: Response) => {
+  addSystemSection = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { title, description, orderIndex } = req.body;
-
-    const result = await this.questionnairesService.addSection(
-      req.params.id as string,
-      req.organizationId!,
-      {
-        title,
-        description,
-        orderIndex,
-      },
-    );
-
+    const result = await this.svc.addSystemSection(req.params.id as string, { title, description, orderIndex });
     res.status(201).json(result);
   });
 
-  reorderSections = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { items } = req.body;
-
-    const result = await this.questionnairesService.reorderSections(
+  addSystemQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.addSystemQuestion(
       req.params.id as string,
-      req.organizationId!,
-      items,
+      req.params.sectionId as string,
+      req.body,
     );
+    res.status(201).json(result);
+  });
 
+  // ── Firm Questionnaire Additions ────────────────────────────────────────────
+
+  getMergedQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.getMergedQuestionnaire(
+      req.organizationId!,
+      req.params.caseTypeId as string,
+    );
     res.status(200).json(result);
   });
 
-  addQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.questionnairesService.addQuestion(
-      req.params.id as string,
+  addFirmSection = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const { title, description, orderIndex } = req.body;
+    const result = await this.svc.addFirmSection(
       req.organizationId!,
-      req.body,
+      req.params.caseTypeId as string,
+      { title, description, orderIndex },
     );
-
     res.status(201).json(result);
   });
 
-  updateQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.questionnairesService.updateQuestion(
-      req.params.id as string,
+  updateFirmSection = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.updateFirmSection(
+      req.organizationId!,
+      req.params.sectionId as string,
+      req.body,
+    );
+    res.status(200).json(result);
+  });
+
+  deleteFirmSection = asyncWrap(async (req: AuthRequest, res: Response) => {
+    await this.svc.deleteFirmSection(req.organizationId!, req.params.sectionId as string);
+    res.status(200).json({ message: "Section deleted" });
+  });
+
+  addFirmQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.addFirmQuestion(
+      req.organizationId!,
+      req.params.caseTypeId as string,
+      req.body,
+    );
+    res.status(201).json(result);
+  });
+
+  updateFirmQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.updateFirmQuestion(
+      req.organizationId!,
       req.params.questionId as string,
-      req.organizationId!,
       req.body,
     );
-
     res.status(200).json(result);
   });
 
-  reorderQuestions = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { items } = req.body;
-
-    const result = await this.questionnairesService.reorderQuestions(
-      req.params.id as string,
-      req.organizationId!,
-      items,
-    );
-
-    res.status(200).json(result);
+  deleteFirmQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
+    await this.svc.deleteFirmQuestion(req.organizationId!, req.params.questionId as string);
+    res.status(200).json({ message: "Question deleted" });
   });
 
-  addLogicRule = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.questionnairesService.addLogicRule(
-      req.params.id as string,
-      req.organizationId!,
-      req.body,
-    );
-
-    res.status(201).json(result);
-  });
-
-  sendToClient = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { clientId, caseTypeId, caseId, expiresAt } = req.body;
-
-    const result = await this.questionnairesService.sendToClient(
-      req.params.id as string,
-      req.organizationId!,
-      {
-        clientId,
-        caseTypeId,
-        caseId,
-        sentById: req.staffId,
-        expiresAt: expiresAt ? new Date(expiresAt) : null,
-      },
-    );
-
-    res.status(201).json(result);
-  });
+  // ── Responses ─────────────────────────────────────────────────────────────
 
   getResponses = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { caseTypeId, page, limit } = req.query;
     const pagination = parsePaginationQuery({ page, limit });
-
-    const result = await this.questionnairesService.getResponses(
-      req.params.id as string,
+    const result = await this.svc.getResponses(
       req.organizationId!,
-      {
-        caseTypeId: caseTypeId as string,
-        ...pagination,
-      },
+      req.params.id as string,
+      { caseTypeId: caseTypeId as string, ...pagination },
     );
-
     res.status(200).json(result);
   });
 
-  getEligibleQuestionnairesForCase = asyncWrap(
-    async (req: AuthRequest, res: Response) => {
-      const { page, limit } = req.query;
-      const pagination = parsePaginationQuery({ page, limit });
+  getEligibleQuestionnairesForCase = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.getEligibleQuestionnairesForCase(
+      req.organizationId!,
+      req.params.caseId as string,
+    );
+    res.status(200).json(result);
+  });
 
-      const result =
-        await this.questionnairesService.getEligibleQuestionnairesForCase(
-          req.organizationId!,
-          req.params.caseId as string,
-          pagination,
-        );
-
-      res.status(200).json(result);
-    },
-  );
+  // ── Token-Based Client Endpoints ───────────────────────────────────────────
 
   getClientQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result =
-      await this.questionnairesService.getClientQuestionnaireByToken(
-        req.params.token as string,
-      );
-
+    const result = await this.svc.getClientQuestionnaireByToken(req.params.token as string);
     res.status(200).json(result);
   });
 
   saveDraftResponse = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.questionnairesService.saveDraftResponseByToken(
-      req.params.token as string,
-      req.body,
-    );
-
+    const result = await this.svc.saveDraftResponseByToken(req.params.token as string, req.body);
     res.status(200).json(result);
   });
 
   submitResponse = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.questionnairesService.submitResponseByToken(
-      req.params.token as string,
-      req.body,
-    );
-
+    const result = await this.svc.submitResponseByToken(req.params.token as string, req.body);
     res.status(200).json(result);
   });
 
@@ -256,20 +152,17 @@ export class QuestionnairesController {
     const file = req.file;
     if (!file) throw new BadRequestError("File is required");
 
-    const { responseId, questionId } = req.body;
+    const { responseId, questionId, questionSource } = req.body;
 
-    const result =
-      await this.questionnairesService.uploadResponseFileByToken(
-        req.params.token as string,
-        {
-          responseId,
-          questionId,
-          fileBuffer: file.buffer,
-          mimeType: file.mimetype,
-          fileSize: file.size,
-          originalFilename: file.originalname,
-        },
-      );
+    const result = await this.svc.uploadResponseFileByToken(req.params.token as string, {
+      responseId,
+      questionId,
+      questionSource: questionSource ?? undefined,
+      fileBuffer: file.buffer,
+      mimeType: file.mimetype,
+      fileSize: file.size,
+      originalFilename: file.originalname,
+    });
 
     res.status(201).json(result);
   });

@@ -47,7 +47,7 @@ export class StaffService {
 
     await tx
       .update(user)
-      .set({ onboardingState: "profile_completed" })
+      .set({ onboardingState: "completed" })
       .where(eq(user.id, userId));
 
     return { nextStep: "/onboarding/step-3-firm-details" };
