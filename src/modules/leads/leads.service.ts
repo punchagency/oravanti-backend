@@ -302,11 +302,15 @@ const getAllLeads = async (
     .limit(limit)
     .offset(offset);
 
-  return buildPaginatedResponse(rows, {
-    page,
-    limit,
-    total: Number(countRow?.total ?? 0),
-  });
+  return buildPaginatedResponse(
+    rows,
+    {
+      page,
+      limit,
+      total: Number(countRow?.total ?? 0),
+    },
+    "leads",
+  );
 };
 
 const getLeadById = async (id: string, organizationId: string) => {
@@ -498,7 +502,7 @@ const runConflictCheck = async (
   const emailMatches = await db
     .select({
       id: clientContacts.id,
-      name: leads.name,
+      name: clients.displayName,
       clientId: clientContacts.clientId,
       email: clientContacts.email,
     })
