@@ -52,6 +52,97 @@ const generateAccessToken = () => randomBytes(32).toString("base64url");
 
 const normalizeName = (name: string) => name.trim().toLowerCase();
 
+type StoredMatch = {
+  type: string;
+  matchedId: string;
+  matchedName: string;
+  confidence: string;
+  rule: string;
+  details: string;
+  caseIds: string[];
+};
+
+const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[]) => {
+  if (storedMatches.length === 0) return [];
+
+  const allCaseIds = [...new Set(storedMatches.flatMap((m) => m.caseIds))];
+  const adverseMatchIds = storedMatches
+    .filter((m) => m.type === "adverse_party")
+    .map((m) => m.matchedId);
+
+  type CaseDetail = {
+    id: string;
+    caseNumber: string;
+    caseType: string;
+    status: string;
+    practiceArea: string | null;
+    clientId: string;
+    clientName: string | null;
+  };
+  const caseMap = new Map<string, CaseDetail>();
+
+  if (allCaseIds.length > 0) {
+    const caseRows = await db
+      .select({
+        id: cases.id,
+        caseNumber: cases.caseNumber,
+        caseType: cases.caseType,
+        status: cases.status,
+        practiceArea: practiceAreas.name,
+        clientId: cases.clientId,
+        clientName: clients.displayName,
+      })
+      .from(cases)
+      .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
+      .leftJoin(clients, eq(clients.id, cases.clientId))
+      .where(inArray(cases.id, allCaseIds));
+
+    for (const row of caseRows) caseMap.set(row.id, row);
+  }
+
+  type AdverseContext = { relationship: string; firmClientName: string | null };
+  const adverseContextMap = new Map<string, AdverseContext>();
+
+  if (adverseMatchIds.length > 0) {
+    const apRows = await db
+      .select({ id: adverseParties.id, relationship: adverseParties.relationship, caseId: adverseParties.caseId })
+      .from(adverseParties)
+      .where(inArray(adverseParties.id, adverseMatchIds));
+
+    for (const ap of apRows) {
+      adverseContextMap.set(ap.id, {
+        relationship: ap.relationship,
+        firmClientName: caseMap.get(ap.caseId)?.clientName ?? null,
+      });
+    }
+  }
+
+  return storedMatches.map((m) => {
+    const caseDetails = m.caseIds
+      .map((id) => caseMap.get(id))
+      .filter((c): c is CaseDetail => c !== undefined)
+      .map(({ id, caseNumber, caseType, status, practiceArea }) => ({
+        id,
+        caseNumber,
+        caseType,
+        status,
+        practiceArea,
+      }));
+
+    if (m.type === "adverse_party") {
+      const ctx = adverseContextMap.get(m.matchedId);
+      return {
+        ...m,
+        caseDetails,
+        adversePartyRelationship: ctx?.relationship ?? null,
+        firmClientName: ctx?.firmClientName ?? null,
+      };
+    }
+
+    return { ...m, caseDetails };
+  });
+};
+
 // ─── Questionnaire Snapshot Builder ──────────────────────────────────────────
 
 const buildSchemaSnapshot = async (
@@ -716,6 +807,7 @@ const runConflictCheck = async (
         firstName: clientContacts.firstName,
         lastName: clientContacts.lastName,
         clientId: clientContacts.clientId,
+        displayName: clients.displayName,
       })
       .from(clientContacts)
       .leftJoin(clients, eq(clients.id, clientContacts.clientId))
@@ -723,19 +815,23 @@ const runConflictCheck = async (
         and(
           eq(clientContacts.organizationId, organizationId),
           eq(clients.status, "active"),
-          ilike(clientContacts.lastName, normalizedLastName),
+          or(
+            ilike(clientContacts.lastName, normalizedLastName),
+            ilike(clients.displayName, `%${normalizedLastName}%`),
+          ),
         ),
       );
 
     for (const m of surnameMatches) {
-      const fullContactName = `${m.firstName} ${m.lastName}`.toLowerCase();
+      const resolvedName = m.displayName ?? `${m.firstName} ${m.lastName}`;
+      const resolvedNameNormalized = resolvedName.toLowerCase();
       if (
-        fullContactName === normalizedName ||
+        resolvedNameNormalized === normalizedName ||
         matches.find((x) => x.matchedId === (m.clientId ?? m.id)) ||
         matches.find(
           (x) =>
             x.type === "related_party" &&
-            x.matchedName.toLowerCase() === fullContactName,
+            x.matchedName.toLowerCase() === resolvedNameNormalized,
         )
       )
         continue;
@@ -743,10 +839,10 @@ const runConflictCheck = async (
       matches.push({
         type: "related_party",
         matchedId: m.clientId ?? m.id,
-        matchedName: `${m.firstName} ${m.lastName}`,
+        matchedName: resolvedName,
         confidence: "surname_match",
         rule: "ABA_1.7",
-        details: `Last name "${normalizedLastName}" matches active client ${m.firstName} ${m.lastName}`,
+        details: `Name contains "${normalizedLastName}" — matches active client ${resolvedName}`,
         caseIds: [],
       });
     }
@@ -938,7 +1034,8 @@ const runConflictCheck = async (
       .where(eq(leads.id, leadId));
   }
 
-  return checkRecord;
+  const enrichedMatches = await enrichMatchesWithCaseContext(matches);
+  return { ...checkRecord, matches: enrichedMatches };
 };
 
 const getConflictCheck = async (leadId: string, organizationId: string) => {
@@ -959,102 +1056,8 @@ const getConflictCheck = async (leadId: string, organizationId: string) => {
 
   if (!cc) return null;
 
-  const storedMatches = (cc.matches ?? []) as Array<{
-    type: string;
-    matchedId: string;
-    matchedName: string;
-    confidence: string;
-    rule: string;
-    details: string;
-    caseIds: string[];
-  }>;
-
-  if (storedMatches.length === 0) return { ...cc, matches: [] };
-
-  // Collect IDs needed for enrichment
-  const allCaseIds = [...new Set(storedMatches.flatMap((m) => m.caseIds))];
-  const adverseMatchIds = storedMatches
-    .filter((m) => m.type === "adverse_party")
-    .map((m) => m.matchedId);
-
-  // Fetch case context (number, type, status, practice area, client)
-  type CaseDetail = {
-    id: string;
-    caseNumber: string;
-    caseType: string;
-    status: string;
-    practiceArea: string | null;
-    clientId: string;
-    clientName: string | null;
-  };
-  const caseMap = new Map<string, CaseDetail>();
-
-  if (allCaseIds.length > 0) {
-    const caseRows = await db
-      .select({
-        id: cases.id,
-        caseNumber: cases.caseNumber,
-        caseType: cases.caseType,
-        status: cases.status,
-        practiceArea: practiceAreas.name,
-        clientId: cases.clientId,
-        clientName: clients.displayName,
-      })
-      .from(cases)
-      .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
-      .leftJoin(clients, eq(clients.id, cases.clientId))
-      .where(inArray(cases.id, allCaseIds));
-
-    for (const row of caseRows) {
-      caseMap.set(row.id, row);
-    }
-  }
-
-  // Fetch adverse party context (relationship + firm client via case)
-  type AdverseContext = { relationship: string; firmClientName: string | null };
-  const adverseContextMap = new Map<string, AdverseContext>();
-
-  if (adverseMatchIds.length > 0) {
-    const apRows = await db
-      .select({ id: adverseParties.id, relationship: adverseParties.relationship, caseId: adverseParties.caseId })
-      .from(adverseParties)
-      .where(inArray(adverseParties.id, adverseMatchIds));
-
-    for (const ap of apRows) {
-      const caseDetail = caseMap.get(ap.caseId);
-      adverseContextMap.set(ap.id, {
-        relationship: ap.relationship,
-        firmClientName: caseDetail?.clientName ?? null,
-      });
-    }
-  }
-
-  // Build enriched matches
-  const enrichedMatches = storedMatches.map((m) => {
-    const caseDetails = m.caseIds
-      .map((id) => caseMap.get(id))
-      .filter((c): c is CaseDetail => c !== undefined)
-      .map(({ id, caseNumber, caseType, status, practiceArea }) => ({
-        id,
-        caseNumber,
-        caseType,
-        status,
-        practiceArea,
-      }));
-
-    if (m.type === "adverse_party") {
-      const ctx = adverseContextMap.get(m.matchedId);
-      return {
-        ...m,
-        caseDetails,
-        adversePartyRelationship: ctx?.relationship ?? null,
-        firmClientName: ctx?.firmClientName ?? null,
-      };
-    }
-
-    return { ...m, caseDetails };
-  });
-
+  const storedMatches = (cc.matches ?? []) as StoredMatch[];
+  const enrichedMatches = await enrichMatchesWithCaseContext(storedMatches);
   return { ...cc, matches: enrichedMatches };
 };
 
