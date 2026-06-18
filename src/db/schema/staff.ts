@@ -1,4 +1,11 @@
-import { pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import {
+  integer,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { organization, user } from "./auth-schema";
 
 export const staffRoleEnum = pgEnum("staff_role", [
@@ -11,6 +18,8 @@ export const staffStatusEnum = pgEnum("staff_status", [
   "active",
   "inactive",
   "on_leave",
+  "recertify_required",
+  "pending_invitation",
 ]);
 
 export const staff = pgTable("staff", {
@@ -21,17 +30,26 @@ export const staff = pgTable("staff", {
     .notNull()
     .references(() => organization.id, { onDelete: "cascade" }),
   userId: text("user_id")
-    .notNull()
     .references(() => user.id, { onDelete: "cascade" })
     .unique(),
 
+  email: text("email"),
+
   firstName: text("first_name").notNull(),
   lastName: text("last_name").notNull(),
-  phone: text("phone").notNull(),
+  phone: text("phone"),
 
   // Workspace Context
   jobTitle: text("job_title").default("Staff Member"),
   status: staffStatusEnum("status").notNull().default("active"),
+
+  role: staffRoleEnum("role"),
+  startDate: timestamp("start_date"),
+
+  // Org-specific fields
+  orgEmail: text("org_email"),
+  maxCaseload: integer("max_caseload").default(7),
+  tempPassword: text("temp_password"),
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),

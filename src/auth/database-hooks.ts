@@ -6,6 +6,7 @@ import { db } from "../db/client";
 import { env } from "../config/env";
 import { member, session } from "../db/schema/auth-schema";
 import { connectedEmailAccount } from "../db/schema/email";
+import { staff } from "../db/schema";
 import { getActiveOrganization } from "./helpers";
 
 const secret = env.BETTER_AUTH_SECRET;
@@ -43,6 +44,16 @@ async function getOrgId(userId: string) {
 }
 
 export const databaseHooks = {
+  user: {
+    update: {
+      after: async (user) => {
+        await db
+          .update(staff)
+          .set({ email: user.email })
+          .where(eq(staff.userId, user.id));
+      },
+    },
+  },
   account: {
     create: {
       after: async (account: any) => {

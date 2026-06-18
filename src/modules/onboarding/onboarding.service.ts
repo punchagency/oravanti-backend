@@ -45,7 +45,7 @@ export class OnboardingService {
     }
 
     const [userRecord] = await db
-      .select({ onboardingState: user.onboardingState })
+      .select({ onboardingState: user.onboardingState, email: user.email })
       .from(user)
       .where(eq(user.id, userId))
       .limit(1);
@@ -83,6 +83,10 @@ export class OnboardingService {
         userId,
         firstName: profile.firstName,
         lastName: profile.lastName,
+        email: userRecord.email ?? "",
+        role: "admin",
+        orgEmail: userRecord.email ?? "",
+        startDate: new Date(),
         phone: profile.phone ?? "",
         jobTitle: profile.jobTitle || "Firm Administrator",
         status: "active",
