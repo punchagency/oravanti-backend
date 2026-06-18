@@ -38,6 +38,8 @@ export const leads = pgTable('leads', {
   source:         leadSourceEnum('source').notNull(),
   situationSummary: text('situation_summary'),
   notes:            text('notes'),
+  intakeAdversePartyName:  text('intake_adverse_party_name'),
+  intakeAdversePartyEmail: text('intake_adverse_party_email'),
   status:         leadStatusEnum('status').notNull().default('new'),
   pipelineStage:  leadPipelineStageEnum('pipeline_stage').notNull().default('lead_inbox'),
 

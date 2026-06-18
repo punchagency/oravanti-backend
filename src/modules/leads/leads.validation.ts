@@ -37,6 +37,8 @@ export const createLeadBodySchema = z.object({
   situationSummary: z.string().optional(),
   notes: z.string().optional(),
   assignedStaffId: optionalUuid,
+  intakeAdversePartyName: z.string().min(1).optional(),
+  intakeAdversePartyEmail: z.string().email().optional(),
 });
 
 export const updateLeadBodySchema = z.object({
@@ -58,6 +60,8 @@ export const updateLeadBodySchema = z.object({
   situationSummary: z.string().optional(),
   notes: z.string().optional(),
   assignedStaffId: optionalUuid,
+  intakeAdversePartyName: z.string().min(1).optional(),
+  intakeAdversePartyEmail: z.string().email().optional(),
 });
 
 export const updateLeadStatusSchema = z.object({

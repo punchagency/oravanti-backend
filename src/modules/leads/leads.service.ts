@@ -233,6 +233,8 @@ const createLead = async (
     situationSummary?: string;
     notes?: string;
     assignedStaffId?: string;
+    intakeAdversePartyName?: string;
+    intakeAdversePartyEmail?: string;
   },
 ) => {
   const [lead] = await db
@@ -249,6 +251,8 @@ const createLead = async (
       situationSummary: data.situationSummary,
       notes: data.notes,
       assignedStaffId: data.assignedStaffId,
+      intakeAdversePartyName: data.intakeAdversePartyName,
+      intakeAdversePartyEmail: data.intakeAdversePartyEmail,
     })
     .returning();
 
@@ -410,6 +414,8 @@ const updateLead = async (
     situationSummary: string;
     notes: string;
     assignedStaffId: string;
+    intakeAdversePartyName: string;
+    intakeAdversePartyEmail: string;
   }>,
 ) => {
   const [updated] = await db
@@ -732,6 +738,98 @@ const runConflictCheck = async (
         details: `Last name "${normalizedLastName}" matches active client ${m.firstName} ${m.lastName}`,
         caseIds: [],
       });
+    }
+  }
+
+  // ABA 1.7 / 1.9 — intake adverse party: does the lead's proposed opponent match a current or former client?
+  if (lead.intakeAdversePartyName || lead.intakeAdversePartyEmail) {
+    const normalizedOpponentName = lead.intakeAdversePartyName
+      ? normalizeName(lead.intakeAdversePartyName)
+      : null;
+    const normalizedOpponentEmail = lead.intakeAdversePartyEmail
+      ? lead.intakeAdversePartyEmail.trim().toLowerCase()
+      : null;
+
+    const activeOpponentContacts = await db
+      .select({
+        id: clientContacts.id,
+        firstName: clientContacts.firstName,
+        lastName: clientContacts.lastName,
+        clientId: clientContacts.clientId,
+        email: clientContacts.email,
+        clientName: clients.displayName,
+      })
+      .from(clientContacts)
+      .leftJoin(clients, eq(clients.id, clientContacts.clientId))
+      .where(
+        and(
+          eq(clientContacts.organizationId, organizationId),
+          eq(clients.status, "active"),
+        ),
+      );
+
+    for (const m of activeOpponentContacts) {
+      const contactName = `${m.firstName} ${m.lastName}`.toLowerCase();
+      const emailHit =
+        normalizedOpponentEmail && m.email.toLowerCase() === normalizedOpponentEmail;
+      const nameHit =
+        normalizedOpponentName && contactName === normalizedOpponentName;
+
+      if (
+        (emailHit || nameHit) &&
+        !matches.find((x) => x.type === "client_is_opponent" && x.matchedId === (m.clientId ?? m.id))
+      ) {
+        matches.push({
+          type: "client_is_opponent",
+          matchedId: m.clientId ?? m.id,
+          matchedName: m.clientName ?? `${m.firstName} ${m.lastName}`,
+          confidence: emailHit ? "exact_email" : "exact_name",
+          rule: "ABA_1.7",
+          details: `Proposed opposing party "${lead.intakeAdversePartyName ?? lead.intakeAdversePartyEmail}" matches active client`,
+          caseIds: [],
+        });
+      }
+    }
+
+    const inactiveOpponentContacts = await db
+      .select({
+        id: clientContacts.id,
+        firstName: clientContacts.firstName,
+        lastName: clientContacts.lastName,
+        clientId: clientContacts.clientId,
+        email: clientContacts.email,
+        clientName: clients.displayName,
+      })
+      .from(clientContacts)
+      .leftJoin(clients, eq(clients.id, clientContacts.clientId))
+      .where(
+        and(
+          eq(clientContacts.organizationId, organizationId),
+          eq(clients.status, "inactive"),
+        ),
+      );
+
+    for (const m of inactiveOpponentContacts) {
+      const contactName = `${m.firstName} ${m.lastName}`.toLowerCase();
+      const emailHit =
+        normalizedOpponentEmail && m.email.toLowerCase() === normalizedOpponentEmail;
+      const nameHit =
+        normalizedOpponentName && contactName === normalizedOpponentName;
+
+      if (
+        (emailHit || nameHit) &&
+        !matches.find((x) => x.type === "former_client_is_opponent" && x.matchedId === (m.clientId ?? m.id))
+      ) {
+        matches.push({
+          type: "former_client_is_opponent",
+          matchedId: m.clientId ?? m.id,
+          matchedName: m.clientName ?? `${m.firstName} ${m.lastName}`,
+          confidence: emailHit ? "exact_email" : "exact_name",
+          rule: "ABA_1.9",
+          details: `Proposed opposing party "${lead.intakeAdversePartyName ?? lead.intakeAdversePartyEmail}" matches former (inactive) client`,
+          caseIds: [],
+        });
+      }
     }
   }
 
