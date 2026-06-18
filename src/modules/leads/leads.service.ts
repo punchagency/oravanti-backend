@@ -390,13 +390,18 @@ const getAllLeads = async (
 
     const matchesById = new Map(checks.map((c) => [c.id, c.matches]));
 
-    return rows.map((r) => {
-      if (r.pipelineStage !== "conflict_check" || !r.conflictCheckId)
-        return r;
-      const matches = matchesById.get(r.conflictCheckId) as any[];
-      if (!matches || matches.length === 0) return r;
-      return { ...r, conflictMatches: matches };
-    });
+    const enriched = await Promise.all(
+      rows.map(async (r) => {
+        if (r.pipelineStage !== "conflict_check" || !r.conflictCheckId)
+          return r;
+        const matches = matchesById.get(r.conflictCheckId) as StoredMatch[] | undefined;
+        if (!matches || matches.length === 0) return r;
+        const conflictMatches = await enrichMatchesWithCaseContext(matches);
+        return { ...r, conflictMatches };
+      }),
+    );
+
+    return enriched;
   };
 
   if (filters.all) {
