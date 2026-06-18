@@ -3187,6 +3187,12 @@ const browseCases = async () => {
   );
 };
 
+const waitForEnter = async () => {
+  abortIfCancelled(
+    await text({ message: "Press Enter to return to the menu...", defaultValue: "" }),
+  );
+};
+
 const runInteractive = async () => {
   intro("Oravanti CLI");
 
@@ -3295,6 +3301,8 @@ const runInteractive = async () => {
       if (action === "browse-cases") {
         await browseCases();
       }
+
+      await waitForEnter();
     } catch (err) {
       // Cancellation within a sub-action: return to the main menu
       if (err instanceof Error && err.message === "cancelled") {
