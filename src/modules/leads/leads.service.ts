@@ -1069,6 +1069,9 @@ const resolveConflictCheck = async (
 
   const now = new Date();
 
+  if (data.action === "supervisor_override" && !data.supervisorNotes?.trim())
+    throw new BadRequestError("Supervisor notes are required to override a conflict");
+
   if (data.action === "supervisor_override") {
     const [updated] = await db
       .update(conflictChecks)
