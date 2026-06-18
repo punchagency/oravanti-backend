@@ -631,24 +631,35 @@ const runConflictCheck = async (
     }
   }
 
-  // ABA 1.7 — adverse party match
+  // ABA 1.7 — adverse party match (by name or email)
   const adverseMatches = await db
     .select()
     .from(adverseParties)
     .where(
       and(
         eq(adverseParties.organizationId, organizationId),
-        ilike(adverseParties.name, `%${normalizedName}%`),
+        or(
+          ilike(adverseParties.name, `%${normalizedName}%`),
+          adverseParties.email !== null
+            ? eq(adverseParties.email, normalizedEmail)
+            : undefined,
+        ),
       ),
     );
 
   for (const m of adverseMatches) {
+    const nameNormalized = normalizeName(m.name);
+    const emailHit = m.email !== null && m.email.toLowerCase() === normalizedEmail;
     matches.push({
       type: "adverse_party",
       matchedId: m.id,
       matchedName: m.name,
       confidence:
-        normalizeName(m.name) === normalizedName ? "exact_name" : "fuzzy_name",
+        nameNormalized === normalizedName
+          ? "exact_name"
+          : emailHit
+            ? "exact_email"
+            : "fuzzy_name",
       rule: "ABA_1.7",
       details: `Name matches adverse party on case ${m.caseId}`,
       caseIds: [m.caseId],
