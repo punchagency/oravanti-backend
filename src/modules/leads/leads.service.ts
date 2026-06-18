@@ -880,7 +880,9 @@ const runConflictCheck = async (
       const emailHit =
         normalizedOpponentEmail && m.email.toLowerCase() === normalizedOpponentEmail;
       const nameHit =
-        normalizedOpponentName && contactName === normalizedOpponentName;
+        normalizedOpponentName &&
+        (contactName === normalizedOpponentName ||
+          m.clientName?.toLowerCase() === normalizedOpponentName);
 
       if (
         (emailHit || nameHit) &&
@@ -921,7 +923,9 @@ const runConflictCheck = async (
       const emailHit =
         normalizedOpponentEmail && m.email.toLowerCase() === normalizedOpponentEmail;
       const nameHit =
-        normalizedOpponentName && contactName === normalizedOpponentName;
+        normalizedOpponentName &&
+        (contactName === normalizedOpponentName ||
+          m.clientName?.toLowerCase() === normalizedOpponentName);
 
       if (
         (emailHit || nameHit) &&
@@ -1027,7 +1031,7 @@ const runConflictCheck = async (
       .update(leads)
       .set({ pipelineStage: "questionnaire", updatedAt: now })
       .where(eq(leads.id, leadId));
-  } else if (status === "needs_review") {
+  } else if (status === "needs_review" || status === "conflict_found") {
     await db
       .update(leads)
       .set({ pipelineStage: "conflict_check", updatedAt: now })
