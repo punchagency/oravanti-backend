@@ -653,12 +653,58 @@ const runConflictCheck = async (
     }
   }
 
+  // ABA 1.7 — shared surname (potential related party, e.g. divorce)
+  const [, ...surnameParts] = normalizedName.split(" ");
+  const normalizedLastName = surnameParts.join(" ");
+
+  if (normalizedLastName.length >= 2) {
+    const surnameMatches = await db
+      .select({
+        id: clientContacts.id,
+        firstName: clientContacts.firstName,
+        lastName: clientContacts.lastName,
+        clientId: clientContacts.clientId,
+      })
+      .from(clientContacts)
+      .leftJoin(clients, eq(clients.id, clientContacts.clientId))
+      .where(
+        and(
+          eq(clientContacts.organizationId, organizationId),
+          eq(clients.status, "active"),
+          ilike(clientContacts.lastName, normalizedLastName),
+        ),
+      );
+
+    for (const m of surnameMatches) {
+      const fullContactName = `${m.firstName} ${m.lastName}`.toLowerCase();
+      if (
+        fullContactName === normalizedName ||
+        matches.find((x) => x.matchedId === (m.clientId ?? m.id))
+      )
+        continue;
+
+      matches.push({
+        type: "related_party",
+        matchedId: m.clientId ?? m.id,
+        matchedName: `${m.firstName} ${m.lastName}`,
+        confidence: "surname_match",
+        rule: "ABA_1.7",
+        details: `Last name "${normalizedLastName}" matches active client ${m.firstName} ${m.lastName}`,
+      });
+    }
+  }
+
   // Determine overall status
   const hasConflict = matches.some(
-    (m) => m.rule === "ABA_1.7" && m.confidence !== "fuzzy_name",
+    (m) =>
+      m.rule === "ABA_1.7" &&
+      (m.confidence === "exact_email" || m.confidence === "exact_name"),
   );
   const hasReview = matches.some(
-    (m) => m.rule === "ABA_1.9" || m.confidence === "fuzzy_name",
+    (m) =>
+      m.rule === "ABA_1.9" ||
+      m.confidence === "fuzzy_name" ||
+      m.confidence === "surname_match",
   );
 
   const status: "pass" | "needs_review" | "conflict_found" = hasConflict
