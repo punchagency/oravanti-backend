@@ -34,3 +34,4 @@ export * from './practice-area-case-types';
 export * from './subscriptions';
 export * from './firm-practice-areas';
 export * from './questionnaires';
+export * from './staff-practice-areas';

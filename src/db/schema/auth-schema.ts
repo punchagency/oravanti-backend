@@ -24,6 +24,7 @@ export const onboardingStatusEnum = pgEnum("onboarding_status", [
   "email_unverified",
   "email_verified",
   "completed",
+  "password_reset_required",
 ]);
 
 export const user = pgTable("user", {

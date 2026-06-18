@@ -8,9 +8,9 @@ import {
 
 const statement = {
   ...defaultStatements,
-  cases: [],
-  clients: [],
-  staffs: [],
+  cases: ["read", "create", "update", "delete"],
+  clients: ["read", "create", "update", "delete"],
+  staffs: ["read", "create", "update", "delete"],
 } as const;
 
 export const ac = createAccessControl(statement);
@@ -32,7 +32,7 @@ export const attorney = ac.newRole({
 export const owner = ac.newRole({
   clients: [],
   cases: [],
-  staffs: [],
+  staffs: ["read", "create", "update", "delete"],
   ...ownerAc.statements,
 });
 
@@ -42,3 +42,18 @@ export const admin = ac.newRole({
   staffs: [],
   ...adminAc.statements,
 });
+
+const memberRole = ac.newRole({
+  ...memberAc.statements,
+  clients: [],
+  cases: [],
+  staffs: [],
+});
+
+export const roleMap = {
+  paralegal,
+  attorney,
+  owner,
+  admin,
+  member: memberRole,
+} as const;

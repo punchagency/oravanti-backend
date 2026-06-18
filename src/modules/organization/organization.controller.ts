@@ -1,7 +1,4 @@
-import { fromNodeHeaders } from "better-auth/node";
-import { auth } from "../../auth";
-import { db } from "../../db/client";
-import { staff } from "../../db/schema";
+import type { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
 import { OrganizationService } from "./organization.service";
 
@@ -12,92 +9,135 @@ export class OrganizationController {
     this.organizationService = organizationService;
   }
 
-  invite = asyncWrap(async (req, res) => {
+  getAll = asyncWrap(async (req: AuthRequest, res) => {
+    if (!req.organizationId) {
+      return res.status(400).json({ error: "No active organization" });
+    }
+
+    const { search, role, team, status, page, limit } = req.query as Record<
+      string,
+      string | undefined
+    >;
+
+    const result = await this.organizationService.getAll(req.organizationId, {
+      search,
+      role,
+      team,
+      status,
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+    res.status(200).json(result);
+  });
+
+  invite = asyncWrap(async (req: AuthRequest, res) => {
+    if (!req.body) {
+      return res.status(400).json({ error: "Request body is required" });
+    }
+
+    console.log({ requestBody: req.body });
+
     const {
       firstName,
       lastName,
       email,
-      phoneNumber,
+      orgEmail,
+      phone,
       role,
-      maxCaseLoad,
       startDate,
+      maxCaseload,
+      practiceAreaIds,
     } = req.body;
 
-    // Verify user session
-    const session = await auth.api.getSession({
-      headers: fromNodeHeaders(req.headers),
-    });
+    if (!firstName || !lastName || !email || !role) {
+      return res
+        .status(400)
+        .json({ error: "firstName, lastName, email, and role are required" });
+    }
 
-    if (!session) return res.status(401).json({ error: "Access Denied" });
+    if (!req.organizationId) {
+      return res.status(400).json({ error: "No active organization" });
+    }
 
-    const activeOrgId = session.session.activeOrganizationId;
-
-    try {
-      const formattedEmail = email.toLowerCase().trim();
-
-      // 1. Stage profile tracking metrics via email unique constraint
-      await db.insert(staff).values({
-        organizationId: activeOrgId!,
+    const result = await this.organizationService.invite(
+      {
+        organizationId: req.organizationId,
         firstName,
         lastName,
-        email: formattedEmail,
-        phone: phoneNumber,
+        email,
+        orgEmail,
+        phone,
         role,
         startDate,
-      });
+        maxCaseload,
+        practiceAreaIds,
+      },
+      req.headers,
+    );
 
-      // 2. Correct Better Auth core API invocation
-      // The plugin exposes 'inviteMember' corresponding to the "/organization/invite-member" endpoint
-      const invitation = await auth.api.createInvitation({
-        body: {
-          organizationId: activeOrgId!,
-          email: formattedEmail,
-          role: role, // e.g., "admin", "member"
-          resend: true,
-        },
-        headers: fromNodeHeaders(req.headers), // Pass headers so Better Auth knows WHO is inviting
-      });
-
-      // NOTE: Better Auth natively handles the execution of your `sendInvitationEmail` config hook here.
-      // If you need a fallback manual tracking link, you can grab it from the return payload:
-      if (invitation && "id" in invitation) {
-        const backupInviteLink = `http://localhost:3000/invite/entry?id=${invitation.id}`;
-
-        console.log(
-          `[STAFF INVITE INITIALIZED] Backup Link: ${backupInviteLink}`,
-        );
-      }
-
-      return res
-        .status(201)
-        .json({ message: "Staff invite data successfully initialized." });
-    } catch (error) {
-      console.error("Invitation dispatch error:", error);
-      return res.status(500).json({
-        error: "Internal processing crash generating invite token logs.",
-      });
-    }
+    return res.status(201).json({
+      message: "Invitation sent successfully.",
+      staffId: result.staffId,
+      invitationId: result.invitationId,
+    });
   });
 
-  acceptInvite = asyncWrap(async (req, res) => {
+  acceptInvite = asyncWrap(async (req: AuthRequest, res) => {
     const { invitationId } = req.body;
-    const data = await auth.api.acceptInvitation({
-      body: {
-        invitationId, // required
-      },
-      // This endpoint requires session cookies.
-      headers: fromNodeHeaders(req.headers),
-    });
-
+    const data = await this.organizationService.acceptInvite(invitationId, req.headers);
     res.status(200).json({ message: "Invitation accepted", data });
   });
 
-  getInvitations = asyncWrap(async (req, res) => {
-    // Verify user session
-    const invitations = await auth.api.listInvitations({
-      headers: fromNodeHeaders(req.headers),
-    });
+  getInvitations = asyncWrap(async (req: AuthRequest, res) => {
+    if (!req.organizationId) {
+      return res.status(400).json({ error: "No active organization" });
+    }
 
-    res.status(200).json({ message: "Invitations listed", data: invitations });
+    const { search, role, team, status, page, limit } = req.query as Record<
+      string,
+      string | undefined
+    >;
+
+    const result = await this.organizationService.listInvitations(
+      req.organizationId,
+      {
+        search,
+        role,
+        team,
+        status,
+        page: page ? parseInt(page, 10) : undefined,
+        limit: limit ? parseInt(limit, 10) : undefined,
+      },
+    );
+    res.status(200).json(result);
+  });
+
+  cancelInvitation = asyncWrap(async (req: AuthRequest, res) => {
+    const { invitationId } = req.body;
+    if (!invitationId) {
+      return res.status(400).json({ error: "invitationId is required" });
+    }
+    await this.organizationService.cancelInvite(invitationId, req.headers);
+    res.status(200).json({ message: "Invitation cancelled" });
+  });
+
+  resendInvitation = asyncWrap(async (req: AuthRequest, res) => {
+    const { email, role } = req.body;
+    if (!email || !role) {
+      return res.status(400).json({ error: "email and role are required" });
+    }
+    if (!req.organizationId) {
+      return res.status(400).json({ error: "No active organization" });
+    }
+    const result = await this.organizationService.resendInvitation(
+      email,
+      role,
+      req.organizationId,
+      req.headers,
+    );
+    res.status(200).json({
+      message: "Invitation resent successfully",
+      data: result,
+    });
   });
 }

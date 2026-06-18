@@ -5,6 +5,8 @@
  *     description: Organization invitations & membership
  */
 import { Router } from "express";
+import { requireAuth } from "../../middleware/auth.middleware";
+import { requirePermission } from "../../middleware/permission.middleware";
 import { OrganizationController } from "./organization.controller";
 
 export class OrganizationRouter {
@@ -21,8 +23,6 @@ export class OrganizationRouter {
   }
 
   initializeRoutes() {
-    this.router.use(this.path, this.router);
-
     /**
      * @openapi
      * /organization/invite:
@@ -46,49 +46,36 @@ export class OrganizationRouter {
      *               $ref: "#/components/schemas/MessageResponse"
      *       400: { description: Validation error }
      */
-    this.router.post("/invite", this.organizationController.invite);
-
-    /**
-     * @openapi
-     * /organization/accept-invitation:
-     *   post:
-     *     tags: [Organization]
-     *     summary: Accept an organization invitation
-     *     requestBody:
-     *       required: true
-     *       content:
-     *         application/json:
-     *           schema:
-     *             $ref: "#/components/schemas/AcceptInvitationRequest"
-     *     responses:
-     *       200:
-     *         description: Invitation accepted
-     *         content:
-     *           application/json:
-     *             schema:
-     *               $ref: "#/components/schemas/MessageResponse"
-     */
+    this.router.get(
+      "/staff",
+      requireAuth,
+      requirePermission("staffs", "read"),
+      this.organizationController.getAll,
+    );
     this.router.post(
-      "/accept-invitation",
+      "/invite",
+      requireAuth,
+      this.organizationController.invite,
+    );
+    this.router.post(
+      "/accept-invite",
+      requireAuth,
       this.organizationController.acceptInvite,
     );
-
-    /**
-     * @openapi
-     * /organization/invitations:
-     *   get:
-     *     tags: [Organization]
-     *     summary: List pending invitations for the current user
-     *     responses:
-     *       200:
-     *         description: List of invitations
-     *         content:
-     *           application/json:
-     *             schema:
-     *               type: array
-     *               items:
-     *                 $ref: "#/components/schemas/Invitation"
-     */
-    this.router.get("/invitations", this.organizationController.getInvitations);
+    this.router.get(
+      "/invitations",
+      requireAuth,
+      this.organizationController.getInvitations,
+    );
+    this.router.post(
+      "/cancel-invitation",
+      requireAuth,
+      this.organizationController.cancelInvitation,
+    );
+    this.router.post(
+      "/resend-invitation",
+      requireAuth,
+      this.organizationController.resendInvitation,
+    );
   }
 }

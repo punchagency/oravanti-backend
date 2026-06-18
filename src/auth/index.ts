@@ -1,13 +1,16 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { symmetricDecrypt } from "better-auth/crypto";
 import {
   emailOTP,
   openAPI,
   organization,
   twoFactor,
 } from "better-auth/plugins";
+import { and, eq } from "drizzle-orm";
 import { env } from "../config/env";
 import { db } from "../db/client";
+import { staff } from "../db/schema";
 import {
   account,
   invitation,
@@ -19,9 +22,9 @@ import {
   verification,
 } from "../db/schema/auth-schema";
 import { emailService } from "../utils/email/email.service";
+import { databaseHooks } from "./database-hooks";
 import { ac, admin, attorney, owner, paralegal } from "./permissions";
 import { cryptoKeyPlugin } from "./plugins/cryptoKeyPlugin";
-import { databaseHooks } from "./database-hooks";
 
 const { isProduction } = env;
 
@@ -69,6 +72,8 @@ export const auth = betterAuth({
   },
   emailVerification: {
     sendVerificationEmail: async ({ user, url }) => {
+      console.log({ user });
+
       await emailService.sendVerificationEmail({ email: user.email, url });
     },
     sendOnSignUp: true,
@@ -85,7 +90,6 @@ export const auth = betterAuth({
       encryptedDEK: { type: "string", required: false },
       dekIv: { type: "string", required: false },
       dekTag: { type: "string", required: false },
-      userType: { type: "string", required: false, input: true },
     },
   },
   session: {
@@ -124,8 +128,37 @@ export const auth = betterAuth({
   },
   plugins: [
     organization({
+      // cancelPendingInvitationsOnReInvite: true,
       async sendInvitationEmail(data) {
         const inviteLink = `http://localhost:5137/accept-invitation?id=${data.id}`;
+
+        const [staffRecord] = await db
+          .select({ tempPassword: staff.tempPassword })
+          .from(staff)
+          .where(
+            and(
+              eq(staff.email, data.email),
+              eq(staff.organizationId, data.organization.id),
+            ),
+          )
+          .limit(1);
+
+        if (staffRecord?.tempPassword) {
+          const plaintextPassword = await symmetricDecrypt({
+            key: env.BETTER_AUTH_SECRET,
+            data: staffRecord.tempPassword,
+          });
+
+          await emailService.sendInvitationWithCredentials({
+            email: data.email,
+            tempPassword: plaintextPassword,
+            inviteLink,
+            invitedByUsername: data.inviter.user.name,
+            invitedByEmail: data.inviter.user.email,
+            teamName: data.organization.name,
+          });
+          return;
+        }
 
         await emailService.sendOrganizationInvitationEmail({
           email: data.email,
@@ -134,6 +167,20 @@ export const auth = betterAuth({
           teamName: data.organization.name,
           inviteLink,
         });
+      },
+      organizationHooks: {
+        afterAcceptInvitation: async ({ member, user }) => {
+          await db
+            .update(staff)
+            .set({ role: member.role as any, status: "active" })
+            .where(eq(staff.userId, user.id));
+        },
+        afterUpdateMemberRole: async ({ member }) => {
+          await db
+            .update(staff)
+            .set({ role: member.role as any })
+            .where(eq(staff.userId, member.userId));
+        },
       },
       ac,
       roles: {
