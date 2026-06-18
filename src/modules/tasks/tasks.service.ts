@@ -87,8 +87,7 @@ export class TasksService {
     caseNumber: cases.caseNumber,
     caseType: cases.caseType,
     clientId: clients.id,
-    clientFirstName: clients.firstName,
-    clientLastName: clients.lastName,
+    clientDisplayName: clients.displayName,
     assignedToId: staff.id,
     assignedToFirstName: staff.firstName,
     assignedToLastName: staff.lastName,
@@ -123,7 +122,7 @@ export class TasksService {
     },
     client: {
       id: r.clientId,
-      name: `${r.clientFirstName} ${r.clientLastName}`,
+      name: r.clientDisplayName ?? '',
     },
     assignedTo: r.assignedToId
       ? {

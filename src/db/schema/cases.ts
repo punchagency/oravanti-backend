@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, date, boolean, timestamp, pgEnum, varchar } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, integer, date, timestamp, pgEnum, varchar } from 'drizzle-orm/pg-core';
 import { clients } from './clients';
 import { teams } from './teams';
 import { staff } from './staff';
@@ -32,12 +32,12 @@ export const cases = pgTable('cases', {
   assignedStaffId:         uuid('assigned_staff_id').references(() => staff.id),
   requiredCertifications:  text('required_certifications').array().notNull().default([]),
   caseProgress:            integer('case_progress').notNull().default(0),
+  leadId:                  uuid('lead_id'),
   filingDate:              date('filing_date').notNull(),
   estimatedCompletionDate: date('estimated_completion_date'),
   nextAppointment:         date('next_appointment'),
   description:             text('description').notNull(),
   notes:                   text('notes'),
-  currentEmployer:         text('current_employer'),
   createdByAdminId:        uuid('created_by_admin_id').references(() => admins.id),
   createdByStaffId:        uuid('created_by_staff_id').references(() => staff.id),
   createdAt:               timestamp('created_at').notNull().defaultNow(),

@@ -28,155 +28,115 @@ export class QuestionnairesRouter {
   }
 
   private initializeRoutes() {
-    const validation = this.questionnairesValidation;
+    const ctrl = this.questionnairesController;
+    const v = this.questionnairesValidation;
 
+    // ── Public token-based client endpoints ──────────────────────────────────
     this.router.get(
       "/client/:token",
-      validateRequest({
-        params: validation.questionnaireClientTokenParamsSchema,
-      }),
-      this.questionnairesController.getClientQuestionnaire,
+      validateRequest({ params: v.questionnaireClientTokenParamsSchema }),
+      ctrl.getClientQuestionnaire,
     );
     this.router.put(
       "/client/:token/draft",
-      validateRequest({
-        params: validation.questionnaireClientTokenParamsSchema,
-        body: validation.responseBodySchema,
-      }),
-      this.questionnairesController.saveDraftResponse,
+      validateRequest({ params: v.questionnaireClientTokenParamsSchema, body: v.responseBodySchema }),
+      ctrl.saveDraftResponse,
     );
     this.router.post(
       "/client/:token/submit",
-      validateRequest({
-        params: validation.questionnaireClientTokenParamsSchema,
-        body: validation.responseBodySchema,
-      }),
-      this.questionnairesController.submitResponse,
+      validateRequest({ params: v.questionnaireClientTokenParamsSchema, body: v.responseBodySchema }),
+      ctrl.submitResponse,
     );
     this.router.post(
       "/client/:token/files",
       this.upload.single("file"),
       validateRequest({
-        params: validation.questionnaireClientTokenParamsSchema,
-        body: validation.uploadResponseFileBodySchema,
+        params: v.questionnaireClientTokenParamsSchema,
+        body: v.uploadResponseFileBodySchema,
       }),
-      this.questionnairesController.uploadResponseFile,
+      ctrl.uploadResponseFile,
     );
 
+    // ── Authenticated admin routes ────────────────────────────────────────────
     this.router.use(requireAuth, requireAdmin, setFirmContext);
 
+    // System questionnaire management (platform admin)
+    this.router.get("/system", ctrl.getSystemQuestionnaires);
+    this.router.post(
+      "/system",
+      validateRequest({ body: v.createSystemQuestionnaireBodySchema }),
+      ctrl.createSystemQuestionnaire,
+    );
     this.router.get(
-      "/",
-      validateRequest({ query: validation.listQuestionnairesQuerySchema }),
-      this.questionnairesController.getAllQuestionnaires,
+      "/system/:id",
+      validateRequest({ params: v.systemQuestionnaireIdParamsSchema }),
+      ctrl.getSystemQuestionnaireById,
     );
     this.router.post(
-      "/",
-      validateRequest({ body: validation.createQuestionnaireBodySchema }),
-      this.questionnairesController.createQuestionnaire,
+      "/system/:id/sections",
+      validateRequest({ params: v.systemQuestionnaireIdParamsSchema, body: v.addSectionBodySchema }),
+      ctrl.addSystemSection,
     );
+    this.router.post(
+      "/system/:id/sections/:sectionId/questions",
+      validateRequest({ params: v.systemSectionParamsSchema }),
+      ctrl.addSystemQuestion,
+    );
+
+    // Firm questionnaire additions (org-scoped merged view + CRUD)
+    this.router.get(
+      "/case-type/:caseTypeId",
+      validateRequest({ params: v.caseTypeIdParamsSchema }),
+      ctrl.getMergedQuestionnaire,
+    );
+    this.router.get(
+      "/case-type/:caseTypeId/system",
+      validateRequest({ params: v.caseTypeIdParamsSchema }),
+      ctrl.getSystemQuestionnaireByCaseType,
+    );
+    this.router.post(
+      "/case-type/:caseTypeId/sections",
+      validateRequest({ params: v.caseTypeIdParamsSchema, body: v.addSectionBodySchema }),
+      ctrl.addFirmSection,
+    );
+    this.router.patch(
+      "/case-type/:caseTypeId/sections/:sectionId",
+      validateRequest({ params: v.firmSectionParamsSchema, body: v.addSectionBodySchema }),
+      ctrl.updateFirmSection,
+    );
+    this.router.delete(
+      "/case-type/:caseTypeId/sections/:sectionId",
+      validateRequest({ params: v.firmSectionParamsSchema }),
+      ctrl.deleteFirmSection,
+    );
+    this.router.post(
+      "/case-type/:caseTypeId/questions",
+      validateRequest({ params: v.caseTypeIdParamsSchema, body: v.addFirmQuestionBodySchema }),
+      ctrl.addFirmQuestion,
+    );
+    this.router.patch(
+      "/case-type/:caseTypeId/questions/:questionId",
+      validateRequest({ params: v.firmQuestionParamsSchema, body: v.updateFirmQuestionBodySchema }),
+      ctrl.updateFirmQuestion,
+    );
+    this.router.delete(
+      "/case-type/:caseTypeId/questions/:questionId",
+      validateRequest({ params: v.firmQuestionParamsSchema }),
+      ctrl.deleteFirmQuestion,
+    );
+
+    // Case-eligible questionnaire
     this.router.get(
       "/eligible-for-case/:caseId",
-      validateRequest({ params: validation.eligibleForCaseParamsSchema }),
-      this.questionnairesController.getEligibleQuestionnairesForCase,
+      validateRequest({ params: v.eligibleForCaseParamsSchema }),
+      ctrl.getEligibleQuestionnairesForCase,
     );
-    this.router.get(
-      "/:id",
-      validateRequest({ params: validation.questionnaireIdParamsSchema }),
-      this.questionnairesController.getQuestionnaireById,
-    );
-    this.router.patch(
-      "/:id",
-      validateRequest({
-        params: validation.questionnaireIdParamsSchema,
-        body: validation.updateQuestionnaireBodySchema,
-      }),
-      this.questionnairesController.updateQuestionnaire,
-    );
-    this.router.put(
-      "/:id/case-types",
-      validateRequest({
-        params: validation.questionnaireIdParamsSchema,
-        body: validation.setQuestionnaireCaseTypesBodySchema,
-      }),
-      this.questionnairesController.setQuestionnaireCaseTypes,
-    );
-    this.router.post(
-      "/:id/publish",
-      validateRequest({ params: validation.questionnaireIdParamsSchema }),
-      this.questionnairesController.publishQuestionnaire,
-    );
-    this.router.post(
-      "/:id/duplicate",
-      validateRequest({
-        params: validation.questionnaireIdParamsSchema,
-        body: validation.duplicateQuestionnaireBodySchema,
-      }),
-      this.questionnairesController.duplicateQuestionnaire,
-    );
-    this.router.post(
-      "/:id/sections",
-      validateRequest({
-        params: validation.questionnaireIdParamsSchema,
-        body: validation.addSectionBodySchema,
-      }),
-      this.questionnairesController.addSection,
-    );
-    this.router.patch(
-      "/:id/sections/reorder",
-      validateRequest({
-        params: validation.questionnaireIdParamsSchema,
-        body: validation.reorderItemsBodySchema,
-      }),
-      this.questionnairesController.reorderSections,
-    );
-    this.router.post(
-      "/:id/questions",
-      validateRequest({
-        params: validation.questionnaireIdParamsSchema,
-        body: validation.addQuestionBodySchema,
-      }),
-      this.questionnairesController.addQuestion,
-    );
-    this.router.patch(
-      "/:id/questions/reorder",
-      validateRequest({
-        params: validation.questionnaireIdParamsSchema,
-        body: validation.reorderItemsBodySchema,
-      }),
-      this.questionnairesController.reorderQuestions,
-    );
-    this.router.patch(
-      "/:id/questions/:questionId",
-      validateRequest({
-        params: validation.questionnaireQuestionParamsSchema,
-        body: validation.updateQuestionBodySchema,
-      }),
-      this.questionnairesController.updateQuestion,
-    );
-    this.router.post(
-      "/:id/logic-rules",
-      validateRequest({
-        params: validation.questionnaireIdParamsSchema,
-        body: validation.addLogicRuleBodySchema,
-      }),
-      this.questionnairesController.addLogicRule,
-    );
-    this.router.post(
-      "/:id/send",
-      validateRequest({
-        params: validation.questionnaireIdParamsSchema,
-        body: validation.sendQuestionnaireBodySchema,
-      }),
-      this.questionnairesController.sendToClient,
-    );
+
+    // Responses
     this.router.get(
       "/:id/responses",
-      validateRequest({
-        params: validation.questionnaireIdParamsSchema,
-        query: validation.listResponsesQuerySchema,
-      }),
-      this.questionnairesController.getResponses,
+      validateRequest({ params: v.questionnaireIdParamsSchema, query: v.listResponsesQuerySchema }),
+      ctrl.getResponses,
     );
   }
 }

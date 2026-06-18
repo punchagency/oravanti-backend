@@ -23,6 +23,7 @@ import { PermissionAuditLogModule } from "./settings/permission-audit-log/permis
 import { ProfileModule } from "./settings/profile/profile.module";
 import { SecurityModule } from "./settings/security/security.module";
 import { TasksModule } from "./tasks/tasks.module";
+import { LeadsModule } from "./leads/leads.module";
 import type { Module } from "../app";
 
 export const modules: Module[] = [
@@ -51,4 +52,5 @@ export const modules: Module[] = [
   new SecurityModule(),
   new OrganizationModule(),
   new OnboardingModule(),
+  new LeadsModule()
 ];

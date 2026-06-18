@@ -1,6 +1,7 @@
 import { and, desc, eq, ilike } from "drizzle-orm";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
+import { clientContacts } from "../../db/schema/client-contacts";
 import { clients } from "../../db/schema/clients";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreaSubcategories } from "../../db/schema/practice-area-subcategories";
@@ -67,15 +68,18 @@ export const getAllCases = async (
       filingDate: cases.filingDate,
       caseProgress: cases.caseProgress,
       clientId: clients.id,
-      clientFirstName: clients.firstName,
-      clientLastName: clients.lastName,
+      clientDisplayName: clients.displayName,
       assignedStaffId: staff.id,
       assigneeFirstName: staff.firstName,
       assigneeLastName: staff.lastName,
-      assigneeRole: staff.role,
+      assigneeRole: staff.jobTitle,
     })
     .from(cases)
     .leftJoin(clients, eq(clients.id, cases.clientId))
+    .leftJoin(
+      clientContacts,
+      and(eq(clientContacts.clientId, clients.id), eq(clientContacts.isPrimary, true)),
+    )
     .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
     .leftJoin(
       practiceAreaCaseTypes,
@@ -106,8 +110,7 @@ export const getAllCases = async (
         const q = filters.search.toLowerCase();
         const matches =
           r.caseNumber.toLowerCase().includes(q) ||
-          r.clientFirstName?.toLowerCase().includes(q) ||
-          r.clientLastName?.toLowerCase().includes(q) ||
+          r.clientDisplayName?.toLowerCase().includes(q) ||
           r.caseType.toLowerCase().includes(q);
         if (!matches) return false;
       }
@@ -140,7 +143,7 @@ export const getAllCases = async (
       caseProgress: r.caseProgress,
       client: {
         id: r.clientId,
-        name: `${r.clientFirstName} ${r.clientLastName}`,
+        name: r.clientDisplayName ?? '',
       },
       assignee: r.assigneeFirstName
         ? {
@@ -186,7 +189,7 @@ export const createCase = async (
     estimatedCompletionDate?: string;
     description: string;
     notes?: string;
-    currentEmployer?: string;
+    leadId?: string;
   },
   creator?: { adminId?: string; staffId?: string },
 ) => {
@@ -218,7 +221,7 @@ export const createCase = async (
       estimatedCompletionDate: data.estimatedCompletionDate,
       description: data.description,
       notes: data.notes,
-      currentEmployer: data.currentEmployer,
+      leadId: data.leadId,
       createdByAdminId: creator?.adminId,
       createdByStaffId: creator?.staffId,
     })

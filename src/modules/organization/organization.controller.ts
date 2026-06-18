@@ -84,7 +84,10 @@ export class OrganizationController {
 
   acceptInvite = asyncWrap(async (req: AuthRequest, res) => {
     const { invitationId } = req.body;
-    const data = await this.organizationService.acceptInvite(invitationId, req.headers);
+    const data = await this.organizationService.acceptInvite(
+      invitationId,
+      req.headers,
+    );
     res.status(200).json({ message: "Invitation accepted", data });
   });
 
