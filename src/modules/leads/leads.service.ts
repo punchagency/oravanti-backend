@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "crypto";
-import { and, count, desc, eq, ilike, or } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, or } from "drizzle-orm";
 import { emailService } from "../../utils/email/email.service";
 import { db } from "../../db/client";
 import { adverseParties } from "../../db/schema/adverse-parties";
@@ -281,8 +281,36 @@ const getAllLeads = async (
 
   const where = and(...conditions);
 
+  const attachConflictMatches = async (rows: (typeof leads.$inferSelect)[]) => {
+    const conflictCheckLeads = rows.filter(
+      (r) => r.pipelineStage === "conflict_check" && r.conflictCheckId,
+    );
+    if (conflictCheckLeads.length === 0) return rows;
+
+    const ccIds = conflictCheckLeads.map((r) => r.conflictCheckId!);
+    const checks = await db
+      .select({ id: conflictChecks.id, matches: conflictChecks.matches })
+      .from(conflictChecks)
+      .where(inArray(conflictChecks.id, ccIds));
+
+    const matchesById = new Map(checks.map((c) => [c.id, c.matches]));
+
+    return rows.map((r) => {
+      if (r.pipelineStage !== "conflict_check" || !r.conflictCheckId)
+        return r;
+      const matches = matchesById.get(r.conflictCheckId) as any[];
+      if (!matches || matches.length === 0) return r;
+      return { ...r, conflictMatches: matches };
+    });
+  };
+
   if (filters.all) {
-    return db.select().from(leads).where(where).orderBy(desc(leads.receivedAt));
+    const rows = await db
+      .select()
+      .from(leads)
+      .where(where)
+      .orderBy(desc(leads.receivedAt));
+    return attachConflictMatches(rows);
   }
 
   const page = filters.page ?? 1;
@@ -302,8 +330,10 @@ const getAllLeads = async (
     .limit(limit)
     .offset(offset);
 
+  const enrichedRows = await attachConflictMatches(rows);
+
   return buildPaginatedResponse(
-    rows,
+    enrichedRows,
     {
       page,
       limit,
@@ -523,6 +553,7 @@ const runConflictCheck = async (
     confidence: string;
     rule: string;
     details: string;
+    caseIds: string[];
   }> = [];
 
   // ABA 1.7 — exact email match against active client contacts
@@ -551,6 +582,7 @@ const runConflictCheck = async (
       confidence: "exact_email",
       rule: "ABA_1.7",
       details: `Email ${normalizedEmail} matches active client contact`,
+      caseIds: [],
     });
   }
 
@@ -587,6 +619,7 @@ const runConflictCheck = async (
           confidence: "exact_name",
           rule: "ABA_1.7",
           details: `Name "${normalizedName}" matches active client`,
+          caseIds: [],
         });
       }
     }
@@ -612,6 +645,7 @@ const runConflictCheck = async (
         normalizeName(m.name) === normalizedName ? "exact_name" : "fuzzy_name",
       rule: "ABA_1.7",
       details: `Name matches adverse party on case ${m.caseId}`,
+      caseIds: [m.caseId],
     });
   }
 
@@ -649,6 +683,7 @@ const runConflictCheck = async (
         confidence: emailMatch ? "exact_email" : "exact_name",
         rule: "ABA_1.9",
         details: `Matches former (inactive) client`,
+        caseIds: [],
       });
     }
   }
@@ -679,7 +714,12 @@ const runConflictCheck = async (
       const fullContactName = `${m.firstName} ${m.lastName}`.toLowerCase();
       if (
         fullContactName === normalizedName ||
-        matches.find((x) => x.matchedId === (m.clientId ?? m.id))
+        matches.find((x) => x.matchedId === (m.clientId ?? m.id)) ||
+        matches.find(
+          (x) =>
+            x.type === "related_party" &&
+            x.matchedName.toLowerCase() === fullContactName,
+        )
       )
         continue;
 
@@ -690,7 +730,39 @@ const runConflictCheck = async (
         confidence: "surname_match",
         rule: "ABA_1.7",
         details: `Last name "${normalizedLastName}" matches active client ${m.firstName} ${m.lastName}`,
+        caseIds: [],
       });
+    }
+  }
+
+  // Populate caseIds for client-based matches
+  const clientMatchIds = [
+    ...new Set(
+      matches
+        .filter((m) => m.type !== "adverse_party")
+        .map((m) => m.matchedId),
+    ),
+  ];
+  if (clientMatchIds.length > 0) {
+    const relatedCases = await db
+      .select({ id: cases.id, clientId: cases.clientId })
+      .from(cases)
+      .where(
+        and(
+          eq(cases.organizationId, organizationId),
+          inArray(cases.clientId, clientMatchIds),
+        ),
+      );
+    const casesByClientId = new Map<string, string[]>();
+    for (const c of relatedCases) {
+      const arr = casesByClientId.get(c.clientId) ?? [];
+      arr.push(c.id);
+      casesByClientId.set(c.clientId, arr);
+    }
+    for (const match of matches) {
+      if (match.type !== "adverse_party") {
+        match.caseIds = casesByClientId.get(match.matchedId) ?? [];
+      }
     }
   }
 
