@@ -92,7 +92,7 @@ export class LeadsController {
   };
 
   resolveConflictCheck = async (req: AuthRequest, res: Response) => {
-    const staffId = req.staffId ?? req.adminId;
+    const staffId = req.staffId;
     const result = await this.svc.resolveConflictCheck(
       req.params.id as string,
       req.organizationId!,

@@ -46,6 +46,19 @@ export const requireStaffOrAdmin = async (
       .limit(1);
 
     req.adminId = adminRecord?.id;
+
+    const [adminStaffRecord] = await db
+      .select({ id: staff.id })
+      .from(staff)
+      .where(
+        and(
+          eq(staff.userId, req.userId),
+          eq(staff.organizationId, req.organizationId),
+        ),
+      )
+      .limit(1);
+
+    req.staffId = adminStaffRecord?.id;
     return next();
   }
 

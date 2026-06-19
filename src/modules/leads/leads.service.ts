@@ -30,6 +30,7 @@ import {
   workflowTemplateSteps,
 } from "../../db/schema/workflow";
 import {
+  AuthorizationError,
   BadRequestError,
   ConflictError,
   NotFoundError,
@@ -1089,6 +1090,18 @@ const resolveConflictCheck = async (
 
   if (!lead || !lead.conflictCheckId)
     throw new NotFoundError("No conflict check found for this lead");
+
+  if (!staffId) {
+    throw new NotFoundError("Staff not found")
+  }
+  const [staffRecord] = await db
+    .select({ id: staff.id })
+    .from(staff)
+    .where(eq(staff.id, staffId))
+    .limit(1);
+
+  if (!staffRecord)
+    throw new AuthorizationError("Only staff members with a valid staff profile may resolve conflict checks");
 
   const now = new Date();
 
