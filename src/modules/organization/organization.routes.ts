@@ -55,6 +55,7 @@ export class OrganizationRouter {
     this.router.post(
       "/invite",
       requireAuth,
+      requirePermission("staffs", "create"),
       this.organizationController.invite,
     );
     this.router.post(
@@ -63,8 +64,19 @@ export class OrganizationRouter {
       this.organizationController.acceptInvite,
     );
     this.router.get(
+      "/my-pending-invitation",
+      requireAuth,
+      this.organizationController.getMyPendingInvitation,
+    );
+    this.router.get(
+      "/needs-setup",
+      requireAuth,
+      this.organizationController.needsSetup,
+    );
+    this.router.get(
       "/invitations",
       requireAuth,
+      requirePermission("staffs", "create"),
       this.organizationController.getInvitations,
     );
     this.router.post(
@@ -88,6 +100,11 @@ export class OrganizationRouter {
       "/resend-invitation",
       requireAuth,
       this.organizationController.resendInvitation,
+    );
+    this.router.post(
+      "/set-password",
+      requireAuth,
+      this.organizationController.setPassword,
     );
   }
 }

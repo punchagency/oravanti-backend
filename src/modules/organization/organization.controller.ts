@@ -157,6 +157,23 @@ export class OrganizationController {
     res.status(200).json({ message: "Role updated successfully" });
   });
 
+  getMyPendingInvitation = asyncWrap(async (req: AuthRequest, res) => {
+    if (!req.userId) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    const invitation =
+      await this.organizationService.getMyPendingInvitation(req.userId);
+    res.status(200).json({ invitation });
+  });
+
+  needsSetup = asyncWrap(async (req: AuthRequest, res) => {
+    if (!req.userId) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    const result = await this.organizationService.needsSetup(req.userId);
+    res.status(200).json(result);
+  });
+
   resendInvitation = asyncWrap(async (req: AuthRequest, res) => {
     const { email, role } = req.body;
     if (!email || !role) {
@@ -175,5 +192,21 @@ export class OrganizationController {
       message: "Invitation resent successfully",
       data: result,
     });
+  });
+
+  setPassword = asyncWrap(async (req: AuthRequest, res) => {
+    if (!req.userId) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: "currentPassword and newPassword are required" });
+    }
+    const result = await this.organizationService.setPassword(
+      req.userId,
+      { currentPassword, newPassword },
+      req.headers,
+    );
+    res.status(200).json(result);
   });
 }

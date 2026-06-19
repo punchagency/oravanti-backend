@@ -2,11 +2,11 @@ import type { BetterAuthOptions } from "better-auth";
 import { symmetricDecrypt } from "better-auth/crypto";
 import { desc, eq } from "drizzle-orm";
 import { google } from "googleapis";
-import { db } from "../db/client";
 import { env } from "../config/env";
+import { db } from "../db/client";
+import { staff } from "../db/schema";
 import { member, session } from "../db/schema/auth-schema";
 import { connectedEmailAccount } from "../db/schema/email";
-import { staff } from "../db/schema";
 import { getActiveOrganization } from "./helpers";
 
 const secret = env.BETTER_AUTH_SECRET;

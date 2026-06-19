@@ -11,6 +11,7 @@ const statement = {
   cases: ["read", "create", "update", "delete"],
   clients: ["read", "create", "update", "delete"],
   staffs: ["read", "create", "update", "delete"],
+  invitations: ["read", "create", "update", "delete"],
 } as const;
 
 export const ac = createAccessControl(statement);
@@ -33,13 +34,15 @@ export const owner = ac.newRole({
   clients: [],
   cases: [],
   staffs: ["read", "create", "update", "delete"],
+  invitations: ["read", "create", "update", "delete"],
   ...ownerAc.statements,
 });
 
 export const admin = ac.newRole({
   clients: [],
   cases: [],
-  staffs: [],
+  staffs: ["read", "create", "update", "delete"],
+  invitations: ["read", "create", "update", "delete"],
   ...adminAc.statements,
 });
 
