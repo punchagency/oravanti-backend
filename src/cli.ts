@@ -12,7 +12,7 @@ import {
 } from "@clack/prompts";
 import { Command } from "commander";
 import { createHash, randomUUID } from "crypto";
-import { and, asc, eq, inArray, ilike, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ilike, or } from "drizzle-orm";
 import { env } from "./config/env";
 import { closeDb, db } from "./db/client";
 import { admins } from "./db/schema/admins";
@@ -40,8 +40,32 @@ import {
   documentVersions,
   externalSubmissions,
 } from "./db/schema/documents";
+import { adverseParties } from "./db/schema/adverse-parties";
+import { clientContacts } from "./db/schema/client-contacts";
+import { conflictChecks } from "./db/schema/conflict-checks";
+import { consultations } from "./db/schema/consultations";
+import { feeAgreements } from "./db/schema/fee-agreements";
 import { firmPracticeAreas } from "./db/schema/firm-practice-areas";
+import { leads } from "./db/schema/leads";
 import { leaveRequests } from "./db/schema/leave-requests";
+import {
+  caseTypeQuestionnaires,
+  caseTypeQuestionnaireSections,
+  caseTypeQuestionnaireQuestions,
+  caseTypeQuestionnaireLogicRules,
+  firmQuestionnaireSections,
+  firmQuestionnaireQuestions,
+  firmQuestionnaireLogicRules,
+  questionnaireSends,
+  questionnaireResponses,
+  questionnaireAnswers,
+  questionnaireResponseFiles,
+} from "./db/schema/questionnaires";
+import {
+  workflowTemplates,
+  workflowTemplateSteps,
+  caseWorkflowSteps,
+} from "./db/schema/workflow";
 import { paralegalProfiles } from "./db/schema/paralegal-profiles";
 import { practiceAreaCaseTypes } from "./db/schema/practice-area-case-types";
 import { practiceAreaSubcategories } from "./db/schema/practice-area-subcategories";
@@ -56,24 +80,6 @@ import { tasks } from "./db/schema/tasks";
 import { teamMembers } from "./db/schema/team-members";
 import { teams } from "./db/schema/teams";
 import { timeEntries } from "./db/schema/time-entries";
-
-const DEFAULT_PRACTICE_AREAS = [
-  "Immigration",
-  "Family",
-  "Business",
-  "Estate",
-  "Real Estate",
-  "Personal Injury",
-  "Criminal",
-  "Employment",
-  "Tax",
-  "Intellectual Property",
-  "Bankruptcy",
-  "Healthcare",
-  "Civil Litigation",
-  "Corporate",
-  "Environmental",
-] as const;
 
 const DEFAULT_IMMIGRATION_CASE_TYPES = [
   { code: "h1b_visa", name: "H-1B Visa", caseNumberPrefix: "H1B" },
@@ -132,12 +138,17 @@ type NewCalendarEventRow = typeof calendarEvents.$inferInsert;
 type NewClientRequestRow = typeof clientRequests.$inferInsert;
 type NewClientRow = typeof clients.$inferInsert;
 type NewClientCompanyRow = typeof clientCompanies.$inferInsert;
+type NewClientContactRow = typeof clientContacts.$inferInsert;
 type NewContractorRow = typeof contractors.$inferInsert;
 type NewDocumentRow = typeof documents.$inferInsert;
 type NewDocumentAccessRow = typeof documentAccess.$inferInsert;
 type NewDocumentActivityLogRow = typeof documentActivityLogs.$inferInsert;
 type NewDocumentCaseLinkRow = typeof documentCaseLinks.$inferInsert;
 type NewDocumentVersionRow = typeof documentVersions.$inferInsert;
+type NewLeadRow = typeof leads.$inferInsert;
+type NewConflictCheckRow = typeof conflictChecks.$inferInsert;
+type NewConsultationRow = typeof consultations.$inferInsert;
+type NewFeeAgreementRow = typeof feeAgreements.$inferInsert;
 type NewLeaveRequestRow = typeof leaveRequests.$inferInsert;
 type NewParalegalProfileRow = typeof paralegalProfiles.$inferInsert;
 type NewTaskRow = typeof tasks.$inferInsert;
@@ -183,6 +194,10 @@ type DemoSeedResult = {
   companyCount: number;
   clientCount: number;
   caseCount: number;
+  leadCount: number;
+  conflictCheckCount: number;
+  consultationCount: number;
+  feeAgreementCount: number;
   contractorCount: number;
   assignmentCount: number;
   documentCount: number;
@@ -268,25 +283,6 @@ const assertDevelopment = () => {
   if (env.NODE_ENV !== "development") {
     throw new Error("Demo data seeding is only available in development.");
   }
-};
-
-const parseNames = (input: string | readonly string[]) => {
-  const rawNames = typeof input === "string" ? input.split(/\r?\n|,/) : input;
-
-  const names: string[] = [];
-  const seen = new Set<string>();
-
-  for (const rawName of rawNames) {
-    const name = normalizeName(rawName);
-    const key = normalizeKey(name);
-
-    if (!name || seen.has(key)) continue;
-
-    seen.add(key);
-    names.push(name);
-  }
-
-  return names;
 };
 
 const getPracticeAreas = () =>
@@ -444,58 +440,6 @@ const parseCaseTypeDefinitions = (
   }
 
   return definitions;
-};
-
-const promptForNames = async () => {
-  const names = abortIfCancelled(
-    await text({
-      message: "Enter one or more practice area names",
-      placeholder: "Immigration, Family, Business",
-      validate(value) {
-        return parseNames(value).length
-          ? undefined
-          : "Enter at least one name.";
-      },
-    }),
-  );
-
-  return parseNames(names);
-};
-
-const createPracticeAreas = async (names: readonly string[]) => {
-  const cleanedNames = parseNames(names);
-
-  if (!cleanedNames.length) {
-    note("No valid practice area names were provided.");
-    return;
-  }
-
-  const existingAreas = await getPracticeAreas();
-  const existingNames = new Set(
-    existingAreas.map((area) => normalizeKey(area.name)),
-  );
-  const skipped = cleanedNames.filter((name) =>
-    existingNames.has(normalizeKey(name)),
-  );
-  const namesToCreate = cleanedNames.filter(
-    (name) => !existingNames.has(normalizeKey(name)),
-  );
-
-  if (!namesToCreate.length) {
-    note(`All provided names already exist: ${skipped.join(", ")}`);
-    return;
-  }
-
-  const created = await db
-    .insert(practiceAreas)
-    .values(namesToCreate.map((name) => ({ name })))
-    .returning();
-
-  printPracticeAreas(created);
-
-  if (skipped.length) {
-    note(`Skipped existing practice areas: ${skipped.join(", ")}`);
-  }
 };
 
 const resolvePracticeArea = async (id?: string) => {
@@ -1081,6 +1025,7 @@ const DEMO_TARGETS = {
   companies: 15,
   clients: 60,
   cases: 100,
+  leads: 40,
   contractors: 15,
   assignments: 100,
   documents: 120,
@@ -1146,6 +1091,7 @@ const caseStatuses = [
   "pending_review",
   "on_hold",
   "completed",
+  "cancelled",
 ] as const;
 const casePriorities = ["low", "medium", "high", "critical"] as const;
 const documentCategories = [
@@ -1163,15 +1109,69 @@ const taskStatuses = [
 ] as const;
 const eventTypes = [
   "client_meeting",
+  "master_calendar_hearing",
+  "individual_hearing",
   "uscis_interview",
   "biometric",
   "filing_deadline",
+  "service_request",
   "internal_event",
 ] as const;
 const leaveTypes = ["annual", "sick", "emergency", "unpaid"] as const;
 const leaveStatuses = ["pending", "approved", "rejected"] as const;
 const errorSeverities = ["critical", "high", "medium", "low"] as const;
 const errorStatuses = ["pending_review", "under_review", "resolved"] as const;
+const leadSources = [
+  "education_flywheel",
+  "referral",
+  "direct",
+  "walk_in",
+  "phone_enquiry",
+  "client_portal",
+] as const;
+const leadPipelineStages = [
+  "lead_inbox",
+  "lead_inbox",
+  "lead_inbox",
+  "conflict_check",
+  "conflict_check",
+  "questionnaire",
+  "consultation",
+  "fee_agreement",
+  "case_opening",
+] as const;
+const conflictCheckStatuses = [
+  "pass",
+  "pass",
+  "needs_review",
+  "conflict_found",
+] as const;
+const consultationStatuses = [
+  "completed",
+  "completed",
+  "scheduled",
+  "cancelled",
+] as const;
+const consultationOutcomes = [
+  "proceed",
+  "proceed",
+  "follow_up",
+  "close_no_case",
+] as const;
+const feeAgreementStatuses = ["draft", "pending_signature", "signed"] as const;
+
+const DEMO_LEAD_NAMES = [
+  ["James", "OBrien"],
+  ["Amina", "Diallo"],
+  ["Carlos", "Reyes"],
+  ["Wei", "Zhang"],
+  ["Fatou", "Ndiaye"],
+  ["Olena", "Kovalenko"],
+  ["Ravi", "Sharma"],
+  ["Lucia", "Ferreira"],
+  ["Ahmed", "AlAmin"],
+  ["Ingrid", "Lindqvist"],
+] as const;
 
 const pick = <T>(items: readonly T[], index: number) =>
   items[index % items.length];
@@ -1180,43 +1180,6 @@ const range = (count: number) =>
   Array.from({ length: count }, (_, index) => index);
 
 const pad = (value: number, width = 3) => String(value).padStart(width, "0");
-
-const caseTypesForPracticeArea = (
-  practiceAreaName: string,
-): CaseTypeInput[] => {
-  if (normalizeKey(practiceAreaName) === "immigration") {
-    return [...DEFAULT_IMMIGRATION_CASE_TYPES];
-  }
-
-  const slug = slugify(practiceAreaName).replace(/-/g, "_");
-  const prefix = practiceAreaName
-    .split(/\s+/)
-    .map((part) => part[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 4);
-
-  return [
-    {
-      code: `${slug}_consultation`,
-      name: `${practiceAreaName} Consultation`,
-      caseNumberPrefix: `${prefix}C`,
-      jurisdiction: "varies",
-    },
-    {
-      code: `${slug}_matter`,
-      name: `${practiceAreaName} Matter`,
-      caseNumberPrefix: `${prefix}M`,
-      jurisdiction: "varies",
-    },
-    {
-      code: `${slug}_review`,
-      name: `${practiceAreaName} Review`,
-      caseNumberPrefix: `${prefix}R`,
-      jurisdiction: "varies",
-    },
-  ];
-};
 
 const ensureAuthUser = async (
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
@@ -1348,78 +1311,50 @@ const seedDemoData = async (organizationId?: string) => {
     return;
   }
 
+  const existingPracticeAreas = await db
+    .select()
+    .from(practiceAreas)
+    .orderBy(asc(practiceAreas.name));
+
+  if (!existingPracticeAreas.length) {
+    note(
+      "No practice areas found. Run 'Seed practice area taxonomy' first.",
+      "Missing taxonomy data",
+    );
+    return;
+  }
+
+  const existingCaseTypes = await db
+    .select({
+      id: practiceAreaCaseTypes.id,
+      subcategoryId: practiceAreaCaseTypes.subcategoryId,
+      code: practiceAreaCaseTypes.code,
+      name: practiceAreaCaseTypes.name,
+      caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
+      jurisdiction: practiceAreaCaseTypes.jurisdiction,
+      createdAt: practiceAreaCaseTypes.createdAt,
+      updatedAt: practiceAreaCaseTypes.updatedAt,
+      practiceAreaId: practiceAreaSubcategories.practiceAreaId,
+    })
+    .from(practiceAreaCaseTypes)
+    .innerJoin(
+      practiceAreaSubcategories,
+      eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
+    );
+
+  if (!existingCaseTypes.length) {
+    note(
+      "No case types found. Run 'Seed practice area taxonomy' first.",
+      "Missing taxonomy data",
+    );
+    return;
+  }
+
   const suffix = `${slugify(firm.firmName) || "firm"}-${Date.now()}`;
 
   const result = await db.transaction(async (tx) => {
-    const practiceAreaRows: PracticeAreaRow[] = [];
-    for (const name of DEFAULT_PRACTICE_AREAS) {
-      let [area] = await tx
-        .select()
-        .from(practiceAreas)
-        .where(ilike(practiceAreas.name, name))
-        .limit(1);
-
-      if (!area) {
-        [area] = await tx.insert(practiceAreas).values({ name }).returning();
-      }
-
-      practiceAreaRows.push(area);
-    }
-
-    const caseTypeRows: Array<
-      PracticeAreaCaseTypeRow & { practiceAreaId: string }
-    > = [];
-    for (const area of practiceAreaRows) {
-      let [generalSubcategory] = await tx
-        .select()
-        .from(practiceAreaSubcategories)
-        .where(
-          and(
-            eq(practiceAreaSubcategories.practiceAreaId, area.id),
-            eq(practiceAreaSubcategories.code, "general"),
-          ),
-        )
-        .limit(1);
-
-      if (!generalSubcategory) {
-        [generalSubcategory] = await tx
-          .insert(practiceAreaSubcategories)
-          .values({
-            practiceAreaId: area.id,
-            code: "general",
-            name: "General",
-          })
-          .returning();
-      }
-
-      for (const caseType of caseTypesForPracticeArea(area.name)) {
-        let [caseTypeRow] = await tx
-          .select()
-          .from(practiceAreaCaseTypes)
-          .where(
-            and(
-              eq(practiceAreaCaseTypes.subcategoryId, generalSubcategory.id),
-              eq(practiceAreaCaseTypes.code, caseType.code),
-            ),
-          )
-          .limit(1);
-
-        if (!caseTypeRow) {
-          [caseTypeRow] = await tx
-            .insert(practiceAreaCaseTypes)
-            .values({
-              subcategoryId: generalSubcategory.id,
-              code: caseType.code,
-              name: caseType.name,
-              caseNumberPrefix: caseType.caseNumberPrefix,
-              jurisdiction: caseType.jurisdiction,
-            })
-            .returning();
-        }
-
-        caseTypeRows.push({ ...caseTypeRow, practiceAreaId: area.id });
-      }
-    }
+    const practiceAreaRows = existingPracticeAreas;
+    const caseTypeRows = existingCaseTypes;
 
     const subscriptionRows = [];
     const firmPracticeAreaRows = [];
@@ -1760,26 +1695,79 @@ const seedDemoData = async (organizationId?: string) => {
       "Italian",
       "Czech",
     ] as const;
-    const clientValues: NewClientRow[] = range(DEMO_TARGETS.clients).map(
-      (index) => {
-        const firstName = pick(firstNames, index);
-        const lastName = pick(lastNames, index);
-        return {
+
+    // Create primary contacts for company-type clients
+    await tx.insert(clientContacts).values(
+      companyClientEntities.map((clientEntity, index) => ({
+        organizationId: firm.id,
+        clientId: clientEntity.id,
+        role: "primary" as const,
+        isPrimary: true,
+        firstName: pick(firstNames, index + 2),
+        lastName: pick(lastNames, index + 2),
+        email: `company.contact.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
+        phone: `+1-555-${pad(2200 + index, 4)}`,
+      } satisfies NewClientContactRow)),
+    );
+
+    const clientData = range(DEMO_TARGETS.clients).map((index) => {
+      const firstName = pick(firstNames, index);
+      const lastName = pick(lastNames, index);
+      const entityType = pick(
+        [
+          "individual",
+          "individual",
+          "individual",
+          "individual",
+          "trust",
+          "estate",
+          "other",
+        ] as const,
+        index,
+      );
+      const displayName =
+        entityType === "individual"
+          ? `${firstName} ${lastName}`
+          : entityType === "trust"
+            ? `${lastName} Family Trust`
+            : entityType === "estate"
+              ? `Estate of ${firstName} ${lastName}`
+              : `${lastName} Holdings`;
+      return {
+        clientValues: {
           organizationId: firm.id,
-          entityType: "individual" as const,
-          displayName: `${firstName} ${lastName}`,
+          entityType,
+          displayName,
           status: (index % 17 === 0
             ? "pending"
             : index % 19 === 0
               ? "inactive"
               : "active") as "active" | "inactive" | "pending",
-        };
-      },
-    );
+        } satisfies NewClientRow,
+        firstName,
+        lastName,
+        nationality: pick(nationalities, index),
+      };
+    });
+
     const createdClients = await tx
       .insert(clients)
-      .values(clientValues)
+      .values(clientData.map((d) => d.clientValues))
       .returning();
+
+    await tx.insert(clientContacts).values(
+      createdClients.map((client, index) => ({
+        organizationId: firm.id,
+        clientId: client.id,
+        role: "primary" as const,
+        isPrimary: true,
+        firstName: clientData[index].firstName,
+        lastName: clientData[index].lastName,
+        email: `client.${clientData[index].firstName.toLowerCase()}.${clientData[index].lastName.toLowerCase()}.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
+        phone: `+1-555-${pad(5100 + index, 4)}`,
+        nationality: clientData[index].nationality,
+      } satisfies NewClientContactRow)),
+    );
 
     const createdCases = await tx
       .insert(cases)
@@ -2070,6 +2058,119 @@ const seedDemoData = async (organizationId?: string) => {
       .values(leaveRequestValues)
       .returning();
 
+    const createdLeads: (typeof leads.$inferSelect)[] = [];
+    const createdConflictChecks: (typeof conflictChecks.$inferSelect)[] = [];
+    const createdConsultations: (typeof consultations.$inferSelect)[] = [];
+    const createdFeeAgreements: (typeof feeAgreements.$inferSelect)[] = [];
+
+    const conflictCheckStages = new Set([
+      "conflict_check",
+      "questionnaire",
+      "consultation",
+      "fee_agreement",
+      "case_opening",
+    ]);
+    const consultationStages = new Set([
+      "consultation",
+      "fee_agreement",
+      "case_opening",
+    ]);
+    const feeAgreementStages = new Set(["fee_agreement", "case_opening"]);
+
+    for (const index of range(DEMO_TARGETS.leads)) {
+      const [firstName, lastName] = pick(DEMO_LEAD_NAMES, index);
+      const pipelineStage = pick(leadPipelineStages, index);
+      const caseType = pick(caseTypeRows, index + 3);
+      const practiceArea = practiceAreaRows.find(
+        (a) => a.id === caseType.practiceAreaId,
+      )!;
+      const assignedStaff = pick(createdStaff, index + 2);
+      const email = `lead.${firstName.toLowerCase()}.${lastName.toLowerCase()}.${suffix}@${DEMO_EMAIL_DOMAIN}`;
+
+      const [lead] = await tx
+        .insert(leads)
+        .values({
+          organizationId: firm.id,
+          name: `${firstName} ${lastName}`,
+          email,
+          phone: `+1-555-${pad(4100 + index, 4)}`,
+          entityType: "individual",
+          practiceAreaId: practiceArea.id,
+          caseTypeId: caseType.id,
+          source: pick(leadSources, index),
+          situationSummary: `Demo intake for ${practiceArea.name.toLowerCase()} matters.`,
+          status: pick(["new", "new", "reviewed", "archived"] as const, index),
+          pipelineStage,
+          assignedStaffId: assignedStaff.id,
+        } satisfies NewLeadRow)
+        .returning();
+
+      createdLeads.push(lead);
+
+      if (conflictCheckStages.has(pipelineStage)) {
+        const [cc] = await tx
+          .insert(conflictChecks)
+          .values({
+            organizationId: firm.id,
+            leadId: lead.id,
+            status: pick(conflictCheckStatuses, index),
+            checkedById: assignedStaff.id,
+            checkedAt: timestampFromNow(-7 + (index % 5)),
+          } satisfies NewConflictCheckRow)
+          .returning();
+        createdConflictChecks.push(cc);
+        await tx
+          .update(leads)
+          .set({ conflictCheckId: cc.id })
+          .where(eq(leads.id, lead.id));
+      }
+
+      if (consultationStages.has(pipelineStage)) {
+        const status = pick(consultationStatuses, index);
+        const [consult] = await tx
+          .insert(consultations)
+          .values({
+            organizationId: firm.id,
+            leadId: lead.id,
+            scheduledAt: timestampFromNow(3 + (index % 14)),
+            duration: pick([30, 45, 60] as const, index),
+            mode: pick(["video", "in_person"] as const, index),
+            leadAttorneyId: assignedStaff.id,
+            status,
+            outcome:
+              status === "completed"
+                ? pick(consultationOutcomes, index)
+                : undefined,
+          } satisfies NewConsultationRow)
+          .returning();
+        createdConsultations.push(consult);
+        await tx
+          .update(leads)
+          .set({ consultationId: consult.id })
+          .where(eq(leads.id, lead.id));
+      }
+
+      if (feeAgreementStages.has(pipelineStage)) {
+        const [fa] = await tx
+          .insert(feeAgreements)
+          .values({
+            organizationId: firm.id,
+            leadId: lead.id,
+            practiceAreaId: practiceArea.id,
+            caseTypeId: caseType.id,
+            agreementType: "standard_retainer",
+            generatedFrom: "manual",
+            status: pick(feeAgreementStatuses, index),
+          } satisfies NewFeeAgreementRow)
+          .returning();
+        createdFeeAgreements.push(fa);
+        await tx
+          .update(leads)
+          .set({ feeAgreementId: fa.id })
+          .where(eq(leads.id, lead.id));
+      }
+    }
+
     const [existingAiConfig] = await tx
       .select()
       .from(aiSystemConfig)
@@ -2148,6 +2249,10 @@ const seedDemoData = async (organizationId?: string) => {
       companyCount: createdCompanies.length,
       clientCount: createdClients.length,
       caseCount: createdCases.length,
+      leadCount: createdLeads.length,
+      conflictCheckCount: createdConflictChecks.length,
+      consultationCount: createdConsultations.length,
+      feeAgreementCount: createdFeeAgreements.length,
       contractorCount: createdContractors.length,
       assignmentCount: createdAssignments.length,
       documentCount: createdDocuments.length,
@@ -2412,6 +2517,20 @@ const dropDemoData = async (organizationId?: string) => {
         .returning(),
     );
     record(
+      "clientCompanies",
+      await tx
+        .delete(clientCompanies)
+        .where(eq(clientCompanies.organizationId, firm.id))
+        .returning(),
+    );
+    record(
+      "clientContacts",
+      await tx
+        .delete(clientContacts)
+        .where(eq(clientContacts.organizationId, firm.id))
+        .returning(),
+    );
+    record(
       "clients",
       await tx
         .delete(clients)
@@ -2437,13 +2556,6 @@ const dropDemoData = async (organizationId?: string) => {
       await tx
         .delete(staff)
         .where(eq(staff.organizationId, firm.id))
-        .returning(),
-    );
-    record(
-      "clientCompanies",
-      await tx
-        .delete(clientCompanies)
-        .where(eq(clientCompanies.organizationId, firm.id))
         .returning(),
     );
     record(
@@ -2587,6 +2699,14 @@ const promptForDeleteIds = async () => {
 };
 
 const deletePracticeAreas = async (ids: readonly string[]) => {
+  if (env.NODE_ENV !== "development") {
+    note(
+      "Deleting practice areas is only available in development.",
+      "Forbidden",
+    );
+    return;
+  }
+
   const selectedIds = ids.length ? [...ids] : await promptForDeleteIds();
 
   if (!selectedIds.length) return;
@@ -2602,13 +2722,25 @@ const deletePracticeAreas = async (ids: readonly string[]) => {
   }
 
   note(
-    areas.map((area) => `- ${area.name} (${area.id})`).join("\n"),
-    "Deleting practice areas can affect firms, cases, and subscriptions that reference them.",
+    [
+      "WARNING: This action is irreversible.",
+      "",
+      "The following practice areas and ALL associated data will be permanently deleted:",
+      "  - Subcategories and case types",
+      "  - Leads and their conflict checks, consultations, and fee agreements",
+      "  - Cases and their tasks, assignments, time entries, calendar events, and documents",
+      "  - Questionnaire templates, sends, and responses",
+      "  - Workflow templates and steps",
+      "  - Subscriptions and firm practice area links",
+      "",
+      ...areas.map((area) => `  · ${area.name} (${area.id})`),
+    ].join("\n"),
+    "Destructive action",
   );
 
   const shouldDelete = abortIfCancelled(
     await confirm({
-      message: `Delete ${areas.length} practice area${areas.length === 1 ? "" : "s"}?`,
+      message: `Permanently delete ${areas.length} practice area${areas.length === 1 ? "" : "s"} and all associated data?`,
       initialValue: false,
     }),
   );
@@ -2618,29 +2750,409 @@ const deletePracticeAreas = async (ids: readonly string[]) => {
     return;
   }
 
-  const deleted = await db
-    .delete(practiceAreas)
-    .where(
-      inArray(
-        practiceAreas.id,
-        areas.map((area) => area.id),
-      ),
-    )
-    .returning();
+  const areaIds = areas.map((a) => a.id);
+
+  const deleted = await db.transaction(async (tx) => {
+    // ─── Gather dependent IDs ───────────────────────────────────────────────
+    const subcategoryRows = await tx
+      .select({ id: practiceAreaSubcategories.id })
+      .from(practiceAreaSubcategories)
+      .where(inArray(practiceAreaSubcategories.practiceAreaId, areaIds));
+    const subcategoryIds = subcategoryRows.map((r) => r.id);
+
+    const caseTypeRows = subcategoryIds.length
+      ? await tx
+          .select({ id: practiceAreaCaseTypes.id })
+          .from(practiceAreaCaseTypes)
+          .where(inArray(practiceAreaCaseTypes.subcategoryId, subcategoryIds))
+      : [];
+    const caseTypeIds = caseTypeRows.map((r) => r.id);
+
+    const caseRows = await tx
+      .select({ id: cases.id })
+      .from(cases)
+      .where(inArray(cases.practiceAreaId, areaIds));
+    const caseIds = caseRows.map((r) => r.id);
+
+    const leadRows = await tx
+      .select({ id: leads.id })
+      .from(leads)
+      .where(inArray(leads.practiceAreaId, areaIds));
+    const leadIds = leadRows.map((r) => r.id);
+
+    const ctqRows = caseTypeIds.length
+      ? await tx
+          .select({ id: caseTypeQuestionnaires.id })
+          .from(caseTypeQuestionnaires)
+          .where(inArray(caseTypeQuestionnaires.caseTypeId, caseTypeIds))
+      : [];
+    const ctqIds = ctqRows.map((r) => r.id);
+
+    const sendConditions = [
+      ...(caseTypeIds.length
+        ? [inArray(questionnaireSends.caseTypeId, caseTypeIds)]
+        : []),
+      ...(leadIds.length ? [inArray(questionnaireSends.leadId, leadIds)] : []),
+      ...(caseIds.length ? [inArray(questionnaireSends.caseId, caseIds)] : []),
+    ];
+    const sendRows = sendConditions.length
+      ? await tx
+          .select({ id: questionnaireSends.id })
+          .from(questionnaireSends)
+          .where(or(...sendConditions))
+      : [];
+    const sendIds = sendRows.map((r) => r.id);
+
+    const responseRows = sendIds.length
+      ? await tx
+          .select({ id: questionnaireResponses.id })
+          .from(questionnaireResponses)
+          .where(inArray(questionnaireResponses.questionnaireSendId, sendIds))
+      : [];
+    const responseIds = responseRows.map((r) => r.id);
+
+    const templateRows = caseTypeIds.length
+      ? await tx
+          .select({ id: workflowTemplates.id })
+          .from(workflowTemplates)
+          .where(inArray(workflowTemplates.caseTypeId, caseTypeIds))
+      : [];
+    const templateIds = templateRows.map((r) => r.id);
+
+    const templateStepRows = templateIds.length
+      ? await tx
+          .select({ id: workflowTemplateSteps.id })
+          .from(workflowTemplateSteps)
+          .where(inArray(workflowTemplateSteps.templateId, templateIds))
+      : [];
+    const templateStepIds = templateStepRows.map((r) => r.id);
+
+    const docRequestRows = caseIds.length
+      ? await tx
+          .select({ id: documentRequests.id })
+          .from(documentRequests)
+          .where(inArray(documentRequests.caseId, caseIds))
+      : [];
+    const docRequestIds = docRequestRows.map((r) => r.id);
+
+    // ─── Delete in reverse dependency order ─────────────────────────────────
+
+    if (responseIds.length) {
+      await tx
+        .delete(questionnaireAnswers)
+        .where(inArray(questionnaireAnswers.responseId, responseIds));
+      await tx
+        .delete(questionnaireResponseFiles)
+        .where(inArray(questionnaireResponseFiles.responseId, responseIds));
+      await tx
+        .delete(questionnaireResponses)
+        .where(inArray(questionnaireResponses.id, responseIds));
+    }
+    if (sendIds.length) {
+      await tx
+        .delete(questionnaireSends)
+        .where(inArray(questionnaireSends.id, sendIds));
+    }
+    if (caseTypeIds.length) {
+      await tx
+        .delete(firmQuestionnaireLogicRules)
+        .where(inArray(firmQuestionnaireLogicRules.caseTypeId, caseTypeIds));
+      await tx
+        .delete(firmQuestionnaireQuestions)
+        .where(inArray(firmQuestionnaireQuestions.caseTypeId, caseTypeIds));
+      await tx
+        .delete(firmQuestionnaireSections)
+        .where(inArray(firmQuestionnaireSections.caseTypeId, caseTypeIds));
+    }
+    if (ctqIds.length) {
+      await tx
+        .delete(caseTypeQuestionnaireLogicRules)
+        .where(
+          inArray(caseTypeQuestionnaireLogicRules.questionnaireId, ctqIds),
+        );
+      await tx
+        .delete(caseTypeQuestionnaireQuestions)
+        .where(inArray(caseTypeQuestionnaireQuestions.questionnaireId, ctqIds));
+      await tx
+        .delete(caseTypeQuestionnaireSections)
+        .where(inArray(caseTypeQuestionnaireSections.questionnaireId, ctqIds));
+      await tx
+        .delete(caseTypeQuestionnaires)
+        .where(inArray(caseTypeQuestionnaires.id, ctqIds));
+    }
+    const caseStepConditions = [
+      ...(caseIds.length ? [inArray(caseWorkflowSteps.caseId, caseIds)] : []),
+      ...(templateStepIds.length
+        ? [inArray(caseWorkflowSteps.templateStepId, templateStepIds)]
+        : []),
+    ];
+    if (caseStepConditions.length) {
+      await tx.delete(caseWorkflowSteps).where(or(...caseStepConditions));
+    }
+    if (templateStepIds.length) {
+      await tx
+        .delete(workflowTemplateSteps)
+        .where(inArray(workflowTemplateSteps.id, templateStepIds));
+    }
+    if (templateIds.length) {
+      await tx
+        .delete(workflowTemplates)
+        .where(inArray(workflowTemplates.id, templateIds));
+    }
+    if (caseIds.length) {
+      await tx
+        .delete(aiErrorFlags)
+        .where(inArray(aiErrorFlags.caseId, caseIds));
+      await tx
+        .delete(adverseParties)
+        .where(inArray(adverseParties.caseId, caseIds));
+      await tx.delete(assignments).where(inArray(assignments.caseId, caseIds));
+      await tx.delete(tasks).where(inArray(tasks.caseId, caseIds));
+      await tx.delete(timeEntries).where(inArray(timeEntries.caseId, caseIds));
+      await tx
+        .delete(calendarEvents)
+        .where(inArray(calendarEvents.caseId, caseIds));
+      await tx
+        .delete(clientRequests)
+        .where(inArray(clientRequests.caseId, caseIds));
+      await tx
+        .delete(documentCaseLinks)
+        .where(inArray(documentCaseLinks.caseId, caseIds));
+      if (docRequestIds.length) {
+        await tx
+          .delete(externalSubmissions)
+          .where(inArray(externalSubmissions.requestId, docRequestIds));
+        await tx
+          .delete(documentRequests)
+          .where(inArray(documentRequests.id, docRequestIds));
+      }
+      await tx.delete(cases).where(inArray(cases.id, caseIds));
+    }
+    if (leadIds.length) {
+      await tx
+        .delete(conflictChecks)
+        .where(inArray(conflictChecks.leadId, leadIds));
+      await tx
+        .delete(consultations)
+        .where(inArray(consultations.leadId, leadIds));
+      await tx
+        .delete(feeAgreements)
+        .where(inArray(feeAgreements.leadId, leadIds));
+      await tx
+        .delete(clientContacts)
+        .where(inArray(clientContacts.leadId, leadIds));
+      await tx.delete(leads).where(inArray(leads.id, leadIds));
+    }
+    await tx
+      .delete(subscriptions)
+      .where(inArray(subscriptions.practiceAreaId, areaIds));
+
+    // DB CASCADE handles: firm_practice_areas, subcategories → case_types → contractors
+    return tx
+      .delete(practiceAreas)
+      .where(inArray(practiceAreas.id, areaIds))
+      .returning();
+  });
 
   printPracticeAreas(deleted);
+};
+
+const browseCases = async () => {
+  // Step 1 – firm
+  const firm = await resolveFirm();
+  if (!firm) return;
+
+  // Step 2 – practice area (only areas that have cases for this firm)
+  const firmPracticeAreaRows = await db
+    .selectDistinct({ id: practiceAreas.id, name: practiceAreas.name })
+    .from(cases)
+    .innerJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
+    .where(eq(cases.organizationId, firm.id))
+    .orderBy(asc(practiceAreas.name));
+
+  if (!firmPracticeAreaRows.length) {
+    note(`No cases found for ${firm.firmName}.`);
+    return;
+  }
+
+  const selectedPracticeAreaId = abortIfCancelled(
+    await select({
+      message: "Select a practice area",
+      options: firmPracticeAreaRows.map((pa) => ({
+        value: pa.id,
+        label: pa.name,
+      })),
+    }),
+  ) as string;
+
+  const selectedPracticeArea = firmPracticeAreaRows.find(
+    (pa) => pa.id === selectedPracticeAreaId,
+  )!;
+
+  // Step 3 – case type (only types that have cases for this firm + practice area)
+  const firmCaseTypeRows = await db
+    .selectDistinct({
+      id: practiceAreaCaseTypes.id,
+      name: practiceAreaCaseTypes.name,
+      code: practiceAreaCaseTypes.code,
+    })
+    .from(cases)
+    .innerJoin(
+      practiceAreaCaseTypes,
+      eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+    )
+    .where(
+      and(
+        eq(cases.organizationId, firm.id),
+        eq(cases.practiceAreaId, selectedPracticeAreaId),
+      ),
+    )
+    .orderBy(asc(practiceAreaCaseTypes.name));
+
+  if (!firmCaseTypeRows.length) {
+    note(`No case types found for ${selectedPracticeArea.name}.`);
+    return;
+  }
+
+  const selectedCaseTypeId = abortIfCancelled(
+    await select({
+      message: "Select a case type",
+      options: firmCaseTypeRows.map((ct) => ({
+        value: ct.id,
+        label: ct.name,
+        hint: ct.code,
+      })),
+    }),
+  ) as string;
+
+  const selectedCaseType = firmCaseTypeRows.find(
+    (ct) => ct.id === selectedCaseTypeId,
+  )!;
+
+  // Step 4 – case
+  const caseListRows = await db
+    .select({
+      id: cases.id,
+      caseNumber: cases.caseNumber,
+      clientName: clients.displayName,
+      status: cases.status,
+    })
+    .from(cases)
+    .innerJoin(clients, eq(clients.id, cases.clientId))
+    .where(
+      and(
+        eq(cases.organizationId, firm.id),
+        eq(cases.practiceAreaId, selectedPracticeAreaId),
+        eq(cases.caseTypeId, selectedCaseTypeId),
+      ),
+    )
+    .orderBy(desc(cases.createdAt));
+
+  if (!caseListRows.length) {
+    note(`No cases found for ${selectedCaseType.name}.`);
+    return;
+  }
+
+  const selectedCaseId = abortIfCancelled(
+    await select({
+      message: "Select a case",
+      options: caseListRows.map((c) => ({
+        value: c.id,
+        label: c.caseNumber,
+        hint: `${c.clientName} — ${c.status}`,
+      })),
+    }),
+  ) as string;
+
+  // Step 5 – fetch expanded details
+  const [detail] = await db
+    .select({
+      id: cases.id,
+      caseNumber: cases.caseNumber,
+      status: cases.status,
+      priority: cases.priority,
+      caseProgress: cases.caseProgress,
+      assignmentType: cases.assignmentType,
+      filingDate: cases.filingDate,
+      estimatedCompletionDate: cases.estimatedCompletionDate,
+      nextAppointment: cases.nextAppointment,
+      description: cases.description,
+      notes: cases.notes,
+      createdAt: cases.createdAt,
+      updatedAt: cases.updatedAt,
+      firmName: organizations.name,
+      practiceAreaName: practiceAreas.name,
+      caseTypeName: practiceAreaCaseTypes.name,
+      clientName: clients.displayName,
+      assignedStaffFirstName: staff.firstName,
+      assignedStaffLastName: staff.lastName,
+      teamName: teams.name,
+    })
+    .from(cases)
+    .innerJoin(organizations, eq(organizations.id, cases.organizationId))
+    .innerJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
+    .innerJoin(
+      practiceAreaCaseTypes,
+      eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+    )
+    .innerJoin(clients, eq(clients.id, cases.clientId))
+    .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
+    .leftJoin(teams, eq(teams.id, cases.teamId))
+    .where(eq(cases.id, selectedCaseId))
+    .limit(1);
+
+  if (!detail) {
+    note("Case not found.");
+    return;
+  }
+
+  const assignedStaff =
+    detail.assignedStaffFirstName && detail.assignedStaffLastName
+      ? `${detail.assignedStaffFirstName} ${detail.assignedStaffLastName}`
+      : "—";
+
+  note(
+    [
+      `Case Number:          ${detail.caseNumber}`,
+      `Firm:                 ${detail.firmName}`,
+      `Practice Area:        ${detail.practiceAreaName}`,
+      `Case Type:            ${detail.caseTypeName}`,
+      `Client:               ${detail.clientName}`,
+      `Status:               ${detail.status}`,
+      `Priority:             ${detail.priority}`,
+      `Progress:             ${detail.caseProgress}%`,
+      `Assignment Type:      ${detail.assignmentType}`,
+      `Assigned Staff:       ${assignedStaff}`,
+      `Team:                 ${detail.teamName ?? "—"}`,
+      `Filing Date:          ${detail.filingDate}`,
+      `Est. Completion:      ${detail.estimatedCompletionDate ?? "—"}`,
+      `Next Appointment:     ${detail.nextAppointment ?? "—"}`,
+      `Description:          ${detail.description}`,
+      `Notes:                ${detail.notes ?? "—"}`,
+      `Created:              ${detail.createdAt.toISOString()}`,
+      `Updated:              ${detail.updatedAt.toISOString()}`,
+    ].join("\n"),
+    "Case Details",
+  );
+};
+
+const waitForEnter = async () => {
+  abortIfCancelled(
+    await text({
+      message: "Press Enter to return to the menu...",
+      defaultValue: "",
+    }),
+  );
 };
 
 const runInteractive = async () => {
   intro("Oravanti CLI");
 
-  const action = abortIfCancelled(
-    await select({
+  while (true) {
+    const action = await select({
       message: "What do you want to do?",
       options: [
         { value: "list", label: "Fetch practice areas" },
-        { value: "create", label: "Create practice areas" },
-        { value: "defaults", label: "Create default practice areas" },
         { value: "seed-taxonomy", label: "Seed practice area taxonomy" },
         { value: "edit", label: "Edit a practice area" },
         { value: "delete", label: "Delete practice areas" },
@@ -2661,75 +3173,91 @@ const runInteractive = async () => {
           value: "demo-data-drop",
           label: "Drop demo data for an organization",
         },
+        {
+          value: "browse-cases",
+          label: "Browse cases (firm → practice area → case type → case)",
+        },
+        { value: "exit", label: "Exit" },
       ],
-    }),
-  );
+    });
 
-  if (action === "list") {
-    printPracticeAreas(await getPracticeAreas());
-  }
+    if (isCancel(action) || action === "exit") {
+      outro("Goodbye.");
+      return;
+    }
 
-  if (action === "create") {
-    await createPracticeAreas(await promptForNames());
-  }
+    try {
+      if (action === "list") {
+        printPracticeAreas(await getPracticeAreas());
+      }
 
-  if (action === "defaults") {
-    await createPracticeAreas(DEFAULT_PRACTICE_AREAS);
-  }
+      if (action === "seed-taxonomy") {
+        await seedPracticeAreaTaxonomy();
+      }
 
-  if (action === "seed-taxonomy") {
-    await seedPracticeAreaTaxonomy();
-  }
+      if (action === "edit") {
+        await editPracticeArea();
+      }
 
-  if (action === "edit") {
-    await editPracticeArea();
-  }
+      if (action === "delete") {
+        await deletePracticeAreas([]);
+      }
 
-  if (action === "delete") {
-    await deletePracticeAreas([]);
-  }
+      if (action === "case-types-list") {
+        const resolved = await resolveSubcategory();
+        if (resolved)
+          printCaseTypes(await getCaseTypes(resolved.subcategory.id));
+      }
 
-  if (action === "case-types-list") {
-    const resolved = await resolveSubcategory();
-    if (resolved) printCaseTypes(await getCaseTypes(resolved.subcategory.id));
-  }
+      if (action === "case-types-create") {
+        const resolved = await resolveSubcategory();
+        if (resolved) {
+          await createCaseTypes(
+            resolved.area.id,
+            resolved.subcategory.id,
+            await promptForCaseTypeDefinitions(),
+          );
+        }
+      }
 
-  if (action === "case-types-create") {
-    const resolved = await resolveSubcategory();
-    if (resolved) {
-      await createCaseTypes(
-        resolved.area.id,
-        resolved.subcategory.id,
-        await promptForCaseTypeDefinitions(),
-      );
+      if (action === "case-types-defaults") {
+        await createDefaultImmigrationCaseTypes();
+      }
+
+      if (action === "case-types-edit") {
+        await editCaseType();
+      }
+
+      if (action === "case-types-delete") {
+        await deleteCaseTypes();
+      }
+
+      if (action === "seed-questionnaires") {
+        await seedSystemQuestionnaires();
+      }
+
+      if (action === "demo-data") {
+        await seedDemoData();
+      }
+
+      if (action === "demo-data-drop") {
+        await dropDemoData();
+      }
+
+      if (action === "browse-cases") {
+        await browseCases();
+      }
+
+      await waitForEnter();
+    } catch (err) {
+      // Cancellation within a sub-action: return to the main menu
+      if (err instanceof Error && err.message === "cancelled") {
+        process.exitCode = 0;
+        continue;
+      }
+      throw err;
     }
   }
-
-  if (action === "case-types-defaults") {
-    await createDefaultImmigrationCaseTypes();
-  }
-
-  if (action === "case-types-edit") {
-    await editCaseType();
-  }
-
-  if (action === "case-types-delete") {
-    await deleteCaseTypes();
-  }
-
-  if (action === "seed-questionnaires") {
-    await seedSystemQuestionnaires();
-  }
-
-  if (action === "demo-data") {
-    await seedDemoData();
-  }
-
-  if (action === "demo-data-drop") {
-    await dropDemoData();
-  }
-
-  outro("Done.");
 };
 
 const runWithSpinner = async (message: string, action: () => Promise<void>) => {
@@ -2757,21 +3285,6 @@ program
     await runWithSpinner("Fetching practice areas", async () => {
       printPracticeAreas(await getPracticeAreas());
     });
-  });
-
-program
-  .command("create")
-  .description("Create one or more practice areas")
-  .argument("[names...]", "Practice area names")
-  .option("--defaults", "Create the default practice areas")
-  .action(async (names: string[], options: { defaults?: boolean }) => {
-    const namesToCreate = options.defaults
-      ? DEFAULT_PRACTICE_AREAS
-      : names.length
-        ? names
-        : await promptForNames();
-
-    await createPracticeAreas(namesToCreate);
   });
 
 program
@@ -2874,6 +3387,17 @@ demoDataCommand
   .description("Select an organization and delete tenant-scoped demo data")
   .argument("[organizationId]", "Organization id")
   .action(dropDemoData);
+
+const casesCommand = program
+  .command("cases")
+  .description("Browse and inspect cases");
+
+casesCommand
+  .command("browse")
+  .description(
+    "Interactively browse cases by firm, practice area, and case type",
+  )
+  .action(browseCases);
 
 program
   .parseAsync(process.argv)

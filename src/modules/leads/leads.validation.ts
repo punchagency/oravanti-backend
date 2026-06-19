@@ -7,9 +7,15 @@ export const idParamsSchema = z.object({ id: uuid });
 
 export const caseIdParamsSchema = z.object({ caseId: uuid });
 
-export const caseIdStepIdParamsSchema = z.object({ caseId: uuid, stepId: uuid });
+export const caseIdStepIdParamsSchema = z.object({
+  caseId: uuid,
+  stepId: uuid,
+});
 
-export const adversePartyParamsSchema = z.object({ caseId: uuid, partyId: uuid });
+export const adversePartyParamsSchema = z.object({
+  caseId: uuid,
+  partyId: uuid,
+});
 
 export const agreementIdParamsSchema = z.object({ agreementId: uuid });
 
@@ -31,6 +37,8 @@ export const createLeadBodySchema = z.object({
   situationSummary: z.string().optional(),
   notes: z.string().optional(),
   assignedStaffId: optionalUuid,
+  intakeAdversePartyName: z.string().min(1).optional(),
+  intakeAdversePartyEmail: z.string().email().optional(),
 });
 
 export const updateLeadBodySchema = z.object({
@@ -52,6 +60,12 @@ export const updateLeadBodySchema = z.object({
   situationSummary: z.string().optional(),
   notes: z.string().optional(),
   assignedStaffId: optionalUuid,
+  intakeAdversePartyName: z.string().min(1).optional(),
+  intakeAdversePartyEmail: z.string().email().optional(),
+});
+
+export const updateLeadStatusSchema = z.object({
+  status: z.enum(["archived", "reviewed"]),
 });
 
 export const advanceStageBodySchema = z.object({
@@ -65,12 +79,17 @@ export const advanceStageBodySchema = z.object({
   ]),
 });
 
-export const resolveConflictCheckBodySchema = z.object({
-  action: z.enum(["manual_review", "supervisor_override"]),
-  status: z.enum(["pass", "needs_review"]).optional(),
-  reviewNotes: z.string().optional(),
-  supervisorNotes: z.string().optional(),
-});
+export const resolveConflictCheckBodySchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("manual_review"),
+    status: z.enum(["pass", "needs_review"]),
+    reviewNotes: z.string().optional(),
+  }),
+  z.object({
+    action: z.literal("supervisor_override"),
+    supervisorNotes: z.string().min(1, "Supervisor notes are required to override a conflict"),
+  }),
+]);
 
 export const createConsultationBodySchema = z.object({
   scheduledAt: z.string().datetime(),

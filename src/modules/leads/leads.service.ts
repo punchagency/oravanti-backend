@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "crypto";
-import { and, count, desc, eq, ilike, or } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, or } from "drizzle-orm";
 import { emailService } from "../../utils/email/email.service";
 import { db } from "../../db/client";
 import { adverseParties } from "../../db/schema/adverse-parties";
@@ -30,6 +30,7 @@ import {
   workflowTemplateSteps,
 } from "../../db/schema/workflow";
 import {
+  AuthorizationError,
   BadRequestError,
   ConflictError,
   NotFoundError,
@@ -51,6 +52,97 @@ const tokenHash = (token: string) =>
 const generateAccessToken = () => randomBytes(32).toString("base64url");
 
 const normalizeName = (name: string) => name.trim().toLowerCase();
+
+type StoredMatch = {
+  type: string;
+  matchedId: string;
+  matchedName: string;
+  confidence: string;
+  rule: string;
+  details: string;
+  caseIds: string[];
+};
+
+const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[]) => {
+  if (storedMatches.length === 0) return [];
+
+  const allCaseIds = [...new Set(storedMatches.flatMap((m) => m.caseIds))];
+  const adverseMatchIds = storedMatches
+    .filter((m) => m.type === "adverse_party")
+    .map((m) => m.matchedId);
+
+  type CaseDetail = {
+    id: string;
+    caseNumber: string;
+    caseType: string;
+    status: string;
+    practiceArea: string | null;
+    clientId: string;
+    clientName: string | null;
+  };
+  const caseMap = new Map<string, CaseDetail>();
+
+  if (allCaseIds.length > 0) {
+    const caseRows = await db
+      .select({
+        id: cases.id,
+        caseNumber: cases.caseNumber,
+        caseType: cases.caseType,
+        status: cases.status,
+        practiceArea: practiceAreas.name,
+        clientId: cases.clientId,
+        clientName: clients.displayName,
+      })
+      .from(cases)
+      .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
+      .leftJoin(clients, eq(clients.id, cases.clientId))
+      .where(inArray(cases.id, allCaseIds));
+
+    for (const row of caseRows) caseMap.set(row.id, row);
+  }
+
+  type AdverseContext = { relationship: string; firmClientName: string | null };
+  const adverseContextMap = new Map<string, AdverseContext>();
+
+  if (adverseMatchIds.length > 0) {
+    const apRows = await db
+      .select({ id: adverseParties.id, relationship: adverseParties.relationship, caseId: adverseParties.caseId })
+      .from(adverseParties)
+      .where(inArray(adverseParties.id, adverseMatchIds));
+
+    for (const ap of apRows) {
+      adverseContextMap.set(ap.id, {
+        relationship: ap.relationship,
+        firmClientName: caseMap.get(ap.caseId)?.clientName ?? null,
+      });
+    }
+  }
+
+  return storedMatches.map((m) => {
+    const caseDetails = m.caseIds
+      .map((id) => caseMap.get(id))
+      .filter((c): c is CaseDetail => c !== undefined)
+      .map(({ id, caseNumber, caseType, status, practiceArea }) => ({
+        id,
+        caseNumber,
+        caseType,
+        status,
+        practiceArea,
+      }));
+
+    if (m.type === "adverse_party") {
+      const ctx = adverseContextMap.get(m.matchedId);
+      return {
+        ...m,
+        caseDetails,
+        adversePartyRelationship: ctx?.relationship ?? null,
+        firmClientName: ctx?.firmClientName ?? null,
+      };
+    }
+
+    return { ...m, caseDetails };
+  });
+};
 
 // ─── Questionnaire Snapshot Builder ──────────────────────────────────────────
 
@@ -233,6 +325,8 @@ const createLead = async (
     situationSummary?: string;
     notes?: string;
     assignedStaffId?: string;
+    intakeAdversePartyName?: string;
+    intakeAdversePartyEmail?: string;
   },
 ) => {
   const [lead] = await db
@@ -249,6 +343,8 @@ const createLead = async (
       situationSummary: data.situationSummary,
       notes: data.notes,
       assignedStaffId: data.assignedStaffId,
+      intakeAdversePartyName: data.intakeAdversePartyName,
+      intakeAdversePartyEmail: data.intakeAdversePartyEmail,
     })
     .returning();
 
@@ -281,8 +377,41 @@ const getAllLeads = async (
 
   const where = and(...conditions);
 
+  const attachConflictMatches = async (rows: (typeof leads.$inferSelect)[]) => {
+    const conflictCheckLeads = rows.filter(
+      (r) => r.pipelineStage === "conflict_check" && r.conflictCheckId,
+    );
+    if (conflictCheckLeads.length === 0) return rows;
+
+    const ccIds = conflictCheckLeads.map((r) => r.conflictCheckId!);
+    const checks = await db
+      .select({ id: conflictChecks.id, matches: conflictChecks.matches })
+      .from(conflictChecks)
+      .where(inArray(conflictChecks.id, ccIds));
+
+    const matchesById = new Map(checks.map((c) => [c.id, c.matches]));
+
+    const enriched = await Promise.all(
+      rows.map(async (r) => {
+        if (r.pipelineStage !== "conflict_check" || !r.conflictCheckId)
+          return r;
+        const matches = matchesById.get(r.conflictCheckId) as StoredMatch[] | undefined;
+        if (!matches || matches.length === 0) return r;
+        const conflictMatches = await enrichMatchesWithCaseContext(matches);
+        return { ...r, conflictMatches };
+      }),
+    );
+
+    return enriched;
+  };
+
   if (filters.all) {
-    return db.select().from(leads).where(where).orderBy(desc(leads.receivedAt));
+    const rows = await db
+      .select()
+      .from(leads)
+      .where(where)
+      .orderBy(desc(leads.receivedAt));
+    return attachConflictMatches(rows);
   }
 
   const page = filters.page ?? 1;
@@ -302,11 +431,17 @@ const getAllLeads = async (
     .limit(limit)
     .offset(offset);
 
-  return buildPaginatedResponse(rows, {
-    page,
-    limit,
-    total: Number(countRow?.total ?? 0),
-  });
+  const enrichedRows = await attachConflictMatches(rows);
+
+  return buildPaginatedResponse(
+    enrichedRows,
+    {
+      page,
+      limit,
+      total: Number(countRow?.total ?? 0),
+    },
+    "leads",
+  );
 };
 
 const getLeadById = async (id: string, organizationId: string) => {
@@ -376,6 +511,8 @@ const updateLead = async (
     situationSummary: string;
     notes: string;
     assignedStaffId: string;
+    intakeAdversePartyName: string;
+    intakeAdversePartyEmail: string;
   }>,
 ) => {
   const [updated] = await db
@@ -388,15 +525,42 @@ const updateLead = async (
   return updated;
 };
 
-const archiveLead = async (id: string, organizationId: string) => {
+const updateLeadStatus = async (
+  id: string,
+  organizationId: string,
+  status: 'archived' | 'reviewed'
+) => {
   const [updated] = await db
     .update(leads)
-    .set({ status: "archived", updatedAt: new Date() })
+    .set({ status, updatedAt: new Date() })
     .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
     .returning();
 
   if (!updated) throw new NotFoundError("Lead not found");
   return updated;
+};
+
+const getLeadStageCounts = async (organizationId: string) => {
+  const rows = await db
+    .select({ stage: leads.pipelineStage, total: count() })
+    .from(leads)
+    .where(eq(leads.organizationId, organizationId))
+    .groupBy(leads.pipelineStage);
+
+  const result: Record<string, number> = {
+    lead_inbox: 0,
+    conflict_check: 0,
+    questionnaire: 0,
+    consultation: 0,
+    fee_agreement: 0,
+    case_opening: 0,
+  };
+
+  for (const row of rows) {
+    result[row.stage] = Number(row.total);
+  }
+
+  return result;
 };
 
 // Stage transitions are validated here before updating
@@ -492,13 +656,14 @@ const runConflictCheck = async (
     confidence: string;
     rule: string;
     details: string;
+    caseIds: string[];
   }> = [];
 
   // ABA 1.7 — exact email match against active client contacts
   const emailMatches = await db
     .select({
       id: clientContacts.id,
-      name: leads.name,
+      name: clients.displayName,
       clientId: clientContacts.clientId,
       email: clientContacts.email,
     })
@@ -520,6 +685,7 @@ const runConflictCheck = async (
       confidence: "exact_email",
       rule: "ABA_1.7",
       details: `Email ${normalizedEmail} matches active client contact`,
+      caseIds: [],
     });
   }
 
@@ -556,31 +722,44 @@ const runConflictCheck = async (
           confidence: "exact_name",
           rule: "ABA_1.7",
           details: `Name "${normalizedName}" matches active client`,
+          caseIds: [],
         });
       }
     }
   }
 
-  // ABA 1.7 — adverse party match
+  // ABA 1.7 — adverse party match (by name or email)
   const adverseMatches = await db
     .select()
     .from(adverseParties)
     .where(
       and(
         eq(adverseParties.organizationId, organizationId),
-        ilike(adverseParties.name, `%${normalizedName}%`),
+        or(
+          ilike(adverseParties.name, `%${normalizedName}%`),
+          adverseParties.email !== null
+            ? eq(adverseParties.email, normalizedEmail)
+            : undefined,
+        ),
       ),
     );
 
   for (const m of adverseMatches) {
+    const nameNormalized = normalizeName(m.name);
+    const emailHit = m.email !== null && m.email.toLowerCase() === normalizedEmail;
     matches.push({
       type: "adverse_party",
       matchedId: m.id,
       matchedName: m.name,
       confidence:
-        normalizeName(m.name) === normalizedName ? "exact_name" : "fuzzy_name",
+        nameNormalized === normalizedName
+          ? "exact_name"
+          : emailHit
+            ? "exact_email"
+            : "fuzzy_name",
       rule: "ABA_1.7",
       details: `Name matches adverse party on case ${m.caseId}`,
+      caseIds: [m.caseId],
     });
   }
 
@@ -618,16 +797,201 @@ const runConflictCheck = async (
         confidence: emailMatch ? "exact_email" : "exact_name",
         rule: "ABA_1.9",
         details: `Matches former (inactive) client`,
+        caseIds: [],
       });
+    }
+  }
+
+  // ABA 1.7 — shared surname (potential related party, e.g. divorce)
+  const [, ...surnameParts] = normalizedName.split(" ");
+  const normalizedLastName = surnameParts.join(" ");
+
+  if (normalizedLastName.length >= 2) {
+    const surnameMatches = await db
+      .select({
+        id: clientContacts.id,
+        firstName: clientContacts.firstName,
+        lastName: clientContacts.lastName,
+        clientId: clientContacts.clientId,
+        displayName: clients.displayName,
+      })
+      .from(clientContacts)
+      .leftJoin(clients, eq(clients.id, clientContacts.clientId))
+      .where(
+        and(
+          eq(clientContacts.organizationId, organizationId),
+          eq(clients.status, "active"),
+          or(
+            ilike(clientContacts.lastName, normalizedLastName),
+            ilike(clients.displayName, `%${normalizedLastName}%`),
+          ),
+        ),
+      );
+
+    for (const m of surnameMatches) {
+      const resolvedName = m.displayName ?? `${m.firstName} ${m.lastName}`;
+      const resolvedNameNormalized = resolvedName.toLowerCase();
+      if (
+        resolvedNameNormalized === normalizedName ||
+        matches.find((x) => x.matchedId === (m.clientId ?? m.id)) ||
+        matches.find(
+          (x) =>
+            x.type === "related_party" &&
+            x.matchedName.toLowerCase() === resolvedNameNormalized,
+        )
+      )
+        continue;
+
+      matches.push({
+        type: "related_party",
+        matchedId: m.clientId ?? m.id,
+        matchedName: resolvedName,
+        confidence: "surname_match",
+        rule: "ABA_1.7",
+        details: `Name contains "${normalizedLastName}" — matches active client ${resolvedName}`,
+        caseIds: [],
+      });
+    }
+  }
+
+  // ABA 1.7 / 1.9 — intake adverse party: does the lead's proposed opponent match a current or former client?
+  if (lead.intakeAdversePartyName || lead.intakeAdversePartyEmail) {
+    const normalizedOpponentName = lead.intakeAdversePartyName
+      ? normalizeName(lead.intakeAdversePartyName)
+      : null;
+    const normalizedOpponentEmail = lead.intakeAdversePartyEmail
+      ? lead.intakeAdversePartyEmail.trim().toLowerCase()
+      : null;
+
+    const activeOpponentContacts = await db
+      .select({
+        id: clientContacts.id,
+        firstName: clientContacts.firstName,
+        lastName: clientContacts.lastName,
+        clientId: clientContacts.clientId,
+        email: clientContacts.email,
+        clientName: clients.displayName,
+      })
+      .from(clientContacts)
+      .leftJoin(clients, eq(clients.id, clientContacts.clientId))
+      .where(
+        and(
+          eq(clientContacts.organizationId, organizationId),
+          eq(clients.status, "active"),
+        ),
+      );
+
+    for (const m of activeOpponentContacts) {
+      const contactName = `${m.firstName} ${m.lastName}`.toLowerCase();
+      const emailHit =
+        normalizedOpponentEmail && m.email.toLowerCase() === normalizedOpponentEmail;
+      const nameHit =
+        normalizedOpponentName &&
+        (contactName === normalizedOpponentName ||
+          m.clientName?.toLowerCase() === normalizedOpponentName);
+
+      if (
+        (emailHit || nameHit) &&
+        !matches.find((x) => x.type === "client_is_opponent" && x.matchedId === (m.clientId ?? m.id))
+      ) {
+        matches.push({
+          type: "client_is_opponent",
+          matchedId: m.clientId ?? m.id,
+          matchedName: m.clientName ?? `${m.firstName} ${m.lastName}`,
+          confidence: emailHit ? "exact_email" : "exact_name",
+          rule: "ABA_1.7",
+          details: `Proposed opposing party "${lead.intakeAdversePartyName ?? lead.intakeAdversePartyEmail}" matches active client`,
+          caseIds: [],
+        });
+      }
+    }
+
+    const inactiveOpponentContacts = await db
+      .select({
+        id: clientContacts.id,
+        firstName: clientContacts.firstName,
+        lastName: clientContacts.lastName,
+        clientId: clientContacts.clientId,
+        email: clientContacts.email,
+        clientName: clients.displayName,
+      })
+      .from(clientContacts)
+      .leftJoin(clients, eq(clients.id, clientContacts.clientId))
+      .where(
+        and(
+          eq(clientContacts.organizationId, organizationId),
+          eq(clients.status, "inactive"),
+        ),
+      );
+
+    for (const m of inactiveOpponentContacts) {
+      const contactName = `${m.firstName} ${m.lastName}`.toLowerCase();
+      const emailHit =
+        normalizedOpponentEmail && m.email.toLowerCase() === normalizedOpponentEmail;
+      const nameHit =
+        normalizedOpponentName &&
+        (contactName === normalizedOpponentName ||
+          m.clientName?.toLowerCase() === normalizedOpponentName);
+
+      if (
+        (emailHit || nameHit) &&
+        !matches.find((x) => x.type === "former_client_is_opponent" && x.matchedId === (m.clientId ?? m.id))
+      ) {
+        matches.push({
+          type: "former_client_is_opponent",
+          matchedId: m.clientId ?? m.id,
+          matchedName: m.clientName ?? `${m.firstName} ${m.lastName}`,
+          confidence: emailHit ? "exact_email" : "exact_name",
+          rule: "ABA_1.9",
+          details: `Proposed opposing party "${lead.intakeAdversePartyName ?? lead.intakeAdversePartyEmail}" matches former (inactive) client`,
+          caseIds: [],
+        });
+      }
+    }
+  }
+
+  // Populate caseIds for client-based matches
+  const clientMatchIds = [
+    ...new Set(
+      matches
+        .filter((m) => m.type !== "adverse_party")
+        .map((m) => m.matchedId),
+    ),
+  ];
+  if (clientMatchIds.length > 0) {
+    const relatedCases = await db
+      .select({ id: cases.id, clientId: cases.clientId })
+      .from(cases)
+      .where(
+        and(
+          eq(cases.organizationId, organizationId),
+          inArray(cases.clientId, clientMatchIds),
+        ),
+      );
+    const casesByClientId = new Map<string, string[]>();
+    for (const c of relatedCases) {
+      const arr = casesByClientId.get(c.clientId) ?? [];
+      arr.push(c.id);
+      casesByClientId.set(c.clientId, arr);
+    }
+    for (const match of matches) {
+      if (match.type !== "adverse_party") {
+        match.caseIds = casesByClientId.get(match.matchedId) ?? [];
+      }
     }
   }
 
   // Determine overall status
   const hasConflict = matches.some(
-    (m) => m.rule === "ABA_1.7" && m.confidence !== "fuzzy_name",
+    (m) =>
+      m.rule === "ABA_1.7" &&
+      (m.confidence === "exact_email" || m.confidence === "exact_name"),
   );
   const hasReview = matches.some(
-    (m) => m.rule === "ABA_1.9" || m.confidence === "fuzzy_name",
+    (m) =>
+      m.rule === "ABA_1.9" ||
+      m.confidence === "fuzzy_name" ||
+      m.confidence === "surname_match",
   );
 
   const status: "pass" | "needs_review" | "conflict_found" = hasConflict
@@ -673,14 +1037,15 @@ const runConflictCheck = async (
       .update(leads)
       .set({ pipelineStage: "questionnaire", updatedAt: now })
       .where(eq(leads.id, leadId));
-  } else if (status === "needs_review") {
+  } else if (status === "needs_review" || status === "conflict_found") {
     await db
       .update(leads)
       .set({ pipelineStage: "conflict_check", updatedAt: now })
       .where(eq(leads.id, leadId));
   }
 
-  return checkRecord;
+  const enrichedMatches = await enrichMatchesWithCaseContext(matches);
+  return { ...checkRecord, matches: enrichedMatches };
 };
 
 const getConflictCheck = async (leadId: string, organizationId: string) => {
@@ -699,7 +1064,11 @@ const getConflictCheck = async (leadId: string, organizationId: string) => {
     .where(eq(conflictChecks.id, lead.conflictCheckId))
     .limit(1);
 
-  return cc ?? null;
+  if (!cc) return null;
+
+  const storedMatches = (cc.matches ?? []) as StoredMatch[];
+  const enrichedMatches = await enrichMatchesWithCaseContext(storedMatches);
+  return { ...cc, matches: enrichedMatches };
 };
 
 const resolveConflictCheck = async (
@@ -722,7 +1091,22 @@ const resolveConflictCheck = async (
   if (!lead || !lead.conflictCheckId)
     throw new NotFoundError("No conflict check found for this lead");
 
+  if (!staffId) {
+    throw new NotFoundError("Staff not found")
+  }
+  const [staffRecord] = await db
+    .select({ id: staff.id })
+    .from(staff)
+    .where(eq(staff.id, staffId))
+    .limit(1);
+
+  if (!staffRecord)
+    throw new AuthorizationError("Only staff members with a valid staff profile may resolve conflict checks");
+
   const now = new Date();
+
+  if (data.action === "supervisor_override" && !data.supervisorNotes?.trim())
+    throw new BadRequestError("Supervisor notes are required to override a conflict");
 
   if (data.action === "supervisor_override") {
     const [updated] = await db
@@ -1580,7 +1964,8 @@ export class LeadsService {
   getAllLeads = getAllLeads;
   getLeadById = getLeadById;
   updateLead = updateLead;
-  archiveLead = archiveLead;
+  updateLeadStatus = updateLeadStatus;
+  getLeadStageCounts = getLeadStageCounts;
   advanceLeadStage = advanceLeadStage;
   runConflictCheck = runConflictCheck;
   getConflictCheck = getConflictCheck;

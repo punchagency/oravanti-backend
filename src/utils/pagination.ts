@@ -5,8 +5,9 @@ export type PaginationParams = {
   limit: number;
 };
 
-export type PaginatedResponse<T> = {
-  data: T[];
+export type PaginatedResponse<T, Key extends string = 'data'> = {
+  [K in Key]: T[];
+} & {
   pagination: {
     page: number;
     limit: number;
@@ -56,14 +57,15 @@ export const parsePaginationQuery = (
 export const getPaginationOffset = ({ page, limit }: PaginationParams) =>
   (page - 1) * limit;
 
-export const buildPaginatedResponse = <T>(
+export const buildPaginatedResponse = <T, Key extends string = 'data'>(
   data: T[],
   pagination: PaginationParams & { total: number },
-): PaginatedResponse<T> => {
+  name?: Key
+): PaginatedResponse<T, Key> => {
   const totalPages = Math.ceil(pagination.total / pagination.limit);
 
-  return {
-    data,
+  return ({
+    [name || 'data']: data,
     pagination: {
       page: pagination.page,
       limit: pagination.limit,
@@ -72,5 +74,5 @@ export const buildPaginatedResponse = <T>(
       hasNextPage: pagination.page < totalPages,
       hasPreviousPage: pagination.page > 1,
     },
-  };
+  } as unknown) as PaginatedResponse<T, Key>;
 };
