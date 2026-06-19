@@ -124,6 +124,39 @@ export class OrganizationController {
     res.status(200).json({ message: "Invitation cancelled" });
   });
 
+  updateStaff = asyncWrap(async (req: AuthRequest, res) => {
+    if (!req.organizationId) {
+      return res.status(400).json({ error: "No active organization" });
+    }
+    const staffId = req.params.staffId as string;
+    const { phone, jobTitle, maxCaseload, startDate, email, orgEmail, firstName, lastName, practiceAreaIds } =
+      req.body;
+    const result = await this.organizationService.updateStaff(
+      staffId,
+      req.organizationId,
+      { phone, jobTitle, maxCaseload, startDate, email, orgEmail, firstName, lastName, practiceAreaIds },
+    );
+    res.status(200).json(result);
+  });
+
+  updateStaffRole = asyncWrap(async (req: AuthRequest, res) => {
+    if (!req.organizationId) {
+      return res.status(400).json({ error: "No active organization" });
+    }
+    const staffId = req.params.staffId as string;
+    const { role } = req.body;
+    if (!role) {
+      return res.status(400).json({ error: "role is required" });
+    }
+    await this.organizationService.updateStaffRole(
+      staffId,
+      req.organizationId,
+      role,
+      req.headers,
+    );
+    res.status(200).json({ message: "Role updated successfully" });
+  });
+
   resendInvitation = asyncWrap(async (req: AuthRequest, res) => {
     const { email, role } = req.body;
     if (!email || !role) {

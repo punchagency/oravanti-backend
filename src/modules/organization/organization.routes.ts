@@ -72,6 +72,18 @@ export class OrganizationRouter {
       requireAuth,
       this.organizationController.cancelInvitation,
     );
+    this.router.patch(
+      "/staff/:staffId",
+      requireAuth,
+      requirePermission("staffs", "update"),
+      this.organizationController.updateStaff,
+    );
+    this.router.patch(
+      "/staff/:staffId/role",
+      requireAuth,
+      requirePermission("staffs", "update"),
+      this.organizationController.updateStaffRole,
+    );
     this.router.post(
       "/resend-invitation",
       requireAuth,

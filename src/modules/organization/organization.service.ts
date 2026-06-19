@@ -46,6 +46,18 @@ export interface InviteStaffParams {
   practiceAreaIds?: string[];
 }
 
+export interface UpdateStaffParams {
+  phone?: string;
+  jobTitle?: string;
+  maxCaseload?: number;
+  startDate?: string;
+  email?: string;
+  orgEmail?: string;
+  firstName?: string;
+  lastName?: string;
+  practiceAreaIds?: string[];
+}
+
 export class OrganizationService {
   async getAll(organizationId: string, filters: GetAllFilters = {}) {
     const { search, role, team, status, page = 1, limit = 10 } = filters;
@@ -462,6 +474,135 @@ export class OrganizationService {
     }
 
     return cancelled;
+  }
+
+  async updateStaff(
+    staffId: string,
+    organizationId: string,
+    params: UpdateStaffParams,
+  ) {
+    const { practiceAreaIds, ...safeFields } = params;
+
+    const updateData: Record<string, unknown> = {
+      ...safeFields,
+      updatedAt: new Date(),
+    };
+
+    if (updateData.startDate) {
+      updateData.startDate = new Date(updateData.startDate as string);
+    }
+
+    if (updateData.maxCaseload !== undefined) {
+      updateData.maxCaseload = Number(updateData.maxCaseload);
+    }
+
+    await db.transaction(async (tx) => {
+      const needsUserLookup =
+        safeFields.email || safeFields.firstName || safeFields.lastName;
+      let userId: string | undefined;
+
+      if (needsUserLookup) {
+        const [existingStaff] = await tx
+          .select({ userId: staff.userId })
+          .from(staff)
+          .where(eq(staff.id, staffId))
+          .limit(1);
+
+        userId = existingStaff?.userId ?? undefined;
+      }
+
+      // If personal email is being updated, sync user.email and staff.email
+      if (userId && safeFields.email) {
+        await tx
+          .update(user)
+          .set({ email: safeFields.email as string, updatedAt: new Date() })
+          .where(eq(user.id, userId));
+
+        updateData.email = safeFields.email;
+      }
+
+      // If first or last name is being updated, sync user.name
+      if (userId && (safeFields.firstName || safeFields.lastName)) {
+        const [currentStaff] = await tx
+          .select({ firstName: staff.firstName, lastName: staff.lastName })
+          .from(staff)
+          .where(eq(staff.id, staffId))
+          .limit(1);
+
+        const newName = [
+          safeFields.firstName ?? currentStaff.firstName,
+          safeFields.lastName ?? currentStaff.lastName,
+        ].join(" ");
+
+        await tx
+          .update(user)
+          .set({ name: newName, updatedAt: new Date() })
+          .where(eq(user.id, userId));
+      }
+
+      await tx
+        .update(staff)
+        .set(updateData)
+        .where(
+          and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)),
+        );
+
+      if (practiceAreaIds !== undefined) {
+        await tx
+          .delete(staffPracticeAreas)
+          .where(eq(staffPracticeAreas.staffId, staffId));
+
+        if (practiceAreaIds.length > 0) {
+          await tx.insert(staffPracticeAreas).values(
+            practiceAreaIds.map((practiceAreaId) => ({
+              staffId,
+              practiceAreaId,
+            })),
+          );
+        }
+      }
+    });
+
+    return { message: "Staff updated successfully" };
+  }
+
+  async updateStaffRole(
+    staffId: string,
+    organizationId: string,
+    role: string,
+    headers: Record<string, string | string[] | undefined>,
+  ) {
+    const [staffRecord] = await db
+      .select({ userId: staff.userId })
+      .from(staff)
+      .where(and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)))
+      .limit(1);
+
+    if (!staffRecord?.userId) {
+      throw new Error("Staff member not found or not linked to a user");
+    }
+
+    const [memberRecord] = await db
+      .select({ id: member.id })
+      .from(member)
+      .where(
+        and(
+          eq(member.userId, staffRecord.userId),
+          eq(member.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!memberRecord) {
+      throw new Error("Member record not found");
+    }
+
+    await auth.api.updateMemberRole({
+      body: { memberId: memberRecord.id, role },
+      headers: fromNodeHeaders(headers as Record<string, string>),
+    });
+
+    return { message: "Role updated successfully" };
   }
 
   async invite(
