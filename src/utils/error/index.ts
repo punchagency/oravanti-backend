@@ -8,6 +8,8 @@ export const isAppError = (error: unknown): error is AppError => {
 };
 
 export const getErrorResponse = (error: unknown, fallbackStatusCode = 500) => {
+  console.log({ error });
+
   if (isAppError(error)) {
     return {
       statusCode: error.statusCode,

@@ -41,3 +41,4 @@ export * from './calendar-events';
 export * from './subscriptions';
 export * from './firm-practice-areas';
 export * from './questionnaires';
+export * from './staff-practice-areas';
