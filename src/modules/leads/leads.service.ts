@@ -106,7 +106,11 @@ const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[]) => {
 
   if (adverseMatchIds.length > 0) {
     const apRows = await db
-      .select({ id: adverseParties.id, relationship: adverseParties.relationship, caseId: adverseParties.caseId })
+      .select({
+        id: adverseParties.id,
+        relationship: adverseParties.relationship,
+        caseId: adverseParties.caseId,
+      })
       .from(adverseParties)
       .where(inArray(adverseParties.id, adverseMatchIds));
 
@@ -385,20 +389,30 @@ const getAllLeads = async (
 
     const ccIds = conflictCheckLeads.map((r) => r.conflictCheckId!);
     const checks = await db
-      .select({ id: conflictChecks.id, matches: conflictChecks.matches })
+      .select({
+        id: conflictChecks.id,
+        matches: conflictChecks.matches,
+        status: conflictChecks.status,
+      })
       .from(conflictChecks)
       .where(inArray(conflictChecks.id, ccIds));
 
-    const matchesById = new Map(checks.map((c) => [c.id, c.matches]));
+    const matchesById = new Map(
+      checks.map((c) => [c.id, { matches: c.matches, status: c.status }]),
+    );
 
     const enriched = await Promise.all(
       rows.map(async (r) => {
         if (r.pipelineStage !== "conflict_check" || !r.conflictCheckId)
           return r;
-        const matches = matchesById.get(r.conflictCheckId) as StoredMatch[] | undefined;
+        const conflict = matchesById.get(r.conflictCheckId) as
+          | { matches: StoredMatch[]; status: string }
+          | undefined;
+        if (!conflict) return r;
+        const { matches } = conflict;
         if (!matches || matches.length === 0) return r;
         const conflictMatches = await enrichMatchesWithCaseContext(matches);
-        return { ...r, conflictMatches };
+        return { ...r, conflictMatches, conflictCheckStatus: conflict.status };
       }),
     );
 
@@ -528,7 +542,7 @@ const updateLead = async (
 const updateLeadStatus = async (
   id: string,
   organizationId: string,
-  status: 'archived' | 'reviewed'
+  status: "archived" | "reviewed",
 ) => {
   const [updated] = await db
     .update(leads)
@@ -746,7 +760,8 @@ const runConflictCheck = async (
 
   for (const m of adverseMatches) {
     const nameNormalized = normalizeName(m.name);
-    const emailHit = m.email !== null && m.email.toLowerCase() === normalizedEmail;
+    const emailHit =
+      m.email !== null && m.email.toLowerCase() === normalizedEmail;
     matches.push({
       type: "adverse_party",
       matchedId: m.id,
@@ -884,7 +899,8 @@ const runConflictCheck = async (
     for (const m of activeOpponentContacts) {
       const contactName = `${m.firstName} ${m.lastName}`.toLowerCase();
       const emailHit =
-        normalizedOpponentEmail && m.email.toLowerCase() === normalizedOpponentEmail;
+        normalizedOpponentEmail &&
+        m.email.toLowerCase() === normalizedOpponentEmail;
       const nameHit =
         normalizedOpponentName &&
         (contactName === normalizedOpponentName ||
@@ -892,7 +908,11 @@ const runConflictCheck = async (
 
       if (
         (emailHit || nameHit) &&
-        !matches.find((x) => x.type === "client_is_opponent" && x.matchedId === (m.clientId ?? m.id))
+        !matches.find(
+          (x) =>
+            x.type === "client_is_opponent" &&
+            x.matchedId === (m.clientId ?? m.id),
+        )
       ) {
         matches.push({
           type: "client_is_opponent",
@@ -927,7 +947,8 @@ const runConflictCheck = async (
     for (const m of inactiveOpponentContacts) {
       const contactName = `${m.firstName} ${m.lastName}`.toLowerCase();
       const emailHit =
-        normalizedOpponentEmail && m.email.toLowerCase() === normalizedOpponentEmail;
+        normalizedOpponentEmail &&
+        m.email.toLowerCase() === normalizedOpponentEmail;
       const nameHit =
         normalizedOpponentName &&
         (contactName === normalizedOpponentName ||
@@ -935,7 +956,11 @@ const runConflictCheck = async (
 
       if (
         (emailHit || nameHit) &&
-        !matches.find((x) => x.type === "former_client_is_opponent" && x.matchedId === (m.clientId ?? m.id))
+        !matches.find(
+          (x) =>
+            x.type === "former_client_is_opponent" &&
+            x.matchedId === (m.clientId ?? m.id),
+        )
       ) {
         matches.push({
           type: "former_client_is_opponent",
@@ -953,9 +978,7 @@ const runConflictCheck = async (
   // Populate caseIds for client-based matches
   const clientMatchIds = [
     ...new Set(
-      matches
-        .filter((m) => m.type !== "adverse_party")
-        .map((m) => m.matchedId),
+      matches.filter((m) => m.type !== "adverse_party").map((m) => m.matchedId),
     ),
   ];
   if (clientMatchIds.length > 0) {
@@ -1092,7 +1115,7 @@ const resolveConflictCheck = async (
     throw new NotFoundError("No conflict check found for this lead");
 
   if (!staffId) {
-    throw new NotFoundError("Staff not found")
+    throw new NotFoundError("Staff not found");
   }
   const [staffRecord] = await db
     .select({ id: staff.id })
@@ -1101,12 +1124,16 @@ const resolveConflictCheck = async (
     .limit(1);
 
   if (!staffRecord)
-    throw new AuthorizationError("Only staff members with a valid staff profile may resolve conflict checks");
+    throw new AuthorizationError(
+      "Only staff members with a valid staff profile may resolve conflict checks",
+    );
 
   const now = new Date();
 
   if (data.action === "supervisor_override" && !data.supervisorNotes?.trim())
-    throw new BadRequestError("Supervisor notes are required to override a conflict");
+    throw new BadRequestError(
+      "Supervisor notes are required to override a conflict",
+    );
 
   if (data.action === "supervisor_override") {
     const [updated] = await db
@@ -1145,7 +1172,10 @@ const resolveConflictCheck = async (
       .where(eq(leads.id, leadId));
   }
 
-  return updated;
+  const matches = updated.matches as StoredMatch[]
+  const enrichedMatches = await enrichMatchesWithCaseContext(matches ?? []);
+
+  return { ...updated, matches: enrichedMatches };
 };
 
 // ─── Questionnaire ────────────────────────────────────────────────────────────
