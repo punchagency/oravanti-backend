@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "crypto";
-import { and, count, desc, eq, ilike, inArray, or } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, ne, or } from "drizzle-orm";
 import { emailService } from "../../utils/email/email.service";
 import { db } from "../../db/client";
 import { adverseParties } from "../../db/schema/adverse-parties";
@@ -52,6 +52,42 @@ const tokenHash = (token: string) =>
 const generateAccessToken = () => randomBytes(32).toString("base64url");
 
 const normalizeName = (name: string) => name.trim().toLowerCase();
+
+// Entity/stopwords that should never constitute a match on their own, so an
+// opponent like "Bianchi" matches the client "Bianchi Family Trust" without
+// every "Group" or "Trust" colliding with one another.
+const ENTITY_STOPWORDS = new Set([
+  "family", "trust", "estate", "llc", "l.l.c", "inc", "incorporated", "corp",
+  "corporation", "co", "company", "group", "holdings", "ltd", "limited", "lp",
+  "llp", "plc", "pllc", "the", "and", "of", "&",
+]);
+
+const significantTokens = (name: string): string[] =>
+  normalizeName(name)
+    .split(/[\s,.]+/)
+    .filter((t) => t.length > 0 && !ENTITY_STOPWORDS.has(t));
+
+/**
+ * Compares two names for conflict-check purposes.
+ * - "exact"   — identical once normalized (trim + lowercase)
+ * - "partial" — they share at least one significant (non-stopword) token
+ * - null      — no meaningful overlap
+ */
+export const compareNames = (
+  a: string | null | undefined,
+  b: string | null | undefined,
+): "exact" | "partial" | null => {
+  if (!a || !b) return null;
+  const na = normalizeName(a);
+  const nb = normalizeName(b);
+  if (!na || !nb) return null;
+  if (na === nb) return "exact";
+
+  const tokensB = new Set(significantTokens(b));
+  if (tokensB.size === 0) return null;
+  const shares = significantTokens(a).some((t) => tokensB.has(t));
+  return shares ? "partial" : null;
+};
 
 type StoredMatch = {
   type: string;
@@ -106,7 +142,11 @@ const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[]) => {
 
   if (adverseMatchIds.length > 0) {
     const apRows = await db
-      .select({ id: adverseParties.id, relationship: adverseParties.relationship, caseId: adverseParties.caseId })
+      .select({
+        id: adverseParties.id,
+        relationship: adverseParties.relationship,
+        caseId: adverseParties.caseId,
+      })
       .from(adverseParties)
       .where(inArray(adverseParties.id, adverseMatchIds));
 
@@ -366,7 +406,12 @@ const getAllLeads = async (
 
   if (filters.stage)
     conditions.push(eq(leads.pipelineStage, filters.stage as any));
-  if (filters.status) conditions.push(eq(leads.status, filters.status as any));
+  if (filters.status) {
+    conditions.push(eq(leads.status, filters.status as any));
+  } else {
+    // Hide declined leads from default lists; still queryable via ?status=declined
+    conditions.push(ne(leads.status, "declined"));
+  }
   if (filters.practiceAreaId)
     conditions.push(eq(leads.practiceAreaId, filters.practiceAreaId));
   if (filters.source) conditions.push(eq(leads.source, filters.source as any));
@@ -385,20 +430,30 @@ const getAllLeads = async (
 
     const ccIds = conflictCheckLeads.map((r) => r.conflictCheckId!);
     const checks = await db
-      .select({ id: conflictChecks.id, matches: conflictChecks.matches })
+      .select({
+        id: conflictChecks.id,
+        matches: conflictChecks.matches,
+        status: conflictChecks.status,
+      })
       .from(conflictChecks)
       .where(inArray(conflictChecks.id, ccIds));
 
-    const matchesById = new Map(checks.map((c) => [c.id, c.matches]));
+    const matchesById = new Map(
+      checks.map((c) => [c.id, { matches: c.matches, status: c.status }]),
+    );
 
     const enriched = await Promise.all(
       rows.map(async (r) => {
         if (r.pipelineStage !== "conflict_check" || !r.conflictCheckId)
           return r;
-        const matches = matchesById.get(r.conflictCheckId) as StoredMatch[] | undefined;
+        const conflict = matchesById.get(r.conflictCheckId) as
+          | { matches: StoredMatch[]; status: string }
+          | undefined;
+        if (!conflict) return r;
+        const { matches } = conflict;
         if (!matches || matches.length === 0) return r;
         const conflictMatches = await enrichMatchesWithCaseContext(matches);
-        return { ...r, conflictMatches };
+        return { ...r, conflictMatches, conflictCheckStatus: conflict.status };
       }),
     );
 
@@ -528,7 +583,7 @@ const updateLead = async (
 const updateLeadStatus = async (
   id: string,
   organizationId: string,
-  status: 'archived' | 'reviewed'
+  status: "archived" | "reviewed",
 ) => {
   const [updated] = await db
     .update(leads)
@@ -544,7 +599,8 @@ const getLeadStageCounts = async (organizationId: string) => {
   const rows = await db
     .select({ stage: leads.pipelineStage, total: count() })
     .from(leads)
-    .where(eq(leads.organizationId, organizationId))
+    // Exclude declined leads so stage badges match the default lists
+    .where(and(eq(leads.organizationId, organizationId), ne(leads.status, "declined")))
     .groupBy(leads.pipelineStage);
 
   const result: Record<string, number> = {
@@ -593,6 +649,13 @@ const advanceLeadStage = async (
 
   // Validate transition rules for forward moves
   if (newIdx > currentIdx) {
+    // A declined lead is terminal and may not advance.
+    if (lead.status === "declined") {
+      throw new ConflictError(
+        "This lead has been declined for a conflict and cannot advance",
+      );
+    }
+
     if (newStage === "questionnaire" && lead.conflictCheckId) {
       const [cc] = await db
         .select()
@@ -600,9 +663,10 @@ const advanceLeadStage = async (
         .where(eq(conflictChecks.id, lead.conflictCheckId))
         .limit(1);
 
-      if (cc && cc.status === "conflict_found" && !cc.supervisorOverrideById) {
+      // Conflict check must be cleared (passed or approved) before advancing.
+      if (!cc || cc.status !== "pass") {
         throw new ConflictError(
-          "Conflict found — supervisor override required before advancing to questionnaire",
+          "Conflict check must be cleared before advancing to questionnaire",
         );
       }
     }
@@ -746,7 +810,8 @@ const runConflictCheck = async (
 
   for (const m of adverseMatches) {
     const nameNormalized = normalizeName(m.name);
-    const emailHit = m.email !== null && m.email.toLowerCase() === normalizedEmail;
+    const emailHit =
+      m.email !== null && m.email.toLowerCase() === normalizedEmail;
     matches.push({
       type: "adverse_party",
       matchedId: m.id,
@@ -856,9 +921,8 @@ const runConflictCheck = async (
 
   // ABA 1.7 / 1.9 — intake adverse party: does the lead's proposed opponent match a current or former client?
   if (lead.intakeAdversePartyName || lead.intakeAdversePartyEmail) {
-    const normalizedOpponentName = lead.intakeAdversePartyName
-      ? normalizeName(lead.intakeAdversePartyName)
-      : null;
+    // Opponent name matching is delegated to compareNames (token-based); only the
+    // email needs explicit normalization here.
     const normalizedOpponentEmail = lead.intakeAdversePartyEmail
       ? lead.intakeAdversePartyEmail.trim().toLowerCase()
       : null;
@@ -882,23 +946,44 @@ const runConflictCheck = async (
       );
 
     for (const m of activeOpponentContacts) {
-      const contactName = `${m.firstName} ${m.lastName}`.toLowerCase();
       const emailHit =
-        normalizedOpponentEmail && m.email.toLowerCase() === normalizedOpponentEmail;
-      const nameHit =
-        normalizedOpponentName &&
-        (contactName === normalizedOpponentName ||
-          m.clientName?.toLowerCase() === normalizedOpponentName);
+        !!normalizedOpponentEmail &&
+        m.email?.toLowerCase() === normalizedOpponentEmail;
+      const nameStrengths = [
+        compareNames(
+          lead.intakeAdversePartyName,
+          `${m.firstName} ${m.lastName}`,
+        ),
+        compareNames(lead.intakeAdversePartyName, m.clientName),
+      ];
+      const strength = emailHit
+        ? "exact"
+        : nameStrengths.includes("exact")
+          ? "exact"
+          : nameStrengths.includes("partial")
+            ? "partial"
+            : null;
 
       if (
-        (emailHit || nameHit) &&
-        !matches.find((x) => x.type === "client_is_opponent" && x.matchedId === (m.clientId ?? m.id))
+        strength &&
+        !matches.find(
+          (x) =>
+            x.type === "client_is_opponent" &&
+            x.matchedId === (m.clientId ?? m.id),
+        )
       ) {
         matches.push({
           type: "client_is_opponent",
           matchedId: m.clientId ?? m.id,
           matchedName: m.clientName ?? `${m.firstName} ${m.lastName}`,
-          confidence: emailHit ? "exact_email" : "exact_name",
+          // Partial matches (e.g. "Bianchi" vs "Bianchi Family Trust") route to
+          // needs_review; exact matches remain a hard ABA 1.7 conflict.
+          confidence:
+            strength === "exact"
+              ? emailHit
+                ? "exact_email"
+                : "exact_name"
+              : "fuzzy_name",
           rule: "ABA_1.7",
           details: `Proposed opposing party "${lead.intakeAdversePartyName ?? lead.intakeAdversePartyEmail}" matches active client`,
           caseIds: [],
@@ -925,23 +1010,44 @@ const runConflictCheck = async (
       );
 
     for (const m of inactiveOpponentContacts) {
-      const contactName = `${m.firstName} ${m.lastName}`.toLowerCase();
       const emailHit =
-        normalizedOpponentEmail && m.email.toLowerCase() === normalizedOpponentEmail;
-      const nameHit =
-        normalizedOpponentName &&
-        (contactName === normalizedOpponentName ||
-          m.clientName?.toLowerCase() === normalizedOpponentName);
+        !!normalizedOpponentEmail &&
+        m.email?.toLowerCase() === normalizedOpponentEmail;
+      const nameStrengths = [
+        compareNames(
+          lead.intakeAdversePartyName,
+          `${m.firstName} ${m.lastName}`,
+        ),
+        compareNames(lead.intakeAdversePartyName, m.clientName),
+      ];
+      const strength = emailHit
+        ? "exact"
+        : nameStrengths.includes("exact")
+          ? "exact"
+          : nameStrengths.includes("partial")
+            ? "partial"
+            : null;
 
       if (
-        (emailHit || nameHit) &&
-        !matches.find((x) => x.type === "former_client_is_opponent" && x.matchedId === (m.clientId ?? m.id))
+        strength &&
+        !matches.find(
+          (x) =>
+            x.type === "former_client_is_opponent" &&
+            x.matchedId === (m.clientId ?? m.id),
+        )
       ) {
         matches.push({
           type: "former_client_is_opponent",
           matchedId: m.clientId ?? m.id,
           matchedName: m.clientName ?? `${m.firstName} ${m.lastName}`,
-          confidence: emailHit ? "exact_email" : "exact_name",
+          // ABA 1.9 matches are always needs_review; confidence still reflects
+          // whether the opponent name matched exactly or partially.
+          confidence:
+            strength === "exact"
+              ? emailHit
+                ? "exact_email"
+                : "exact_name"
+              : "fuzzy_name",
           rule: "ABA_1.9",
           details: `Proposed opposing party "${lead.intakeAdversePartyName ?? lead.intakeAdversePartyEmail}" matches former (inactive) client`,
           caseIds: [],
@@ -953,9 +1059,7 @@ const runConflictCheck = async (
   // Populate caseIds for client-based matches
   const clientMatchIds = [
     ...new Set(
-      matches
-        .filter((m) => m.type !== "adverse_party")
-        .map((m) => m.matchedId),
+      matches.filter((m) => m.type !== "adverse_party").map((m) => m.matchedId),
     ),
   ];
   if (clientMatchIds.length > 0) {
@@ -1007,7 +1111,21 @@ const runConflictCheck = async (
   if (lead.conflictCheckId) {
     const [updated] = await db
       .update(conflictChecks)
-      .set({ status, matches, checkedById, checkedAt: now, updatedAt: now })
+      .set({
+        status,
+        matches,
+        checkedById,
+        checkedAt: now,
+        updatedAt: now,
+        // Re-running a check invalidates any prior resolution so a stale
+        // approval can't silently clear a freshly-surfaced conflict.
+        reviewedById: null,
+        reviewedAt: null,
+        reviewNotes: null,
+        supervisorOverrideById: null,
+        supervisorOverrideAt: null,
+        supervisorOverrideNotes: null,
+      })
       .where(eq(conflictChecks.id, lead.conflictCheckId))
       .returning();
     checkRecord = updated;
@@ -1031,17 +1149,27 @@ const runConflictCheck = async (
       .where(eq(leads.id, leadId));
   }
 
-  // Auto-advance to questionnaire stage if pass
-  if (status === "pass") {
-    await db
-      .update(leads)
-      .set({ pipelineStage: "questionnaire", updatedAt: now })
-      .where(eq(leads.id, leadId));
-  } else if (status === "needs_review" || status === "conflict_found") {
-    await db
-      .update(leads)
-      .set({ pipelineStage: "conflict_check", updatedAt: now })
-      .where(eq(leads.id, leadId));
+  // Auto-advance the pipeline stage based on the result, but never regress a
+  // lead that is already further along and never touch a terminal lead.
+  if (lead.status !== "declined") {
+    const currentIdx = STAGE_ORDER.indexOf(lead.pipelineStage as any);
+    if (status === "pass") {
+      // Clear leads move on to the questionnaire (only from conflict_check or earlier).
+      if (currentIdx < STAGE_ORDER.indexOf("questionnaire")) {
+        await db
+          .update(leads)
+          .set({ pipelineStage: "questionnaire", updatedAt: now })
+          .where(eq(leads.id, leadId));
+      }
+    } else {
+      // needs_review / conflict_found are held at conflict_check.
+      if (currentIdx < STAGE_ORDER.indexOf("conflict_check")) {
+        await db
+          .update(leads)
+          .set({ pipelineStage: "conflict_check", updatedAt: now })
+          .where(eq(leads.id, leadId));
+      }
+    }
   }
 
   const enrichedMatches = await enrichMatchesWithCaseContext(matches);
@@ -1071,15 +1199,28 @@ const getConflictCheck = async (leadId: string, organizationId: string) => {
   return { ...cc, matches: enrichedMatches };
 };
 
+// Neutral, non-accusatory notice. NEVER discloses the conflict, matched party,
+// or any specifics — see plan A7.
+const buildDeclineEmail = (lead: { name: string; email: string }) => ({
+  to: lead.email,
+  subject: "Update on your inquiry",
+  html: `
+    <p>Dear ${lead.name},</p>
+    <p>Thank you for reaching out to our firm. After careful review, we are
+       unable to move forward with your matter at this time.</p>
+    <p>We are not able to share the specific reason, and this decision does
+       not reflect on the merits of your situation. We encourage you to seek
+       other counsel promptly so any important deadlines are protected.</p>
+    <p>We wish you the very best.</p>`,
+});
+
 const resolveConflictCheck = async (
   leadId: string,
   organizationId: string,
   staffId: string,
   data: {
-    action: "manual_review" | "supervisor_override";
-    status?: "pass" | "needs_review";
-    reviewNotes?: string;
-    supervisorNotes?: string;
+    action: "approve" | "decline";
+    reviewNotes: string;
   },
 ) => {
   const [lead] = await db
@@ -1092,7 +1233,9 @@ const resolveConflictCheck = async (
     throw new NotFoundError("No conflict check found for this lead");
 
   if (!staffId) {
-    throw new NotFoundError("Staff not found")
+    throw new AuthorizationError(
+      "A valid staff profile is required to resolve conflicts",
+    );
   }
   const [staffRecord] = await db
     .select({ id: staff.id })
@@ -1101,51 +1244,80 @@ const resolveConflictCheck = async (
     .limit(1);
 
   if (!staffRecord)
-    throw new AuthorizationError("Only staff members with a valid staff profile may resolve conflict checks");
+    throw new AuthorizationError(
+      "A valid staff profile is required to resolve conflicts",
+    );
 
+  const [cc] = await db
+    .select()
+    .from(conflictChecks)
+    .where(eq(conflictChecks.id, lead.conflictCheckId))
+    .limit(1);
+
+  if (!cc) throw new NotFoundError("No conflict check found for this lead");
+
+  const wasHardConflict = cc.status === "conflict_found";
   const now = new Date();
 
-  if (data.action === "supervisor_override" && !data.supervisorNotes?.trim())
-    throw new BadRequestError("Supervisor notes are required to override a conflict");
+  const updated = await db.transaction(async (tx) => {
+    if (data.action === "approve") {
+      const [u] = await tx
+        .update(conflictChecks)
+        .set({
+          status: "pass",
+          reviewedById: staffId,
+          reviewedAt: now,
+          reviewNotes: data.reviewNotes,
+          updatedAt: now,
+        })
+        .where(eq(conflictChecks.id, cc.id))
+        .returning();
 
-  if (data.action === "supervisor_override") {
-    const [updated] = await db
+      await tx
+        .update(leads)
+        .set({
+          status: wasHardConflict ? "overridden" : "reviewed",
+          // Advance off conflict_check, but never regress a further-along lead
+          pipelineStage:
+            lead.pipelineStage === "conflict_check"
+              ? "questionnaire"
+              : lead.pipelineStage,
+          updatedAt: now,
+        })
+        .where(eq(leads.id, leadId));
+      return u;
+    }
+
+    // decline — terminate the lead for conflict
+    const [u] = await tx
       .update(conflictChecks)
       .set({
-        supervisorOverrideById: staffId,
-        supervisorOverrideAt: now,
-        supervisorOverrideNotes: data.supervisorNotes,
+        status: "conflict_found",
+        reviewedById: staffId,
+        reviewedAt: now,
+        reviewNotes: data.reviewNotes,
         updatedAt: now,
       })
-      .where(eq(conflictChecks.id, lead.conflictCheckId))
+      .where(eq(conflictChecks.id, cc.id))
       .returning();
-    return updated;
-  }
 
-  // manual_review
-  if (!data.status)
-    throw new BadRequestError("status is required for manual_review action");
-  const [updated] = await db
-    .update(conflictChecks)
-    .set({
-      status: data.status,
-      reviewedById: staffId,
-      reviewedAt: now,
-      reviewNotes: data.reviewNotes,
-      updatedAt: now,
-    })
-    .where(eq(conflictChecks.id, lead.conflictCheckId))
-    .returning();
-
-  // If manually passed, advance stage
-  if (data.status === "pass") {
-    await db
+    await tx
       .update(leads)
-      .set({ pipelineStage: "questionnaire", updatedAt: now })
+      .set({ status: "declined", updatedAt: now }) // stage left as-is (terminal)
       .where(eq(leads.id, leadId));
-  }
+    return u;
+  });
 
-  return updated;
+  // Notify the lead after the resolution has committed. Fire-and-forget so an
+  // email failure can never roll back the decision.
+  if (data.action === "decline")
+    emailService.sendEmail(buildDeclineEmail(lead)).catch(console.error);
+
+  const enrichedMatches = await enrichMatchesWithCaseContext(
+    (updated.matches ?? []) as StoredMatch[],
+  );
+
+  return { ...updated, matches: enrichedMatches };
 };
 
 // ─── Questionnaire ────────────────────────────────────────────────────────────

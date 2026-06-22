@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
+import { requirePermission } from "../../middleware/permission.middleware";
 import { setFirmContext } from "../../middleware/rls.middleware";
 import { requireStaffOrAdmin } from "../../middleware/staff-or-admin.middleware";
 import { validateRequest } from "../../middleware/validate.middleware";
@@ -117,7 +118,8 @@ export class LeadsRouter {
     this.router.patch(
       "/:id/conflict-check",
       requireAuth,
-      requireAdmin,
+      requireStaffOrAdmin, // populates req.staffId (audit actor)
+      requirePermission("conflicts", "review"), // owner/admin gate (real enforcement)
       setFirmContext,
       validateRequest({
         params: v.idParamsSchema,

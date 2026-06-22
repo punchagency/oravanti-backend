@@ -79,17 +79,13 @@ export const advanceStageBodySchema = z.object({
   ]),
 });
 
-export const resolveConflictCheckBodySchema = z.discriminatedUnion("action", [
-  z.object({
-    action: z.literal("manual_review"),
-    status: z.enum(["pass", "needs_review"]),
-    reviewNotes: z.string().optional(),
-  }),
-  z.object({
-    action: z.literal("supervisor_override"),
-    supervisorNotes: z.string().min(1, "Supervisor notes are required to override a conflict"),
-  }),
-]);
+export const resolveConflictCheckBodySchema = z.object({
+  action: z.enum(["approve", "decline"]),
+  reviewNotes: z
+    .string()
+    .trim()
+    .min(1, "A note is required to resolve a conflict"),
+});
 
 export const createConsultationBodySchema = z.object({
   scheduledAt: z.string().datetime(),
