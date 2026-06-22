@@ -1100,15 +1100,28 @@ const getConflictCheck = async (leadId: string, organizationId: string) => {
   return { ...cc, matches: enrichedMatches };
 };
 
+// Neutral, non-accusatory notice. NEVER discloses the conflict, matched party,
+// or any specifics — see plan A7.
+const buildDeclineEmail = (lead: { name: string; email: string }) => ({
+  to: lead.email,
+  subject: "Update on your inquiry",
+  html: `
+    <p>Dear ${lead.name},</p>
+    <p>Thank you for reaching out to our firm. After careful review, we are
+       unable to move forward with your matter at this time.</p>
+    <p>We are not able to share the specific reason, and this decision does
+       not reflect on the merits of your situation. We encourage you to seek
+       other counsel promptly so any important deadlines are protected.</p>
+    <p>We wish you the very best.</p>`,
+});
+
 const resolveConflictCheck = async (
   leadId: string,
   organizationId: string,
   staffId: string,
   data: {
-    action: "manual_review" | "supervisor_override";
-    status?: "pass" | "needs_review";
-    reviewNotes?: string;
-    supervisorNotes?: string;
+    action: "approve" | "decline";
+    reviewNotes: string;
   },
 ) => {
   const [lead] = await db
@@ -1121,7 +1134,9 @@ const resolveConflictCheck = async (
     throw new NotFoundError("No conflict check found for this lead");
 
   if (!staffId) {
-    throw new NotFoundError("Staff not found");
+    throw new AuthorizationError(
+      "A valid staff profile is required to resolve conflicts",
+    );
   }
   const [staffRecord] = await db
     .select({ id: staff.id })
@@ -1131,55 +1146,77 @@ const resolveConflictCheck = async (
 
   if (!staffRecord)
     throw new AuthorizationError(
-      "Only staff members with a valid staff profile may resolve conflict checks",
+      "A valid staff profile is required to resolve conflicts",
     );
 
+  const [cc] = await db
+    .select()
+    .from(conflictChecks)
+    .where(eq(conflictChecks.id, lead.conflictCheckId))
+    .limit(1);
+
+  if (!cc) throw new NotFoundError("No conflict check found for this lead");
+
+  const wasHardConflict = cc.status === "conflict_found";
   const now = new Date();
 
-  if (data.action === "supervisor_override" && !data.supervisorNotes?.trim())
-    throw new BadRequestError(
-      "Supervisor notes are required to override a conflict",
-    );
+  const updated = await db.transaction(async (tx) => {
+    if (data.action === "approve") {
+      const [u] = await tx
+        .update(conflictChecks)
+        .set({
+          status: "pass",
+          reviewedById: staffId,
+          reviewedAt: now,
+          reviewNotes: data.reviewNotes,
+          updatedAt: now,
+        })
+        .where(eq(conflictChecks.id, cc.id))
+        .returning();
 
-  if (data.action === "supervisor_override") {
-    const [updated] = await db
+      await tx
+        .update(leads)
+        .set({
+          status: wasHardConflict ? "overridden" : "reviewed",
+          // Advance off conflict_check, but never regress a further-along lead
+          pipelineStage:
+            lead.pipelineStage === "conflict_check"
+              ? "questionnaire"
+              : lead.pipelineStage,
+          updatedAt: now,
+        })
+        .where(eq(leads.id, leadId));
+      return u;
+    }
+
+    // decline — terminate the lead for conflict
+    const [u] = await tx
       .update(conflictChecks)
       .set({
-        supervisorOverrideById: staffId,
-        supervisorOverrideAt: now,
-        supervisorOverrideNotes: data.supervisorNotes,
+        status: "conflict_found",
+        reviewedById: staffId,
+        reviewedAt: now,
+        reviewNotes: data.reviewNotes,
         updatedAt: now,
       })
-      .where(eq(conflictChecks.id, lead.conflictCheckId))
+      .where(eq(conflictChecks.id, cc.id))
       .returning();
-    return updated;
-  }
 
-  // manual_review
-  if (!data.status)
-    throw new BadRequestError("status is required for manual_review action");
-  const [updated] = await db
-    .update(conflictChecks)
-    .set({
-      status: data.status,
-      reviewedById: staffId,
-      reviewedAt: now,
-      reviewNotes: data.reviewNotes,
-      updatedAt: now,
-    })
-    .where(eq(conflictChecks.id, lead.conflictCheckId))
-    .returning();
-
-  // If manually passed, advance stage
-  if (data.status === "pass") {
-    await db
+    await tx
       .update(leads)
-      .set({ pipelineStage: "questionnaire", updatedAt: now })
+      .set({ status: "declined", updatedAt: now }) // stage left as-is (terminal)
       .where(eq(leads.id, leadId));
-  }
+    return u;
+  });
 
-  const matches = updated.matches as StoredMatch[]
-  const enrichedMatches = await enrichMatchesWithCaseContext(matches ?? []);
+  // Notify the lead after the resolution has committed. Fire-and-forget so an
+  // email failure can never roll back the decision.
+  if (data.action === "decline")
+    emailService.sendEmail(buildDeclineEmail(lead)).catch(console.error);
+
+  const enrichedMatches = await enrichMatchesWithCaseContext(
+    (updated.matches ?? []) as StoredMatch[],
+  );
 
   return { ...updated, matches: enrichedMatches };
 };
