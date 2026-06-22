@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "crypto";
-import { and, count, desc, eq, ilike, inArray, or } from "drizzle-orm";
+import { and, count, desc, eq, ilike, inArray, ne, or } from "drizzle-orm";
 import { emailService } from "../../utils/email/email.service";
 import { db } from "../../db/client";
 import { adverseParties } from "../../db/schema/adverse-parties";
@@ -370,7 +370,12 @@ const getAllLeads = async (
 
   if (filters.stage)
     conditions.push(eq(leads.pipelineStage, filters.stage as any));
-  if (filters.status) conditions.push(eq(leads.status, filters.status as any));
+  if (filters.status) {
+    conditions.push(eq(leads.status, filters.status as any));
+  } else {
+    // Hide declined leads from default lists; still queryable via ?status=declined
+    conditions.push(ne(leads.status, "declined"));
+  }
   if (filters.practiceAreaId)
     conditions.push(eq(leads.practiceAreaId, filters.practiceAreaId));
   if (filters.source) conditions.push(eq(leads.source, filters.source as any));
@@ -558,7 +563,8 @@ const getLeadStageCounts = async (organizationId: string) => {
   const rows = await db
     .select({ stage: leads.pipelineStage, total: count() })
     .from(leads)
-    .where(eq(leads.organizationId, organizationId))
+    // Exclude declined leads so stage badges match the default lists
+    .where(and(eq(leads.organizationId, organizationId), ne(leads.status, "declined")))
     .groupBy(leads.pipelineStage);
 
   const result: Record<string, number> = {
