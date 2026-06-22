@@ -299,3 +299,39 @@ describe("runConflictCheck stage handling", () => {
     expect(leadUpdateChains).toHaveLength(0);
   });
 });
+
+describe("compareNames", () => {
+  it("treats identical normalized names as exact", async () => {
+    const { compareNames } = await import(
+      "../../../src/modules/leads/leads.service"
+    );
+    expect(compareNames("Bianchi Family Trust", "bianchi family trust ")).toBe(
+      "exact",
+    );
+  });
+
+  it("matches a bare surname against a company name as partial", async () => {
+    const { compareNames } = await import(
+      "../../../src/modules/leads/leads.service"
+    );
+    expect(compareNames("Bianchi", "Bianchi Family Trust")).toBe("partial");
+    expect(compareNames("Smith", "John Smith")).toBe("partial");
+  });
+
+  it("does not match on entity stopwords alone", async () => {
+    const { compareNames } = await import(
+      "../../../src/modules/leads/leads.service"
+    );
+    expect(compareNames("Trust", "Acme Group Trust")).toBeNull();
+    expect(compareNames("The Group", "Bianchi Family Trust")).toBeNull();
+  });
+
+  it("returns null for unrelated names or missing input", async () => {
+    const { compareNames } = await import(
+      "../../../src/modules/leads/leads.service"
+    );
+    expect(compareNames("Bianchi", "Rossi Holdings")).toBeNull();
+    expect(compareNames(null, "Bianchi")).toBeNull();
+    expect(compareNames("Bianchi", undefined)).toBeNull();
+  });
+});

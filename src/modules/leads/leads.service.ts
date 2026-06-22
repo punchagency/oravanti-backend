@@ -53,6 +53,42 @@ const generateAccessToken = () => randomBytes(32).toString("base64url");
 
 const normalizeName = (name: string) => name.trim().toLowerCase();
 
+// Entity/stopwords that should never constitute a match on their own, so an
+// opponent like "Bianchi" matches the client "Bianchi Family Trust" without
+// every "Group" or "Trust" colliding with one another.
+const ENTITY_STOPWORDS = new Set([
+  "family", "trust", "estate", "llc", "l.l.c", "inc", "incorporated", "corp",
+  "corporation", "co", "company", "group", "holdings", "ltd", "limited", "lp",
+  "llp", "plc", "pllc", "the", "and", "of", "&",
+]);
+
+const significantTokens = (name: string): string[] =>
+  normalizeName(name)
+    .split(/[\s,.]+/)
+    .filter((t) => t.length > 0 && !ENTITY_STOPWORDS.has(t));
+
+/**
+ * Compares two names for conflict-check purposes.
+ * - "exact"   — identical once normalized (trim + lowercase)
+ * - "partial" — they share at least one significant (non-stopword) token
+ * - null      — no meaningful overlap
+ */
+export const compareNames = (
+  a: string | null | undefined,
+  b: string | null | undefined,
+): "exact" | "partial" | null => {
+  if (!a || !b) return null;
+  const na = normalizeName(a);
+  const nb = normalizeName(b);
+  if (!na || !nb) return null;
+  if (na === nb) return "exact";
+
+  const tokensB = new Set(significantTokens(b));
+  if (tokensB.size === 0) return null;
+  const shares = significantTokens(a).some((t) => tokensB.has(t));
+  return shares ? "partial" : null;
+};
+
 type StoredMatch = {
   type: string;
   matchedId: string;
@@ -885,9 +921,8 @@ const runConflictCheck = async (
 
   // ABA 1.7 / 1.9 — intake adverse party: does the lead's proposed opponent match a current or former client?
   if (lead.intakeAdversePartyName || lead.intakeAdversePartyEmail) {
-    const normalizedOpponentName = lead.intakeAdversePartyName
-      ? normalizeName(lead.intakeAdversePartyName)
-      : null;
+    // Opponent name matching is delegated to compareNames (token-based); only the
+    // email needs explicit normalization here.
     const normalizedOpponentEmail = lead.intakeAdversePartyEmail
       ? lead.intakeAdversePartyEmail.trim().toLowerCase()
       : null;
@@ -911,17 +946,26 @@ const runConflictCheck = async (
       );
 
     for (const m of activeOpponentContacts) {
-      const contactName = `${m.firstName} ${m.lastName}`.toLowerCase();
       const emailHit =
-        normalizedOpponentEmail &&
-        m.email.toLowerCase() === normalizedOpponentEmail;
-      const nameHit =
-        normalizedOpponentName &&
-        (contactName === normalizedOpponentName ||
-          m.clientName?.toLowerCase() === normalizedOpponentName);
+        !!normalizedOpponentEmail &&
+        m.email?.toLowerCase() === normalizedOpponentEmail;
+      const nameStrengths = [
+        compareNames(
+          lead.intakeAdversePartyName,
+          `${m.firstName} ${m.lastName}`,
+        ),
+        compareNames(lead.intakeAdversePartyName, m.clientName),
+      ];
+      const strength = emailHit
+        ? "exact"
+        : nameStrengths.includes("exact")
+          ? "exact"
+          : nameStrengths.includes("partial")
+            ? "partial"
+            : null;
 
       if (
-        (emailHit || nameHit) &&
+        strength &&
         !matches.find(
           (x) =>
             x.type === "client_is_opponent" &&
@@ -932,7 +976,14 @@ const runConflictCheck = async (
           type: "client_is_opponent",
           matchedId: m.clientId ?? m.id,
           matchedName: m.clientName ?? `${m.firstName} ${m.lastName}`,
-          confidence: emailHit ? "exact_email" : "exact_name",
+          // Partial matches (e.g. "Bianchi" vs "Bianchi Family Trust") route to
+          // needs_review; exact matches remain a hard ABA 1.7 conflict.
+          confidence:
+            strength === "exact"
+              ? emailHit
+                ? "exact_email"
+                : "exact_name"
+              : "fuzzy_name",
           rule: "ABA_1.7",
           details: `Proposed opposing party "${lead.intakeAdversePartyName ?? lead.intakeAdversePartyEmail}" matches active client`,
           caseIds: [],
@@ -959,17 +1010,26 @@ const runConflictCheck = async (
       );
 
     for (const m of inactiveOpponentContacts) {
-      const contactName = `${m.firstName} ${m.lastName}`.toLowerCase();
       const emailHit =
-        normalizedOpponentEmail &&
-        m.email.toLowerCase() === normalizedOpponentEmail;
-      const nameHit =
-        normalizedOpponentName &&
-        (contactName === normalizedOpponentName ||
-          m.clientName?.toLowerCase() === normalizedOpponentName);
+        !!normalizedOpponentEmail &&
+        m.email?.toLowerCase() === normalizedOpponentEmail;
+      const nameStrengths = [
+        compareNames(
+          lead.intakeAdversePartyName,
+          `${m.firstName} ${m.lastName}`,
+        ),
+        compareNames(lead.intakeAdversePartyName, m.clientName),
+      ];
+      const strength = emailHit
+        ? "exact"
+        : nameStrengths.includes("exact")
+          ? "exact"
+          : nameStrengths.includes("partial")
+            ? "partial"
+            : null;
 
       if (
-        (emailHit || nameHit) &&
+        strength &&
         !matches.find(
           (x) =>
             x.type === "former_client_is_opponent" &&
@@ -980,7 +1040,14 @@ const runConflictCheck = async (
           type: "former_client_is_opponent",
           matchedId: m.clientId ?? m.id,
           matchedName: m.clientName ?? `${m.firstName} ${m.lastName}`,
-          confidence: emailHit ? "exact_email" : "exact_name",
+          // ABA 1.9 matches are always needs_review; confidence still reflects
+          // whether the opponent name matched exactly or partially.
+          confidence:
+            strength === "exact"
+              ? emailHit
+                ? "exact_email"
+                : "exact_name"
+              : "fuzzy_name",
           rule: "ABA_1.9",
           details: `Proposed opposing party "${lead.intakeAdversePartyName ?? lead.intakeAdversePartyEmail}" matches former (inactive) client`,
           caseIds: [],
