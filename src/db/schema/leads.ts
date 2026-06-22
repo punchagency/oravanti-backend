@@ -15,7 +15,13 @@ export const leadSourceEnum = pgEnum('lead_source', [
   'client_portal',
 ]);
 
-export const leadStatusEnum = pgEnum('lead_status', ['new', 'reviewed', 'archived']);
+export const leadStatusEnum = pgEnum('lead_status', [
+  'new',
+  'reviewed',
+  'archived',
+  'declined',   // terminal: lead terminated for a conflict
+  'overridden', // proceeded despite a found conflict (cleared by reviewer)
+]);
 
 export const leadPipelineStageEnum = pgEnum('lead_pipeline_stage', [
   'lead_inbox',
