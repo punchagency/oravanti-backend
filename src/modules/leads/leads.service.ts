@@ -613,6 +613,13 @@ const advanceLeadStage = async (
 
   // Validate transition rules for forward moves
   if (newIdx > currentIdx) {
+    // A declined lead is terminal and may not advance.
+    if (lead.status === "declined") {
+      throw new ConflictError(
+        "This lead has been declined for a conflict and cannot advance",
+      );
+    }
+
     if (newStage === "questionnaire" && lead.conflictCheckId) {
       const [cc] = await db
         .select()
@@ -620,9 +627,10 @@ const advanceLeadStage = async (
         .where(eq(conflictChecks.id, lead.conflictCheckId))
         .limit(1);
 
-      if (cc && cc.status === "conflict_found" && !cc.supervisorOverrideById) {
+      // Conflict check must be cleared (passed or approved) before advancing.
+      if (!cc || cc.status !== "pass") {
         throw new ConflictError(
-          "Conflict found — supervisor override required before advancing to questionnaire",
+          "Conflict check must be cleared before advancing to questionnaire",
         );
       }
     }
@@ -1036,7 +1044,21 @@ const runConflictCheck = async (
   if (lead.conflictCheckId) {
     const [updated] = await db
       .update(conflictChecks)
-      .set({ status, matches, checkedById, checkedAt: now, updatedAt: now })
+      .set({
+        status,
+        matches,
+        checkedById,
+        checkedAt: now,
+        updatedAt: now,
+        // Re-running a check invalidates any prior resolution so a stale
+        // approval can't silently clear a freshly-surfaced conflict.
+        reviewedById: null,
+        reviewedAt: null,
+        reviewNotes: null,
+        supervisorOverrideById: null,
+        supervisorOverrideAt: null,
+        supervisorOverrideNotes: null,
+      })
       .where(eq(conflictChecks.id, lead.conflictCheckId))
       .returning();
     checkRecord = updated;
@@ -1060,17 +1082,27 @@ const runConflictCheck = async (
       .where(eq(leads.id, leadId));
   }
 
-  // Auto-advance to questionnaire stage if pass
-  if (status === "pass") {
-    await db
-      .update(leads)
-      .set({ pipelineStage: "questionnaire", updatedAt: now })
-      .where(eq(leads.id, leadId));
-  } else if (status === "needs_review" || status === "conflict_found") {
-    await db
-      .update(leads)
-      .set({ pipelineStage: "conflict_check", updatedAt: now })
-      .where(eq(leads.id, leadId));
+  // Auto-advance the pipeline stage based on the result, but never regress a
+  // lead that is already further along and never touch a terminal lead.
+  if (lead.status !== "declined") {
+    const currentIdx = STAGE_ORDER.indexOf(lead.pipelineStage as any);
+    if (status === "pass") {
+      // Clear leads move on to the questionnaire (only from conflict_check or earlier).
+      if (currentIdx < STAGE_ORDER.indexOf("questionnaire")) {
+        await db
+          .update(leads)
+          .set({ pipelineStage: "questionnaire", updatedAt: now })
+          .where(eq(leads.id, leadId));
+      }
+    } else {
+      // needs_review / conflict_found are held at conflict_check.
+      if (currentIdx < STAGE_ORDER.indexOf("conflict_check")) {
+        await db
+          .update(leads)
+          .set({ pipelineStage: "conflict_check", updatedAt: now })
+          .where(eq(leads.id, leadId));
+      }
+    }
   }
 
   const enrichedMatches = await enrichMatchesWithCaseContext(matches);
