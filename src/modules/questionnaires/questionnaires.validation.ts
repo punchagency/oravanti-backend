@@ -55,6 +55,8 @@ export class QuestionnairesValidation {
   public questionnaireIdParamsSchema = z.object({ id: this.uuidParam });
   public questionnaireClientTokenParamsSchema = z.object({ token: z.string().min(1) });
   public eligibleForCaseParamsSchema = z.object({ caseId: this.uuidParam });
+  public responseIdParamsSchema = z.object({ responseId: this.uuidParam });
+  public sendIdParamsSchema = z.object({ sendId: this.uuidParam });
 
   // ── Bodies ─────────────────────────────────────────────────────────────────
 

@@ -131,6 +131,43 @@ export class QuestionnairesController {
     res.status(200).json(result);
   });
 
+  // ── Intake: eligible leads, question bank, response review ──────────────────
+
+  getEligibleLeads = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.getEligibleLeadsForQuestionnaire(
+      req.organizationId!,
+    );
+    res.status(200).json(result);
+  });
+
+  getQuestionBank = asyncWrap(async (_req: AuthRequest, res: Response) => {
+    res.status(200).json(await this.svc.getQuestionBank());
+  });
+
+  getResponseDetail = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.getResponseDetailById(
+      req.organizationId!,
+      req.params.responseId as string,
+    );
+    res.status(200).json(result);
+  });
+
+  acceptResponse = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.acceptResponseAndAdvance(
+      req.organizationId!,
+      req.params.responseId as string,
+    );
+    res.status(200).json(result);
+  });
+
+  sendReminder = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.sendManualReminder(
+      req.organizationId!,
+      req.params.sendId as string,
+    );
+    res.status(200).json(result);
+  });
+
   // ── Token-Based Client Endpoints ───────────────────────────────────────────
 
   getClientQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {

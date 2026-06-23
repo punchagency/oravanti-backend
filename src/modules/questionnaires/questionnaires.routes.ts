@@ -2,6 +2,7 @@ import { Router } from "express";
 import multer from "multer";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
+import { requireStaffOrAdmin } from "../../middleware/staff-or-admin.middleware";
 import { setFirmContext } from "../../middleware/rls.middleware";
 import { validateRequest } from "../../middleware/validate.middleware";
 import { QuestionnairesController } from "./questionnaires.controller";
@@ -55,6 +56,32 @@ export class QuestionnairesRouter {
         body: v.uploadResponseFileBodySchema,
       }),
       ctrl.uploadResponseFile,
+    );
+
+    // ── Authenticated staff-or-admin intake routes ───────────────────────────
+    // Send-wizard data, response review, accept, and manual reminders are usable
+    // by firm staff (attorney/paralegal), not just org admins.
+    const staffGuards = [requireAuth, requireStaffOrAdmin, setFirmContext];
+
+    this.router.get("/eligible-leads", ...staffGuards, ctrl.getEligibleLeads);
+    this.router.get("/question-bank", ...staffGuards, ctrl.getQuestionBank);
+    this.router.get(
+      "/responses/:responseId/detail",
+      ...staffGuards,
+      validateRequest({ params: v.responseIdParamsSchema }),
+      ctrl.getResponseDetail,
+    );
+    this.router.post(
+      "/responses/:responseId/accept",
+      ...staffGuards,
+      validateRequest({ params: v.responseIdParamsSchema }),
+      ctrl.acceptResponse,
+    );
+    this.router.post(
+      "/sends/:sendId/remind",
+      ...staffGuards,
+      validateRequest({ params: v.sendIdParamsSchema }),
+      ctrl.sendReminder,
     );
 
     // ── Authenticated admin routes ────────────────────────────────────────────
