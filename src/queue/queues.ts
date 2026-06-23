@@ -52,7 +52,7 @@ export const scheduleQuestionnaireReminder = async (
   const job = await questionnaireRemindersQueue.add(
     "reminder",
     { sendId },
-    { delay: days * 24 * 60 * 60 * 1000, jobId: `reminder:${sendId}` },
+    { delay: days * 24 * 60 * 60 * 1000, jobId: `reminder-${sendId}` },
   );
   return job.id;
 };
