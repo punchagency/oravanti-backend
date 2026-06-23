@@ -17,6 +17,8 @@ import {
   member,
   organization as organizationSchema,
   session,
+  team,
+  teamMember,
   twoFactor as twoFactorSchema,
   user,
   verification,
@@ -62,6 +64,8 @@ export const auth = betterAuth({
       organization: organizationSchema,
       invitation,
       twoFactor: twoFactorSchema,
+      team,
+      teamMember,
     },
   }),
   emailAndPassword: {
@@ -129,6 +133,9 @@ export const auth = betterAuth({
   plugins: [
     organization({
       // cancelPendingInvitationsOnReInvite: true,
+      teams: {
+        enabled: true,
+      },
       async sendInvitationEmail(data) {
         const inviteLink = `http://localhost:5137/accept-invitation?id=${data.id}`;
 
@@ -200,6 +207,16 @@ export const auth = betterAuth({
             zipCode: { type: "string", input: true, required: false },
             website: { type: "string", input: true, required: false },
             taxId: { type: "string", input: true, required: false },
+          },
+        },
+        team: {
+          additionalFields: {
+            leadId: { type: "string", required: false },
+            description: { type: "string", required: false },
+            maxCaseload: { type: "number", required: false },
+            workloadPercentage: { type: "number", required: false },
+            status: { type: "string", required: false },
+            activeCases: { type: "number", required: false },
           },
         },
       },

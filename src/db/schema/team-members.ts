@@ -1,15 +1,25 @@
-import { pgTable, uuid, timestamp, primaryKey } from 'drizzle-orm/pg-core';
-import { staff } from './staff';
-import { teams } from './teams';
+import {
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uuid,
+} from "drizzle-orm/pg-core";
+import { team } from "./auth-schema";
+import { staff } from "./staff";
 
 export const teamMembers = pgTable(
-  'team_members',
+  "team_members",
   {
-    teamId: uuid('team_id').notNull().references(() => teams.id, { onDelete: 'cascade' }),
-    staffId: uuid('staff_id').notNull().references(() => staff.id, { onDelete: 'cascade' }),
-    joinedAt: timestamp('joined_at').notNull().defaultNow(),
+    teamId: text("team_id")
+      .notNull()
+      .references(() => team.id, { onDelete: "cascade" }),
+    staffId: uuid("staff_id")
+      .notNull()
+      .references(() => staff.id, { onDelete: "cascade" }),
+    joinedAt: timestamp("joined_at").notNull().defaultNow(),
   },
-  (t) => [primaryKey({ columns: [t.teamId, t.staffId] })]
+  (t) => [primaryKey({ columns: [t.teamId, t.staffId] })],
 );
 
 export type TeamMember = typeof teamMembers.$inferSelect;

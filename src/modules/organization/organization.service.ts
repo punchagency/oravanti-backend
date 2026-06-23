@@ -1,7 +1,7 @@
 import { symmetricEncrypt } from "better-auth/crypto";
 import { fromNodeHeaders } from "better-auth/node";
-import { and, desc, eq, sql } from "drizzle-orm";
-import { randomBytes } from "node:crypto";
+import { aliasedTable, and, desc, eq, inArray, sql } from "drizzle-orm";
+import { randomBytes, randomUUID } from "node:crypto";
 import { auth } from "../../auth";
 import { env } from "../../config/env";
 import { db } from "../../db/client";
@@ -9,13 +9,14 @@ import {
   practiceAreas,
   staff,
   staffPracticeAreas,
-  teamMembers,
-  teams,
+  teamPracticeAreas,
 } from "../../db/schema";
 import {
   invitation,
   member,
   organization,
+  teamMember,
+  team as teamTable,
   user,
 } from "../../db/schema/auth-schema";
 
@@ -106,7 +107,7 @@ export class OrganizationService {
     // Team filter: subquery on team_members + teams junction
     if (team && team !== "all-teams") {
       conditions.push(
-        sql`(${staff.id}) IN (SELECT ${teamMembers.staffId} FROM ${teamMembers} INNER JOIN ${teams} ON ${teamMembers.teamId} = ${teams.id} WHERE ${teams.name} = ${team})`,
+        sql`(${staff.userId}) IN (SELECT ${teamMember.userId} FROM ${teamMember} INNER JOIN ${teamTable} ON ${teamMember.teamId} = ${teamTable.id} WHERE ${teamTable.name} = ${team})`,
       );
     }
 
@@ -163,15 +164,15 @@ export class OrganizationService {
             '[]'::json
           )
         `,
-        team: sql<string>`
+        teams: sql<{ id: string; name: string }[]>`
           COALESCE(
             (
-              SELECT string_agg(${teams.name}, ', ' ORDER BY ${teams.name})
-              FROM ${teamMembers}
-              INNER JOIN ${teams} ON ${teams.id} = ${teamMembers.teamId}
-              WHERE ${teamMembers.staffId} = ${staff.id}
+              SELECT json_agg(json_build_object('id', ${teamTable.id}, 'name', ${teamTable.name}) ORDER BY ${teamTable.name})
+              FROM ${teamMember}
+              INNER JOIN ${teamTable} ON ${teamTable.id} = ${teamMember.teamId}
+              WHERE ${teamMember.userId} = ${staff.userId}
             ),
-            ''
+            '[]'::json
           )
         `,
       })
@@ -207,7 +208,7 @@ export class OrganizationService {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       practiceAreas: row.practiceAreas ?? [],
-      team: row.team,
+      teams: row.teams,
     }));
 
     // Unfiltered status counts for the summary bar (computed from all staff in org, ignoring filters)
@@ -282,10 +283,10 @@ export class OrganizationService {
       conditions.push(
         sql`(${invitation.email}) IN (
           SELECT ${staff.email} FROM ${staff}
-          WHERE ${staff.id} IN (
-            SELECT ${teamMembers.staffId} FROM ${teamMembers}
-            INNER JOIN ${teams} ON ${teamMembers.teamId} = ${teams.id}
-            WHERE ${teams.name} = ${team}
+          WHERE ${staff.userId} IN (
+            SELECT ${teamMember.userId} FROM ${teamMember}
+            INNER JOIN ${teamTable} ON ${teamMember.teamId} = ${teamTable.id}
+            WHERE ${teamTable.name} = ${team}
           )
         )`,
       );
@@ -333,10 +334,10 @@ export class OrganizationService {
         team: sql<string>`
           COALESCE(
             (
-              SELECT string_agg(${teams.name}, ', ' ORDER BY ${teams.name})
-              FROM ${teamMembers}
-              INNER JOIN ${teams} ON ${teams.id} = ${teamMembers.teamId}
-              WHERE ${teamMembers.staffId} = ${staff.id}
+              SELECT string_agg(${teamTable.name}, ', ' ORDER BY ${teamTable.name})
+              FROM ${teamMember}
+              INNER JOIN ${teamTable} ON ${teamTable.id} = ${teamMember.teamId}
+              WHERE ${teamMember.userId} = ${staff.userId}
             ),
             ''
           )
@@ -537,7 +538,9 @@ export class OrganizationService {
     const [staffRecord] = await db
       .select({ userId: staff.userId })
       .from(staff)
-      .where(and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)))
+      .where(
+        and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)),
+      )
       .limit(1);
 
     if (!staffRecord?.userId) {
@@ -663,6 +666,285 @@ export class OrganizationService {
     return { message: "Password set successfully" };
   }
 
+  async listTeams(
+    organizationId: string,
+    filters: {
+      search?: string;
+      status?: string;
+      page?: number;
+      limit?: number;
+    } = {},
+  ) {
+    const { search, status, page = 1, limit = 10 } = filters;
+    const offset = (page - 1) * limit;
+
+    const conditions: ReturnType<typeof sql>[] = [
+      eq(teamTable.organizationId, organizationId),
+    ];
+
+    if (search) {
+      const likeQuery = `%${search.toLowerCase()}%`;
+      conditions.push(sql`LOWER(${teamTable.name}) LIKE ${likeQuery}`);
+    }
+
+    if (status && status !== "all-statuses") {
+      conditions.push(sql`${teamTable.status} = ${status}`);
+    }
+
+    const [{ count }] = await db
+      .select({ count: sql<number>`COUNT(*)` })
+      .from(teamTable)
+      .where(and(...conditions));
+
+    const total = Number(count);
+
+    const leadStaff = aliasedTable(staff, "leadStaff");
+
+    const rows = await db
+      .select({
+        id: teamTable.id,
+        name: teamTable.name,
+        description: teamTable.description,
+        leadId: teamTable.leadId,
+        leadName: sql<string | null>`
+          CASE WHEN ${leadStaff.id} IS NOT NULL
+            THEN ${leadStaff.firstName} || ' ' || ${leadStaff.lastName}
+          END
+        `,
+        leadRole: leadStaff.role,
+        maxCaseload: teamTable.maxCaseload,
+        workloadPercentage: teamTable.workloadPercentage,
+        status: teamTable.status,
+        activeCases: teamTable.activeCases,
+        memberCount: sql<number>`
+          COALESCE(
+            (SELECT COUNT(*) FROM ${teamMember} WHERE ${teamMember.teamId} = ${teamTable.id}),
+            0
+          )::int
+        `,
+        createdAt: teamTable.createdAt,
+      })
+      .from(teamTable)
+      .leftJoin(leadStaff, sql`${leadStaff.id}::text = ${teamTable.leadId}`)
+      .where(and(...conditions))
+      .orderBy(desc(teamTable.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const data = rows;
+
+    const counts = await this.getTeamCounts(organizationId);
+
+    return { data, counts, pagination: { total, limit, offset } };
+  }
+
+  async getTeamCounts(organizationId: string) {
+    const [result] = await db
+      .select({
+        totalTeams: sql<number>`COUNT(*)::int`,
+        atCapacity: sql<number>`COUNT(*) FILTER (WHERE ${teamTable.workloadPercentage} > 80)::int`,
+      })
+      .from(teamTable)
+      .where(eq(teamTable.organizationId, organizationId));
+
+    const [activeMembersResult] = await db
+      .select({
+        activeMembers: sql<number>`COUNT(DISTINCT ${staff.id})::int`,
+      })
+      .from(teamMember)
+      .innerJoin(teamTable, eq(teamTable.id, teamMember.teamId))
+      .innerJoin(staff, eq(staff.userId, teamMember.userId))
+      .where(eq(teamTable.organizationId, organizationId));
+
+    const [practiceAreasResult] = await db
+      .select({
+        practiceAreasCovered: sql<number>`COUNT(DISTINCT ${staffPracticeAreas.practiceAreaId})::int`,
+      })
+      .from(staffPracticeAreas)
+      .innerJoin(staff, eq(staff.id, staffPracticeAreas.staffId))
+      .innerJoin(teamMember, eq(teamMember.userId, staff.userId))
+      .innerJoin(teamTable, eq(teamTable.id, teamMember.teamId))
+      .where(eq(teamTable.organizationId, organizationId));
+
+    return {
+      totalTeams: result.totalTeams,
+      activeMembers: activeMembersResult.activeMembers,
+      atCapacity: result.atCapacity,
+      practiceAreasCovered: practiceAreasResult.practiceAreasCovered,
+    };
+  }
+
+  async getTeam(teamId: string, organizationId: string) {
+    const leadStaff = aliasedTable(staff, "leadStaff");
+
+    const [row] = await db
+      .select({
+        id: teamTable.id,
+        name: teamTable.name,
+        description: teamTable.description,
+        leadId: teamTable.leadId,
+        leadName: sql<string | null>`
+          CASE WHEN ${leadStaff.id} IS NOT NULL
+            THEN ${leadStaff.firstName} || ' ' || ${leadStaff.lastName}
+          END
+        `,
+        leadRole: leadStaff.role,
+        maxCaseload: teamTable.maxCaseload,
+        workloadPercentage: teamTable.workloadPercentage,
+        status: teamTable.status,
+        activeCases: teamTable.activeCases,
+        memberCount: sql<number>`
+          COALESCE(
+            (SELECT COUNT(*) FROM ${teamMember} WHERE ${teamMember.teamId} = ${teamTable.id}),
+            0
+          )::int
+        `,
+        practiceAreas: sql<{ id: string; name: string }[]>`
+          COALESCE(
+            (
+              SELECT json_agg(DISTINCT jsonb_build_object('id', ${practiceAreas.id}, 'name', ${practiceAreas.name}))
+              FROM ${teamPracticeAreas}
+              INNER JOIN ${practiceAreas} ON ${practiceAreas.id} = ${teamPracticeAreas.practiceAreaId}
+              WHERE ${teamPracticeAreas.teamId} = ${teamTable.id}
+            ),
+            '[]'::json
+          )
+        `,
+        members: sql<
+          {
+            id: string;
+            firstName: string;
+            lastName: string;
+            role: string | null;
+            status: string;
+          }[]
+        >`
+          COALESCE(
+            (
+              SELECT json_agg(json_build_object(
+                'id', ${staff.id},
+                'firstName', ${staff.firstName},
+                'lastName', ${staff.lastName},
+                'role', ${staff.role},
+                'status', ${staff.status}
+              ))
+              FROM ${teamMember}
+              INNER JOIN ${staff} ON ${staff.userId} = ${teamMember.userId}
+              WHERE ${teamMember.teamId} = ${teamTable.id}
+            ),
+            '[]'::json
+          )
+        `,
+        createdAt: teamTable.createdAt,
+      })
+      .from(teamTable)
+      .leftJoin(leadStaff, sql`${leadStaff.id}::text = ${teamTable.leadId}`)
+      .where(
+        and(
+          eq(teamTable.id, teamId),
+          eq(teamTable.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!row) return null;
+
+    return {
+      ...row,
+      practiceAreas: row.practiceAreas ?? [],
+      members: row.members ?? [],
+    };
+  }
+
+  async createTeam(
+    organizationId: string,
+    params: {
+      name: string;
+      description?: string;
+      leadId?: string;
+      maxCaseload?: number;
+      practiceAreaIds?: string[];
+      memberStaffIds?: string[];
+    },
+    headers: Record<string, string | string[] | undefined>,
+  ) {
+    console.log({ params });
+
+    const createdTeam = await auth.api.createTeam({
+      body: {
+        name: params.name.trim(),
+        organizationId,
+        leadId: params.leadId,
+        description: params.description?.trim(),
+        maxCaseload: params.maxCaseload,
+        workloadPercentage: 0,
+        status: "available",
+        activeCases: 0,
+      },
+      headers: fromNodeHeaders(headers),
+    });
+
+    try {
+      await db.transaction(async (tx) => {
+        if (params.practiceAreaIds?.length) {
+          await tx.insert(teamPracticeAreas).values(
+            params.practiceAreaIds.map((practiceAreaId) => ({
+              teamId: createdTeam.id,
+              practiceAreaId,
+            })),
+          );
+        }
+
+        const allUserIds: string[] = [];
+
+        if (params.leadId) {
+          const [leadStaff] = await tx
+            .select({ userId: staff.userId })
+            .from(staff)
+            .where(eq(staff.id, params.leadId))
+            .limit(1);
+
+          if (leadStaff?.userId) {
+            allUserIds.push(leadStaff.userId);
+          }
+        }
+
+        if (params.memberStaffIds?.length) {
+          const memberUsers = await tx
+            .select({ userId: staff.userId })
+            .from(staff)
+            .where(inArray(staff.id, params.memberStaffIds));
+
+          for (const mu of memberUsers) {
+            if (mu.userId && !allUserIds.includes(mu.userId)) {
+              allUserIds.push(mu.userId);
+            }
+          }
+        }
+
+        for (const userId of allUserIds) {
+          await tx.insert(teamMember).values({
+            id: randomUUID(),
+            teamId: createdTeam.id,
+            userId,
+            createdAt: new Date(),
+          });
+        }
+      });
+    } catch {
+      await auth.api.removeTeam({
+        body: { teamId: createdTeam.id },
+        headers: fromNodeHeaders(headers),
+      });
+      await db.delete(teamTable).where(eq(teamTable.id, createdTeam.id));
+      throw new Error(
+        "Failed to complete team creation. All changes have been rolled back.",
+      );
+    }
+
+    return createdTeam;
+  }
+
   async invite(
     params: InviteStaffParams,
     headers: Record<string, string | string[] | undefined>,
@@ -764,6 +1046,149 @@ export class OrganizationService {
       });
 
       throw e;
+    }
+  }
+
+  async deleteTeam(teamId: string, organizationId: string) {
+    const [existingTeam] = await db
+      .select({ id: teamTable.id })
+      .from(teamTable)
+      .where(and(eq(teamTable.id, teamId), eq(teamTable.organizationId, organizationId)));
+
+    if (!existingTeam) {
+      throw new Error("Team not found");
+    }
+
+    await db.delete(teamTable).where(eq(teamTable.id, teamId));
+  }
+
+  async removeTeamMember(
+    teamId: string,
+    staffId: string,
+    organizationId: string,
+  ) {
+    const staffMember = await db
+      .select({ userId: staff.userId })
+      .from(staff)
+      .where(and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)))
+      .then((rows) => rows[0]);
+
+    if (!staffMember || !staffMember.userId) {
+      throw new Error("Staff member not found");
+    }
+
+    await db.delete(teamMember).where(
+      and(eq(teamMember.teamId, teamId), eq(teamMember.userId, staffMember.userId)),
+    );
+
+    await db
+      .update(teamTable)
+      .set({ leadId: null })
+      .where(and(eq(teamTable.id, teamId), eq(teamTable.leadId, staffId)));
+  }
+
+  async deleteStaff(staffId: string, organizationId: string) {
+    const [staffMember] = await db
+      .select({ userId: staff.userId })
+      .from(staff)
+      .where(and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)));
+
+    if (!staffMember) {
+      throw new Error("Staff member not found");
+    }
+
+    if (staffMember.userId) {
+      await db.delete(teamMember).where(eq(teamMember.userId, staffMember.userId));
+    }
+
+    await db
+      .update(teamTable)
+      .set({ leadId: null })
+      .where(eq(teamTable.leadId, staffId));
+
+    await db.delete(staff).where(eq(staff.id, staffId));
+  }
+
+  async updateTeam(
+    teamId: string,
+    organizationId: string,
+    params: {
+      name?: string;
+      description?: string;
+      maxCaseload?: number;
+      leadId?: string | null;
+      practiceAreaIds?: string[];
+    },
+  ) {
+    const [existing] = await db
+      .select({ id: teamTable.id })
+      .from(teamTable)
+      .where(and(eq(teamTable.id, teamId), eq(teamTable.organizationId, organizationId)));
+
+    if (!existing) {
+      throw new Error("Team not found");
+    }
+
+    if (params.name !== undefined || params.description !== undefined || params.maxCaseload !== undefined || params.leadId !== undefined) {
+      await db
+        .update(teamTable)
+        .set({
+          ...(params.name !== undefined && { name: params.name }),
+          ...(params.description !== undefined && { description: params.description }),
+          ...(params.maxCaseload !== undefined && { maxCaseload: params.maxCaseload }),
+          ...(params.leadId !== undefined && { leadId: params.leadId }),
+        })
+        .where(eq(teamTable.id, teamId));
+    }
+
+    if (params.practiceAreaIds !== undefined) {
+      await db.delete(teamPracticeAreas).where(eq(teamPracticeAreas.teamId, teamId));
+      if (params.practiceAreaIds.length > 0) {
+        await db.insert(teamPracticeAreas).values(
+          params.practiceAreaIds.map((practiceAreaId) => ({
+            teamId,
+            practiceAreaId,
+          })),
+        );
+      }
+    }
+  }
+
+  async addTeamMembers(
+    teamId: string,
+    organizationId: string,
+    staffIds: string[],
+  ) {
+    const [existing] = await db
+      .select({ id: teamTable.id })
+      .from(teamTable)
+      .where(and(eq(teamTable.id, teamId), eq(teamTable.organizationId, organizationId)));
+
+    if (!existing) {
+      throw new Error("Team not found");
+    }
+
+    const staffMembers = await db
+      .select({ id: staff.id, userId: staff.userId })
+      .from(staff)
+      .where(and(inArray(staff.id, staffIds), eq(staff.organizationId, organizationId)));
+
+    const existingMembers = await db
+      .select({ userId: teamMember.userId })
+      .from(teamMember)
+      .where(eq(teamMember.teamId, teamId));
+
+    const existingUserIds = new Set(existingMembers.map((m) => m.userId));
+
+    for (const s of staffMembers) {
+      if (s.userId && !existingUserIds.has(s.userId)) {
+        await db.insert(teamMember).values({
+          id: randomUUID(),
+          teamId,
+          userId: s.userId,
+          createdAt: new Date(),
+        });
+      }
     }
   }
 }

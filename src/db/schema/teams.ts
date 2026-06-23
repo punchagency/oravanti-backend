@@ -7,7 +7,7 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
-import { organization } from './auth-schema';
+import { organization } from "./auth-schema";
 import { staff } from "./staff";
 
 export const teamStatusEnum = pgEnum("team_status", [
@@ -19,7 +19,7 @@ export const teamStatusEnum = pgEnum("team_status", [
 export const teams = pgTable(
   "teams",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: text("id").primaryKey(),
     organizationId: text("organization_id")
       .notNull()
       .references(() => organization.id),

@@ -47,6 +47,24 @@ export class OrganizationRouter {
      *       400: { description: Validation error }
      */
     this.router.get(
+      "/teams",
+      requireAuth,
+      requirePermission("staffs", "read"),
+      this.organizationController.getTeams,
+    );
+    this.router.get(
+      "/teams/:teamId",
+      requireAuth,
+      requirePermission("staffs", "read"),
+      this.organizationController.getTeam,
+    );
+    this.router.post(
+      "/teams",
+      requireAuth,
+      requirePermission("staffs", "create"),
+      this.organizationController.createTeam,
+    );
+    this.router.get(
       "/staff",
       requireAuth,
       requirePermission("staffs", "read"),
@@ -84,6 +102,12 @@ export class OrganizationRouter {
       requireAuth,
       this.organizationController.cancelInvitation,
     );
+    this.router.delete(
+      "/staff/:staffId",
+      requireAuth,
+      requirePermission("staffs", "delete"),
+      this.organizationController.deleteStaff,
+    );
     this.router.patch(
       "/staff/:staffId",
       requireAuth,
@@ -100,6 +124,30 @@ export class OrganizationRouter {
       "/resend-invitation",
       requireAuth,
       this.organizationController.resendInvitation,
+    );
+    this.router.patch(
+      "/teams/:teamId",
+      requireAuth,
+      requirePermission("staffs", "update"),
+      this.organizationController.updateTeam,
+    );
+    this.router.post(
+      "/teams/:teamId/members",
+      requireAuth,
+      requirePermission("staffs", "update"),
+      this.organizationController.addTeamMembers,
+    );
+    this.router.delete(
+      "/teams/:teamId",
+      requireAuth,
+      requirePermission("staffs", "delete"),
+      this.organizationController.deleteTeam,
+    );
+    this.router.delete(
+      "/teams/:teamId/members/:memberId",
+      requireAuth,
+      requirePermission("staffs", "update"),
+      this.organizationController.removeTeamMember,
     );
     this.router.post(
       "/set-password",

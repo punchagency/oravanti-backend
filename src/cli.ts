@@ -12,7 +12,7 @@ import {
 } from "@clack/prompts";
 import { Command } from "commander";
 import { createHash, randomUUID } from "crypto";
-import { and, asc, eq, inArray, ilike, or } from "drizzle-orm";
+import { and, asc, eq, ilike, inArray, or } from "drizzle-orm";
 import { env } from "./config/env";
 import { closeDb, db } from "./db/client";
 import { admins } from "./db/schema/admins";
@@ -22,14 +22,15 @@ import { assignments } from "./db/schema/assignments";
 import {
   member,
   organization as organizations,
+  team,
   user,
 } from "./db/schema/auth-schema";
 import { calendarEvents } from "./db/schema/calendar-events";
 import { cases } from "./db/schema/cases";
 import { certifications } from "./db/schema/certifications";
+import { clientCompanies } from "./db/schema/client-companies";
 import { clientRequests } from "./db/schema/client-requests";
 import { clients } from "./db/schema/clients";
-import { clientCompanies } from "./db/schema/client-companies";
 import { contractors } from "./db/schema/contractors";
 import {
   documentAccess,
@@ -46,8 +47,6 @@ import { paralegalProfiles } from "./db/schema/paralegal-profiles";
 import { practiceAreaCaseTypes } from "./db/schema/practice-area-case-types";
 import { practiceAreaSubcategories } from "./db/schema/practice-area-subcategories";
 import { practiceAreas } from "./db/schema/practice-areas";
-import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
-import { seedSystemQuestionnaires } from "./db/seeds/system-questionnaires.seed";
 import { profiles } from "./db/schema/profiles";
 import { staff } from "./db/schema/staff";
 import { staffCertifications } from "./db/schema/staff-certifications";
@@ -56,6 +55,8 @@ import { tasks } from "./db/schema/tasks";
 import { teamMembers } from "./db/schema/team-members";
 import { teams } from "./db/schema/teams";
 import { timeEntries } from "./db/schema/time-entries";
+import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
+import { seedSystemQuestionnaires } from "./db/seeds/system-questionnaires.seed";
 
 const DEFAULT_PRACTICE_AREAS = [
   "Immigration",
@@ -2204,7 +2205,7 @@ const dropDemoData = async (organizationId?: string) => {
       .from(staff)
       .where(eq(staff.organizationId, firm.id));
     const orgTeams = await tx
-      .select({ id: teams.id })
+      .select({ id: team.id })
       .from(teams)
       .where(eq(teams.organizationId, firm.id));
     const demoUsers = await tx
