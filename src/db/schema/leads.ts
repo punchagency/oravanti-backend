@@ -15,7 +15,13 @@ export const leadSourceEnum = pgEnum('lead_source', [
   'client_portal',
 ]);
 
-export const leadStatusEnum = pgEnum('lead_status', ['new', 'reviewed', 'archived']);
+export const leadStatusEnum = pgEnum('lead_status', [
+  'new',
+  'reviewed',
+  'archived',
+  'declined',   // terminal: lead terminated for a conflict
+  'overridden', // proceeded despite a found conflict (cleared by reviewer)
+]);
 
 export const leadPipelineStageEnum = pgEnum('lead_pipeline_stage', [
   'lead_inbox',
@@ -38,6 +44,8 @@ export const leads = pgTable('leads', {
   source:         leadSourceEnum('source').notNull(),
   situationSummary: text('situation_summary'),
   notes:            text('notes'),
+  intakeAdversePartyName:  text('intake_adverse_party_name'),
+  intakeAdversePartyEmail: text('intake_adverse_party_email'),
   status:         leadStatusEnum('status').notNull().default('new'),
   pipelineStage:  leadPipelineStageEnum('pipeline_stage').notNull().default('lead_inbox'),
 

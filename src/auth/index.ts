@@ -2,6 +2,7 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { symmetricDecrypt } from "better-auth/crypto";
 import {
+  customSession,
   emailOTP,
   openAPI,
   organization,
@@ -229,6 +230,30 @@ export const auth = betterAuth({
       },
     }),
     cryptoKeyPlugin(),
+    // Surface the active organization member role (owner/admin/attorney/
+    // paralegal) on the session so the frontend can gate conflict review
+    // without an extra request. The backend permission remains the real gate.
+    customSession(async ({ user, session }) => {
+      const activeOrganizationId = (session as { activeOrganizationId?: string })
+        .activeOrganizationId;
+
+      let memberRole: string | null = null;
+      if (activeOrganizationId) {
+        const [membership] = await db
+          .select({ role: member.role })
+          .from(member)
+          .where(
+            and(
+              eq(member.userId, user.id),
+              eq(member.organizationId, activeOrganizationId),
+            ),
+          )
+          .limit(1);
+        memberRole = membership?.role ?? null;
+      }
+
+      return { user, session, memberRole };
+    }),
   ],
   databaseHooks,
   telemetry: { enabled: false },

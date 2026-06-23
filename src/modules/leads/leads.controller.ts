@@ -30,6 +30,11 @@ export class LeadsController {
     res.json({ success: true, data: result });
   };
 
+  getLeadStageCounts = async (req: AuthRequest, res: Response) => {
+    const counts = await this.svc.getLeadStageCounts(req.organizationId!);
+    res.json({ success: true, data: counts });
+  };
+
   getLeadById = async (req: AuthRequest, res: Response) => {
     const lead = await this.svc.getLeadById(
       req.params.id as string,
@@ -49,10 +54,11 @@ export class LeadsController {
     res.json({ success: true, data: lead });
   };
 
-  archiveLead = async (req: AuthRequest, res: Response) => {
-    const lead = await this.svc.archiveLead(
+  updateLeadStatus = async (req: AuthRequest, res: Response) => {
+    const lead = await this.svc.updateLeadStatus(
       req.params.id as string,
       req.organizationId!,
+      req.body.status
     );
     res.json({ success: true, data: lead });
   };
@@ -86,7 +92,7 @@ export class LeadsController {
   };
 
   resolveConflictCheck = async (req: AuthRequest, res: Response) => {
-    const staffId = req.staffId ?? req.adminId;
+    const staffId = req.staffId;
     const result = await this.svc.resolveConflictCheck(
       req.params.id as string,
       req.organizationId!,
