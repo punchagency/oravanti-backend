@@ -67,6 +67,12 @@ export class QuestionnairesRouter {
     this.router.get("/eligible-leads", ...staffGuards, ctrl.getEligibleLeads);
     this.router.get("/question-bank", ...staffGuards, ctrl.getQuestionBank);
     this.router.get(
+      "/intake/case-type/:caseTypeId",
+      ...staffGuards,
+      validateRequest({ params: v.caseTypeIdParamsSchema }),
+      ctrl.getCaseTypePreview,
+    );
+    this.router.get(
       "/responses/:responseId/detail",
       ...staffGuards,
       validateRequest({ params: v.responseIdParamsSchema }),

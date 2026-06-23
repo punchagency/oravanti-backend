@@ -144,6 +144,14 @@ export class QuestionnairesController {
     res.status(200).json(await this.svc.getQuestionBank());
   });
 
+  getCaseTypePreview = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.getMergedQuestionnaire(
+      req.organizationId!,
+      req.params.caseTypeId as string,
+    );
+    res.status(200).json(result);
+  });
+
   getResponseDetail = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.svc.getResponseDetailById(
       req.organizationId!,
