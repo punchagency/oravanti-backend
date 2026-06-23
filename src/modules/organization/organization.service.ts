@@ -100,21 +100,21 @@ export class OrganizationService {
     }
 
     // Role filter: check both member.role and staff.role (synced copy) via case-insensitive text comparison
-    if (role && role !== "all-roles") {
+    if (role) {
       conditions.push(
         sql`(LOWER(${member.role}::text) = LOWER(${role}) OR LOWER(${staff.role}::text) = LOWER(${role}))`,
       );
     }
 
     // Team filter: subquery on team_members + teams junction
-    if (team && team !== "all-teams") {
+    if (team) {
       conditions.push(
         sql`(${staff.userId}) IN (SELECT ${teamMember.userId} FROM ${teamMember} INNER JOIN ${teamTable} ON ${teamMember.teamId} = ${teamTable.id} WHERE ${teamTable.name} = ${team})`,
       );
     }
 
     // Status filter: direct enum match
-    if (status && status !== "all-statuses") {
+    if (status) {
       conditions.push(sql`${staff.status} = ${status}`);
     }
 
@@ -262,11 +262,11 @@ export class OrganizationService {
       eq(invitation.organizationId, organizationId),
     ];
 
-    if (status && status !== "all-statuses") {
+    if (status) {
       conditions.push(eq(invitation.status, status));
     }
 
-    if (role && role !== "all-roles") {
+    if (role) {
       conditions.push(sql`LOWER(${invitation.role}::text) = LOWER(${role})`);
     }
 
@@ -281,7 +281,7 @@ export class OrganizationService {
       );
     }
 
-    if (team && team !== "all-teams") {
+    if (team) {
       conditions.push(
         sql`(${invitation.email}) IN (
           SELECT ${staff.email} FROM ${staff}
@@ -715,7 +715,7 @@ export class OrganizationService {
       conditions.push(sql`LOWER(${teamTable.name}) LIKE ${likeQuery}`);
     }
 
-    if (status && status !== "all-statuses") {
+    if (status) {
       conditions.push(sql`${teamTable.status} = ${status}`);
     }
 
