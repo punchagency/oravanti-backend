@@ -47,6 +47,7 @@ import {
 import { stubESignatureProvider } from "./esignature.provider";
 import { generateCaseNumber } from "../cases/cases.service";
 import { user } from "../../db/schema/auth-schema";
+import { env } from "../../config/env";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1568,9 +1569,7 @@ const sendQuestionnaire = async (
     .where(eq(leads.id, leadId));
 
   const baseUrl =
-    process.env.APP_URL ??
-    process.env.BETTER_AUTH_URL ??
-    "http://localhost:3000";
+    env.FRONTEND_APP_URL ?? "http://localhost:5173";
   const orgSlug = encodeURIComponent(organizationId);
   const clientLink = `${baseUrl}/questionnaire/${orgSlug}/${accessToken}`;
 
