@@ -534,16 +534,19 @@ export class OrganizationService {
           .where(eq(staff.id, staffId))
           .limit(1);
 
-        if (existingStaff?.userId) {
+        const currentUserId = existingStaff?.userId;
+        if (currentUserId) {
           await tx
             .delete(teamMember)
-            .where(eq(teamMember.userId, existingStaff.userId));
+            .where(eq(teamMember.userId, currentUserId));
 
           if (teamIds.length > 0) {
             await tx.insert(teamMember).values(
               teamIds.map((teamId) => ({
+                id: randomUUID(),
                 teamId,
-                userId: existingStaff.userId,
+                userId: currentUserId,
+                createdAt: new Date(),
               })),
             );
           }
@@ -1050,8 +1053,10 @@ export class OrganizationService {
       if (teamIds?.length) {
         await tx.insert(teamMember).values(
           teamIds.map((teamId) => ({
+            id: randomUUID(),
             teamId,
             userId: createdUser.id,
+            createdAt: new Date(),
           })),
         );
       }

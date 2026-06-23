@@ -22,7 +22,9 @@ import { assignments } from "./db/schema/assignments";
 import {
   member,
   organization as organizations,
+  invitation,
   team,
+  teamMember,
   user,
 } from "./db/schema/auth-schema";
 import { calendarEvents } from "./db/schema/calendar-events";
@@ -56,7 +58,10 @@ import { teamMembers } from "./db/schema/team-members";
 import { teams } from "./db/schema/teams";
 import { timeEntries } from "./db/schema/time-entries";
 import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
+import { seedStaffAndTeams } from "./db/seeds/staff-and-teams.seed";
 import { seedSystemQuestionnaires } from "./db/seeds/system-questionnaires.seed";
+import { staffPracticeAreas } from "./db/schema/staff-practice-areas";
+import { teamPracticeAreas } from "./db/schema/team-practice-areas";
 
 const DEFAULT_PRACTICE_AREAS = [
   "Immigration",
@@ -2204,10 +2209,6 @@ const dropDemoData = async (organizationId?: string) => {
       .select({ id: staff.id })
       .from(staff)
       .where(eq(staff.organizationId, firm.id));
-    const orgTeams = await tx
-      .select({ id: team.id })
-      .from(teams)
-      .where(eq(teams.organizationId, firm.id));
     const demoUsers = await tx
       .select({ id: user.id })
       .from(user)
@@ -2215,9 +2216,38 @@ const dropDemoData = async (organizationId?: string) => {
       .where(
         and(
           eq(member.organizationId, firm.id),
-          ilike(user.email, `%@${DEMO_EMAIL_DOMAIN}`),
+          or(
+            ilike(user.email, `%@${DEMO_EMAIL_DOMAIN}`),
+            ilike(user.email, `%@seed.oravanti.test`),
+          ),
         ),
       );
+    const [ownerMember] = await tx
+      .select({ userId: member.userId })
+      .from(member)
+      .where(
+        and(
+          eq(member.organizationId, firm.id),
+          eq(member.role, "owner"),
+        ),
+      )
+      .limit(1);
+
+    let ownerStaffId: string | undefined;
+    if (ownerMember) {
+      const [ownerStaff] = await tx
+        .select({ id: staff.id })
+        .from(staff)
+        .where(
+          and(
+            eq(staff.organizationId, firm.id),
+            eq(staff.userId, ownerMember.userId),
+          ),
+        )
+        .limit(1);
+      ownerStaffId = ownerStaff?.id;
+    }
+
     const orgDocuments = await tx
       .select({ id: documents.id })
       .from(documentCaseLinks)
@@ -2231,8 +2261,7 @@ const dropDemoData = async (organizationId?: string) => {
       .innerJoin(member, eq(member.userId, user.id))
       .where(eq(member.organizationId, firm.id));
 
-    const staffIds = orgStaff.map((row) => row.id);
-    const teamIds = orgTeams.map((row) => row.id);
+    const staffIds = orgStaff.map((row) => row.id).filter((id) => id !== ownerStaffId);
     const demoUserIds = demoUsers.map((row) => row.id);
     const documentIds = orgDocuments.map((row) => row.id);
     const documentRequestIds = orgDocumentRequests.map((row) => row.id);
@@ -2393,18 +2422,6 @@ const dropDemoData = async (organizationId?: string) => {
       deleted.staffCertifications = 0;
     }
 
-    if (teamIds.length) {
-      record(
-        "teamMembers",
-        await tx
-          .delete(teamMembers)
-          .where(inArray(teamMembers.teamId, teamIds))
-          .returning(),
-      );
-    } else {
-      deleted.teamMembers = 0;
-    }
-
     record(
       "cases",
       await tx
@@ -2426,19 +2443,58 @@ const dropDemoData = async (organizationId?: string) => {
         .where(ilike(contractors.email, `contractor.%@${DEMO_EMAIL_DOMAIN}`))
         .returning(),
     );
-    record(
-      "teams",
+    const authTeamIds = (
       await tx
-        .delete(teams)
-        .where(eq(teams.organizationId, firm.id))
+        .select({ id: team.id })
+        .from(team)
+        .where(eq(team.organizationId, firm.id))
+    ).map((r) => r.id);
+
+    if (authTeamIds.length) {
+      record(
+        "teamMember",
+        await tx
+          .delete(teamMember)
+          .where(inArray(teamMember.teamId, authTeamIds))
+          .returning(),
+      );
+      record(
+        "teamPracticeAreas",
+        await tx
+          .delete(teamPracticeAreas)
+          .where(inArray(teamPracticeAreas.teamId, authTeamIds))
+          .returning(),
+      );
+    } else {
+      deleted.teamMember = 0;
+      deleted.teamPracticeAreas = 0;
+    }
+
+    record(
+      "invitations",
+      await tx
+        .delete(invitation)
+        .where(eq(invitation.organizationId, firm.id))
         .returning(),
     );
+
+    if (authTeamIds.length) {
+      record(
+        "authTeams",
+        await tx
+          .delete(team)
+          .where(inArray(team.id, authTeamIds))
+          .returning(),
+      );
+    } else {
+      deleted.authTeams = 0;
+    }
+
     record(
       "staff",
-      await tx
-        .delete(staff)
-        .where(eq(staff.organizationId, firm.id))
-        .returning(),
+      staffIds.length
+        ? await tx.delete(staff).where(inArray(staff.id, staffIds)).returning()
+        : [],
     );
     record(
       "clientCompanies",
@@ -2662,6 +2718,10 @@ const runInteractive = async () => {
           value: "demo-data-drop",
           label: "Drop demo data for an organization",
         },
+        {
+          value: "seed-staff-teams",
+          label: "Seed staff & teams for an organization",
+        },
       ],
     }),
   );
@@ -2728,6 +2788,11 @@ const runInteractive = async () => {
 
   if (action === "demo-data-drop") {
     await dropDemoData();
+  }
+
+  if (action === "seed-staff-teams") {
+    const firm = await resolveFirm();
+    if (firm) await seedStaffAndTeams(firm.id);
   }
 
   outro("Done.");
@@ -2875,6 +2940,12 @@ demoDataCommand
   .description("Select an organization and delete tenant-scoped demo data")
   .argument("[organizationId]", "Organization id")
   .action(dropDemoData);
+
+const staffTeamsCommand = program
+  .command("seed-staff-teams")
+  .description("Seed staff members and teams for an organization")
+  .argument("[organizationId]", "Organization id")
+  .action(seedStaffAndTeams);
 
 program
   .parseAsync(process.argv)
