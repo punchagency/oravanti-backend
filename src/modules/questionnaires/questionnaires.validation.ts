@@ -57,6 +57,7 @@ export class QuestionnairesValidation {
   public eligibleForCaseParamsSchema = z.object({ caseId: this.uuidParam });
   public responseIdParamsSchema = z.object({ responseId: this.uuidParam });
   public sendIdParamsSchema = z.object({ sendId: this.uuidParam });
+  public fileIdParamsSchema = z.object({ fileId: this.uuidParam });
 
   // ── Bodies ─────────────────────────────────────────────────────────────────
 

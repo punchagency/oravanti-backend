@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "crypto";
+import PDFDocument from "pdfkit";
 import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
 import { supabaseAdmin } from "../../config/supabase";
 import { env } from "../../config/env";
@@ -800,6 +801,105 @@ export class QuestionnairesService {
     }
 
     return { advanced: true, leadId: response.leadId };
+  };
+
+  /**
+   * Render the response answers to a PDF (documents excluded). Returns a Buffer.
+   */
+  generateResponsePdf = async (
+    organizationId: string,
+    responseId: string,
+  ): Promise<{ buffer: Buffer; filename: string }> => {
+    const { response, send, answers } = await this.getResponseDetailById(
+      organizationId,
+      responseId,
+    );
+
+    const answerMap = new Map(answers.map((a) => [a.questionId, a.value]));
+    const snapshot = (send?.schemaSnapshot ?? {}) as {
+      title?: string;
+      sections?: Array<{
+        title?: string;
+        questions?: Array<{ id: string; label: string; type: string }>;
+      }>;
+    };
+
+    const doc = new PDFDocument({ margin: 50, size: "A4" });
+    const chunks: Buffer[] = [];
+    doc.on("data", (c: Buffer) => chunks.push(c));
+    const done = new Promise<Buffer>((resolve) => {
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+    });
+
+    doc
+      .fontSize(18)
+      .text(snapshot.title ?? "Questionnaire response", { underline: false });
+    doc
+      .fontSize(10)
+      .fillColor("#666")
+      .text(`Status: ${response.status}`)
+      .text(
+        `Submitted: ${response.submittedAt ? new Date(response.submittedAt).toLocaleString() : "—"}`,
+      )
+      .moveDown(1)
+      .fillColor("#000");
+
+    for (const section of snapshot.sections ?? []) {
+      doc.moveDown(0.5).fontSize(13).fillColor("#1a1a1a").text(section.title ?? "Section");
+      doc.moveDown(0.25);
+      for (const q of section.questions ?? []) {
+        if (q.type === "file_upload") continue; // documents excluded from PDF
+        const raw = answerMap.get(q.id);
+        const value =
+          raw == null || (typeof raw === "string" && raw.trim() === "")
+            ? "Not yet answered"
+            : typeof raw === "string"
+              ? raw
+              : JSON.stringify(raw);
+        doc.fontSize(10).fillColor("#444").text(q.label, { continued: false });
+        doc.fontSize(11).fillColor("#000").text(value).moveDown(0.4);
+      }
+    }
+
+    doc.end();
+    const buffer = await done;
+    return { buffer, filename: `questionnaire-response-${responseId}.pdf` };
+  };
+
+  /**
+   * Fetch an uploaded response document for a gated download (proxied from
+   * storage so access can be permission-checked rather than relying on the
+   * public URL). Caller must have the documents:download permission.
+   */
+  getResponseFileForDownload = async (
+    organizationId: string,
+    fileId: string,
+  ): Promise<{ buffer: Buffer; mimeType: string; filename: string }> => {
+    const [file] = await db
+      .select()
+      .from(questionnaireResponseFiles)
+      .where(
+        and(
+          eq(questionnaireResponseFiles.id, fileId),
+          eq(questionnaireResponseFiles.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!file) throw new NotFoundError("Document not found");
+
+    const { data, error } = await supabaseAdmin.storage
+      .from(SUPABASE_STORAGE_BUCKET)
+      .download(file.storagePath);
+    if (error || !data) {
+      throw new ExternalServiceError(error?.message ?? "Failed to read document");
+    }
+
+    const buffer = Buffer.from(await data.arrayBuffer());
+    return {
+      buffer,
+      mimeType: file.mimeType,
+      filename: file.originalFilename,
+    };
   };
 
   /** Manually send a reminder for an outstanding questionnaire send. */

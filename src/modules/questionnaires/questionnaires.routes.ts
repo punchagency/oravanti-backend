@@ -3,6 +3,7 @@ import multer from "multer";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { requireStaffOrAdmin } from "../../middleware/staff-or-admin.middleware";
+import { requirePermission } from "../../middleware/permission.middleware";
 import { setFirmContext } from "../../middleware/rls.middleware";
 import { validateRequest } from "../../middleware/validate.middleware";
 import { QuestionnairesController } from "./questionnaires.controller";
@@ -82,6 +83,23 @@ export class QuestionnairesRouter {
       ...staffGuards,
       validateRequest({ params: v.sendIdParamsSchema }),
       ctrl.sendReminder,
+    );
+
+    // Response answers PDF — available to any staff (documents excluded).
+    this.router.get(
+      "/responses/:responseId/pdf",
+      ...staffGuards,
+      validateRequest({ params: v.responseIdParamsSchema }),
+      ctrl.downloadResponsePdf,
+    );
+
+    // Individual uploaded document — gated by the documents:download permission.
+    this.router.get(
+      "/files/:fileId/download",
+      ...staffGuards,
+      requirePermission("documents", "download"),
+      validateRequest({ params: v.fileIdParamsSchema }),
+      ctrl.downloadResponseFile,
     );
 
     // ── Authenticated admin routes ────────────────────────────────────────────

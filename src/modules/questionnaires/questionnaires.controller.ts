@@ -168,6 +168,33 @@ export class QuestionnairesController {
     res.status(200).json(result);
   });
 
+  downloadResponsePdf = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const { buffer, filename } = await this.svc.generateResponsePdf(
+      req.organizationId!,
+      req.params.responseId as string,
+    );
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${filename}"`,
+    );
+    res.status(200).send(buffer);
+  });
+
+  downloadResponseFile = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const { buffer, mimeType, filename } =
+      await this.svc.getResponseFileForDownload(
+        req.organizationId!,
+        req.params.fileId as string,
+      );
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${filename}"`,
+    );
+    res.status(200).send(buffer);
+  });
+
   // ── Token-Based Client Endpoints ───────────────────────────────────────────
 
   getClientQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
