@@ -50,6 +50,7 @@ export interface InviteStaffParams {
   startDate?: string;
   maxCaseload?: number;
   practiceAreaIds?: string[];
+  teamIds?: string[];
 }
 
 export interface UpdateStaffParams {
@@ -62,6 +63,7 @@ export interface UpdateStaffParams {
   firstName?: string;
   lastName?: string;
   practiceAreaIds?: string[];
+  teamIds?: string[];
 }
 
 export class OrganizationService {
@@ -444,7 +446,7 @@ export class OrganizationService {
     organizationId: string,
     params: UpdateStaffParams,
   ) {
-    const { practiceAreaIds, ...safeFields } = params;
+    const { practiceAreaIds, teamIds, ...safeFields } = params;
 
     const updateData: Record<string, unknown> = {
       ...safeFields,
@@ -522,6 +524,29 @@ export class OrganizationService {
               practiceAreaId,
             })),
           );
+        }
+      }
+
+      if (teamIds !== undefined) {
+        const [existingStaff] = await tx
+          .select({ userId: staff.userId })
+          .from(staff)
+          .where(eq(staff.id, staffId))
+          .limit(1);
+
+        if (existingStaff?.userId) {
+          await tx
+            .delete(teamMember)
+            .where(eq(teamMember.userId, existingStaff.userId));
+
+          if (teamIds.length > 0) {
+            await tx.insert(teamMember).values(
+              teamIds.map((teamId) => ({
+                teamId,
+                userId: existingStaff.userId,
+              })),
+            );
+          }
         }
       }
     });
@@ -960,6 +985,7 @@ export class OrganizationService {
       startDate,
       maxCaseload,
       practiceAreaIds,
+      teamIds,
     } = params;
 
     const formattedEmail = email.toLowerCase().trim();
@@ -1017,6 +1043,15 @@ export class OrganizationService {
           practiceAreaIds.map((practiceAreaId) => ({
             staffId: created.id,
             practiceAreaId,
+          })),
+        );
+      }
+
+      if (teamIds?.length) {
+        await tx.insert(teamMember).values(
+          teamIds.map((teamId) => ({
+            teamId,
+            userId: createdUser.id,
           })),
         );
       }

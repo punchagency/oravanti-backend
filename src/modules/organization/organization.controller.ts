@@ -104,6 +104,7 @@ export class OrganizationController {
       startDate,
       maxCaseload,
       practiceAreaIds,
+      teamIds,
     } = req.body;
 
     if (!firstName || !lastName || !email || !role) {
@@ -128,6 +129,7 @@ export class OrganizationController {
         startDate,
         maxCaseload,
         practiceAreaIds,
+        teamIds,
       },
       req.headers,
     );
@@ -186,12 +188,12 @@ export class OrganizationController {
       return res.status(400).json({ error: "No active organization" });
     }
     const staffId = req.params.staffId as string;
-    const { phone, jobTitle, maxCaseload, startDate, email, orgEmail, firstName, lastName, practiceAreaIds } =
+    const { phone, jobTitle, maxCaseload, startDate, email, orgEmail, firstName, lastName, practiceAreaIds, teamIds } =
       req.body;
     const result = await this.organizationService.updateStaff(
       staffId,
       req.organizationId,
-      { phone, jobTitle, maxCaseload, startDate, email, orgEmail, firstName, lastName, practiceAreaIds },
+      { phone, jobTitle, maxCaseload, startDate, email, orgEmail, firstName, lastName, practiceAreaIds, teamIds },
     );
     res.status(200).json(result);
   });
