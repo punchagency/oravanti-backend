@@ -137,16 +137,17 @@ export const sendQuestionnaireBodySchema = z.object({
 export const createConsultationBodySchema = z.object({
   scheduledAt: z.string().datetime(),
   duration: z.number().int().positive(),
-  mode: z.enum(["video", "in_person"]),
+  mode: z.enum(["video", "in_person", "phone_call"]),
   leadAttorneyId: optionalUuid,
   videoLink: z.string().url().optional(),
   preConsultationNotes: z.string().optional(),
+  notifyChannels: z.array(z.enum(["email", "sms"])).optional(),
 });
 
 export const updateConsultationBodySchema = z.object({
   scheduledAt: z.string().datetime().optional(),
   duration: z.number().int().positive().optional(),
-  mode: z.enum(["video", "in_person"]).optional(),
+  mode: z.enum(["video", "in_person", "phone_call"]).optional(),
   videoLink: z.string().url().optional().nullable(),
   status: z
     .enum(["scheduled", "in_progress", "completed", "cancelled", "no_show"])

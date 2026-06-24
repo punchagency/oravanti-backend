@@ -1641,10 +1641,11 @@ const createConsultation = async (
   data: {
     scheduledAt: Date;
     duration: number;
-    mode: "video" | "in_person";
+    mode: "video" | "in_person" | "phone_call";
     leadAttorneyId?: string;
     videoLink?: string;
     preConsultationNotes?: string;
+    notifyChannels?: ("email" | "sms")[];
   },
 ) => {
   const [lead] = await db
@@ -1656,6 +1657,16 @@ const createConsultation = async (
   if (!lead) throw new NotFoundError("Lead not found");
   if (lead.consultationId)
     throw new ConflictError("Consultation already exists for this lead");
+
+  const notifyChannels = data.notifyChannels?.length
+    ? data.notifyChannels
+    : ["email"];
+  const modeLabel =
+    data.mode === "video"
+      ? "Video Call"
+      : data.mode === "phone_call"
+        ? "Phone call"
+        : "In Person";
 
   const [consultation] = await db
     .insert(consultations)
@@ -1705,7 +1716,7 @@ const createConsultation = async (
           html: `<p>Hi ${attorney.firstName},</p>
             <p>A consultation has been scheduled with <strong>${lead.name}</strong>.</p>
             <p><strong>Date/Time:</strong> ${scheduledStr} UTC</p>
-            <p><strong>Mode:</strong> ${data.mode === "video" ? "Video Call" : "In Person"}</p>
+            <p><strong>Mode:</strong> ${modeLabel}</p>
             ${data.videoLink ? `<p><strong>Video Link:</strong> <a href="${data.videoLink}">${data.videoLink}</a></p>` : ""}
             ${data.preConsultationNotes ? `<p><strong>Pre-consultation notes:</strong> ${data.preConsultationNotes}</p>` : ""}`,
         })
@@ -1713,17 +1724,25 @@ const createConsultation = async (
     }
   }
 
-  emailService
-    .sendEmail({
-      to: lead.email,
-      subject: "Your consultation has been scheduled",
-      html: `<p>Dear ${lead.name},</p>
-        <p>Your consultation has been scheduled for <strong>${scheduledStr} UTC</strong>.</p>
-        <p><strong>Mode:</strong> ${data.mode === "video" ? "Video Call" : "In Person"}</p>
-        ${data.videoLink ? `<p><strong>Video Link:</strong> <a href="${data.videoLink}">${data.videoLink}</a></p>` : ""}
-        <p>We look forward to speaking with you.</p>`,
-    })
-    .catch(console.error);
+  if (notifyChannels.includes("email")) {
+    emailService
+      .sendEmail({
+        to: lead.email,
+        subject: "Your consultation has been scheduled",
+        html: `<p>Dear ${lead.name},</p>
+          <p>Your consultation has been scheduled for <strong>${scheduledStr} UTC</strong>.</p>
+          <p><strong>Mode:</strong> ${modeLabel}</p>
+          ${data.videoLink ? `<p><strong>Video Link:</strong> <a href="${data.videoLink}">${data.videoLink}</a></p>` : ""}
+          <p>We look forward to speaking with you.</p>`,
+      })
+      .catch(console.error);
+  }
+
+  if (notifyChannels.includes("sms") && lead.phone) {
+    console.log(
+      `[sms-stub] consultation scheduled for ${lead.phone}: ${scheduledStr} UTC (${modeLabel})`,
+    );
+  }
 
   return consultation;
 };
