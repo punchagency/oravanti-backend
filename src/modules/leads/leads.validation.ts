@@ -87,6 +87,53 @@ export const resolveConflictCheckBodySchema = z.object({
     .min(1, "A note is required to resolve a conflict"),
 });
 
+const questionnaireQuestionTypeValues = [
+  "short_text",
+  "long_text",
+  "number",
+  "email",
+  "phone",
+  "date",
+  "time",
+  "single_choice",
+  "multiple_choice",
+  "dropdown",
+  "rating_scale",
+  "file_upload",
+  "yes_no",
+  "matrix_grid",
+  "signature",
+] as const;
+
+export const sendQuestionnaireBodySchema = z.object({
+  deliveryChannels: z.array(z.enum(["email", "sms"])).optional(),
+  language: z.string().optional(),
+  // null/omitted = never; otherwise one of the allowed reminder intervals
+  autoReminderDays: z
+    .union([z.literal(2), z.literal(3), z.literal(5), z.literal(7)])
+    .nullable()
+    .optional(),
+  customQuestions: z
+    .array(
+      z.object({
+        label: z.string().trim().min(1),
+        type: z.enum(questionnaireQuestionTypeValues).optional(),
+        isRequired: z.boolean().optional(),
+        saveToFirm: z.boolean().optional(),
+      }),
+    )
+    .optional(),
+  customDocumentRequests: z
+    .array(
+      z.object({
+        label: z.string().trim().min(1),
+        isRequired: z.boolean().optional(),
+        saveToFirm: z.boolean().optional(),
+      }),
+    )
+    .optional(),
+});
+
 export const createConsultationBodySchema = z.object({
   scheduledAt: z.string().datetime(),
   duration: z.number().int().positive(),

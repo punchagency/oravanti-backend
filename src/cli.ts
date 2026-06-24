@@ -72,6 +72,7 @@ import { practiceAreaSubcategories } from "./db/schema/practice-area-subcategori
 import { practiceAreas } from "./db/schema/practice-areas";
 import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
 import { seedSystemQuestionnaires } from "./db/seeds/system-questionnaires.seed";
+import { seedMasterQuestionnaires } from "./db/seeds/master-questionnaires.seed";
 import { profiles } from "./db/schema/profiles";
 import { staff } from "./db/schema/staff";
 import { staffCertifications } from "./db/schema/staff-certifications";
@@ -3168,6 +3169,10 @@ const runInteractive = async () => {
           value: "seed-questionnaires",
           label: "Seed system questionnaires (one per case type)",
         },
+        {
+          value: "seed-master-questionnaires",
+          label: "Seed master intake questionnaires (from PDF question library)",
+        },
         { value: "demo-data", label: "Seed demo data for an organization" },
         {
           value: "demo-data-drop",
@@ -3236,6 +3241,10 @@ const runInteractive = async () => {
         await seedSystemQuestionnaires();
       }
 
+      if (action === "seed-master-questionnaires") {
+        await seedMasterQuestionnaires();
+      }
+
       if (action === "demo-data") {
         await seedDemoData();
       }
@@ -3296,6 +3305,15 @@ program
   .command("seed-questionnaires")
   .description("Seed system questionnaires (one per case type, idempotent)")
   .action(seedSystemQuestionnaires);
+
+program
+  .command("seed-master-questionnaires")
+  .description(
+    "Seed case-type questionnaires from the master intake PDF question library (idempotent)",
+  )
+  .action(async () => {
+    await seedMasterQuestionnaires();
+  });
 
 program
   .command("edit")

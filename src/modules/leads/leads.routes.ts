@@ -135,7 +135,10 @@ export class LeadsRouter {
       requireAuth,
       requireStaffOrAdmin,
       setFirmContext,
-      validateRequest({ params: v.idParamsSchema }),
+      validateRequest({
+        params: v.idParamsSchema,
+        body: v.sendQuestionnaireBodySchema,
+      }),
       ctrl.sendQuestionnaire,
     );
 
