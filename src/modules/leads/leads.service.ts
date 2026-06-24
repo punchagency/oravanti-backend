@@ -1,5 +1,15 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
-import { and, count, desc, eq, ilike, inArray, ne, or } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  getTableColumns,
+  ilike,
+  inArray,
+  ne,
+  or,
+} from "drizzle-orm";
 import {
   cancelQuestionnaireReminder,
   scheduleQuestionnaireReminder,
@@ -427,7 +437,9 @@ const getAllLeads = async (
 
   const where = and(...conditions);
 
-  const attachConflictMatches = async (rows: (typeof leads.$inferSelect)[]) => {
+  const attachConflictMatches = async (
+    rows: (typeof leads.$inferSelect & { caseTypeName: string | null })[],
+  ) => {
     const conflictCheckLeads = rows.filter(
       (r) => r.pipelineStage === "conflict_check" && r.conflictCheckId,
     );
@@ -467,8 +479,15 @@ const getAllLeads = async (
 
   if (filters.all) {
     const rows = await db
-      .select()
+      .select({
+        ...getTableColumns(leads),
+        caseTypeName: practiceAreaCaseTypes.name,
+      })
       .from(leads)
+      .leftJoin(
+        practiceAreaCaseTypes,
+        eq(leads.caseTypeId, practiceAreaCaseTypes.id),
+      )
       .where(where)
       .orderBy(desc(leads.receivedAt));
     return attachConflictMatches(rows);
@@ -484,8 +503,15 @@ const getAllLeads = async (
     .where(where);
 
   const rows = await db
-    .select()
+    .select({
+      ...getTableColumns(leads),
+      caseTypeName: practiceAreaCaseTypes.name,
+    })
     .from(leads)
+    .leftJoin(
+      practiceAreaCaseTypes,
+      eq(leads.caseTypeId, practiceAreaCaseTypes.id),
+    )
     .where(where)
     .orderBy(desc(leads.receivedAt))
     .limit(limit)
@@ -506,8 +532,15 @@ const getAllLeads = async (
 
 const getLeadById = async (id: string, organizationId: string) => {
   const [lead] = await db
-    .select()
+    .select({
+      ...getTableColumns(leads),
+      caseTypeName: practiceAreaCaseTypes.name,
+    })
     .from(leads)
+    .leftJoin(
+      practiceAreaCaseTypes,
+      eq(leads.caseTypeId, practiceAreaCaseTypes.id),
+    )
     .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
     .limit(1);
 
