@@ -176,6 +176,16 @@ export class QuestionnairesController {
     res.status(200).json(result);
   });
 
+  requestMissingDocuments = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const result = await this.svc.requestMissingDocuments(
+        req.organizationId!,
+        req.params.sendId as string,
+      );
+      res.status(200).json(result);
+    },
+  );
+
   downloadResponsePdf = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { buffer, filename } = await this.svc.generateResponsePdf(
       req.organizationId!,

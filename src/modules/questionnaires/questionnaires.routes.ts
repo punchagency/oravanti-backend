@@ -90,6 +90,12 @@ export class QuestionnairesRouter {
       validateRequest({ params: v.sendIdParamsSchema }),
       ctrl.sendReminder,
     );
+    this.router.post(
+      "/sends/:sendId/request-documents",
+      ...staffGuards,
+      validateRequest({ params: v.sendIdParamsSchema }),
+      ctrl.requestMissingDocuments,
+    );
 
     // Response answers PDF — available to any staff (documents excluded).
     this.router.get(
