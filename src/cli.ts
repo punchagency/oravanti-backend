@@ -3333,7 +3333,6 @@ const runInteractive = async () => {
       throw err;
     }
   }
-  outro("Done.");
 };
 
 const runWithSpinner = async (message: string, action: () => Promise<void>) => {
