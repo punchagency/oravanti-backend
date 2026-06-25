@@ -1885,10 +1885,9 @@ const generateFeeAgreement = async (
   if (lead.feeAgreementId)
     throw new ConflictError("Fee agreement already exists for this lead");
 
-  const documentContent = `Fee Agreement for ${lead.name} — ${data.agreementType ?? "Standard Retainer"}`;
-  const { envelopeId, signingLink } =
-    await stubESignatureProvider.createEnvelope(lead.email, documentContent);
-
+  // Create the agreement as a draft only. The signing envelope is minted and the
+  // client is emailed at the separate "send" step; the lead stays in the
+  // consultation stage until the signed document is received.
   const [agreement] = await db
     .insert(feeAgreements)
     .values({
@@ -1897,24 +1896,64 @@ const generateFeeAgreement = async (
       practiceAreaId: lead.practiceAreaId ?? undefined,
       caseTypeId: lead.caseTypeId ?? undefined,
       agreementType: data.agreementType,
-      generatedFrom: (data.generatedFrom ?? "questionnaire_auto") as any,
-      status: "pending_signature",
-      envelopeId,
-      signingLink,
+      generatedFrom: (data.generatedFrom ?? "manual") as any,
+      status: "draft",
     })
     .returning();
 
-  const now = new Date();
   await db
     .update(leads)
-    .set({
-      feeAgreementId: agreement.id,
-      pipelineStage: "fee_agreement",
-      updatedAt: now,
-    })
+    .set({ feeAgreementId: agreement.id, updatedAt: new Date() })
     .where(eq(leads.id, leadId));
 
-  // Email signing link to lead
+  return agreement;
+};
+
+// Dispatch a drafted agreement: mint the e-signature envelope, email the client
+// the signing link, and move the agreement to pending_signature. The lead stays
+// in the consultation stage.
+const sendFeeAgreement = async (
+  agreementId: string,
+  organizationId: string,
+) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+  if (agreement.status !== "draft")
+    throw new BadRequestError("Only a draft agreement can be sent");
+
+  const [lead] = await db
+    .select()
+    .from(leads)
+    .where(eq(leads.id, agreement.leadId))
+    .limit(1);
+  if (!lead) throw new NotFoundError("Lead not found");
+
+  const documentContent = `Fee Agreement for ${lead.name} — ${agreement.agreementType ?? "Standard Retainer"}`;
+  const { envelopeId, signingLink } =
+    await stubESignatureProvider.createEnvelope(lead.email, documentContent);
+
+  const now = new Date();
+  const [updated] = await db
+    .update(feeAgreements)
+    .set({
+      status: "pending_signature",
+      envelopeId,
+      signingLink,
+      updatedAt: now,
+    })
+    .where(eq(feeAgreements.id, agreementId))
+    .returning();
+
   emailService
     .sendEmail({
       to: lead.email,
@@ -1926,7 +1965,47 @@ const generateFeeAgreement = async (
     })
     .catch(console.error);
 
-  return { ...agreement, clientSigningLink: signingLink };
+  return { ...updated, clientSigningLink: signingLink };
+};
+
+// Staff manually confirms receipt of the signed document: mark the agreement
+// signed and advance the lead to the case-opening stage (the manual equivalent
+// of the e-signature webhook).
+const markFeeAgreementReceived = async (
+  agreementId: string,
+  organizationId: string,
+) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+  if (agreement.status !== "pending_signature" && agreement.status !== "signed")
+    throw new BadRequestError(
+      "The agreement must be sent before it can be marked as received",
+    );
+
+  const now = new Date();
+  if (agreement.status !== "signed") {
+    await db
+      .update(feeAgreements)
+      .set({ status: "signed", clientSignedAt: now, updatedAt: now })
+      .where(eq(feeAgreements.id, agreementId));
+  }
+
+  await db
+    .update(leads)
+    .set({ pipelineStage: "case_opening", updatedAt: now })
+    .where(eq(leads.id, agreement.leadId));
+
+  return { received: true, agreementId, leadId: agreement.leadId };
 };
 
 const getFeeAgreement = async (leadId: string, organizationId: string) => {
@@ -2434,6 +2513,8 @@ export class LeadsService {
   getConsultation = getConsultation;
   updateConsultation = updateConsultation;
   generateFeeAgreement = generateFeeAgreement;
+  sendFeeAgreement = sendFeeAgreement;
+  markFeeAgreementReceived = markFeeAgreementReceived;
   getFeeAgreement = getFeeAgreement;
   nudgeClient = nudgeClient;
   handleESignatureWebhook = handleESignatureWebhook;
