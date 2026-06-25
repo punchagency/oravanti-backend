@@ -1858,6 +1858,15 @@ const generateFeeAgreement = async (
     throw new BadRequestError(
       "A consultation must be scheduled before generating a fee agreement",
     );
+  const [consultation] = await db
+    .select({ status: consultations.status })
+    .from(consultations)
+    .where(eq(consultations.id, lead.consultationId))
+    .limit(1);
+  if (!consultation || consultation.status !== "completed")
+    throw new BadRequestError(
+      "The consultation must be completed before generating a fee agreement",
+    );
   if (lead.feeAgreementId)
     throw new ConflictError("Fee agreement already exists for this lead");
 
