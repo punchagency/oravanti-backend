@@ -69,6 +69,11 @@ export const questionnaireResponseStatusEnum = pgEnum(
 
 export const questionSourceEnum = pgEnum("question_source", ["system", "firm"]);
 
+export const questionnaireFileScanStatusEnum = pgEnum(
+  "questionnaire_file_scan_status",
+  ["pending", "scanning", "clean", "issues_found", "failed"],
+);
+
 // ─── System Questionnaires (platform-owned, one per case type) ────────────────
 
 export const caseTypeQuestionnaires = pgTable(
@@ -214,6 +219,12 @@ export const questionnaireSends = pgTable(
     status:     questionnaireSendStatusEnum("status").notNull().default("sent"),
     accessTokenHash: text("access_token_hash").notNull().unique(),
     schemaSnapshot:  jsonb("schema_snapshot"),
+    // Delivery + reminder configuration captured from the send wizard.
+    deliveryChannels: jsonb("delivery_channels").notNull().default(["email"]),
+    language:         text("language").notNull().default("english"),
+    autoReminderDays: integer("auto_reminder_days"), // null = never
+    reminderJobId:    text("reminder_job_id"),        // BullMQ delayed-job id
+    lastReminderAt:   timestamp("last_reminder_at"),
     expiresAt:  timestamp("expires_at"),
     sentAt:     timestamp("sent_at").notNull().defaultNow(),
     openedAt:   timestamp("opened_at"),
@@ -292,6 +303,11 @@ export const questionnaireResponseFiles = pgTable(
     mimeType:       text("mime_type").notNull(),
     fileSize:       integer("file_size").notNull(),
     originalFilename: text("original_filename").notNull(),
+    // AI document scan (stubbed until the AI service is wired). scanResult holds
+    // an array of { severity, title, description, affectedField? } findings.
+    scanStatus:     questionnaireFileScanStatusEnum("scan_status").notNull().default("pending"),
+    scanResult:     jsonb("scan_result"),
+    scannedAt:      timestamp("scanned_at"),
     createdAt:      timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [

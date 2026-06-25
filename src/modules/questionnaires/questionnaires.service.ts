@@ -1,9 +1,12 @@
 import { createHash, randomBytes } from "crypto";
-import { and, asc, count, desc, eq } from "drizzle-orm";
+import PDFDocument from "pdfkit";
+import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
 import { supabaseAdmin } from "../../config/supabase";
 import { env } from "../../config/env";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
+import { conflictChecks } from "../../db/schema/conflict-checks";
+import { leads } from "../../db/schema/leads";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import {
   caseTypeQuestionnaires,
@@ -17,6 +20,11 @@ import {
   questionnaireResponses,
   questionnaireSends,
 } from "../../db/schema/questionnaires";
+import {
+  cancelQuestionnaireReminder,
+  enqueueDocumentScan,
+} from "../../queue/queues";
+import { sendQuestionnaireReminder } from "../../queue/workers/reminder.worker";
 import {
   BadRequestError,
   ConflictError,
@@ -103,6 +111,27 @@ const validateSubmissionAnswers = (snapshot: unknown, answers: AnswerInput[]) =>
       questionIds: missing.map((q) => q.id),
     });
   }
+};
+
+const computeCompletion = (
+  snapshot: unknown,
+  answers: { questionId: string; value: unknown }[],
+  files: { questionId: string }[],
+) => {
+  if (!snapshot || typeof snapshot !== "object") {
+    return { answered: 0, total: 0 };
+  }
+  const s = snapshot as {
+    sections?: Array<{ questions?: Array<{ id: string }> }>;
+  };
+  const allQuestions = (s.sections ?? []).flatMap((sec) => sec.questions ?? []);
+  const answeredIds = new Set<string>();
+  for (const a of answers) {
+    if (!isEmptyAnswer(a.value)) answeredIds.add(a.questionId);
+  }
+  for (const f of files) answeredIds.add(f.questionId);
+  const answered = allQuestions.filter((q) => answeredIds.has(q.id)).length;
+  return { answered, total: allQuestions.length };
 };
 
 export class QuestionnairesService {
@@ -506,11 +535,18 @@ export class QuestionnairesService {
     },
   ) => {
     const send = await this.getActiveSendByToken(accessToken);
-    return this.saveResponse(send, {
+    const result = await this.saveResponse(send, {
       status: "submitted",
       currentSectionRef: data.currentSectionRef,
       answers: data.answers ?? [],
     });
+
+    // Response is in — cancel the pending auto-reminder so it never fires.
+    if (send.reminderJobId) {
+      await cancelQuestionnaireReminder(send.reminderJobId).catch(console.error);
+    }
+
+    return result;
   };
 
   uploadResponseFileByToken = async (
@@ -568,7 +604,325 @@ export class QuestionnairesService {
       })
       .returning();
 
+    // Kick off the (stubbed) AI document scan asynchronously.
+    await enqueueDocumentScan(file.id).catch(console.error);
+
     return file;
+  };
+
+  // ── Intake: eligible leads, question bank, response review ──────────────────
+
+  /**
+   * Leads that are ready to receive a questionnaire: in the questionnaire stage,
+   * conflict-cleared, with a case type, and not yet sent one. Shaped for the send
+   * wizard's "<name> — <case type>" dropdown.
+   */
+  getEligibleLeadsForQuestionnaire = async (organizationId: string) => {
+    const rows = await db
+      .select({
+        id: leads.id,
+        name: leads.name,
+        email: leads.email,
+        caseTypeId: leads.caseTypeId,
+        caseTypeName: practiceAreaCaseTypes.name,
+        conflictStatus: conflictChecks.status,
+        supervisorOverrideById: conflictChecks.supervisorOverrideById,
+      })
+      .from(leads)
+      .leftJoin(
+        practiceAreaCaseTypes,
+        eq(practiceAreaCaseTypes.id, leads.caseTypeId),
+      )
+      .leftJoin(conflictChecks, eq(conflictChecks.id, leads.conflictCheckId))
+      .where(
+        and(
+          eq(leads.organizationId, organizationId),
+          eq(leads.pipelineStage, "questionnaire"),
+          isNull(leads.questionnaireSendId),
+        ),
+      );
+
+    return rows
+      .filter((r) => r.caseTypeId)
+      .filter(
+        (r) =>
+          r.conflictStatus === "pass" ||
+          r.conflictStatus === null || // no conflict check on file
+          r.supervisorOverrideById !== null,
+      )
+      .map((r) => ({
+        id: r.id,
+        name: r.name,
+        email: r.email,
+        caseTypeId: r.caseTypeId,
+        caseTypeName: r.caseTypeName,
+      }));
+  };
+
+  /**
+   * System question library grouped by case type, for the wizard's "browse
+   * snippets" picker.
+   */
+  getQuestionBank = async () => {
+    const rows = await db
+      .select({
+        caseTypeId: caseTypeQuestionnaires.caseTypeId,
+        caseTypeName: practiceAreaCaseTypes.name,
+        questionnaireTitle: caseTypeQuestionnaires.title,
+        questionLabel: caseTypeQuestionnaireQuestions.label,
+        questionType: caseTypeQuestionnaireQuestions.type,
+        questionDescription: caseTypeQuestionnaireQuestions.description,
+        orderIndex: caseTypeQuestionnaireQuestions.orderIndex,
+      })
+      .from(caseTypeQuestionnaireQuestions)
+      .innerJoin(
+        caseTypeQuestionnaires,
+        eq(
+          caseTypeQuestionnaires.id,
+          caseTypeQuestionnaireQuestions.questionnaireId,
+        ),
+      )
+      .leftJoin(
+        practiceAreaCaseTypes,
+        eq(practiceAreaCaseTypes.id, caseTypeQuestionnaires.caseTypeId),
+      )
+      .orderBy(asc(caseTypeQuestionnaireQuestions.orderIndex));
+
+    const grouped = new Map<
+      string,
+      {
+        caseTypeId: string;
+        caseTypeName: string | null;
+        questions: { label: string; type: string; description: string | null }[];
+      }
+    >();
+    for (const r of rows) {
+      const key = r.caseTypeId;
+      const entry = grouped.get(key) ?? {
+        caseTypeId: r.caseTypeId,
+        caseTypeName: r.caseTypeName,
+        questions: [],
+      };
+      entry.questions.push({
+        label: r.questionLabel,
+        type: r.questionType,
+        description: r.questionDescription,
+      });
+      grouped.set(key, entry);
+    }
+    return Array.from(grouped.values());
+  };
+
+  /**
+   * Full response detail for the admin review modal: send (with snapshot),
+   * response, answers, files (incl. scan results) and a completion summary.
+   */
+  getResponseDetailById = async (organizationId: string, responseId: string) => {
+    const [response] = await db
+      .select()
+      .from(questionnaireResponses)
+      .where(
+        and(
+          eq(questionnaireResponses.id, responseId),
+          eq(questionnaireResponses.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!response) throw new NotFoundError("Response not found");
+
+    const [send] = await db
+      .select()
+      .from(questionnaireSends)
+      .where(eq(questionnaireSends.id, response.questionnaireSendId))
+      .limit(1);
+
+    const answers = await db
+      .select()
+      .from(questionnaireAnswers)
+      .where(eq(questionnaireAnswers.responseId, response.id));
+
+    const files = await db
+      .select()
+      .from(questionnaireResponseFiles)
+      .where(eq(questionnaireResponseFiles.responseId, response.id));
+
+    const completion = computeCompletion(send?.schemaSnapshot, answers, files);
+
+    return { response, send, answers, files, completion };
+  };
+
+  /**
+   * Mark a response complete and advance its lead to the consultation stage.
+   * Requires every required question/document to be answered.
+   */
+  acceptResponseAndAdvance = async (
+    organizationId: string,
+    responseId: string,
+  ) => {
+    const [response] = await db
+      .select()
+      .from(questionnaireResponses)
+      .where(
+        and(
+          eq(questionnaireResponses.id, responseId),
+          eq(questionnaireResponses.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!response) throw new NotFoundError("Response not found");
+
+    const [send] = await db
+      .select()
+      .from(questionnaireSends)
+      .where(eq(questionnaireSends.id, response.questionnaireSendId))
+      .limit(1);
+
+    const answers = await db
+      .select()
+      .from(questionnaireAnswers)
+      .where(eq(questionnaireAnswers.responseId, response.id));
+    const files = await db
+      .select()
+      .from(questionnaireResponseFiles)
+      .where(eq(questionnaireResponseFiles.responseId, response.id));
+
+    // File-upload questions are "answered" by an uploaded file.
+    const merged = [
+      ...answers.map((a) => ({ questionId: a.questionId, value: a.value })),
+      ...files.map((f) => ({ questionId: f.questionId, value: "file" })),
+    ];
+    validateSubmissionAnswers(send?.schemaSnapshot, merged);
+
+    if (response.leadId) {
+      await db
+        .update(leads)
+        .set({ pipelineStage: "consultation", updatedAt: new Date() })
+        .where(eq(leads.id, response.leadId));
+    }
+
+    return { advanced: true, leadId: response.leadId };
+  };
+
+  /**
+   * Render the response answers to a PDF (documents excluded). Returns a Buffer.
+   */
+  generateResponsePdf = async (
+    organizationId: string,
+    responseId: string,
+  ): Promise<{ buffer: Buffer; filename: string }> => {
+    const { response, send, answers } = await this.getResponseDetailById(
+      organizationId,
+      responseId,
+    );
+
+    const answerMap = new Map(answers.map((a) => [a.questionId, a.value]));
+    const snapshot = (send?.schemaSnapshot ?? {}) as {
+      title?: string;
+      sections?: Array<{
+        title?: string;
+        questions?: Array<{ id: string; label: string; type: string }>;
+      }>;
+    };
+
+    const doc = new PDFDocument({ margin: 50, size: "A4" });
+    const chunks: Buffer[] = [];
+    doc.on("data", (c: Buffer) => chunks.push(c));
+    const done = new Promise<Buffer>((resolve) => {
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+    });
+
+    doc
+      .fontSize(18)
+      .text(snapshot.title ?? "Questionnaire response", { underline: false });
+    doc
+      .fontSize(10)
+      .fillColor("#666")
+      .text(`Status: ${response.status}`)
+      .text(
+        `Submitted: ${response.submittedAt ? new Date(response.submittedAt).toLocaleString() : "—"}`,
+      )
+      .moveDown(1)
+      .fillColor("#000");
+
+    for (const section of snapshot.sections ?? []) {
+      doc.moveDown(0.5).fontSize(13).fillColor("#1a1a1a").text(section.title ?? "Section");
+      doc.moveDown(0.25);
+      for (const q of section.questions ?? []) {
+        if (q.type === "file_upload") continue; // documents excluded from PDF
+        const raw = answerMap.get(q.id);
+        const value =
+          raw == null || (typeof raw === "string" && raw.trim() === "")
+            ? "Not yet answered"
+            : typeof raw === "string"
+              ? raw
+              : JSON.stringify(raw);
+        doc.fontSize(10).fillColor("#444").text(q.label, { continued: false });
+        doc.fontSize(11).fillColor("#000").text(value).moveDown(0.4);
+      }
+    }
+
+    doc.end();
+    const buffer = await done;
+    return { buffer, filename: `questionnaire-response-${responseId}.pdf` };
+  };
+
+  /**
+   * Fetch an uploaded response document for a gated download (proxied from
+   * storage so access can be permission-checked rather than relying on the
+   * public URL). Caller must have the documents:download permission.
+   */
+  getResponseFileForDownload = async (
+    organizationId: string,
+    fileId: string,
+  ): Promise<{ buffer: Buffer; mimeType: string; filename: string }> => {
+    const [file] = await db
+      .select()
+      .from(questionnaireResponseFiles)
+      .where(
+        and(
+          eq(questionnaireResponseFiles.id, fileId),
+          eq(questionnaireResponseFiles.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!file) throw new NotFoundError("Document not found");
+
+    const { data, error } = await supabaseAdmin.storage
+      .from(SUPABASE_STORAGE_BUCKET)
+      .download(file.storagePath);
+    if (error || !data) {
+      throw new ExternalServiceError(error?.message ?? "Failed to read document");
+    }
+
+    const buffer = Buffer.from(await data.arrayBuffer());
+    return {
+      buffer,
+      mimeType: file.mimeType,
+      filename: file.originalFilename,
+    };
+  };
+
+  /** Manually send a reminder for an outstanding questionnaire send. */
+  sendManualReminder = async (organizationId: string, sendId: string) => {
+    const [send] = await db
+      .select()
+      .from(questionnaireSends)
+      .where(
+        and(
+          eq(questionnaireSends.id, sendId),
+          eq(questionnaireSends.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!send) throw new NotFoundError("Questionnaire send not found");
+
+    const sent = await sendQuestionnaireReminder(sendId);
+    if (!sent) {
+      throw new BadRequestError(
+        "No reminder sent — the questionnaire is already submitted.",
+      );
+    }
+    return { reminderSentAt: new Date() };
   };
 
   // ── Private Helpers ────────────────────────────────────────────────────────

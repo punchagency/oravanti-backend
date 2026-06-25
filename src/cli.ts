@@ -12,17 +12,18 @@ import {
 } from "@clack/prompts";
 import { Command } from "commander";
 import { createHash, randomUUID } from "crypto";
-import { and, asc, desc, eq, inArray, ilike, or } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, or } from "drizzle-orm";
 import { env } from "./config/env";
 import { closeDb, db } from "./db/client";
 import { admins } from "./db/schema/admins";
+import { adverseParties } from "./db/schema/adverse-parties";
 import { aiErrorFlags } from "./db/schema/ai-error-flags";
 import { aiSystemConfig } from "./db/schema/ai-system-config";
 import { assignments } from "./db/schema/assignments";
 import {
+  invitation,
   member,
   organization as organizations,
-  invitation,
   team,
   teamMember,
   user,
@@ -31,8 +32,11 @@ import { calendarEvents } from "./db/schema/calendar-events";
 import { cases } from "./db/schema/cases";
 import { certifications } from "./db/schema/certifications";
 import { clientCompanies } from "./db/schema/client-companies";
+import { clientContacts } from "./db/schema/client-contacts";
 import { clientRequests } from "./db/schema/client-requests";
 import { clients } from "./db/schema/clients";
+import { conflictChecks } from "./db/schema/conflict-checks";
+import { consultations } from "./db/schema/consultations";
 import { contractors } from "./db/schema/contractors";
 import {
   documentAccess,
@@ -43,49 +47,45 @@ import {
   documentVersions,
   externalSubmissions,
 } from "./db/schema/documents";
-import { adverseParties } from "./db/schema/adverse-parties";
-import { clientContacts } from "./db/schema/client-contacts";
-import { conflictChecks } from "./db/schema/conflict-checks";
-import { consultations } from "./db/schema/consultations";
 import { feeAgreements } from "./db/schema/fee-agreements";
 import { firmPracticeAreas } from "./db/schema/firm-practice-areas";
 import { leads } from "./db/schema/leads";
 import { leaveRequests } from "./db/schema/leave-requests";
-import {
-  caseTypeQuestionnaires,
-  caseTypeQuestionnaireSections,
-  caseTypeQuestionnaireQuestions,
-  caseTypeQuestionnaireLogicRules,
-  firmQuestionnaireSections,
-  firmQuestionnaireQuestions,
-  firmQuestionnaireLogicRules,
-  questionnaireSends,
-  questionnaireResponses,
-  questionnaireAnswers,
-  questionnaireResponseFiles,
-} from "./db/schema/questionnaires";
-import {
-  workflowTemplates,
-  workflowTemplateSteps,
-  caseWorkflowSteps,
-} from "./db/schema/workflow";
 import { paralegalProfiles } from "./db/schema/paralegal-profiles";
 import { practiceAreaCaseTypes } from "./db/schema/practice-area-case-types";
 import { practiceAreaSubcategories } from "./db/schema/practice-area-subcategories";
 import { practiceAreas } from "./db/schema/practice-areas";
 import { profiles } from "./db/schema/profiles";
+import {
+  caseTypeQuestionnaireLogicRules,
+  caseTypeQuestionnaireQuestions,
+  caseTypeQuestionnaires,
+  caseTypeQuestionnaireSections,
+  firmQuestionnaireLogicRules,
+  firmQuestionnaireQuestions,
+  firmQuestionnaireSections,
+  questionnaireAnswers,
+  questionnaireResponseFiles,
+  questionnaireResponses,
+  questionnaireSends,
+} from "./db/schema/questionnaires";
 import { staff } from "./db/schema/staff";
 import { staffCertifications } from "./db/schema/staff-certifications";
 import { subscriptions, SubscriptionStatus } from "./db/schema/subscriptions";
 import { tasks } from "./db/schema/tasks";
 import { teamMembers } from "./db/schema/team-members";
+import { teamPracticeAreas } from "./db/schema/team-practice-areas";
 import { teams } from "./db/schema/teams";
 import { timeEntries } from "./db/schema/time-entries";
+import {
+  caseWorkflowSteps,
+  workflowTemplates,
+  workflowTemplateSteps,
+} from "./db/schema/workflow";
+import { seedMasterQuestionnaires } from "./db/seeds/master-questionnaires.seed";
 import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
 import { seedStaffAndTeams } from "./db/seeds/staff-and-teams.seed";
 import { seedSystemQuestionnaires } from "./db/seeds/system-questionnaires.seed";
-import { staffPracticeAreas } from "./db/schema/staff-practice-areas";
-import { teamPracticeAreas } from "./db/schema/team-practice-areas";
 
 const DEFAULT_IMMIGRATION_CASE_TYPES = [
   { code: "h1b_visa", name: "H-1B Visa", caseNumberPrefix: "H1B" },
@@ -1704,16 +1704,19 @@ const seedDemoData = async (organizationId?: string) => {
 
     // Create primary contacts for company-type clients
     await tx.insert(clientContacts).values(
-      companyClientEntities.map((clientEntity, index) => ({
-        organizationId: firm.id,
-        clientId: clientEntity.id,
-        role: "primary" as const,
-        isPrimary: true,
-        firstName: pick(firstNames, index + 2),
-        lastName: pick(lastNames, index + 2),
-        email: `company.contact.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
-        phone: `+1-555-${pad(2200 + index, 4)}`,
-      } satisfies NewClientContactRow)),
+      companyClientEntities.map(
+        (clientEntity, index) =>
+          ({
+            organizationId: firm.id,
+            clientId: clientEntity.id,
+            role: "primary" as const,
+            isPrimary: true,
+            firstName: pick(firstNames, index + 2),
+            lastName: pick(lastNames, index + 2),
+            email: `company.contact.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
+            phone: `+1-555-${pad(2200 + index, 4)}`,
+          }) satisfies NewClientContactRow,
+      ),
     );
 
     const clientData = range(DEMO_TARGETS.clients).map((index) => {
@@ -1762,17 +1765,20 @@ const seedDemoData = async (organizationId?: string) => {
       .returning();
 
     await tx.insert(clientContacts).values(
-      createdClients.map((client, index) => ({
-        organizationId: firm.id,
-        clientId: client.id,
-        role: "primary" as const,
-        isPrimary: true,
-        firstName: clientData[index].firstName,
-        lastName: clientData[index].lastName,
-        email: `client.${clientData[index].firstName.toLowerCase()}.${clientData[index].lastName.toLowerCase()}.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
-        phone: `+1-555-${pad(5100 + index, 4)}`,
-        nationality: clientData[index].nationality,
-      } satisfies NewClientContactRow)),
+      createdClients.map(
+        (client, index) =>
+          ({
+            organizationId: firm.id,
+            clientId: client.id,
+            role: "primary" as const,
+            isPrimary: true,
+            firstName: clientData[index].firstName,
+            lastName: clientData[index].lastName,
+            email: `client.${clientData[index].firstName.toLowerCase()}.${clientData[index].lastName.toLowerCase()}.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
+            phone: `+1-555-${pad(5100 + index, 4)}`,
+            nationality: clientData[index].nationality,
+          }) satisfies NewClientContactRow,
+      ),
     );
 
     const createdCases = await tx
@@ -2330,12 +2336,7 @@ const dropDemoData = async (organizationId?: string) => {
     const [ownerMember] = await tx
       .select({ userId: member.userId })
       .from(member)
-      .where(
-        and(
-          eq(member.organizationId, firm.id),
-          eq(member.role, "owner"),
-        ),
-      )
+      .where(and(eq(member.organizationId, firm.id), eq(member.role, "owner")))
       .limit(1);
 
     let ownerStaffId: string | undefined;
@@ -2366,7 +2367,9 @@ const dropDemoData = async (organizationId?: string) => {
       .innerJoin(member, eq(member.userId, user.id))
       .where(eq(member.organizationId, firm.id));
 
-    const staffIds = orgStaff.map((row) => row.id).filter((id) => id !== ownerStaffId);
+    const staffIds = orgStaff
+      .map((row) => row.id)
+      .filter((id) => id !== ownerStaffId);
     const demoUserIds = demoUsers.map((row) => row.id);
     const documentIds = orgDocuments.map((row) => row.id);
     const documentRequestIds = orgDocumentRequests.map((row) => row.id);
@@ -2600,10 +2603,7 @@ const dropDemoData = async (organizationId?: string) => {
     if (authTeamIds.length) {
       record(
         "authTeams",
-        await tx
-          .delete(team)
-          .where(inArray(team.id, authTeamIds))
-          .returning(),
+        await tx.delete(team).where(inArray(team.id, authTeamIds)).returning(),
       );
     } else {
       deleted.authTeams = 0;
@@ -3225,6 +3225,11 @@ const runInteractive = async () => {
           value: "seed-questionnaires",
           label: "Seed system questionnaires (one per case type)",
         },
+        {
+          value: "seed-master-questionnaires",
+          label:
+            "Seed master intake questionnaires (from PDF question library)",
+        },
         { value: "demo-data", label: "Seed demo data for an organization" },
         {
           value: "demo-data-drop",
@@ -3297,6 +3302,10 @@ const runInteractive = async () => {
         await seedSystemQuestionnaires();
       }
 
+      if (action === "seed-master-questionnaires") {
+        await seedMasterQuestionnaires();
+      }
+
       if (action === "demo-data") {
         await seedDemoData();
       }
@@ -3363,6 +3372,15 @@ program
   .command("seed-questionnaires")
   .description("Seed system questionnaires (one per case type, idempotent)")
   .action(seedSystemQuestionnaires);
+
+program
+  .command("seed-master-questionnaires")
+  .description(
+    "Seed case-type questionnaires from the master intake PDF question library (idempotent)",
+  )
+  .action(async () => {
+    await seedMasterQuestionnaires();
+  });
 
 program
   .command("edit")

@@ -1,5 +1,9 @@
-import { createHash, randomBytes } from "crypto";
+import { createHash, randomBytes, randomUUID } from "crypto";
 import { and, count, desc, eq, ilike, inArray, ne, or } from "drizzle-orm";
+import {
+  cancelQuestionnaireReminder,
+  scheduleQuestionnaireReminder,
+} from "../../queue/queues";
 import { emailService } from "../../utils/email/email.service";
 import { db } from "../../db/client";
 import { adverseParties } from "../../db/schema/adverse-parties";
@@ -43,6 +47,7 @@ import {
 import { stubESignatureProvider } from "./esignature.provider";
 import { generateCaseNumber } from "../cases/cases.service";
 import { user } from "../../db/schema/auth-schema";
+import { env } from "../../config/env";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1322,10 +1327,75 @@ const resolveConflictCheck = async (
 
 // ─── Questionnaire ────────────────────────────────────────────────────────────
 
+type CustomQuestionInput = {
+  label: string;
+  type?: string;
+  isRequired?: boolean;
+  saveToFirm?: boolean;
+};
+
+type CustomDocumentInput = {
+  label: string;
+  isRequired?: boolean;
+  saveToFirm?: boolean;
+};
+
+export type SendQuestionnaireConfig = {
+  deliveryChannels?: ("email" | "sms")[];
+  language?: string;
+  autoReminderDays?: number | null;
+  customQuestions?: CustomQuestionInput[];
+  customDocumentRequests?: CustomDocumentInput[];
+};
+
+/**
+ * Get (or lazily create) the firm's "Additional questions" section for a case
+ * type — the home for custom questions/docs the staff chose to persist.
+ */
+const getOrCreateFirmAdditionsSection = async (
+  organizationId: string,
+  caseTypeId: string,
+) => {
+  const existing = await db
+    .select()
+    .from(firmQuestionnaireSections)
+    .where(
+      and(
+        eq(firmQuestionnaireSections.organizationId, organizationId),
+        eq(firmQuestionnaireSections.caseTypeId, caseTypeId),
+        eq(firmQuestionnaireSections.title, "Additional questions"),
+      ),
+    )
+    .limit(1);
+  if (existing[0]) return existing[0];
+
+  const [{ value: maxOrder } = { value: 0 }] = await db
+    .select({ value: count() })
+    .from(firmQuestionnaireSections)
+    .where(
+      and(
+        eq(firmQuestionnaireSections.organizationId, organizationId),
+        eq(firmQuestionnaireSections.caseTypeId, caseTypeId),
+      ),
+    );
+
+  const [section] = await db
+    .insert(firmQuestionnaireSections)
+    .values({
+      organizationId,
+      caseTypeId,
+      title: "Additional questions",
+      orderIndex: Number(maxOrder) + 100,
+    })
+    .returning();
+  return section;
+};
+
 const sendQuestionnaire = async (
   leadId: string,
   organizationId: string,
   sentById?: string,
+  config: SendQuestionnaireConfig = {},
 ) => {
   const [lead] = await db
     .select()
@@ -1351,9 +1421,110 @@ const sendQuestionnaire = async (
     );
   }
 
+  // Custom items the staff chose to persist become firm questions so every future
+  // send for this case type includes them. They get attached to a firm section and
+  // are then picked up automatically by buildSchemaSnapshot below.
+  const persistQuestions = (config.customQuestions ?? []).filter(
+    (q) => q.saveToFirm,
+  );
+  const persistDocs = (config.customDocumentRequests ?? []).filter(
+    (d) => d.saveToFirm,
+  );
+  if (persistQuestions.length || persistDocs.length) {
+    const section = await getOrCreateFirmAdditionsSection(
+      organizationId,
+      lead.caseTypeId,
+    );
+    let order = Date.now() % 100000;
+    for (const q of persistQuestions) {
+      await db.insert(firmQuestionnaireQuestions).values({
+        organizationId,
+        caseTypeId: lead.caseTypeId,
+        firmSectionId: section.id,
+        label: q.label,
+        type: (q.type ?? "short_text") as any,
+        orderIndex: order++,
+        isRequired: q.isRequired ?? false,
+      });
+    }
+    for (const d of persistDocs) {
+      await db.insert(firmQuestionnaireQuestions).values({
+        organizationId,
+        caseTypeId: lead.caseTypeId,
+        firmSectionId: section.id,
+        label: d.label,
+        type: "file_upload" as any,
+        orderIndex: order++,
+        isRequired: d.isRequired ?? false,
+      });
+    }
+  }
+
   const schemaSnapshot = await buildSchemaSnapshot(organizationId, systemQ.id);
   if (!schemaSnapshot)
     throw new NotFoundError("Could not build questionnaire snapshot");
+
+  // Per-send-only custom items are appended directly to this send's snapshot with
+  // synthetic ids (no DB row). The snapshot is the source of truth for rendering
+  // and for matching answers, so unsaved questions still work end-to-end.
+  const sendOnlyQuestions = (config.customQuestions ?? []).filter(
+    (q) => !q.saveToFirm,
+  );
+  const sendOnlyDocs = (config.customDocumentRequests ?? []).filter(
+    (d) => !d.saveToFirm,
+  );
+  const extraSections: any[] = [];
+  if (sendOnlyQuestions.length) {
+    extraSections.push({
+      id: randomUUID(),
+      source: "firm",
+      title: "Additional questions",
+      description: null,
+      questions: sendOnlyQuestions.map((q, i) => ({
+        id: randomUUID(),
+        source: "firm",
+        label: q.label,
+        description: null,
+        type: q.type ?? "short_text",
+        orderIndex: i,
+        isRequired: q.isRequired ?? false,
+        config: {},
+        isLocked: false,
+      })),
+    });
+  }
+  if (sendOnlyDocs.length) {
+    extraSections.push({
+      id: randomUUID(),
+      source: "firm",
+      title: "Requested documents",
+      description: null,
+      questions: sendOnlyDocs.map((d, i) => ({
+        id: randomUUID(),
+        source: "firm",
+        label: d.label,
+        description: null,
+        type: "file_upload",
+        orderIndex: i,
+        isRequired: d.isRequired ?? false,
+        config: {},
+        isLocked: false,
+      })),
+    });
+  }
+  const finalSnapshot = {
+    ...schemaSnapshot,
+    sections: [...schemaSnapshot.sections, ...extraSections],
+  };
+
+  const deliveryChannels = config.deliveryChannels?.length
+    ? config.deliveryChannels
+    : ["email"];
+  const language = config.language ?? "english";
+  const autoReminderDays =
+    config.autoReminderDays && config.autoReminderDays > 0
+      ? config.autoReminderDays
+      : null;
 
   const accessToken = generateAccessToken();
   const [send] = await db
@@ -1365,9 +1536,27 @@ const sendQuestionnaire = async (
       caseTypeId: lead.caseTypeId,
       sentById,
       accessTokenHash: tokenHash(accessToken),
-      schemaSnapshot: schemaSnapshot as any,
+      schemaSnapshot: finalSnapshot as any,
+      deliveryChannels,
+      language,
+      autoReminderDays,
     })
     .returning();
+
+  // Schedule the auto-reminder as a delayed job; remember its id so we can cancel
+  // it when the response is submitted.
+  if (autoReminderDays) {
+    const reminderJobId = await scheduleQuestionnaireReminder(
+      send.id,
+      autoReminderDays,
+    );
+    if (reminderJobId) {
+      await db
+        .update(questionnaireSends)
+        .set({ reminderJobId })
+        .where(eq(questionnaireSends.id, send.id));
+    }
+  }
 
   const now = new Date();
   await db
@@ -1380,24 +1569,41 @@ const sendQuestionnaire = async (
     .where(eq(leads.id, leadId));
 
   const baseUrl =
-    process.env.APP_URL ??
-    process.env.BETTER_AUTH_URL ??
-    "http://localhost:3000";
-  const clientLink = `${baseUrl}/questionnaire/${accessToken}`;
+    env.FRONTEND_APP_URL ?? "http://localhost:5173";
+  const orgSlug = encodeURIComponent(organizationId);
+  const clientLink = `${baseUrl}/questionnaire/${orgSlug}/${accessToken}`;
 
-  // Fire-and-forget email to lead
-  emailService
-    .sendEmail({
-      to: lead.email,
-      subject: "Please complete your intake questionnaire",
-      html: `<p>Dear ${lead.name},</p>
-        <p>Please complete your intake questionnaire using the link below:</p>
-        <p><a href="${clientLink}">Complete Questionnaire</a></p>
-        <p>This link is unique to you. Please do not share it.</p>`,
-    })
-    .catch(console.error);
+  // Fire-and-forget delivery to lead via the configured channels.
+  if (deliveryChannels.includes("email")) {
+    emailService
+      .sendEmail({
+        to: lead.email,
+        subject: "Please complete your intake questionnaire",
+        html: `<p>Dear ${lead.name},</p>
+          <p>Please complete your intake questionnaire using the link below:</p>
+          <p><a href="${clientLink}">Complete Questionnaire</a></p>
+          <p>This link is unique to you. Please do not share it.</p>`,
+      })
+      .catch(console.error);
+  }
+  if (deliveryChannels.includes("sms") && lead.phone) {
+    // SMS provider not yet wired — log the intent for now.
+    console.log(`[sms-stub] questionnaire link to ${lead.phone}: ${clientLink}`);
+  }
 
   return { send: { ...send, accessToken }, clientLink, sentAt: send.sentAt };
+};
+
+/** Cancel a send's pending auto-reminder, if any (e.g. on submission). */
+export const cancelSendReminder = async (sendId: string) => {
+  const [send] = await db
+    .select()
+    .from(questionnaireSends)
+    .where(eq(questionnaireSends.id, sendId))
+    .limit(1);
+  if (send?.reminderJobId) {
+    await cancelQuestionnaireReminder(send.reminderJobId).catch(console.error);
+  }
 };
 
 const getLeadQuestionnaire = async (leadId: string, organizationId: string) => {

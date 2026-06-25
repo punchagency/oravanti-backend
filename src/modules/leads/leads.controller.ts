@@ -109,6 +109,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       req.staffId,
+      req.body ?? {},
     );
     res.json({ success: true, data: result });
   };
