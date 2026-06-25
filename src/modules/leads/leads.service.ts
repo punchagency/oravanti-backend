@@ -1854,6 +1854,10 @@ const generateFeeAgreement = async (
     .limit(1);
 
   if (!lead) throw new NotFoundError("Lead not found");
+  if (!lead.consultationId)
+    throw new BadRequestError(
+      "A consultation must be scheduled before generating a fee agreement",
+    );
   if (lead.feeAgreementId)
     throw new ConflictError("Fee agreement already exists for this lead");
 
