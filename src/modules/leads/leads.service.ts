@@ -1822,6 +1822,19 @@ const updateConsultation = async (
   if (!lead || !lead.consultationId)
     throw new NotFoundError("No consultation found for this lead");
 
+  // A consultation can't be marked complete before its scheduled start time.
+  if (data.status === "completed") {
+    const [existing] = await db
+      .select({ scheduledAt: consultations.scheduledAt })
+      .from(consultations)
+      .where(eq(consultations.id, lead.consultationId))
+      .limit(1);
+    if (existing && existing.scheduledAt.getTime() > Date.now())
+      throw new BadRequestError(
+        "A consultation cannot be completed before its scheduled start time",
+      );
+  }
+
   const [updated] = await db
     .update(consultations)
     .set({
