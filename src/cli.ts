@@ -1526,6 +1526,11 @@ const seedDemoData = async (organizationId?: string) => {
         role === "admin" ? "admin" : "member",
       );
 
+      const staffRole = role.includes("paralegal")
+        ? "paralegal"
+        : role === "attorney"
+          ? "attorney"
+          : "admin";
       const [createdStaffMember] = await tx
         .insert(staff)
         .values({
@@ -1535,6 +1540,7 @@ const seedDemoData = async (organizationId?: string) => {
           lastName,
           phone,
           jobTitle: role,
+          role: staffRole,
           status: index % 11 === 0 ? "on_leave" : "active",
         })
         .returning();
