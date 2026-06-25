@@ -248,4 +248,28 @@ export class QuestionnairesController {
 
     res.status(201).json(result);
   });
+
+  uploadResponseFileForStaff = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const file = req.file;
+      if (!file) throw new BadRequestError("File is required");
+
+      const { questionId, questionSource } = req.body;
+
+      const result = await this.svc.uploadResponseFileByStaff(
+        req.organizationId!,
+        {
+          responseId: req.params.responseId as string,
+          questionId,
+          questionSource: questionSource ?? undefined,
+          fileBuffer: file.buffer,
+          mimeType: file.mimetype,
+          fileSize: file.size,
+          originalFilename: file.originalname,
+        },
+      );
+
+      res.status(201).json(result);
+    },
+  );
 }

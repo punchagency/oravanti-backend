@@ -611,6 +611,86 @@ export class QuestionnairesService {
     return file;
   };
 
+  /**
+   * Staff-side manual upload of a document received outside the client portal
+   * (e.g. in-person, by email, or via scan). Attaches the file to the response's
+   * question so the consultation card reflects it as received.
+   */
+  uploadResponseFileByStaff = async (
+    organizationId: string,
+    data: {
+      responseId: string;
+      questionId: string;
+      questionSource?: "system" | "firm";
+      fileBuffer: Buffer;
+      mimeType: string;
+      fileSize: number;
+      originalFilename: string;
+    },
+  ) => {
+    const [response] = await db
+      .select()
+      .from(questionnaireResponses)
+      .where(
+        and(
+          eq(questionnaireResponses.id, data.responseId),
+          eq(questionnaireResponses.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!response) throw new NotFoundError("Response not found");
+
+    const [send] = await db
+      .select()
+      .from(questionnaireSends)
+      .where(eq(questionnaireSends.id, response.questionnaireSendId))
+      .limit(1);
+
+    const questionSource =
+      data.questionSource ??
+      getQuestionSourceFromSnapshot(send?.schemaSnapshot, data.questionId);
+
+    const safeFilename = `${Date.now()}-${data.originalFilename.replace(/\s+/g, "_")}`;
+    const storagePath = buildResponseFileStoragePath(
+      organizationId,
+      response.id,
+      data.questionId,
+      safeFilename,
+    );
+
+    const { error: uploadError } = await supabaseAdmin.storage
+      .from(SUPABASE_STORAGE_BUCKET)
+      .upload(storagePath, data.fileBuffer, {
+        contentType: data.mimeType,
+        upsert: false,
+      });
+
+    if (uploadError) throw new ExternalServiceError(uploadError.message);
+
+    const { data: urlData } = supabaseAdmin.storage
+      .from(SUPABASE_STORAGE_BUCKET)
+      .getPublicUrl(storagePath);
+
+    const [file] = await db
+      .insert(questionnaireResponseFiles)
+      .values({
+        organizationId,
+        responseId: response.id,
+        questionId: data.questionId,
+        questionSource,
+        storagePath,
+        fileUrl: urlData.publicUrl,
+        mimeType: data.mimeType,
+        fileSize: data.fileSize,
+        originalFilename: data.originalFilename,
+      })
+      .returning();
+
+    await enqueueDocumentScan(file.id).catch(console.error);
+
+    return file;
+  };
+
   // ── Intake: eligible leads, question bank, response review ──────────────────
 
   /**
