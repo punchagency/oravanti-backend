@@ -11,6 +11,7 @@ const statement = {
   cases: ["read", "create", "update", "delete"],
   clients: ["read", "create", "update", "delete"],
   staffs: ["read", "create", "update", "delete"],
+  invitations: ["read", "create", "update", "delete"],
   conflicts: ["review"], // conflict-check resolution (owners + admins only)
   documents: ["read", "download", "create", "update", "delete"], // download gates client docs
 } as const;
@@ -39,6 +40,7 @@ export const owner = ac.newRole({
   clients: [],
   cases: [],
   staffs: ["read", "create", "update", "delete"],
+  invitations: ["read", "create", "update", "delete"],
   conflicts: ["review"],
   documents: ["read", "download", "create", "update", "delete"],
   ...ownerAc.statements,
@@ -47,7 +49,8 @@ export const owner = ac.newRole({
 export const admin = ac.newRole({
   clients: [],
   cases: [],
-  staffs: [],
+  staffs: ["read", "create", "update", "delete"],
+  invitations: ["read", "create", "update", "delete"],
   conflicts: ["review"],
   documents: ["read", "download", "create", "update", "delete"],
   ...adminAc.statements,
