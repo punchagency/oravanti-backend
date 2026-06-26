@@ -3,7 +3,7 @@ import { organization } from './auth-schema';
 
 export const admins = pgTable('admins', {
   id:        uuid('id').primaryKey().defaultRandom(),
-  organizationId:    text('organization_id').notNull().unique().references(() => organization.id),
+  organizationId:    text('organization_id').notNull().unique().references(() => organization.id, { onDelete: 'cascade' }),
   userId:    text('user_id').notNull().unique(),
   firstName: text('first_name').notNull(),
   lastName:  text('last_name').notNull(),
