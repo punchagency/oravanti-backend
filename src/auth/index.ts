@@ -136,6 +136,7 @@ export const auth = betterAuth({
       // cancelPendingInvitationsOnReInvite: true,
       teams: {
         enabled: true,
+        defaultTeam: { enabled: false },
       },
       async sendInvitationEmail(data) {
         const inviteLink = `http://localhost:5137/accept-invitation?id=${data.id}`;
@@ -234,8 +235,9 @@ export const auth = betterAuth({
     // paralegal) on the session so the frontend can gate conflict review
     // without an extra request. The backend permission remains the real gate.
     customSession(async ({ user, session }) => {
-      const activeOrganizationId = (session as { activeOrganizationId?: string })
-        .activeOrganizationId;
+      const activeOrganizationId = (
+        session as { activeOrganizationId?: string }
+      ).activeOrganizationId;
 
       let memberRole: string | null = null;
       if (activeOrganizationId) {
