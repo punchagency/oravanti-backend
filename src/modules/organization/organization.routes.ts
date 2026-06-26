@@ -70,6 +70,12 @@ export class OrganizationRouter {
       requirePermission("staffs", "read"),
       this.organizationController.getAll,
     );
+    this.router.get(
+      "/staff/:staffId",
+      requireAuth,
+      requirePermission("staffs", "read"),
+      this.organizationController.getStaff,
+    );
     this.router.post(
       "/invite",
       requireAuth,

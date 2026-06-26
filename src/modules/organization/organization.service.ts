@@ -6,10 +6,12 @@ import { auth } from "../../auth";
 import { env } from "../../config/env";
 import { db } from "../../db/client";
 import {
+  practiceAreaCaseTypes,
   practiceAreas,
+  practiceAreaSubcategories,
   staff,
-  staffPracticeAreas,
-  teamPracticeAreas,
+  staffPracticeAreaCaseTypes,
+  teamPracticeAreaCaseTypes,
 } from "../../db/schema";
 import {
   invitation,
@@ -49,7 +51,7 @@ export interface InviteStaffParams {
   role?: string;
   startDate?: string;
   maxCaseload?: number;
-  practiceAreaIds?: string[];
+  caseTypeIds?: string[];
   teamIds?: string[];
 }
 
@@ -62,7 +64,7 @@ export interface UpdateStaffParams {
   orgEmail?: string;
   firstName?: string;
   lastName?: string;
-  practiceAreaIds?: string[];
+  caseTypeIds?: string[];
   teamIds?: string[];
 }
 
@@ -158,10 +160,35 @@ export class OrganizationService {
         practiceAreas: sql<{ id: string; name: string }[]>`
           COALESCE(
             (
-              SELECT json_agg(json_build_object('id', ${staffPracticeAreas.practiceAreaId}, 'name', ${practiceAreas.name}))
-              FROM ${staffPracticeAreas}
-              INNER JOIN ${practiceAreas} ON ${practiceAreas.id} = ${staffPracticeAreas.practiceAreaId}
-              WHERE ${staffPracticeAreas.staffId} = ${staff.id}
+              SELECT json_agg(DISTINCT jsonb_build_object('id', ${practiceAreas.id}, 'name', ${practiceAreas.name}))
+              FROM ${staffPracticeAreaCaseTypes}
+              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${staffPracticeAreaCaseTypes.caseTypeId}
+              INNER JOIN ${practiceAreaSubcategories} ON ${practiceAreaSubcategories.id} = ${practiceAreaCaseTypes.subcategoryId}
+              INNER JOIN ${practiceAreas} ON ${practiceAreas.id} = ${practiceAreaSubcategories.practiceAreaId}
+              WHERE ${staffPracticeAreaCaseTypes.staffId} = ${staff.id}
+            ),
+            '[]'::json
+          )
+        `,
+        subcategories: sql<{ id: string; name: string }[]>`
+          COALESCE(
+            (
+              SELECT json_agg(DISTINCT jsonb_build_object('id', ${practiceAreaSubcategories.id}, 'name', ${practiceAreaSubcategories.name}))
+              FROM ${staffPracticeAreaCaseTypes}
+              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${staffPracticeAreaCaseTypes.caseTypeId}
+              INNER JOIN ${practiceAreaSubcategories} ON ${practiceAreaSubcategories.id} = ${practiceAreaCaseTypes.subcategoryId}
+              WHERE ${staffPracticeAreaCaseTypes.staffId} = ${staff.id}
+            ),
+            '[]'::json
+          )
+        `,
+        caseTypes: sql<{ id: string; name: string }[]>`
+          COALESCE(
+            (
+              SELECT json_agg(json_build_object('id', ${staffPracticeAreaCaseTypes.caseTypeId}, 'name', ${practiceAreaCaseTypes.name}))
+              FROM ${staffPracticeAreaCaseTypes}
+              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${staffPracticeAreaCaseTypes.caseTypeId}
+              WHERE ${staffPracticeAreaCaseTypes.staffId} = ${staff.id}
             ),
             '[]'::json
           )
@@ -210,6 +237,8 @@ export class OrganizationService {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       practiceAreas: row.practiceAreas ?? [],
+      subcategories: row.subcategories ?? [],
+      caseTypes: row.caseTypes ?? [],
       teams: row.teams,
     }));
 
@@ -325,10 +354,12 @@ export class OrganizationService {
         practiceAreas: sql<{ id: string; name: string }[]>`
           COALESCE(
             (
-              SELECT json_agg(json_build_object('id', ${staffPracticeAreas.practiceAreaId}, 'name', ${practiceAreas.name}))
-              FROM ${staffPracticeAreas}
-              INNER JOIN ${practiceAreas} ON ${practiceAreas.id} = ${staffPracticeAreas.practiceAreaId}
-              WHERE ${staffPracticeAreas.staffId} = ${staff.id}
+              SELECT json_agg(DISTINCT jsonb_build_object('id', ${practiceAreas.id}, 'name', ${practiceAreas.name}))
+              FROM ${staffPracticeAreaCaseTypes}
+              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${staffPracticeAreaCaseTypes.caseTypeId}
+              INNER JOIN ${practiceAreaSubcategories} ON ${practiceAreaSubcategories.id} = ${practiceAreaCaseTypes.subcategoryId}
+              INNER JOIN ${practiceAreas} ON ${practiceAreas.id} = ${practiceAreaSubcategories.practiceAreaId}
+              WHERE ${staffPracticeAreaCaseTypes.staffId} = ${staff.id}
             ),
             '[]'::json
           )
@@ -446,7 +477,11 @@ export class OrganizationService {
     organizationId: string,
     params: UpdateStaffParams,
   ) {
-    const { practiceAreaIds, teamIds, ...safeFields } = params;
+    const {
+      caseTypeIds,
+      teamIds,
+      ...safeFields
+    } = params;
 
     const updateData: Record<string, unknown> = {
       ...safeFields,
@@ -512,16 +547,16 @@ export class OrganizationService {
           and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)),
         );
 
-      if (practiceAreaIds !== undefined) {
+      if (caseTypeIds !== undefined) {
         await tx
-          .delete(staffPracticeAreas)
-          .where(eq(staffPracticeAreas.staffId, staffId));
+          .delete(staffPracticeAreaCaseTypes)
+          .where(eq(staffPracticeAreaCaseTypes.staffId, staffId));
 
-        if (practiceAreaIds.length > 0) {
-          await tx.insert(staffPracticeAreas).values(
-            practiceAreaIds.map((practiceAreaId) => ({
+        if (caseTypeIds.length > 0) {
+          await tx.insert(staffPracticeAreaCaseTypes).values(
+            caseTypeIds.map((caseTypeId) => ({
               staffId,
-              practiceAreaId,
+              caseTypeId,
             })),
           );
         }
@@ -786,10 +821,13 @@ export class OrganizationService {
 
     const [practiceAreasResult] = await db
       .select({
-        practiceAreasCovered: sql<number>`COUNT(DISTINCT ${staffPracticeAreas.practiceAreaId})::int`,
+        practiceAreasCovered: sql<number>`COUNT(DISTINCT ${practiceAreas.id})::int`,
       })
-      .from(staffPracticeAreas)
-      .innerJoin(staff, eq(staff.id, staffPracticeAreas.staffId))
+      .from(staffPracticeAreaCaseTypes)
+      .innerJoin(practiceAreaCaseTypes, eq(practiceAreaCaseTypes.id, staffPracticeAreaCaseTypes.caseTypeId))
+      .innerJoin(practiceAreaSubcategories, eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId))
+      .innerJoin(practiceAreas, eq(practiceAreas.id, practiceAreaSubcategories.practiceAreaId))
+      .innerJoin(staff, eq(staff.id, staffPracticeAreaCaseTypes.staffId))
       .innerJoin(teamMember, eq(teamMember.userId, staff.userId))
       .innerJoin(teamTable, eq(teamTable.id, teamMember.teamId))
       .where(eq(teamTable.organizationId, organizationId));
@@ -831,9 +869,34 @@ export class OrganizationService {
           COALESCE(
             (
               SELECT json_agg(DISTINCT jsonb_build_object('id', ${practiceAreas.id}, 'name', ${practiceAreas.name}))
-              FROM ${teamPracticeAreas}
-              INNER JOIN ${practiceAreas} ON ${practiceAreas.id} = ${teamPracticeAreas.practiceAreaId}
-              WHERE ${teamPracticeAreas.teamId} = ${teamTable.id}
+              FROM ${teamPracticeAreaCaseTypes}
+              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${teamPracticeAreaCaseTypes.caseTypeId}
+              INNER JOIN ${practiceAreaSubcategories} ON ${practiceAreaSubcategories.id} = ${practiceAreaCaseTypes.subcategoryId}
+              INNER JOIN ${practiceAreas} ON ${practiceAreas.id} = ${practiceAreaSubcategories.practiceAreaId}
+              WHERE ${teamPracticeAreaCaseTypes.teamId} = ${teamTable.id}
+            ),
+            '[]'::json
+          )
+        `,
+        subcategories: sql<{ id: string; name: string }[]>`
+          COALESCE(
+            (
+              SELECT json_agg(DISTINCT jsonb_build_object('id', ${practiceAreaSubcategories.id}, 'name', ${practiceAreaSubcategories.name}))
+              FROM ${teamPracticeAreaCaseTypes}
+              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${teamPracticeAreaCaseTypes.caseTypeId}
+              INNER JOIN ${practiceAreaSubcategories} ON ${practiceAreaSubcategories.id} = ${practiceAreaCaseTypes.subcategoryId}
+              WHERE ${teamPracticeAreaCaseTypes.teamId} = ${teamTable.id}
+            ),
+            '[]'::json
+          )
+        `,
+        caseTypes: sql<{ id: string; name: string }[]>`
+          COALESCE(
+            (
+              SELECT json_agg(json_build_object('id', ${teamPracticeAreaCaseTypes.caseTypeId}, 'name', ${practiceAreaCaseTypes.name}))
+              FROM ${teamPracticeAreaCaseTypes}
+              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${teamPracticeAreaCaseTypes.caseTypeId}
+              WHERE ${teamPracticeAreaCaseTypes.teamId} = ${teamTable.id}
             ),
             '[]'::json
           )
@@ -880,6 +943,8 @@ export class OrganizationService {
     return {
       ...row,
       practiceAreas: row.practiceAreas ?? [],
+      subcategories: row.subcategories ?? [],
+      caseTypes: row.caseTypes ?? [],
       members: row.members ?? [],
     };
   }
@@ -891,7 +956,7 @@ export class OrganizationService {
       description?: string;
       leadId?: string;
       maxCaseload?: number;
-      practiceAreaIds?: string[];
+      caseTypeIds?: string[];
       memberStaffIds?: string[];
     },
     headers: Record<string, string | string[] | undefined>,
@@ -914,11 +979,11 @@ export class OrganizationService {
 
     try {
       await db.transaction(async (tx) => {
-        if (params.practiceAreaIds?.length) {
-          await tx.insert(teamPracticeAreas).values(
-            params.practiceAreaIds.map((practiceAreaId) => ({
+        if (params.caseTypeIds?.length) {
+          await tx.insert(teamPracticeAreaCaseTypes).values(
+            params.caseTypeIds.map((caseTypeId) => ({
               teamId: createdTeam.id,
-              practiceAreaId,
+              caseTypeId,
             })),
           );
         }
@@ -987,7 +1052,7 @@ export class OrganizationService {
       role,
       startDate,
       maxCaseload,
-      practiceAreaIds,
+      caseTypeIds,
       teamIds,
     } = params;
 
@@ -1041,11 +1106,11 @@ export class OrganizationService {
 
       staffId = created.id;
 
-      if (practiceAreaIds?.length) {
-        await tx.insert(staffPracticeAreas).values(
-          practiceAreaIds.map((practiceAreaId) => ({
+      if (caseTypeIds?.length) {
+        await tx.insert(staffPracticeAreaCaseTypes).values(
+          caseTypeIds.map((caseTypeId) => ({
             staffId: created.id,
-            practiceAreaId,
+            caseTypeId,
           })),
         );
       }
@@ -1093,7 +1158,12 @@ export class OrganizationService {
     const [existingTeam] = await db
       .select({ id: teamTable.id })
       .from(teamTable)
-      .where(and(eq(teamTable.id, teamId), eq(teamTable.organizationId, organizationId)));
+      .where(
+        and(
+          eq(teamTable.id, teamId),
+          eq(teamTable.organizationId, organizationId),
+        ),
+      );
 
     if (!existingTeam) {
       throw new Error("Team not found");
@@ -1110,16 +1180,23 @@ export class OrganizationService {
     const staffMember = await db
       .select({ userId: staff.userId })
       .from(staff)
-      .where(and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)))
+      .where(
+        and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)),
+      )
       .then((rows) => rows[0]);
 
     if (!staffMember || !staffMember.userId) {
       throw new Error("Staff member not found");
     }
 
-    await db.delete(teamMember).where(
-      and(eq(teamMember.teamId, teamId), eq(teamMember.userId, staffMember.userId)),
-    );
+    await db
+      .delete(teamMember)
+      .where(
+        and(
+          eq(teamMember.teamId, teamId),
+          eq(teamMember.userId, staffMember.userId),
+        ),
+      );
 
     await db
       .update(teamTable)
@@ -1127,26 +1204,127 @@ export class OrganizationService {
       .where(and(eq(teamTable.id, teamId), eq(teamTable.leadId, staffId)));
   }
 
+  async getStaff(staffId: string, organizationId: string) {
+    const [row] = await db
+      .select({
+        id: staff.id,
+        userId: staff.userId,
+        firstName: staff.firstName,
+        lastName: staff.lastName,
+        email: user.email,
+        orgEmail: staff.orgEmail,
+        phone: staff.phone,
+        role: member.role,
+        staffRole: staff.role,
+        status: staff.status,
+        startDate: staff.startDate,
+        maxCaseload: staff.maxCaseload,
+        practiceAreas: sql<{ id: string; name: string }[]>`
+          COALESCE(
+            (
+              SELECT json_agg(DISTINCT jsonb_build_object('id', ${practiceAreas.id}, 'name', ${practiceAreas.name}))
+              FROM ${staffPracticeAreaCaseTypes}
+              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${staffPracticeAreaCaseTypes.caseTypeId}
+              INNER JOIN ${practiceAreaSubcategories} ON ${practiceAreaSubcategories.id} = ${practiceAreaCaseTypes.subcategoryId}
+              INNER JOIN ${practiceAreas} ON ${practiceAreas.id} = ${practiceAreaSubcategories.practiceAreaId}
+              WHERE ${staffPracticeAreaCaseTypes.staffId} = ${staff.id}
+            ),
+            '[]'::json
+          )
+        `,
+        subcategories: sql<{ id: string; name: string }[]>`
+          COALESCE(
+            (
+              SELECT json_agg(DISTINCT jsonb_build_object('id', ${practiceAreaSubcategories.id}, 'name', ${practiceAreaSubcategories.name}))
+              FROM ${staffPracticeAreaCaseTypes}
+              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${staffPracticeAreaCaseTypes.caseTypeId}
+              INNER JOIN ${practiceAreaSubcategories} ON ${practiceAreaSubcategories.id} = ${practiceAreaCaseTypes.subcategoryId}
+              WHERE ${staffPracticeAreaCaseTypes.staffId} = ${staff.id}
+            ),
+            '[]'::json
+          )
+        `,
+        caseTypes: sql<{ id: string; name: string }[]>`
+          COALESCE(
+            (
+              SELECT json_agg(json_build_object('id', ${staffPracticeAreaCaseTypes.caseTypeId}, 'name', ${practiceAreaCaseTypes.name}))
+              FROM ${staffPracticeAreaCaseTypes}
+              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${staffPracticeAreaCaseTypes.caseTypeId}
+              WHERE ${staffPracticeAreaCaseTypes.staffId} = ${staff.id}
+            ),
+            '[]'::json
+          )
+        `,
+        teams: sql<{ id: string; name: string }[]>`
+          COALESCE(
+            (
+              SELECT json_agg(json_build_object('id', ${teamTable.id}, 'name', ${teamTable.name}) ORDER BY ${teamTable.name})
+              FROM ${teamMember}
+              INNER JOIN ${teamTable} ON ${teamTable.id} = ${teamMember.teamId}
+              WHERE ${teamMember.userId} = ${staff.userId}
+            ),
+            '[]'::json
+          )
+        `,
+      })
+      .from(staff)
+      .leftJoin(user, eq(staff.userId, user.id))
+      .leftJoin(
+        member,
+        and(
+          eq(member.userId, staff.userId),
+          eq(member.organizationId, staff.organizationId),
+        ),
+      )
+      .where(
+        and(
+          eq(staff.id, staffId),
+          eq(staff.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      userId: row.userId,
+      firstName: row.firstName,
+      lastName: row.lastName,
+      email: row.email,
+      orgEmail: row.orgEmail,
+      phone: row.phone,
+      role: row.role ?? row.staffRole,
+      status: row.status,
+      startDate: row.startDate,
+      maxCaseload: row.maxCaseload,
+      practiceAreas: row.practiceAreas ?? [],
+      subcategories: row.subcategories ?? [],
+      caseTypes: row.caseTypes ?? [],
+      teams: row.teams ?? [],
+    };
+  }
+
   async deleteStaff(staffId: string, organizationId: string) {
     const [staffMember] = await db
       .select({ userId: staff.userId })
       .from(staff)
-      .where(and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)));
+      .where(
+        and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)),
+      );
 
     if (!staffMember) {
       throw new Error("Staff member not found");
     }
 
-    if (staffMember.userId) {
-      await db.delete(teamMember).where(eq(teamMember.userId, staffMember.userId));
-    }
+    await db.transaction(async (tx) => {
+      await tx
+        .update(teamTable)
+        .set({ leadId: null })
+        .where(eq(teamTable.leadId, staffId));
 
-    await db
-      .update(teamTable)
-      .set({ leadId: null })
-      .where(eq(teamTable.leadId, staffId));
-
-    await db.delete(staff).where(eq(staff.id, staffId));
+      await tx.delete(user).where(eq(user.id, staffMember.userId!));
+    });
   }
 
   async updateTeam(
@@ -1157,37 +1335,53 @@ export class OrganizationService {
       description?: string;
       maxCaseload?: number;
       leadId?: string | null;
-      practiceAreaIds?: string[];
+      caseTypeIds?: string[];
     },
   ) {
     const [existing] = await db
       .select({ id: teamTable.id })
       .from(teamTable)
-      .where(and(eq(teamTable.id, teamId), eq(teamTable.organizationId, organizationId)));
+      .where(
+        and(
+          eq(teamTable.id, teamId),
+          eq(teamTable.organizationId, organizationId),
+        ),
+      );
 
     if (!existing) {
       throw new Error("Team not found");
     }
 
-    if (params.name !== undefined || params.description !== undefined || params.maxCaseload !== undefined || params.leadId !== undefined) {
+    if (
+      params.name !== undefined ||
+      params.description !== undefined ||
+      params.maxCaseload !== undefined ||
+      params.leadId !== undefined
+    ) {
       await db
         .update(teamTable)
         .set({
           ...(params.name !== undefined && { name: params.name }),
-          ...(params.description !== undefined && { description: params.description }),
-          ...(params.maxCaseload !== undefined && { maxCaseload: params.maxCaseload }),
+          ...(params.description !== undefined && {
+            description: params.description,
+          }),
+          ...(params.maxCaseload !== undefined && {
+            maxCaseload: params.maxCaseload,
+          }),
           ...(params.leadId !== undefined && { leadId: params.leadId }),
         })
         .where(eq(teamTable.id, teamId));
     }
 
-    if (params.practiceAreaIds !== undefined) {
-      await db.delete(teamPracticeAreas).where(eq(teamPracticeAreas.teamId, teamId));
-      if (params.practiceAreaIds.length > 0) {
-        await db.insert(teamPracticeAreas).values(
-          params.practiceAreaIds.map((practiceAreaId) => ({
+    if (params.caseTypeIds !== undefined) {
+      await db
+        .delete(teamPracticeAreaCaseTypes)
+        .where(eq(teamPracticeAreaCaseTypes.teamId, teamId));
+      if (params.caseTypeIds.length > 0) {
+        await db.insert(teamPracticeAreaCaseTypes).values(
+          params.caseTypeIds.map((caseTypeId) => ({
             teamId,
-            practiceAreaId,
+            caseTypeId,
           })),
         );
       }
@@ -1202,7 +1396,12 @@ export class OrganizationService {
     const [existing] = await db
       .select({ id: teamTable.id })
       .from(teamTable)
-      .where(and(eq(teamTable.id, teamId), eq(teamTable.organizationId, organizationId)));
+      .where(
+        and(
+          eq(teamTable.id, teamId),
+          eq(teamTable.organizationId, organizationId),
+        ),
+      );
 
     if (!existing) {
       throw new Error("Team not found");
@@ -1211,7 +1410,12 @@ export class OrganizationService {
     const staffMembers = await db
       .select({ id: staff.id, userId: staff.userId })
       .from(staff)
-      .where(and(inArray(staff.id, staffIds), eq(staff.organizationId, organizationId)));
+      .where(
+        and(
+          inArray(staff.id, staffIds),
+          eq(staff.organizationId, organizationId),
+        ),
+      );
 
     const existingMembers = await db
       .select({ userId: teamMember.userId })

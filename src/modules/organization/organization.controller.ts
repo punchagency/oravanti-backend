@@ -14,7 +14,7 @@ export class OrganizationController {
       return res.status(400).json({ error: "No active organization" });
     }
 
-    const { name, description, leadId, maxCaseload, practiceAreaIds, memberStaffIds } = req.body;
+    const { name, description, leadId, maxCaseload, caseTypeIds, memberStaffIds } = req.body;
 
     if (!name) {
       return res.status(400).json({ error: "Team name is required" });
@@ -22,11 +22,26 @@ export class OrganizationController {
 
     const result = await this.organizationService.createTeam(
       req.organizationId,
-      { name, description, leadId, maxCaseload, practiceAreaIds, memberStaffIds },
+      { name, description, leadId, maxCaseload, caseTypeIds, memberStaffIds },
       req.headers,
     );
 
     res.status(201).json(result);
+  });
+
+  getStaff = asyncWrap(async (req: AuthRequest, res) => {
+    if (!req.organizationId) {
+      return res.status(400).json({ error: "No active organization" });
+    }
+    const staffId = req.params.staffId as string;
+    const result = await this.organizationService.getStaff(
+      staffId,
+      req.organizationId,
+    );
+    if (!result) {
+      return res.status(404).json({ error: "Staff member not found" });
+    }
+    res.status(200).json(result);
   });
 
   getTeam = asyncWrap(async (req: AuthRequest, res) => {
@@ -103,7 +118,7 @@ export class OrganizationController {
       role,
       startDate,
       maxCaseload,
-      practiceAreaIds,
+      caseTypeIds,
       teamIds,
     } = req.body;
 
@@ -128,7 +143,7 @@ export class OrganizationController {
         role,
         startDate,
         maxCaseload,
-        practiceAreaIds,
+        caseTypeIds,
         teamIds,
       },
       req.headers,
@@ -188,12 +203,12 @@ export class OrganizationController {
       return res.status(400).json({ error: "No active organization" });
     }
     const staffId = req.params.staffId as string;
-    const { phone, jobTitle, maxCaseload, startDate, email, orgEmail, firstName, lastName, practiceAreaIds, teamIds } =
+    const { phone, jobTitle, maxCaseload, startDate, email, orgEmail, firstName, lastName, caseTypeIds, teamIds } =
       req.body;
     const result = await this.organizationService.updateStaff(
       staffId,
       req.organizationId,
-      { phone, jobTitle, maxCaseload, startDate, email, orgEmail, firstName, lastName, practiceAreaIds, teamIds },
+      { phone, jobTitle, maxCaseload, startDate, email, orgEmail, firstName, lastName, caseTypeIds, teamIds },
     );
     res.status(200).json(result);
   });
@@ -290,13 +305,13 @@ export class OrganizationController {
       return res.status(400).json({ error: "No active organization" });
     }
     const teamId = req.params.teamId as string;
-    const { name, description, maxCaseload, leadId, practiceAreaIds } = req.body;
+    const { name, description, maxCaseload, leadId, caseTypeIds } = req.body;
     await this.organizationService.updateTeam(teamId, req.organizationId, {
       name,
       description,
       maxCaseload,
       leadId,
-      practiceAreaIds,
+      caseTypeIds,
     });
     res.status(200).json({ message: "Team updated" });
   });

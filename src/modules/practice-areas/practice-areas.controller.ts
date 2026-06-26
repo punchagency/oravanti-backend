@@ -42,4 +42,9 @@ export class PracticeAreasController {
     );
     res.status(200).json(result);
   });
+
+  getTreeData = asyncWrap(async (_req: Request, res: Response) => {
+    const result = await this.practiceAreasService.getTreeData();
+    res.status(200).json(result);
+  });
 }

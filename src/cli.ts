@@ -74,7 +74,6 @@ import { staffCertifications } from "./db/schema/staff-certifications";
 import { subscriptions, SubscriptionStatus } from "./db/schema/subscriptions";
 import { tasks } from "./db/schema/tasks";
 import { teamMembers } from "./db/schema/team-members";
-import { teamPracticeAreas } from "./db/schema/team-practice-areas";
 import { teams } from "./db/schema/teams";
 import { timeEntries } from "./db/schema/time-entries";
 import {
@@ -2580,16 +2579,8 @@ const dropDemoData = async (organizationId?: string) => {
           .where(inArray(teamMember.teamId, authTeamIds))
           .returning(),
       );
-      record(
-        "teamPracticeAreas",
-        await tx
-          .delete(teamPracticeAreas)
-          .where(inArray(teamPracticeAreas.teamId, authTeamIds))
-          .returning(),
-      );
     } else {
       deleted.teamMember = 0;
-      deleted.teamPracticeAreas = 0;
     }
 
     record(

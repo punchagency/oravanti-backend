@@ -144,5 +144,10 @@ export class PracticeAreasRouter {
       validateRequest({ body: this.validation.optionalBody() }),
       this.practiceAreasController.cancelSubscriptions,
     );
+
+    this.router.get(
+      "/tree-data",
+      this.practiceAreasController.getTreeData,
+    );
   }
 }
