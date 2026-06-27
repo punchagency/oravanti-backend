@@ -10,17 +10,14 @@ import { organization } from "./auth-schema";
 import { leads } from "./leads";
 import { staff } from "./staff";
 
-export const consultationModeEnum = pgEnum("consultation_mode", [
-  "video",
-  "in_person",
-]);
+export const consultationModeEnum = pgEnum('consultation_mode', ['video', 'in_person', 'phone_call']);
 
-export const consultationStatusEnum = pgEnum("consultation_status", [
-  "scheduled",
-  "in_progress",
-  "completed",
-  "cancelled",
-  "no_show",
+export const consultationStatusEnum = pgEnum('consultation_status', [
+  'scheduled',
+  'in_progress',
+  'completed',
+  'cancelled',
+  'no_show',
 ]);
 
 export const consultationOutcomeEnum = pgEnum("consultation_outcome", [

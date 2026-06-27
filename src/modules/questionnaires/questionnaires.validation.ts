@@ -105,4 +105,10 @@ export class QuestionnairesValidation {
     questionId: this.uuidParam,
     questionSource: z.enum(["system", "firm"]).optional(),
   });
+
+  // Staff manual upload — responseId comes from the route param.
+  public uploadResponseFileStaffBodySchema = z.object({
+    questionId: this.uuidParam,
+    questionSource: z.enum(["system", "firm"]).optional(),
+  });
 }

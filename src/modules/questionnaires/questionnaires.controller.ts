@@ -176,6 +176,16 @@ export class QuestionnairesController {
     res.status(200).json(result);
   });
 
+  requestMissingDocuments = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const result = await this.svc.requestMissingDocuments(
+        req.organizationId!,
+        req.params.sendId as string,
+      );
+      res.status(200).json(result);
+    },
+  );
+
   downloadResponsePdf = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { buffer, filename } = await this.svc.generateResponsePdf(
       req.organizationId!,
@@ -238,4 +248,28 @@ export class QuestionnairesController {
 
     res.status(201).json(result);
   });
+
+  uploadResponseFileForStaff = asyncWrap(
+    async (req: AuthRequest, res: Response) => {
+      const file = req.file;
+      if (!file) throw new BadRequestError("File is required");
+
+      const { questionId, questionSource } = req.body;
+
+      const result = await this.svc.uploadResponseFileByStaff(
+        req.organizationId!,
+        {
+          responseId: req.params.responseId as string,
+          questionId,
+          questionSource: questionSource ?? undefined,
+          fileBuffer: file.buffer,
+          mimeType: file.mimetype,
+          fileSize: file.size,
+          originalFilename: file.originalname,
+        },
+      );
+
+      res.status(201).json(result);
+    },
+  );
 }

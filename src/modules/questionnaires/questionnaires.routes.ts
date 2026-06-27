@@ -90,6 +90,24 @@ export class QuestionnairesRouter {
       validateRequest({ params: v.sendIdParamsSchema }),
       ctrl.sendReminder,
     );
+    this.router.post(
+      "/sends/:sendId/request-documents",
+      ...staffGuards,
+      validateRequest({ params: v.sendIdParamsSchema }),
+      ctrl.requestMissingDocuments,
+    );
+
+    // Staff manual upload of a document received outside the client portal.
+    this.router.post(
+      "/responses/:responseId/files",
+      ...staffGuards,
+      this.upload.single("file"),
+      validateRequest({
+        params: v.responseIdParamsSchema,
+        body: v.uploadResponseFileStaffBodySchema,
+      }),
+      ctrl.uploadResponseFileForStaff,
+    );
 
     // Response answers PDF — available to any staff (documents excluded).
     this.router.get(

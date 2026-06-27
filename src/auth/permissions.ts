@@ -21,7 +21,7 @@ export const ac = createAccessControl(statement);
 export const paralegal = ac.newRole({
   cases: [],
   clients: [],
-  staffs: [],
+  staffs: ["read"], // list attorneys for the consultation wizard
   conflicts: [],
   documents: ["read"],
   ...memberAc.statements,
@@ -30,7 +30,7 @@ export const paralegal = ac.newRole({
 export const attorney = ac.newRole({
   cases: [],
   clients: [],
-  staffs: [],
+  staffs: ["read"], // list attorneys for the consultation wizard
   conflicts: [],
   documents: ["read", "download"],
   ...memberAc.statements,

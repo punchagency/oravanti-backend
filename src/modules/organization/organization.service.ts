@@ -99,10 +99,17 @@ export class OrganizationService {
       );
     }
 
-    // Role filter: check both member.role and staff.role (synced copy) via case-insensitive text comparison
-    if (role) {
+    // Role filter: a staff member's role can live in three places depending on
+    // how the row was created — better-auth member.role, the synced staff.role
+    // enum, or (for demo/seeded rows that predate the sync) staff.jobTitle, e.g.
+    // "attorney" / "senior_paralegal". Match any of them, case-insensitively.
+    if (role && role !== "all-roles") {
       conditions.push(
-        sql`(LOWER(${member.role}::text) = LOWER(${role}) OR LOWER(${staff.role}::text) = LOWER(${role}))`,
+        sql`(
+          LOWER(${member.role}::text) = LOWER(${role})
+          OR LOWER(${staff.role}::text) = LOWER(${role})
+          OR LOWER(${staff.jobTitle}) LIKE LOWER(${`%${role}%`})
+        )`,
       );
     }
 

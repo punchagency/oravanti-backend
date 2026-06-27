@@ -247,6 +247,24 @@ export class AgreementsRouter {
       validateRequest({ params: v.agreementIdParamsSchema }),
       ctrl.nudgeClient,
     );
+
+    this.router.post(
+      "/:agreementId/send",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.agreementIdParamsSchema }),
+      ctrl.sendFeeAgreement,
+    );
+
+    this.router.post(
+      "/:agreementId/mark-received",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.agreementIdParamsSchema }),
+      ctrl.markFeeAgreementReceived,
+    );
   }
 }
 
