@@ -19,7 +19,8 @@
     "db:migrate": "ts-node src/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "db:push": "drizzle-kit push",
-    "auth:generate": "auth generate --output ./src/db/schema/auth-schema.ts --yes"
+    "auth:generate": "auth generate --output ./src/db/schema/auth-schema.ts --yes",
+    "db:clear": "tsx src/db/clear-all.ts"
   },
   "repository": {
     "type": "git",

@@ -157,6 +157,8 @@ export class AuthService {
     body: {
       email: string;
       password: string;
+      firstName?: string;
+      lastName?: string;
       rememberMe?: boolean;
     },
     req: Request<any, any, any, { account_type?: AccountType }>,
@@ -173,13 +175,19 @@ export class AuthService {
       );
     }
 
+    const displayName = [body.firstName, body.lastName]
+      .filter(Boolean)
+      .join(" ")
+      .trim() || "User";
+
     let response;
     try {
       response = await auth.api.signUpEmail({
         headers: clientHeaders,
         body: {
-          ...body,
-          name: "User",
+          email: body.email,
+          password: body.password,
+          name: displayName,
           accountType: accountType,
           onboardingState: "email_unverified",
           callbackURL: env.EMAIL_VERIFICATION_CALLBACK_URL,

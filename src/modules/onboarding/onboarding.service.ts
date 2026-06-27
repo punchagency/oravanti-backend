@@ -17,6 +17,7 @@ export class OnboardingService {
     userId: string,
     body: {
       accountType: AccountType;
+      referralSource?: string;
       profile: {
         firstName: string;
         lastName: string;
@@ -36,7 +37,7 @@ export class OnboardingService {
       };
     },
   ) => {
-    const { accountType, profile, firmDetails } = body;
+    const { accountType, referralSource, profile, firmDetails } = body;
 
     if (accountType !== "firm_admin") {
       throw new BadRequestError(
@@ -106,6 +107,7 @@ export class OnboardingService {
           zipCode: firmDetails.zipcode,
           website: firmDetails.website,
           taxId: firmDetails.taxId,
+          referralSource: referralSource ?? null,
         })
         .where(eq(organization.id, newOrg.id));
 

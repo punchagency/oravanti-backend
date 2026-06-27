@@ -1,5 +1,6 @@
 import {
   integer,
+  numeric,
   pgEnum,
   pgTable,
   text,
@@ -45,6 +46,9 @@ export const staff = pgTable("staff", {
 
   role: staffRoleEnum("role"),
   startDate: timestamp("start_date"),
+  avatarUrl: text("avatar_url"),
+  monthlySalary: numeric("monthly_salary", { precision: 10, scale: 2 }).default("0"),
+  hourlyRate: numeric("hourly_rate", { precision: 8, scale: 2 }).default("0"),
 
   // Org-specific fields
   orgEmail: text("org_email"),

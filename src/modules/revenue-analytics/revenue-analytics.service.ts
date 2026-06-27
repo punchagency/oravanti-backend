@@ -111,8 +111,8 @@ function getPreviousPeriodRange(period: Period): {
   return { startStr: null, endStr: null };
 }
 
-function monthsSince(startDateStr: string): number {
-  const start = new Date(startDateStr);
+function monthsSince(startDate: Date | null): number {
+  const start = startDate ?? new Date();
   const now = new Date();
   const diff =
     (now.getFullYear() - start.getFullYear()) * 12 +

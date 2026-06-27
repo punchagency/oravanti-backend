@@ -11,8 +11,6 @@ import {
 } from "../schema/auth-schema";
 import { practiceAreas } from "../schema/practice-areas";
 import { staff } from "../schema/staff";
-import { staffPracticeAreas } from "../schema/staff-practice-areas";
-import { teamPracticeAreas } from "../schema/team-practice-areas";
 
 const DEMO_EMAIL_DOMAIN = "oravanti.com";
 
@@ -533,18 +531,6 @@ export const seedStaffAndTeams = async (organizationId: string) => {
       status,
       email,
     });
-
-    const practiceCount = 1 + (i % 3);
-    for (const p of range(practiceCount)) {
-      const paIdx = (i + p) % practiceAreaRows.length;
-      await db
-        .insert(staffPracticeAreas)
-        .values({
-          staffId: newStaff.id,
-          practiceAreaId: practiceAreaRows[paIdx].id,
-        })
-        .onConflictDoNothing();
-    }
   }
 
   const createdTeams: Array<{ id: string }> = [];
@@ -589,15 +575,6 @@ export const seedStaffAndTeams = async (organizationId: string) => {
     }
 
     createdTeams.push({ id: teamId });
-
-    const paIdx = i % practiceAreaRows.length;
-    await db
-      .insert(teamPracticeAreas)
-      .values({
-        teamId,
-        practiceAreaId: practiceAreaRows[paIdx].id,
-      })
-      .onConflictDoNothing();
   }
 
   const staffTeamCount = new Map<string, number>();
