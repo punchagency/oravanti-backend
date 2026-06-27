@@ -39,6 +39,7 @@ export * from "./questionnaires";
 export * from "./staff-certifications";
 export * from "./subscriptions";
 export * from "./tasks";
+export * from "./team-members";
 export * from "./team-practice-area-case-types";
 export * from "./staff-practice-area-case-types";
 export * from "./relations";

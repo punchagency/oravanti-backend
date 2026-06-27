@@ -1586,6 +1586,7 @@ const seedDemoData = async (organizationId?: string) => {
       .returning();
 
     const teamValues: NewTeamRow[] = range(DEMO_TARGETS.teams).map((index) => ({
+      id: randomUUID(),
       organizationId: firm.id,
       name: `Demo ${pick(practiceAreaRows, index).name} Team ${suffix}-${pad(index + 1)}`,
       leadId: pick(createdStaff, index + 1).id,

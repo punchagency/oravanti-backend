@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { and, eq } from "drizzle-orm";
 import { db } from "../../../db/client";
 import { staff } from "../../../db/schema/staff";
@@ -44,7 +45,7 @@ export class TeamsService {
     }
 
     try {
-      const [newTeam] = await db.insert(teams).values(body).returning();
+      const [newTeam] = await db.insert(teams).values({ ...body, id: crypto.randomUUID() }).returning();
       return newTeam;
     } catch (error: any) {
       if (error.code === "23505") {
