@@ -31,6 +31,7 @@ type AppEnv = Record<RequiredEnvKey, string> & {
   PROD_DATABASE_URL?: string;
   SERVER_MASTER_KEY_OLD?: string;
   CONTRACTOR_PAYMENT_ENCRYPTION_KEY?: string;
+  RESEND_API_KEY?: string;
   databaseUrl: string;
   isProduction: boolean;
 };
@@ -77,11 +78,14 @@ const validateEnv = (): AppEnv => {
     throw new Error("Missing required environment variable: PROD_DATABASE_URL");
   }
 
+  const resendApiKey = readEnv("RESEND_API_KEY");
+
   return {
     ...values,
     ...(prodDatabaseUrl ? { PROD_DATABASE_URL: prodDatabaseUrl } : {}),
     ...(serverMasterKeyOld ? { SERVER_MASTER_KEY_OLD: serverMasterKeyOld } : {}),
     ...(contractorPaymentEncryptionKey ? { CONTRACTOR_PAYMENT_ENCRYPTION_KEY: contractorPaymentEncryptionKey } : {}),
+    ...(resendApiKey ? { RESEND_API_KEY: resendApiKey } : {}),
     databaseUrl: isProduction ? prodDatabaseUrl! : values.DATABASE_URL,
     isProduction,
   };
