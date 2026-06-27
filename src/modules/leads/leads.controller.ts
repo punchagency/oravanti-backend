@@ -182,6 +182,22 @@ export class LeadsController {
     res.json({ success: true, data: result });
   };
 
+  sendFeeAgreement = async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.sendFeeAgreement(
+      req.params.agreementId as string,
+      req.organizationId!,
+    );
+    res.json({ success: true, data: result });
+  };
+
+  markFeeAgreementReceived = async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.markFeeAgreementReceived(
+      req.params.agreementId as string,
+      req.organizationId!,
+    );
+    res.json({ success: true, data: result });
+  };
+
   // ─── eSignature Webhook (public) ─────────────────────────────────────────────
 
   handleESignatureWebhook = async (req: Request, res: Response) => {

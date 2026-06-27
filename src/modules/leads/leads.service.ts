@@ -1,5 +1,15 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
-import { and, count, desc, eq, ilike, inArray, ne, or } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  getTableColumns,
+  ilike,
+  inArray,
+  ne,
+  or,
+} from "drizzle-orm";
 import {
   cancelQuestionnaireReminder,
   scheduleQuestionnaireReminder,
@@ -427,7 +437,9 @@ const getAllLeads = async (
 
   const where = and(...conditions);
 
-  const attachConflictMatches = async (rows: (typeof leads.$inferSelect)[]) => {
+  const attachConflictMatches = async (
+    rows: (typeof leads.$inferSelect & { caseTypeName: string | null })[],
+  ) => {
     const conflictCheckLeads = rows.filter(
       (r) => r.pipelineStage === "conflict_check" && r.conflictCheckId,
     );
@@ -467,8 +479,15 @@ const getAllLeads = async (
 
   if (filters.all) {
     const rows = await db
-      .select()
+      .select({
+        ...getTableColumns(leads),
+        caseTypeName: practiceAreaCaseTypes.name,
+      })
       .from(leads)
+      .leftJoin(
+        practiceAreaCaseTypes,
+        eq(leads.caseTypeId, practiceAreaCaseTypes.id),
+      )
       .where(where)
       .orderBy(desc(leads.receivedAt));
     return attachConflictMatches(rows);
@@ -484,8 +503,15 @@ const getAllLeads = async (
     .where(where);
 
   const rows = await db
-    .select()
+    .select({
+      ...getTableColumns(leads),
+      caseTypeName: practiceAreaCaseTypes.name,
+    })
     .from(leads)
+    .leftJoin(
+      practiceAreaCaseTypes,
+      eq(leads.caseTypeId, practiceAreaCaseTypes.id),
+    )
     .where(where)
     .orderBy(desc(leads.receivedAt))
     .limit(limit)
@@ -506,8 +532,15 @@ const getAllLeads = async (
 
 const getLeadById = async (id: string, organizationId: string) => {
   const [lead] = await db
-    .select()
+    .select({
+      ...getTableColumns(leads),
+      caseTypeName: practiceAreaCaseTypes.name,
+    })
     .from(leads)
+    .leftJoin(
+      practiceAreaCaseTypes,
+      eq(leads.caseTypeId, practiceAreaCaseTypes.id),
+    )
     .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
     .limit(1);
 
@@ -1641,10 +1674,11 @@ const createConsultation = async (
   data: {
     scheduledAt: Date;
     duration: number;
-    mode: "video" | "in_person";
+    mode: "video" | "in_person" | "phone_call";
     leadAttorneyId?: string;
     videoLink?: string;
     preConsultationNotes?: string;
+    notifyChannels?: ("email" | "sms")[];
   },
 ) => {
   const [lead] = await db
@@ -1656,6 +1690,16 @@ const createConsultation = async (
   if (!lead) throw new NotFoundError("Lead not found");
   if (lead.consultationId)
     throw new ConflictError("Consultation already exists for this lead");
+
+  const notifyChannels = data.notifyChannels?.length
+    ? data.notifyChannels
+    : ["email"];
+  const modeLabel =
+    data.mode === "video"
+      ? "Video Call"
+      : data.mode === "phone_call"
+        ? "Phone call"
+        : "In Person";
 
   const [consultation] = await db
     .insert(consultations)
@@ -1705,7 +1749,7 @@ const createConsultation = async (
           html: `<p>Hi ${attorney.firstName},</p>
             <p>A consultation has been scheduled with <strong>${lead.name}</strong>.</p>
             <p><strong>Date/Time:</strong> ${scheduledStr} UTC</p>
-            <p><strong>Mode:</strong> ${data.mode === "video" ? "Video Call" : "In Person"}</p>
+            <p><strong>Mode:</strong> ${modeLabel}</p>
             ${data.videoLink ? `<p><strong>Video Link:</strong> <a href="${data.videoLink}">${data.videoLink}</a></p>` : ""}
             ${data.preConsultationNotes ? `<p><strong>Pre-consultation notes:</strong> ${data.preConsultationNotes}</p>` : ""}`,
         })
@@ -1713,17 +1757,25 @@ const createConsultation = async (
     }
   }
 
-  emailService
-    .sendEmail({
-      to: lead.email,
-      subject: "Your consultation has been scheduled",
-      html: `<p>Dear ${lead.name},</p>
-        <p>Your consultation has been scheduled for <strong>${scheduledStr} UTC</strong>.</p>
-        <p><strong>Mode:</strong> ${data.mode === "video" ? "Video Call" : "In Person"}</p>
-        ${data.videoLink ? `<p><strong>Video Link:</strong> <a href="${data.videoLink}">${data.videoLink}</a></p>` : ""}
-        <p>We look forward to speaking with you.</p>`,
-    })
-    .catch(console.error);
+  if (notifyChannels.includes("email")) {
+    emailService
+      .sendEmail({
+        to: lead.email,
+        subject: "Your consultation has been scheduled",
+        html: `<p>Dear ${lead.name},</p>
+          <p>Your consultation has been scheduled for <strong>${scheduledStr} UTC</strong>.</p>
+          <p><strong>Mode:</strong> ${modeLabel}</p>
+          ${data.videoLink ? `<p><strong>Video Link:</strong> <a href="${data.videoLink}">${data.videoLink}</a></p>` : ""}
+          <p>We look forward to speaking with you.</p>`,
+      })
+      .catch(console.error);
+  }
+
+  if (notifyChannels.includes("sms") && lead.phone) {
+    console.log(
+      `[sms-stub] consultation scheduled for ${lead.phone}: ${scheduledStr} UTC (${modeLabel})`,
+    );
+  }
 
   return consultation;
 };
@@ -1770,6 +1822,21 @@ const updateConsultation = async (
   if (!lead || !lead.consultationId)
     throw new NotFoundError("No consultation found for this lead");
 
+  // A consultation can't be completed or marked no-show before its start time.
+  if (data.status === "completed" || data.status === "no_show") {
+    const [existing] = await db
+      .select({ scheduledAt: consultations.scheduledAt })
+      .from(consultations)
+      .where(eq(consultations.id, lead.consultationId))
+      .limit(1);
+    if (existing && existing.scheduledAt.getTime() > Date.now())
+      throw new BadRequestError(
+        `A consultation cannot be marked ${
+          data.status === "completed" ? "completed" : "as a no-show"
+        } before its scheduled start time`,
+      );
+  }
+
   const [updated] = await db
     .update(consultations)
     .set({
@@ -1802,13 +1869,25 @@ const generateFeeAgreement = async (
     .limit(1);
 
   if (!lead) throw new NotFoundError("Lead not found");
+  if (!lead.consultationId)
+    throw new BadRequestError(
+      "A consultation must be scheduled before generating a fee agreement",
+    );
+  const [consultation] = await db
+    .select({ status: consultations.status })
+    .from(consultations)
+    .where(eq(consultations.id, lead.consultationId))
+    .limit(1);
+  if (!consultation || consultation.status !== "completed")
+    throw new BadRequestError(
+      "The consultation must be completed before generating a fee agreement",
+    );
   if (lead.feeAgreementId)
     throw new ConflictError("Fee agreement already exists for this lead");
 
-  const documentContent = `Fee Agreement for ${lead.name} — ${data.agreementType ?? "Standard Retainer"}`;
-  const { envelopeId, signingLink } =
-    await stubESignatureProvider.createEnvelope(lead.email, documentContent);
-
+  // Create the agreement as a draft only. The signing envelope is minted and the
+  // client is emailed at the separate "send" step; the lead stays in the
+  // consultation stage until the signed document is received.
   const [agreement] = await db
     .insert(feeAgreements)
     .values({
@@ -1817,24 +1896,64 @@ const generateFeeAgreement = async (
       practiceAreaId: lead.practiceAreaId ?? undefined,
       caseTypeId: lead.caseTypeId ?? undefined,
       agreementType: data.agreementType,
-      generatedFrom: (data.generatedFrom ?? "questionnaire_auto") as any,
-      status: "pending_signature",
-      envelopeId,
-      signingLink,
+      generatedFrom: (data.generatedFrom ?? "manual") as any,
+      status: "draft",
     })
     .returning();
 
-  const now = new Date();
   await db
     .update(leads)
-    .set({
-      feeAgreementId: agreement.id,
-      pipelineStage: "fee_agreement",
-      updatedAt: now,
-    })
+    .set({ feeAgreementId: agreement.id, updatedAt: new Date() })
     .where(eq(leads.id, leadId));
 
-  // Email signing link to lead
+  return agreement;
+};
+
+// Dispatch a drafted agreement: mint the e-signature envelope, email the client
+// the signing link, and move the agreement to pending_signature. The lead stays
+// in the consultation stage.
+const sendFeeAgreement = async (
+  agreementId: string,
+  organizationId: string,
+) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+  if (agreement.status !== "draft")
+    throw new BadRequestError("Only a draft agreement can be sent");
+
+  const [lead] = await db
+    .select()
+    .from(leads)
+    .where(eq(leads.id, agreement.leadId))
+    .limit(1);
+  if (!lead) throw new NotFoundError("Lead not found");
+
+  const documentContent = `Fee Agreement for ${lead.name} — ${agreement.agreementType ?? "Standard Retainer"}`;
+  const { envelopeId, signingLink } =
+    await stubESignatureProvider.createEnvelope(lead.email, documentContent);
+
+  const now = new Date();
+  const [updated] = await db
+    .update(feeAgreements)
+    .set({
+      status: "pending_signature",
+      envelopeId,
+      signingLink,
+      updatedAt: now,
+    })
+    .where(eq(feeAgreements.id, agreementId))
+    .returning();
+
   emailService
     .sendEmail({
       to: lead.email,
@@ -1846,7 +1965,47 @@ const generateFeeAgreement = async (
     })
     .catch(console.error);
 
-  return { ...agreement, clientSigningLink: signingLink };
+  return { ...updated, clientSigningLink: signingLink };
+};
+
+// Staff manually confirms receipt of the signed document: mark the agreement
+// signed and advance the lead to the case-opening stage (the manual equivalent
+// of the e-signature webhook).
+const markFeeAgreementReceived = async (
+  agreementId: string,
+  organizationId: string,
+) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+  if (agreement.status !== "pending_signature" && agreement.status !== "signed")
+    throw new BadRequestError(
+      "The agreement must be sent before it can be marked as received",
+    );
+
+  const now = new Date();
+  if (agreement.status !== "signed") {
+    await db
+      .update(feeAgreements)
+      .set({ status: "signed", clientSignedAt: now, updatedAt: now })
+      .where(eq(feeAgreements.id, agreementId));
+  }
+
+  await db
+    .update(leads)
+    .set({ pipelineStage: "case_opening", updatedAt: now })
+    .where(eq(leads.id, agreement.leadId));
+
+  return { received: true, agreementId, leadId: agreement.leadId };
 };
 
 const getFeeAgreement = async (leadId: string, organizationId: string) => {
@@ -2354,6 +2513,8 @@ export class LeadsService {
   getConsultation = getConsultation;
   updateConsultation = updateConsultation;
   generateFeeAgreement = generateFeeAgreement;
+  sendFeeAgreement = sendFeeAgreement;
+  markFeeAgreementReceived = markFeeAgreementReceived;
   getFeeAgreement = getFeeAgreement;
   nudgeClient = nudgeClient;
   handleESignatureWebhook = handleESignatureWebhook;
