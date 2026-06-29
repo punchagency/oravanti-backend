@@ -42,12 +42,13 @@ Service environment is split by container:
 
 Each service env file has a matching `.example` file describing its values.
 
-The API continues to use the existing `.env` file. For the API container to talk to local Postgres and Supabase Cloud, use values like:
+The API continues to use the existing `.env` file. For the API container to talk to local Postgres and Cloudflare R2, use values like:
 
 ```sh
 DATABASE_URL=postgresql://postgres:password123@db:5432/postgres
 PROD_DATABASE_URL=postgresql://postgres:password123@db:5432/postgres
-SUPABASE_URL=https://your-project-ref.supabase.co
-SUPABASE_ANON_KEY=<supabase-cloud-anon-key>
-SUPABASE_SERVICE_ROLE_KEY=<supabase-cloud-service-role-key>
+R2_ACCOUNT_ID=<cloudflare-account-id>
+R2_ACCESS_KEY_ID=<r2-access-key-id>
+R2_SECRET_ACCESS_KEY=<r2-secret-access-key>
+R2_BUCKET=<r2-bucket-name>
 ```
