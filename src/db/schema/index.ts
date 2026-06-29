@@ -17,6 +17,8 @@ export * from "./client-contacts";
 export * from "./client-requests";
 export * from "./clients";
 export * from "./conflict-checks";
+export * from "./consultation-locations";
+export * from "./consultation-settings";
 export * from "./consultations";
 export * from "./contractors";
 export * from "./data-access-controls";
