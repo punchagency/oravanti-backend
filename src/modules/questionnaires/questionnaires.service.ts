@@ -1,8 +1,6 @@
 import { createHash, randomBytes } from "crypto";
 import PDFDocument from "pdfkit";
 import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
-import { supabaseAdmin } from "../../config/supabase";
-import { env } from "../../config/env";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { conflictChecks } from "../../db/schema/conflict-checks";
@@ -29,7 +27,6 @@ import { emailService } from "../../utils/email/email.service";
 import {
   BadRequestError,
   ConflictError,
-  ExternalServiceError,
   NotFoundError,
 } from "../../utils/error/app-error";
 import {
@@ -37,8 +34,7 @@ import {
   getPaginationOffset,
   PaginationParams,
 } from "../../utils/pagination";
-
-const { SUPABASE_STORAGE_BUCKET } = env;
+import { storageService } from "../../utils/storage/storage.service";
 
 type JsonObject = Record<string, unknown>;
 type AnswerInput = { questionId: string; value: unknown };
@@ -79,6 +75,18 @@ const buildResponseFileStoragePath = (
   questionId: string,
   filename: string,
 ) => `questionnaire-responses/${organizationId}/${responseId}/${questionId}/${filename}`;
+
+/**
+ * Response files store the storage object key (not a permanent URL). Replace
+ * each `fileUrl` with a short-lived presigned download URL for client responses.
+ */
+const presignResponseFiles = <T extends { storagePath: string }>(files: T[]) =>
+  Promise.all(
+    files.map(async (file) => ({
+      ...file,
+      fileUrl: await storageService.getSignedDownloadUrl(file.storagePath),
+    })),
+  );
 
 const getQuestionSourceFromSnapshot = (
   snapshot: unknown,
@@ -580,15 +588,11 @@ export class QuestionnairesService {
       safeFilename,
     );
 
-    const { error: uploadError } = await supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .upload(storagePath, data.fileBuffer, { contentType: data.mimeType, upsert: false });
-
-    if (uploadError) throw new ExternalServiceError(uploadError.message);
-
-    const { data: urlData } = supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .getPublicUrl(storagePath);
+    await storageService.upload({
+      key: storagePath,
+      body: data.fileBuffer,
+      contentType: data.mimeType,
+    });
 
     const [file] = await db
       .insert(questionnaireResponseFiles)
@@ -598,7 +602,7 @@ export class QuestionnairesService {
         questionId: data.questionId,
         questionSource,
         storagePath,
-        fileUrl: urlData.publicUrl,
+        fileUrl: storagePath,
         mimeType: data.mimeType,
         fileSize: data.fileSize,
         originalFilename: data.originalFilename,
@@ -658,18 +662,11 @@ export class QuestionnairesService {
       safeFilename,
     );
 
-    const { error: uploadError } = await supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .upload(storagePath, data.fileBuffer, {
-        contentType: data.mimeType,
-        upsert: false,
-      });
-
-    if (uploadError) throw new ExternalServiceError(uploadError.message);
-
-    const { data: urlData } = supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .getPublicUrl(storagePath);
+    await storageService.upload({
+      key: storagePath,
+      body: data.fileBuffer,
+      contentType: data.mimeType,
+    });
 
     const [file] = await db
       .insert(questionnaireResponseFiles)
@@ -679,7 +676,7 @@ export class QuestionnairesService {
         questionId: data.questionId,
         questionSource,
         storagePath,
-        fileUrl: urlData.publicUrl,
+        fileUrl: storagePath,
         mimeType: data.mimeType,
         fileSize: data.fileSize,
         originalFilename: data.originalFilename,
@@ -829,7 +826,13 @@ export class QuestionnairesService {
 
     const completion = computeCompletion(send?.schemaSnapshot, answers, files);
 
-    return { response, send, answers, files, completion };
+    return {
+      response,
+      send,
+      answers,
+      files: await presignResponseFiles(files),
+      completion,
+    };
   };
 
   /**
@@ -968,14 +971,7 @@ export class QuestionnairesService {
       .limit(1);
     if (!file) throw new NotFoundError("Document not found");
 
-    const { data, error } = await supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .download(file.storagePath);
-    if (error || !data) {
-      throw new ExternalServiceError(error?.message ?? "Failed to read document");
-    }
-
-    const buffer = Buffer.from(await data.arrayBuffer());
+    const buffer = await storageService.download(file.storagePath);
     return {
       buffer,
       mimeType: file.mimeType,
@@ -1251,7 +1247,7 @@ export class QuestionnairesService {
       .from(questionnaireResponseFiles)
       .where(eq(questionnaireResponseFiles.responseId, response.id));
 
-    return { ...response, answers, files };
+    return { ...response, answers, files: await presignResponseFiles(files) };
   };
 
   private ensureResponseForSend = async (
