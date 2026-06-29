@@ -4,7 +4,6 @@ import { inArray } from "drizzle-orm";
 import { Request } from "express";
 import { auth } from "../../auth";
 import { env } from "../../config/env";
-import { supabaseAdmin } from "../../config/supabase";
 import { db } from "../../db/client";
 import {
   contractorCertificationDocuments,
@@ -28,9 +27,8 @@ import {
   ExternalServiceError,
   ValidationError,
 } from "../../utils/error/app-error";
+import { storageService } from "../../utils/storage/storage.service";
 import { AccountType } from "./enums";
-
-const { SUPABASE_STORAGE_BUCKET } = env;
 
 type AuthServiceError = {
   message: string;
@@ -129,28 +127,15 @@ export class AuthService {
     fileBuffer: Buffer;
     mimeType: string;
   }) => {
-    const { error: uploadError } = await supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .upload(data.storagePath, data.fileBuffer, {
-        contentType: data.mimeType,
-        upsert: false,
-      });
-
-    if (uploadError) throw new ExternalServiceError(uploadError.message);
-
-    const { data: urlData } = supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .getPublicUrl(data.storagePath);
-
-    return urlData.publicUrl;
+    await storageService.upload({
+      key: data.storagePath,
+      body: data.fileBuffer,
+      contentType: data.mimeType,
+    });
   };
 
   private removeFromStorage = async (storagePaths: string[]) => {
-    if (!storagePaths.length) return;
-
-    await supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .remove(storagePaths);
+    await storageService.remove(storagePaths);
   };
 
   signUpWithEmail = async (
@@ -348,7 +333,6 @@ export class AuthService {
       documentId: string;
       title: string;
       storagePath: string;
-      fileUrl: string;
       originalFilename: string;
       mimeType: string;
       fileSize: number;
@@ -363,7 +347,6 @@ export class AuthService {
       documentId: string;
       title: string;
       storagePath: string;
-      fileUrl: string;
       originalFilename: string;
       mimeType: string;
       fileSize: number;
@@ -381,7 +364,7 @@ export class AuthService {
           documentId,
           safeStorageName(title, file.originalname),
         );
-        const fileUrl = await this.uploadToStorage({
+        await this.uploadToStorage({
           storagePath,
           fileBuffer: file.buffer,
           mimeType: file.mimetype,
@@ -391,7 +374,6 @@ export class AuthService {
           documentId,
           title,
           storagePath,
-          fileUrl,
           originalFilename: file.originalname,
           mimeType: file.mimetype,
           fileSize: file.size,
@@ -408,7 +390,7 @@ export class AuthService {
           documentId,
           safeStorageName(title, file.originalname),
         );
-        const fileUrl = await this.uploadToStorage({
+        await this.uploadToStorage({
           storagePath,
           fileBuffer: file.buffer,
           mimeType: file.mimetype,
@@ -418,7 +400,6 @@ export class AuthService {
           documentId,
           title,
           storagePath,
-          fileUrl,
           originalFilename: file.originalname,
           mimeType: file.mimetype,
           fileSize: file.size,
@@ -487,7 +468,6 @@ export class AuthService {
             .values({
               documentId: document.id,
               filePath: identification.storagePath,
-              fileUrl: identification.fileUrl,
               originalFileName: identification.originalFilename,
               mimeType: identification.mimeType,
               fileSize: identification.fileSize,
@@ -526,7 +506,6 @@ export class AuthService {
             .values({
               documentId: document.id,
               filePath: certification.storagePath,
-              fileUrl: certification.fileUrl,
               originalFileName: certification.originalFilename,
               mimeType: certification.mimeType,
               fileSize: certification.fileSize,
