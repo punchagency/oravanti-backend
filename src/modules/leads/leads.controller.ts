@@ -124,16 +124,25 @@ export class LeadsController {
 
   // ─── Consultation ────────────────────────────────────────────────────────────
 
-  createConsultation = async (req: AuthRequest, res: Response) => {
-    const result = await this.svc.createConsultation(
+  initiateConsultation = async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.initiateConsultation(
       req.params.id as string,
       req.organizationId!,
-      {
-        ...req.body,
-        scheduledAt: new Date(req.body.scheduledAt),
-      },
+      req.body,
     );
     res.status(201).json({ success: true, data: result });
+  };
+
+  getConsultations = async (req: AuthRequest, res: Response) => {
+    const { search, attorneyId, sort } = req.query;
+    const pagination = parsePaginationQuery(req.query);
+    const result = await this.svc.getConsultations(req.organizationId!, {
+      ...pagination,
+      search: search as string | undefined,
+      attorneyId: attorneyId as string | undefined,
+      sort: sort as string | undefined,
+    });
+    res.json({ success: true, data: result });
   };
 
   getConsultation = async (req: AuthRequest, res: Response) => {

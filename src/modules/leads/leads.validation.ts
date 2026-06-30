@@ -134,15 +134,28 @@ export const sendQuestionnaireBodySchema = z.object({
     .optional(),
 });
 
-export const createConsultationBodySchema = z.object({
-  scheduledAt: z.string().datetime(),
-  duration: z.number().int().positive(),
-  mode: z.enum(["video", "in_person", "phone_call"]),
-  leadAttorneyId: optionalUuid,
-  videoLink: z.string().url().optional(),
-  preConsultationNotes: z.string().optional(),
-  notifyChannels: z.array(z.enum(["email", "sms"])).optional(),
-});
+// Admin initiates scheduling; the lead later picks the time (no scheduledAt here).
+export const initiateConsultationBodySchema = z
+  .object({
+    leadAttorneyId: uuid,
+    participantStaffIds: z.array(uuid).optional(),
+    mode: z.enum(["video", "in_person", "phone_call"]),
+    duration: z.number().int().positive(),
+    locationId: optionalUuid,
+    // Only used when the firm's fee structure is custom_per_case_type.
+    feeAmount: z.number().positive().optional(),
+    preConsultationNotes: z.string().optional(),
+    notifyChannels: z.array(z.enum(["email", "sms"])).optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.mode === "in_person" && !val.locationId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "A location is required for in-person consultations",
+        path: ["locationId"],
+      });
+    }
+  });
 
 export const updateConsultationBodySchema = z.object({
   scheduledAt: z.string().datetime().optional(),

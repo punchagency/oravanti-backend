@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
 import {
   and,
+  asc,
   count,
   desc,
   eq,
@@ -20,7 +21,12 @@ import { adverseParties } from "../../db/schema/adverse-parties";
 import { clientContacts } from "../../db/schema/client-contacts";
 import { clients } from "../../db/schema/clients";
 import { conflictChecks } from "../../db/schema/conflict-checks";
-import { consultations } from "../../db/schema/consultations";
+import {
+  consultations,
+  consultationParticipants,
+} from "../../db/schema/consultations";
+import { consultationLocations } from "../../db/schema/consultation-locations";
+import { consultationSettings } from "../../db/schema/consultation-settings";
 import { feeAgreements } from "../../db/schema/fee-agreements";
 import { leads } from "../../db/schema/leads";
 import { cases } from "../../db/schema/cases";
@@ -1668,15 +1674,16 @@ const getLeadQuestionnaire = async (leadId: string, organizationId: string) => {
 
 // ─── Consultation ──────────────────────────────────────────────────────────────
 
-const createConsultation = async (
+const initiateConsultation = async (
   leadId: string,
   organizationId: string,
   data: {
-    scheduledAt: Date;
-    duration: number;
+    leadAttorneyId: string;
+    participantStaffIds?: string[];
     mode: "video" | "in_person" | "phone_call";
-    leadAttorneyId?: string;
-    videoLink?: string;
+    duration: number;
+    locationId?: string;
+    feeAmount?: number;
     preConsultationNotes?: string;
     notifyChannels?: ("email" | "sms")[];
   },
@@ -1691,93 +1698,140 @@ const createConsultation = async (
   if (lead.consultationId)
     throw new ConflictError("Consultation already exists for this lead");
 
-  const notifyChannels = data.notifyChannels?.length
-    ? data.notifyChannels
-    : ["email"];
-  const modeLabel =
-    data.mode === "video"
-      ? "Video Call"
-      : data.mode === "phone_call"
-        ? "Phone call"
-        : "In Person";
+  // Mode-specific validation: in-person consultations need a saved location.
+  if (data.mode === "in_person") {
+    if (!data.locationId)
+      throw new BadRequestError(
+        "A location is required for in-person consultations",
+      );
+    const [location] = await db
+      .select({ id: consultationLocations.id })
+      .from(consultationLocations)
+      .where(
+        and(
+          eq(consultationLocations.id, data.locationId),
+          eq(consultationLocations.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!location) throw new NotFoundError("Consultation location not found");
+  }
+
+  // Resolve the fee from the firm's consultation settings (Plan 01).
+  const [settings] = await db
+    .select()
+    .from(consultationSettings)
+    .where(eq(consultationSettings.organizationId, organizationId))
+    .limit(1);
+
+  let feeStatus: "none" | "unpaid" = "none";
+  let feeAmount: string | null = null;
+  if (settings?.chargesFee) {
+    const defaultAmount =
+      settings.defaultAmount != null ? Number(settings.defaultAmount) : null;
+    const resolved =
+      settings.feeStructure === "custom_per_case_type"
+        ? data.feeAmount ?? defaultAmount
+        : defaultAmount;
+    if (resolved != null) {
+      feeStatus = "unpaid";
+      feeAmount = String(resolved);
+    }
+  }
+
+  const accessToken = generateAccessToken();
+  const bookingExpiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+  const status =
+    feeStatus === "unpaid" ? "pending_payment" : "awaiting_slot_selection";
 
   const [consultation] = await db
     .insert(consultations)
     .values({
       organizationId,
       leadId,
-      scheduledAt: data.scheduledAt,
       duration: data.duration,
       mode: data.mode,
       leadAttorneyId: data.leadAttorneyId,
-      videoLink: data.videoLink,
+      locationId: data.mode === "in_person" ? data.locationId : null,
+      status,
+      feeAmount,
+      feeStatus,
+      bookingTokenHash: tokenHash(accessToken),
+      bookingExpiresAt,
+      bookingStatus: "sent",
       preConsultationNotes: data.preConsultationNotes,
     })
     .returning();
 
-  const now = new Date();
+  // Additional participants (the lead attorney stays on the consultation row).
+  const participantIds = (data.participantStaffIds ?? []).filter(
+    (id) => id !== data.leadAttorneyId,
+  );
+  if (participantIds.length) {
+    const participantStaff = await db
+      .select({ id: staff.id, role: staff.role })
+      .from(staff)
+      .where(
+        and(
+          eq(staff.organizationId, organizationId),
+          inArray(staff.id, participantIds),
+        ),
+      );
+    if (participantStaff.length) {
+      await db.insert(consultationParticipants).values(
+        participantStaff.map((member) => ({
+          organizationId,
+          consultationId: consultation.id,
+          staffId: member.id,
+          roleSnapshot: member.role ?? null,
+        })),
+      );
+    }
+  }
+
   await db
     .update(leads)
     .set({
       consultationId: consultation.id,
       pipelineStage: "consultation",
-      updatedAt: now,
+      updatedAt: new Date(),
     })
     .where(eq(leads.id, leadId));
 
-  // Notify attorney and lead
-  const scheduledStr = data.scheduledAt.toLocaleString("en-US", {
-    timeZone: "UTC",
-  });
-
-  if (data.leadAttorneyId) {
-    const [attorney] = await db
-      .select({
-        email: user.email,
-        firstName: staff.firstName,
-      })
-      .from(staff)
-      .leftJoin(user, eq(staff.userId, user.id))
-      .where(eq(staff.id, data.leadAttorneyId))
-      .limit(1);
-
-    if (attorney) {
-      emailService
-        .sendEmail({
-          to: attorney.email!,
-          subject: `New consultation assigned: ${lead.name}`,
-          html: `<p>Hi ${attorney.firstName},</p>
-            <p>A consultation has been scheduled with <strong>${lead.name}</strong>.</p>
-            <p><strong>Date/Time:</strong> ${scheduledStr} UTC</p>
-            <p><strong>Mode:</strong> ${modeLabel}</p>
-            ${data.videoLink ? `<p><strong>Video Link:</strong> <a href="${data.videoLink}">${data.videoLink}</a></p>` : ""}
-            ${data.preConsultationNotes ? `<p><strong>Pre-consultation notes:</strong> ${data.preConsultationNotes}</p>` : ""}`,
-        })
-        .catch(console.error);
-    }
-  }
+  // Email the lead the booking link. Plan 05 refines the templates and adds the
+  // public token-gated booking/payment routes; here we mint the link so the
+  // lead-driven flow is wired end to end.
+  const bookingLink = `${env.FRONTEND_APP_URL}/consultation-booking/${accessToken}`;
+  const notifyChannels = data.notifyChannels?.length
+    ? data.notifyChannels
+    : ["email"];
 
   if (notifyChannels.includes("email")) {
+    const needsPayment = feeStatus === "unpaid";
     emailService
       .sendEmail({
         to: lead.email,
-        subject: "Your consultation has been scheduled",
-        html: `<p>Dear ${lead.name},</p>
-          <p>Your consultation has been scheduled for <strong>${scheduledStr} UTC</strong>.</p>
-          <p><strong>Mode:</strong> ${modeLabel}</p>
-          ${data.videoLink ? `<p><strong>Video Link:</strong> <a href="${data.videoLink}">${data.videoLink}</a></p>` : ""}
-          <p>We look forward to speaking with you.</p>`,
+        subject: needsPayment
+          ? "Action needed: pay your consultation fee"
+          : "Pick a time for your consultation",
+        html: needsPayment
+          ? `<p>Dear ${lead.name},</p>
+            <p>Please pay your consultation fee of <strong>$${feeAmount}</strong> and then choose a time that works for you:</p>
+            <p><a href="${bookingLink}">${bookingLink}</a></p>`
+          : `<p>Dear ${lead.name},</p>
+            <p>Please choose a time that works for your consultation:</p>
+            <p><a href="${bookingLink}">${bookingLink}</a></p>`,
       })
       .catch(console.error);
   }
 
   if (notifyChannels.includes("sms") && lead.phone) {
     console.log(
-      `[sms-stub] consultation scheduled for ${lead.phone}: ${scheduledStr} UTC (${modeLabel})`,
+      `[sms-stub] consultation booking link to ${lead.phone}: ${bookingLink}`,
     );
   }
 
-  return consultation;
+  return { consultation, bookingToken: accessToken };
 };
 
 const getConsultation = async (leadId: string, organizationId: string) => {
@@ -1796,7 +1850,21 @@ const getConsultation = async (leadId: string, organizationId: string) => {
     .where(eq(consultations.id, lead.consultationId))
     .limit(1);
 
-  return consultation ?? null;
+  if (!consultation) return null;
+
+  const participants = await db
+    .select({
+      id: consultationParticipants.id,
+      staffId: consultationParticipants.staffId,
+      roleSnapshot: consultationParticipants.roleSnapshot,
+      firstName: staff.firstName,
+      lastName: staff.lastName,
+    })
+    .from(consultationParticipants)
+    .leftJoin(staff, eq(consultationParticipants.staffId, staff.id))
+    .where(eq(consultationParticipants.consultationId, consultation.id));
+
+  return { ...consultation, participants };
 };
 
 const updateConsultation = async (
@@ -1829,7 +1897,7 @@ const updateConsultation = async (
       .from(consultations)
       .where(eq(consultations.id, lead.consultationId))
       .limit(1);
-    if (existing && existing.scheduledAt.getTime() > Date.now())
+    if (existing?.scheduledAt && existing.scheduledAt.getTime() > Date.now())
       throw new BadRequestError(
         `A consultation cannot be marked ${
           data.status === "completed" ? "completed" : "as a no-show"
@@ -1850,6 +1918,77 @@ const updateConsultation = async (
     .returning();
 
   return updated;
+};
+
+const getConsultations = async (
+  organizationId: string,
+  filters: Partial<PaginationParams> & {
+    search?: string;
+    attorneyId?: string;
+    sort?: string;
+  } = {},
+) => {
+  const conditions = [eq(consultations.organizationId, organizationId)];
+  if (filters.attorneyId)
+    conditions.push(eq(consultations.leadAttorneyId, filters.attorneyId));
+  if (filters.search)
+    conditions.push(ilike(leads.name, `%${filters.search}%`));
+
+  const where = and(...conditions);
+
+  const orderBy = (() => {
+    switch (filters.sort) {
+      case "date_desc":
+        return [desc(consultations.scheduledAt)];
+      case "client_asc":
+        return [asc(leads.name)];
+      case "client_desc":
+        return [desc(leads.name)];
+      case "date_asc":
+      default:
+        return [asc(consultations.scheduledAt)];
+    }
+  })();
+
+  const page = filters.page ?? 1;
+  const limit = filters.limit ?? 20;
+  const offset = getPaginationOffset({ page, limit });
+
+  const [countRow] = await db
+    .select({ total: count() })
+    .from(consultations)
+    .innerJoin(leads, eq(consultations.leadId, leads.id))
+    .where(where);
+
+  const rows = await db
+    .select({
+      id: consultations.id,
+      leadId: consultations.leadId,
+      leadName: leads.name,
+      leadEmail: leads.email,
+      mode: consultations.mode,
+      status: consultations.status,
+      scheduledAt: consultations.scheduledAt,
+      duration: consultations.duration,
+      feeStatus: consultations.feeStatus,
+      feeAmount: consultations.feeAmount,
+      leadAttorneyId: consultations.leadAttorneyId,
+      attorneyFirstName: staff.firstName,
+      attorneyLastName: staff.lastName,
+    })
+    .from(consultations)
+    .innerJoin(leads, eq(consultations.leadId, leads.id))
+    .leftJoin(staff, eq(consultations.leadAttorneyId, staff.id))
+    .where(where)
+    .orderBy(...orderBy)
+    .limit(limit)
+    .offset(offset);
+
+  return buildPaginatedResponse(rows, {
+    page,
+    limit,
+    total: Number(countRow?.total ?? 0),
+  });
 };
 
 // ─── Fee Agreement ─────────────────────────────────────────────────────────────
@@ -2509,8 +2648,9 @@ export class LeadsService {
   resolveConflictCheck = resolveConflictCheck;
   sendQuestionnaire = sendQuestionnaire;
   getLeadQuestionnaire = getLeadQuestionnaire;
-  createConsultation = createConsultation;
+  initiateConsultation = initiateConsultation;
   getConsultation = getConsultation;
+  getConsultations = getConsultations;
   updateConsultation = updateConsultation;
   generateFeeAgreement = generateFeeAgreement;
   sendFeeAgreement = sendFeeAgreement;

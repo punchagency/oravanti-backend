@@ -50,6 +50,15 @@ export class LeadsRouter {
       ctrl.getLeadStageCounts,
     );
 
+    // Registered before "/:id" so "/consultations" isn't captured as an id.
+    this.router.get(
+      "/consultations",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      ctrl.getConsultations,
+    );
+
     this.router.get(
       "/:id",
       requireAuth,
@@ -160,9 +169,9 @@ export class LeadsRouter {
       setFirmContext,
       validateRequest({
         params: v.idParamsSchema,
-        body: v.createConsultationBodySchema,
+        body: v.initiateConsultationBodySchema,
       }),
-      ctrl.createConsultation,
+      ctrl.initiateConsultation,
     );
 
     this.router.get(
