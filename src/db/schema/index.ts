@@ -36,6 +36,7 @@ export * from "./practice-area-subcategories";
 export * from "./practice-areas";
 export * from "./profiles";
 export * from "./questionnaires";
+export * from "./staff-availability";
 export * from "./staff-certifications";
 export * from "./subscriptions";
 export * from "./tasks";
