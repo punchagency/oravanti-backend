@@ -32,6 +32,12 @@ type AppEnv = Record<RequiredEnvKey, string> & {
   SERVER_MASTER_KEY_OLD?: string;
   CONTRACTOR_PAYMENT_ENCRYPTION_KEY?: string;
   RESEND_API_KEY?: string;
+  // Platform-owned Google Workspace service account used to mint Google Meet
+  // links for all firms. Optional: when unset the Meet service falls back to a
+  // placeholder link so non-Workspace/dev environments still function.
+  GOOGLE_MEET_CLIENT_EMAIL?: string;
+  GOOGLE_MEET_PRIVATE_KEY?: string;
+  GOOGLE_MEET_IMPERSONATED_USER?: string;
   databaseUrl: string;
   isProduction: boolean;
 };
@@ -79,6 +85,9 @@ const validateEnv = (): AppEnv => {
   }
 
   const resendApiKey = readEnv("RESEND_API_KEY");
+  const googleMeetClientEmail = readEnv("GOOGLE_MEET_CLIENT_EMAIL");
+  const googleMeetPrivateKey = readEnv("GOOGLE_MEET_PRIVATE_KEY");
+  const googleMeetImpersonatedUser = readEnv("GOOGLE_MEET_IMPERSONATED_USER");
 
   return {
     ...values,
@@ -86,6 +95,9 @@ const validateEnv = (): AppEnv => {
     ...(serverMasterKeyOld ? { SERVER_MASTER_KEY_OLD: serverMasterKeyOld } : {}),
     ...(contractorPaymentEncryptionKey ? { CONTRACTOR_PAYMENT_ENCRYPTION_KEY: contractorPaymentEncryptionKey } : {}),
     ...(resendApiKey ? { RESEND_API_KEY: resendApiKey } : {}),
+    ...(googleMeetClientEmail ? { GOOGLE_MEET_CLIENT_EMAIL: googleMeetClientEmail } : {}),
+    ...(googleMeetPrivateKey ? { GOOGLE_MEET_PRIVATE_KEY: googleMeetPrivateKey } : {}),
+    ...(googleMeetImpersonatedUser ? { GOOGLE_MEET_IMPERSONATED_USER: googleMeetImpersonatedUser } : {}),
     databaseUrl: isProduction ? prodDatabaseUrl! : values.DATABASE_URL,
     isProduction,
   };
