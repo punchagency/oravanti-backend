@@ -62,8 +62,10 @@ import {
 } from "../../utils/pagination";
 import { stubESignatureProvider } from "./esignature.provider";
 import { generateCaseNumber } from "../cases/cases.service";
-import { user } from "../../db/schema/auth-schema";
+import { organization, user } from "../../db/schema/auth-schema";
 import { env } from "../../config/env";
+import { generateConsultationSlots } from "./consultation-slots.service";
+import { googleMeetService } from "../../utils/google-meet/google-meet.service";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1991,6 +1993,287 @@ const getConsultations = async (
   });
 };
 
+// ─── Public booking flow (lead-facing, token-gated) ─────────────────────────────
+
+const getConsultationByBookingToken = async (
+  token: string,
+  markOpened = false,
+) => {
+  const [consultation] = await db
+    .select()
+    .from(consultations)
+    .where(eq(consultations.bookingTokenHash, tokenHash(token)))
+    .limit(1);
+
+  if (!consultation) throw new NotFoundError("Booking link not found");
+  if (consultation.bookingStatus === "revoked")
+    throw new ConflictError("This booking link has been revoked");
+
+  if (
+    consultation.bookingExpiresAt &&
+    consultation.bookingExpiresAt.getTime() < Date.now()
+  ) {
+    if (consultation.bookingStatus !== "expired") {
+      await db
+        .update(consultations)
+        .set({ bookingStatus: "expired", updatedAt: new Date() })
+        .where(eq(consultations.id, consultation.id));
+    }
+    throw new ConflictError("This booking link has expired");
+  }
+
+  if (markOpened && consultation.bookingStatus === "sent") {
+    await db
+      .update(consultations)
+      .set({ bookingStatus: "opened", updatedAt: new Date() })
+      .where(eq(consultations.id, consultation.id));
+    consultation.bookingStatus = "opened";
+  }
+
+  return consultation;
+};
+
+const getConsultationBooking = async (token: string) => {
+  const consultation = await getConsultationByBookingToken(token, true);
+
+  const [lead] = await db
+    .select({ name: leads.name })
+    .from(leads)
+    .where(eq(leads.id, consultation.leadId))
+    .limit(1);
+
+  const [firm] = await db
+    .select({ name: organization.name })
+    .from(organization)
+    .where(eq(organization.id, consultation.organizationId))
+    .limit(1);
+
+  const requiresPayment = consultation.feeStatus === "unpaid";
+
+  // Slots are only offered once any fee is settled and a time isn't yet chosen.
+  const slots =
+    !requiresPayment &&
+    consultation.bookingStatus !== "slot_selected" &&
+    consultation.leadAttorneyId
+      ? await generateConsultationSlots(
+          consultation.organizationId,
+          consultation.leadAttorneyId,
+          { durationMinutes: consultation.duration },
+        )
+      : [];
+
+  return {
+    firmName: firm?.name ?? null,
+    leadName: lead?.name ?? null,
+    mode: consultation.mode,
+    durationMinutes: consultation.duration,
+    requiresPayment,
+    fee: {
+      status: consultation.feeStatus,
+      amount:
+        consultation.feeAmount != null ? Number(consultation.feeAmount) : null,
+    },
+    scheduledAt: consultation.scheduledAt,
+    bookingStatus: consultation.bookingStatus,
+    slots,
+  };
+};
+
+const payConsultationFee = async (token: string) => {
+  const consultation = await getConsultationByBookingToken(token);
+  if (consultation.feeStatus !== "unpaid")
+    throw new ConflictError("No payment is required for this consultation");
+
+  // Dummy payment: just flip the flags and unlock slot selection.
+  await db
+    .update(consultations)
+    .set({
+      feeStatus: "paid",
+      bookingStatus: "paid",
+      status: "awaiting_slot_selection",
+      updatedAt: new Date(),
+    })
+    .where(eq(consultations.id, consultation.id));
+
+  const [lead] = await db
+    .select({ name: leads.name, email: leads.email })
+    .from(leads)
+    .where(eq(leads.id, consultation.leadId))
+    .limit(1);
+
+  if (lead) {
+    const bookingLink = `${env.FRONTEND_APP_URL}/consultation-booking/${token}`;
+    emailService
+      .sendEmail({
+        to: lead.email,
+        subject: "Payment received — pick a time for your consultation",
+        html: `<p>Dear ${lead.name},</p>
+          <p>Thanks, your payment was received. Please choose a time that works for you:</p>
+          <p><a href="${bookingLink}">${bookingLink}</a></p>`,
+      })
+      .catch(console.error);
+  }
+
+  return { success: true };
+};
+
+const sendConsultationConfirmation = async (
+  consultation: typeof consultations.$inferSelect,
+) => {
+  const [lead] = await db
+    .select({ name: leads.name, email: leads.email })
+    .from(leads)
+    .where(eq(leads.id, consultation.leadId))
+    .limit(1);
+  if (!lead) return;
+
+  const scheduledStr = consultation.scheduledAt
+    ? consultation.scheduledAt.toLocaleString("en-US", { timeZone: "UTC" })
+    : "TBD";
+
+  let attorney:
+    | { firstName: string; email: string | null; phone: string | null }
+    | undefined;
+  if (consultation.leadAttorneyId) {
+    [attorney] = await db
+      .select({
+        firstName: staff.firstName,
+        email: user.email,
+        phone: staff.phone,
+      })
+      .from(staff)
+      .leftJoin(user, eq(staff.userId, user.id))
+      .where(eq(staff.id, consultation.leadAttorneyId))
+      .limit(1);
+  }
+
+  const participants = await db
+    .select({ email: user.email })
+    .from(consultationParticipants)
+    .leftJoin(staff, eq(consultationParticipants.staffId, staff.id))
+    .leftJoin(user, eq(staff.userId, user.id))
+    .where(eq(consultationParticipants.consultationId, consultation.id));
+
+  // Mode-specific meeting detail.
+  let meetingDetail = "";
+  if (consultation.mode === "video" && consultation.videoLink) {
+    meetingDetail = `<p><strong>Join link:</strong> <a href="${consultation.videoLink}">${consultation.videoLink}</a></p>`;
+  } else if (consultation.mode === "phone_call") {
+    meetingDetail = attorney?.phone
+      ? `<p><strong>Phone:</strong> ${attorney.phone}</p>`
+      : `<p>Your attorney will call you at the scheduled time.</p>`;
+  } else if (consultation.mode === "in_person" && consultation.locationId) {
+    const [location] = await db
+      .select()
+      .from(consultationLocations)
+      .where(eq(consultationLocations.id, consultation.locationId))
+      .limit(1);
+    if (location) {
+      const address = [
+        location.addressLine1,
+        location.addressLine2,
+        location.city,
+        location.state,
+        location.zipCode,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      meetingDetail = `<p><strong>Location:</strong> ${location.label}${
+        address ? ` — ${address}` : ""
+      }</p>`;
+    }
+  }
+
+  emailService
+    .sendEmail({
+      to: lead.email,
+      subject: "Your consultation is confirmed",
+      html: `<p>Dear ${lead.name},</p>
+        <p>Your consultation is confirmed for <strong>${scheduledStr} UTC</strong>.</p>
+        ${meetingDetail}
+        <p>We look forward to speaking with you.</p>`,
+    })
+    .catch(console.error);
+
+  const staffEmails = [attorney?.email, ...participants.map((p) => p.email)].filter(
+    (email): email is string => Boolean(email),
+  );
+  for (const email of staffEmails) {
+    emailService
+      .sendEmail({
+        to: email,
+        subject: `Consultation confirmed: ${lead.name}`,
+        html: `<p>A consultation with <strong>${lead.name}</strong> is confirmed for <strong>${scheduledStr} UTC</strong>.</p>
+          ${meetingDetail}`,
+      })
+      .catch(console.error);
+  }
+};
+
+const selectConsultationSlot = async (token: string, startIso: string) => {
+  const consultation = await getConsultationByBookingToken(token);
+
+  if (consultation.feeStatus === "unpaid")
+    throw new ConflictError("Payment is required before selecting a time");
+  if (
+    consultation.bookingStatus === "slot_selected" ||
+    consultation.status === "scheduled"
+  )
+    throw new ConflictError(
+      "A time has already been selected for this consultation",
+    );
+  if (!consultation.leadAttorneyId)
+    throw new BadRequestError("No attorney is assigned to this consultation");
+
+  const start = new Date(startIso);
+  if (Number.isNaN(start.getTime())) throw new BadRequestError("Invalid time");
+
+  // Re-validate availability to guard against double-booking.
+  const slots = await generateConsultationSlots(
+    consultation.organizationId,
+    consultation.leadAttorneyId,
+    { durationMinutes: consultation.duration },
+  );
+  if (!slots.some((slot) => slot.start === start.toISOString()))
+    throw new ConflictError(
+      "That time is no longer available. Please choose another.",
+    );
+
+  let videoLink: string | null = null;
+  let meetExternalId: string | null = null;
+  if (consultation.mode === "video") {
+    const [lead] = await db
+      .select({ name: leads.name })
+      .from(leads)
+      .where(eq(leads.id, consultation.leadId))
+      .limit(1);
+    const meet = await googleMeetService.createMeetLink({
+      summary: `Consultation with ${lead?.name ?? "client"}`,
+      startTime: start,
+      durationMinutes: consultation.duration,
+    });
+    videoLink = meet.url;
+    meetExternalId = meet.externalId ?? null;
+  }
+
+  const [updated] = await db
+    .update(consultations)
+    .set({
+      scheduledAt: start,
+      status: "scheduled",
+      bookingStatus: "slot_selected",
+      videoLink,
+      meetExternalId,
+      updatedAt: new Date(),
+    })
+    .where(eq(consultations.id, consultation.id))
+    .returning();
+
+  await sendConsultationConfirmation(updated);
+
+  return { success: true, scheduledAt: start.toISOString() };
+};
+
 // ─── Fee Agreement ─────────────────────────────────────────────────────────────
 
 const generateFeeAgreement = async (
@@ -2652,6 +2935,9 @@ export class LeadsService {
   getConsultation = getConsultation;
   getConsultations = getConsultations;
   updateConsultation = updateConsultation;
+  getConsultationBooking = getConsultationBooking;
+  payConsultationFee = payConsultationFee;
+  selectConsultationSlot = selectConsultationSlot;
   generateFeeAgreement = generateFeeAgreement;
   sendFeeAgreement = sendFeeAgreement;
   markFeeAgreementReceived = markFeeAgreementReceived;

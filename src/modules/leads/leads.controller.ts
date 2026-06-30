@@ -164,6 +164,30 @@ export class LeadsController {
     res.json({ success: true, data: result });
   };
 
+  // ─── Public booking flow (token-gated, no auth) ──────────────────────────────
+
+  getConsultationBooking = async (req: Request, res: Response) => {
+    const result = await this.svc.getConsultationBooking(
+      req.params.token as string,
+    );
+    res.json({ success: true, data: result });
+  };
+
+  payConsultationFee = async (req: Request, res: Response) => {
+    const result = await this.svc.payConsultationFee(
+      req.params.token as string,
+    );
+    res.json({ success: true, data: result });
+  };
+
+  selectConsultationSlot = async (req: Request, res: Response) => {
+    const result = await this.svc.selectConsultationSlot(
+      req.params.token as string,
+      req.body.start,
+    );
+    res.json({ success: true, data: result });
+  };
+
   // ─── Fee Agreement ───────────────────────────────────────────────────────────
 
   generateFeeAgreement = async (req: AuthRequest, res: Response) => {

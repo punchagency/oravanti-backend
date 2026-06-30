@@ -157,6 +157,14 @@ export const initiateConsultationBodySchema = z
     }
   });
 
+export const bookingTokenParamsSchema = z.object({
+  token: z.string().min(1),
+});
+
+export const selectSlotBodySchema = z.object({
+  start: z.string().datetime(),
+});
+
 export const updateConsultationBodySchema = z.object({
   scheduledAt: z.string().datetime().optional(),
   duration: z.number().int().positive().optional(),

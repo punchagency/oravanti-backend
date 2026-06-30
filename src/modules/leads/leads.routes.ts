@@ -302,6 +302,45 @@ export class WebhooksRouter {
   }
 }
 
+// Public, token-gated lead-facing consultation booking at /consultation-booking.
+export class ConsultationBookingRouter {
+  public router: Router;
+  public path: string;
+  private ctrl: LeadsController;
+
+  constructor(ctrl: LeadsController) {
+    this.router = Router();
+    this.path = "/consultation-booking";
+    this.ctrl = ctrl;
+    this.initializeRoutes();
+  }
+
+  private initializeRoutes() {
+    const { ctrl } = this;
+
+    this.router.get(
+      "/:token",
+      validateRequest({ params: v.bookingTokenParamsSchema }),
+      ctrl.getConsultationBooking,
+    );
+
+    this.router.post(
+      "/:token/pay",
+      validateRequest({ params: v.bookingTokenParamsSchema }),
+      ctrl.payConsultationFee,
+    );
+
+    this.router.post(
+      "/:token/select-slot",
+      validateRequest({
+        params: v.bookingTokenParamsSchema,
+        body: v.selectSlotBodySchema,
+      }),
+      ctrl.selectConsultationSlot,
+    );
+  }
+}
+
 // ── Case sub-resource routers (workflow + adverse parties) ────────────────────
 
 export class CaseWorkflowRouter {

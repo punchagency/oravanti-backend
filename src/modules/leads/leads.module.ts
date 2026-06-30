@@ -1,6 +1,7 @@
 import { LeadsController } from "./leads.controller";
 import {
   AgreementsRouter,
+  ConsultationBookingRouter,
   LeadsRouter,
   WebhooksRouter,
 } from "./leads.routes";
@@ -39,6 +40,18 @@ export class WebhooksModule {
 
   constructor() {
     const router = new WebhooksRouter(buildController());
+    this.router = router.router;
+    this.path = router.path;
+  }
+}
+
+// Public, token-gated lead-facing booking at /consultation-booking.
+export class ConsultationBookingModule {
+  public router: import("express").Router;
+  public path: string;
+
+  constructor() {
+    const router = new ConsultationBookingRouter(buildController());
     this.router = router.router;
     this.path = router.path;
   }
