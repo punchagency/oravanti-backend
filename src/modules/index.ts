@@ -22,6 +22,7 @@ import { FirmInfoModule } from "./settings/firm-info/firm-info.module";
 import { PermissionAuditLogModule } from "./settings/permission-audit-log/permission-audit-log.module";
 import { ProfileModule } from "./settings/profile/profile.module";
 import { SecurityModule } from "./settings/security/security.module";
+import { StaffAvailabilityModule } from "./staff-availability/staff-availability.module";
 import { TasksModule } from "./tasks/tasks.module";
 import {
   AgreementsModule,
@@ -33,6 +34,7 @@ import type { Module } from "../app";
 export const modules: Module[] = [
   new AuthModule(),
   new StaffModule(),
+  new StaffAvailabilityModule(),
   new TeamsModule(),
   new AssignmentsModule(),
   new DocumentsModule(),
