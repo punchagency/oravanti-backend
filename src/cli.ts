@@ -85,6 +85,7 @@ import { seedMasterQuestionnaires } from "./db/seeds/master-questionnaires.seed"
 import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
 import { seedStaffAndTeams } from "./db/seeds/staff-and-teams.seed";
 import { seedSystemQuestionnaires } from "./db/seeds/system-questionnaires.seed";
+import { StaffAvailabilityService } from "./modules/staff-availability/staff-availability.service";
 
 const DEFAULT_IMMIGRATION_CASE_TYPES = [
   { code: "h1b_visa", name: "H-1B Visa", caseNumberPrefix: "H1B" },
@@ -3200,6 +3201,322 @@ const waitForEnter = async () => {
   );
 };
 
+const staffAvailabilityService = new StaffAvailabilityService();
+
+const DAY_LABELS = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+] as const;
+
+const AVAILABILITY_TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+type AvailabilityLine = {
+  dayOfWeek: number;
+  startTime: string;
+  endTime: string;
+  label?: string;
+};
+
+// Parses lines of "day|HH:MM|HH:MM" (optionally "|label"), skipping invalid
+// rows. day: 0 = Sunday … 6 = Saturday.
+const parseAvailabilityLines = (
+  input: string,
+  withLabel = false,
+): AvailabilityLine[] => {
+  const rows: AvailabilityLine[] = [];
+
+  for (const rawLine of input.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const [rawDay, start, end, label] = line.split("|").map((part) =>
+      part.trim(),
+    );
+    const dayOfWeek = Number(rawDay);
+
+    if (!Number.isInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6) continue;
+    if (
+      !AVAILABILITY_TIME_REGEX.test(start ?? "") ||
+      !AVAILABILITY_TIME_REGEX.test(end ?? "")
+    ) {
+      continue;
+    }
+    if (start >= end) continue;
+
+    rows.push(
+      withLabel
+        ? { dayOfWeek, startTime: start, endTime: end, label: label || undefined }
+        : { dayOfWeek, startTime: start, endTime: end },
+    );
+  }
+
+  return rows;
+};
+
+const getStaffForFirm = (organizationId: string) =>
+  db
+    .select({
+      id: staff.id,
+      firstName: staff.firstName,
+      lastName: staff.lastName,
+      role: staff.role,
+      status: staff.status,
+    })
+    .from(staff)
+    .where(eq(staff.organizationId, organizationId))
+    .orderBy(asc(staff.firstName), asc(staff.lastName));
+
+const resolveStaffMember = async (organizationId: string) => {
+  const members = await getStaffForFirm(organizationId);
+
+  if (!members.length) {
+    note("No staff members found for this firm.");
+    return null;
+  }
+
+  const selectedId = abortIfCancelled(
+    await select({
+      message: "Select a staff member",
+      options: members.map((member) => ({
+        value: member.id,
+        label: `${member.firstName} ${member.lastName}`,
+        hint: `${member.role ?? "—"} · ${member.status}`,
+      })),
+    }),
+  );
+
+  return members.find((member) => member.id === selectedId) ?? null;
+};
+
+const printStaffAvailability = (
+  data: Awaited<ReturnType<typeof staffAvailabilityService.getAvailability>>,
+) => {
+  if (data.windows.length) {
+    note("Weekly working hours");
+    console.table(
+      data.windows.map((window) => ({
+        day: DAY_LABELS[window.dayOfWeek] ?? window.dayOfWeek,
+        start: window.startTime,
+        end: window.endTime,
+      })),
+    );
+  } else {
+    note("No weekly working hours set.");
+  }
+
+  if (data.breaks.length) {
+    note("Breaks");
+    console.table(
+      data.breaks.map((entry) => ({
+        day: DAY_LABELS[entry.dayOfWeek] ?? entry.dayOfWeek,
+        start: entry.startTime,
+        end: entry.endTime,
+        label: entry.label ?? "",
+      })),
+    );
+  } else {
+    note("No breaks set.");
+  }
+
+  if (data.overrides.length) {
+    note("Date overrides");
+    console.table(
+      data.overrides.map((override) => ({
+        date: override.date,
+        type: override.type,
+        start: override.startTime ?? "",
+        end: override.endTime ?? "",
+        reason: override.reason ?? "",
+      })),
+    );
+  } else {
+    note("No date overrides set.");
+  }
+};
+
+const setStaffAvailabilityFlow = async (organizationId?: string) => {
+  const firm = await resolveFirm(organizationId);
+  if (!firm) return;
+
+  const member = await resolveStaffMember(firm.id);
+  if (!member) return;
+
+  const who = `${member.firstName} ${member.lastName}`;
+
+  while (true) {
+    const choice = abortIfCancelled(
+      await select({
+        message: `Availability for ${who} (${firm.firmName})`,
+        options: [
+          { value: "view", label: "View current availability" },
+          {
+            value: "weekly",
+            label: "Set weekly working hours (replaces existing)",
+          },
+          { value: "breaks", label: "Set break times (replaces existing)" },
+          { value: "override", label: "Add a date override" },
+          { value: "delete-override", label: "Remove a date override" },
+          { value: "back", label: "Back to main menu" },
+        ],
+      }),
+    );
+
+    if (choice === "back") return;
+
+    if (choice === "view") {
+      printStaffAvailability(
+        await staffAvailabilityService.getAvailability(firm.id, member.id),
+      );
+    }
+
+    if (choice === "weekly") {
+      const input = abortIfCancelled(
+        await text({
+          message:
+            "Working hours as day|HH:MM|HH:MM, one per line (day: 0=Sun … 6=Sat)",
+          placeholder: "1|09:00|17:00",
+          validate(value) {
+            return parseAvailabilityLines(value).length
+              ? undefined
+              : "Enter at least one valid window, e.g. 1|09:00|17:00.";
+          },
+        }),
+      );
+      const saved = await staffAvailabilityService.setWeeklyAvailability(
+        firm.id,
+        member.id,
+        { windows: parseAvailabilityLines(input) },
+      );
+      note(`Saved ${saved.length} working window(s) for ${who}.`);
+    }
+
+    if (choice === "breaks") {
+      const input = abortIfCancelled(
+        await text({
+          message:
+            "Breaks as day|HH:MM|HH:MM|label (label optional), one per line",
+          placeholder: "1|12:00|13:00|Lunch",
+          validate(value) {
+            return parseAvailabilityLines(value, true).length
+              ? undefined
+              : "Enter at least one valid break, e.g. 1|12:00|13:00|Lunch.";
+          },
+        }),
+      );
+      const saved = await staffAvailabilityService.setBreaks(firm.id, member.id, {
+        breaks: parseAvailabilityLines(input, true),
+      });
+      note(`Saved ${saved.length} break(s) for ${who}.`);
+    }
+
+    if (choice === "override") {
+      const date = abortIfCancelled(
+        await text({
+          message: "Override date (YYYY-MM-DD)",
+          placeholder: isoDateFromNow(7),
+          validate(value) {
+            return /^\d{4}-\d{2}-\d{2}$/.test(value.trim())
+              ? undefined
+              : "Enter a date as YYYY-MM-DD.";
+          },
+        }),
+      ).trim();
+
+      const type = abortIfCancelled(
+        await select({
+          message: "Override type",
+          options: [
+            { value: "closed", label: "Closed (unavailable all day)" },
+            { value: "custom_hours", label: "Custom hours for this date" },
+          ],
+        }),
+      );
+
+      let startTime: string | undefined;
+      let endTime: string | undefined;
+
+      if (type === "custom_hours") {
+        startTime = abortIfCancelled(
+          await text({
+            message: "Start time (HH:MM)",
+            placeholder: "09:00",
+            validate(value) {
+              return AVAILABILITY_TIME_REGEX.test(value.trim())
+                ? undefined
+                : "Enter a time as HH:MM.";
+            },
+          }),
+        ).trim();
+        endTime = abortIfCancelled(
+          await text({
+            message: "End time (HH:MM)",
+            placeholder: "13:00",
+            validate(value) {
+              if (!AVAILABILITY_TIME_REGEX.test(value.trim())) {
+                return "Enter a time as HH:MM.";
+              }
+              if (startTime && value.trim() <= startTime) {
+                return "End time must be after start time.";
+              }
+              return undefined;
+            },
+          }),
+        ).trim();
+      }
+
+      const reason = abortIfCancelled(
+        await text({
+          message: "Reason (optional)",
+          placeholder: "Out of office",
+          defaultValue: "",
+        }),
+      ).trim();
+
+      const created = await staffAvailabilityService.createOverride(
+        firm.id,
+        member.id,
+        { date, type, startTime, endTime, reason: reason || undefined },
+      );
+      note(`Added ${created.type} override on ${created.date} for ${who}.`);
+    }
+
+    if (choice === "delete-override") {
+      const { overrides } = await staffAvailabilityService.getAvailability(
+        firm.id,
+        member.id,
+      );
+
+      if (!overrides.length) {
+        note("No date overrides to remove.");
+      } else {
+        const overrideId = abortIfCancelled(
+          await select({
+            message: "Select an override to remove",
+            options: overrides.map((override) => ({
+              value: override.id,
+              label: `${override.date} — ${override.type}`,
+              hint: override.reason ?? undefined,
+            })),
+          }),
+        );
+        await staffAvailabilityService.deleteOverride(
+          firm.id,
+          member.id,
+          overrideId,
+        );
+        note("Override removed.");
+      }
+    }
+
+    await waitForEnter();
+  }
+};
+
 const runInteractive = async () => {
   intro("Oravanti CLI");
 
@@ -3236,6 +3553,10 @@ const runInteractive = async () => {
         {
           value: "seed-staff-teams",
           label: "Seed staff & teams for an organization",
+        },
+        {
+          value: "staff-availability",
+          label: "Set staff availability (hours, breaks, overrides)",
         },
         {
           value: "browse-cases",
@@ -3319,6 +3640,11 @@ const runInteractive = async () => {
       if (action === "seed-staff-teams") {
         const firm = await resolveFirm();
         if (firm) await seedStaffAndTeams(firm.id);
+      }
+
+      if (action === "staff-availability") {
+        await setStaffAvailabilityFlow();
+        continue;
       }
 
       await waitForEnter();
@@ -3486,6 +3812,12 @@ const staffTeamsCommand = program
   .description("Seed staff members and teams for an organization")
   .argument("[organizationId]", "Organization id")
   .action(seedStaffAndTeams);
+
+program
+  .command("staff-availability")
+  .description("Set a staff member's consultation availability")
+  .argument("[organizationId]", "Organization id")
+  .action(setStaffAvailabilityFlow);
 
 program
   .parseAsync(process.argv)
