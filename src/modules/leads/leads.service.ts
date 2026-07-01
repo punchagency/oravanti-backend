@@ -593,11 +593,27 @@ const getLeadById = async (id: string, organizationId: string) => {
         : Promise.resolve(null),
     ]);
 
+  // Prior consultations for this lead (follow-ups / re-schedules), newest first.
+  // The current one lives on `consultation`; the rest are history for the card.
+  const consultationHistory = lead.consultationId
+    ? await db
+        .select()
+        .from(consultations)
+        .where(
+          and(
+            eq(consultations.leadId, id),
+            ne(consultations.id, lead.consultationId),
+          ),
+        )
+        .orderBy(desc(consultations.createdAt))
+    : [];
+
   return {
     ...lead,
     conflictCheck,
     questionnaireSend,
     consultation,
+    consultationHistory,
     feeAgreement,
   };
 };
@@ -1693,6 +1709,7 @@ const initiateConsultation = async (
     notifyChannels?: ("email" | "sms")[];
     urgent?: boolean;
     scheduledAt?: string;
+    parentConsultationId?: string;
   },
 ) => {
   const [lead] = await db
@@ -1716,6 +1733,26 @@ const initiateConsultation = async (
     if (existing && !inactive.includes(existing.status))
       throw new ConflictError(
         "An active consultation already exists for this lead",
+      );
+  }
+
+  // Follow-up: the parent must be a completed consultation for this same lead.
+  if (data.parentConsultationId) {
+    const [parent] = await db
+      .select({ leadId: consultations.leadId, status: consultations.status })
+      .from(consultations)
+      .where(
+        and(
+          eq(consultations.id, data.parentConsultationId),
+          eq(consultations.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!parent || parent.leadId !== leadId)
+      throw new BadRequestError("Parent consultation not found for this lead");
+    if (parent.status !== "completed")
+      throw new BadRequestError(
+        "Follow-ups can only be scheduled after the prior consultation is completed",
       );
   }
 
@@ -1818,6 +1855,7 @@ const initiateConsultation = async (
     .values({
       organizationId,
       leadId,
+      parentConsultationId: data.parentConsultationId ?? null,
       scheduledAt,
       isUrgent: data.urgent ?? false,
       duration: data.duration,
@@ -1860,11 +1898,15 @@ const initiateConsultation = async (
     }
   }
 
+  // Point the lead at the newest consultation. A follow-up may happen after the
+  // lead has advanced past the consultation stage, so don't move it backward.
   await db
     .update(leads)
     .set({
       consultationId: consultation.id,
-      pipelineStage: "consultation",
+      ...(data.parentConsultationId
+        ? {}
+        : { pipelineStage: "consultation" as const }),
       updatedAt: new Date(),
     })
     .where(eq(leads.id, leadId));

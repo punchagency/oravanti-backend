@@ -151,6 +151,8 @@ export const initiateConsultationBodySchema = z
     // Urgent (admin fast-track): schedule now, skip the lead's slot queue.
     urgent: z.boolean().optional(),
     scheduledAt: z.string().datetime().optional(),
+    // Set when this consultation is a follow-up of a prior completed one.
+    parentConsultationId: optionalUuid,
   })
   .superRefine((val, ctx) => {
     if (val.mode === "in_person" && !val.locationId) {

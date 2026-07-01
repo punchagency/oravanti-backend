@@ -7,6 +7,7 @@ import {
   text,
   timestamp,
   uuid,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { organization } from "./auth-schema";
 import { consultationLocations } from "./consultation-locations";
@@ -58,6 +59,10 @@ export const consultations = pgTable("consultations", {
   leadId: uuid("lead_id")
     .notNull()
     .references(() => leads.id),
+  // Set when this consultation is a follow-up of a prior (completed) one.
+  parentConsultationId: uuid("parent_consultation_id").references(
+    (): AnyPgColumn => consultations.id,
+  ),
   // Null until the lead selects a slot in the booking flow.
   scheduledAt: timestamp("scheduled_at"),
   duration: integer("duration").notNull(),
