@@ -593,20 +593,17 @@ const getLeadById = async (id: string, organizationId: string) => {
         : Promise.resolve(null),
     ]);
 
-  // Prior consultations for this lead (follow-ups / re-schedules), newest first.
-  // The current one lives on `consultation`; the rest are history for the card.
-  const consultationHistory = lead.consultationId
-    ? await db
-        .select()
-        .from(consultations)
-        .where(
-          and(
-            eq(consultations.leadId, id),
-            ne(consultations.id, lead.consultationId),
-          ),
-        )
-        .orderBy(desc(consultations.createdAt))
-    : [];
+  // Prior consultations for this lead (follow-ups / re-schedules / cancelled),
+  // newest first. The current one (if any) lives on `consultation`; everything
+  // else is history for the card. Null-safe: when the lead has no current
+  // consultation (e.g. after a cancellation), every consultation is history.
+  const consultationHistory = (
+    await db
+      .select()
+      .from(consultations)
+      .where(eq(consultations.leadId, id))
+      .orderBy(desc(consultations.createdAt))
+  ).filter((c) => c.id !== lead.consultationId);
 
   return {
     ...lead,
@@ -2482,6 +2479,15 @@ const cancelConsultation = async (
     })
     .where(eq(consultations.id, consultation.id))
     .returning();
+
+  // Detach the cancelled consultation from the lead so it no longer counts as
+  // the lead's active consultation: the lead drops out of the "in progress"
+  // list and can be scheduled again. The row itself is kept (visible under the
+  // lead's consultation history). Pipeline stage is left untouched.
+  await db
+    .update(leads)
+    .set({ consultationId: null, updatedAt: new Date() })
+    .where(eq(leads.id, leadId));
 
   // Remove the calendar/Meet event (no-op for placeholder/unconfigured).
   await googleMeetService.deleteMeetEvent(consultation.meetExternalId);
