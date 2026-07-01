@@ -64,7 +64,10 @@ import { stubESignatureProvider } from "./esignature.provider";
 import { generateCaseNumber } from "../cases/cases.service";
 import { organization, user } from "../../db/schema/auth-schema";
 import { env } from "../../config/env";
-import { generateConsultationSlots } from "./consultation-slots.service";
+import {
+  checkAttorneyTimeConflicts,
+  generateConsultationSlots,
+} from "./consultation-slots.service";
 import { googleMeetService } from "../../utils/google-meet/google-meet.service";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1688,6 +1691,8 @@ const initiateConsultation = async (
     feeAmount?: number;
     preConsultationNotes?: string;
     notifyChannels?: ("email" | "sms")[];
+    urgent?: boolean;
+    scheduledAt?: string;
   },
 ) => {
   const [lead] = await db
@@ -1697,8 +1702,45 @@ const initiateConsultation = async (
     .limit(1);
 
   if (!lead) throw new NotFoundError("Lead not found");
-  if (lead.consultationId)
-    throw new ConflictError("Consultation already exists for this lead");
+
+  // Block only when the lead already has an ACTIVE consultation. Cancelled,
+  // completed, or no-show ones can be superseded by a new booking (re-schedule
+  // after cancel) or a follow-up.
+  if (lead.consultationId) {
+    const [existing] = await db
+      .select({ status: consultations.status })
+      .from(consultations)
+      .where(eq(consultations.id, lead.consultationId))
+      .limit(1);
+    const inactive = ["cancelled", "no_show", "completed"];
+    if (existing && !inactive.includes(existing.status))
+      throw new ConflictError(
+        "An active consultation already exists for this lead",
+      );
+  }
+
+  // Urgent (admin fast-track) requires the lead to have passed conflict check.
+  if (data.urgent) {
+    if (!data.scheduledAt)
+      throw new BadRequestError(
+        "A time is required for urgent scheduling",
+      );
+    if (lead.status === "declined")
+      throw new BadRequestError("This lead has been declined");
+    if (!lead.conflictCheckId)
+      throw new BadRequestError(
+        "The lead must pass conflict check before urgent scheduling",
+      );
+    const [cc] = await db
+      .select({ status: conflictChecks.status })
+      .from(conflictChecks)
+      .where(eq(conflictChecks.id, lead.conflictCheckId))
+      .limit(1);
+    if (cc?.status !== "pass")
+      throw new BadRequestError(
+        "The lead must pass conflict check before urgent scheduling",
+      );
+  }
 
   // Mode-specific validation: in-person consultations need a saved location.
   if (data.mode === "in_person") {
@@ -1731,8 +1773,10 @@ const initiateConsultation = async (
   if (settings?.chargesFee) {
     const defaultAmount =
       settings.defaultAmount != null ? Number(settings.defaultAmount) : null;
+    // Urgent bookings let the admin override the amount (urgency surcharge)
+    // regardless of the firm's fee structure.
     const resolved =
-      settings.feeStructure === "custom_per_case_type"
+      data.urgent || settings.feeStructure === "custom_per_case_type"
         ? data.feeAmount ?? defaultAmount
         : defaultAmount;
     if (resolved != null) {
@@ -1741,16 +1785,41 @@ const initiateConsultation = async (
     }
   }
 
+  // Urgent bookings carry the admin-chosen time immediately; lead-driven
+  // bookings leave scheduledAt null until the lead picks a slot.
+  const scheduledAt = data.urgent ? new Date(data.scheduledAt!) : null;
+
+  // Non-blocking conflict warnings for urgent (warn-but-allow): the admin can
+  // book outside the attorney's availability or over an existing appointment.
+  let warnings: string[] = [];
+  if (data.urgent && scheduledAt) {
+    const conflict = await checkAttorneyTimeConflicts(
+      organizationId,
+      data.leadAttorneyId,
+      scheduledAt,
+      data.duration,
+    );
+    warnings = conflict.warnings;
+  }
+
   const accessToken = generateAccessToken();
   const bookingExpiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+  // Fee → payment gate; urgent no-fee is finalized right after insert; normal
+  // no-fee waits for the lead to pick a slot.
   const status =
-    feeStatus === "unpaid" ? "pending_payment" : "awaiting_slot_selection";
+    feeStatus === "unpaid"
+      ? "pending_payment"
+      : data.urgent
+        ? "scheduled"
+        : "awaiting_slot_selection";
 
   const [consultation] = await db
     .insert(consultations)
     .values({
       organizationId,
       leadId,
+      scheduledAt,
+      isUrgent: data.urgent ?? false,
       duration: data.duration,
       mode: data.mode,
       leadAttorneyId: data.leadAttorneyId,
@@ -1800,6 +1869,13 @@ const initiateConsultation = async (
     })
     .where(eq(leads.id, leadId));
 
+  // Urgent + no fee: connect ASAP — finalize immediately (mints the Meet link
+  // and sends the confirmation). No lead action is required.
+  if (data.urgent && feeStatus !== "unpaid") {
+    const finalized = await finalizeConsultation(consultation);
+    return { consultation: finalized, bookingToken: accessToken, warnings };
+  }
+
   // Email the lead the booking link. Plan 05 refines the templates and adds the
   // public token-gated booking/payment routes; here we mint the link so the
   // lead-driven flow is wired end to end.
@@ -1810,6 +1886,7 @@ const initiateConsultation = async (
 
   if (notifyChannels.includes("email")) {
     const needsPayment = feeStatus === "unpaid";
+    const urgent = Boolean(data.urgent);
     emailService
       .sendEmail({
         to: lead.email,
@@ -1818,7 +1895,11 @@ const initiateConsultation = async (
           : "Pick a time for your consultation",
         html: needsPayment
           ? `<p>Dear ${lead.name},</p>
-            <p>Please pay your consultation fee of <strong>$${feeAmount}</strong> and then choose a time that works for you:</p>
+            <p>Please pay your consultation fee of <strong>$${feeAmount}</strong>${
+              urgent
+                ? " to be connected with an attorney as soon as possible"
+                : " and then choose a time that works for you"
+            }:</p>
             <p><a href="${bookingLink}">${bookingLink}</a></p>`
           : `<p>Dear ${lead.name},</p>
             <p>Please choose a time that works for your consultation:</p>
@@ -1833,7 +1914,7 @@ const initiateConsultation = async (
     );
   }
 
-  return { consultation, bookingToken: accessToken };
+  return { consultation, bookingToken: accessToken, warnings };
 };
 
 const getConsultation = async (leadId: string, organizationId: string) => {
@@ -2084,16 +2165,24 @@ const payConsultationFee = async (token: string) => {
   if (consultation.feeStatus !== "unpaid")
     throw new ConflictError("No payment is required for this consultation");
 
-  // Dummy payment: just flip the flags and unlock slot selection.
-  await db
+  // Dummy payment: flip the fee flags. Urgent consultations already carry the
+  // admin-chosen time, so finalize immediately (connect ASAP) rather than
+  // sending the lead back to pick a slot.
+  const [paid] = await db
     .update(consultations)
     .set({
       feeStatus: "paid",
       bookingStatus: "paid",
-      status: "awaiting_slot_selection",
+      status: consultation.isUrgent ? consultation.status : "awaiting_slot_selection",
       updatedAt: new Date(),
     })
-    .where(eq(consultations.id, consultation.id));
+    .where(eq(consultations.id, consultation.id))
+    .returning();
+
+  if (consultation.isUrgent) {
+    await finalizeConsultation(paid);
+    return { success: true };
+  }
 
   const [lead] = await db
     .select({ name: leads.name, email: leads.email })
@@ -2210,6 +2299,51 @@ const sendConsultationConfirmation = async (
   }
 };
 
+// Finalize a consultation whose scheduledAt is already set: mint the Meet link
+// (video, when not already present), flip to scheduled, and send confirmations.
+// Shared by the lead slot-selection flow and urgent scheduling (both the
+// no-fee-at-initiate and the pay-then-connect paths).
+const finalizeConsultation = async (
+  consultation: typeof consultations.$inferSelect,
+) => {
+  const start = consultation.scheduledAt;
+  if (!start)
+    throw new BadRequestError("Consultation has no scheduled time to finalize");
+
+  let videoLink = consultation.videoLink;
+  let meetExternalId = consultation.meetExternalId;
+  if (consultation.mode === "video" && !videoLink) {
+    const [lead] = await db
+      .select({ name: leads.name })
+      .from(leads)
+      .where(eq(leads.id, consultation.leadId))
+      .limit(1);
+    const meet = await googleMeetService.createMeetLink({
+      summary: `Consultation with ${lead?.name ?? "client"}`,
+      startTime: start,
+      durationMinutes: consultation.duration,
+    });
+    videoLink = meet.url;
+    meetExternalId = meet.externalId ?? null;
+  }
+
+  const [updated] = await db
+    .update(consultations)
+    .set({
+      scheduledAt: start,
+      status: "scheduled",
+      bookingStatus: "slot_selected",
+      videoLink,
+      meetExternalId,
+      updatedAt: new Date(),
+    })
+    .where(eq(consultations.id, consultation.id))
+    .returning();
+
+  await sendConsultationConfirmation(updated);
+  return updated;
+};
+
 const selectConsultationSlot = async (token: string, startIso: string) => {
   const consultation = await getConsultationByBookingToken(token);
 
@@ -2239,37 +2373,9 @@ const selectConsultationSlot = async (token: string, startIso: string) => {
       "That time is no longer available. Please choose another.",
     );
 
-  let videoLink: string | null = null;
-  let meetExternalId: string | null = null;
-  if (consultation.mode === "video") {
-    const [lead] = await db
-      .select({ name: leads.name })
-      .from(leads)
-      .where(eq(leads.id, consultation.leadId))
-      .limit(1);
-    const meet = await googleMeetService.createMeetLink({
-      summary: `Consultation with ${lead?.name ?? "client"}`,
-      startTime: start,
-      durationMinutes: consultation.duration,
-    });
-    videoLink = meet.url;
-    meetExternalId = meet.externalId ?? null;
-  }
-
-  const [updated] = await db
-    .update(consultations)
-    .set({
-      scheduledAt: start,
-      status: "scheduled",
-      bookingStatus: "slot_selected",
-      videoLink,
-      meetExternalId,
-      updatedAt: new Date(),
-    })
-    .where(eq(consultations.id, consultation.id))
-    .returning();
-
-  await sendConsultationConfirmation(updated);
+  // Persist the chosen slot, then finalize (Meet link + confirmation emails).
+  consultation.scheduledAt = start;
+  await finalizeConsultation(consultation);
 
   return { success: true, scheduledAt: start.toISOString() };
 };

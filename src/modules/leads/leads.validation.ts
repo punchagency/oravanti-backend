@@ -134,7 +134,8 @@ export const sendQuestionnaireBodySchema = z.object({
     .optional(),
 });
 
-// Admin initiates scheduling; the lead later picks the time (no scheduledAt here).
+// Admin initiates scheduling. Normally the lead later picks the time; for
+// urgent bookings the admin supplies scheduledAt and the lead skips the queue.
 export const initiateConsultationBodySchema = z
   .object({
     leadAttorneyId: uuid,
@@ -142,10 +143,14 @@ export const initiateConsultationBodySchema = z
     mode: z.enum(["video", "in_person", "phone_call"]),
     duration: z.number().int().positive(),
     locationId: optionalUuid,
-    // Only used when the firm's fee structure is custom_per_case_type.
+    // Used when the firm's fee structure is custom_per_case_type, or as an
+    // urgency surcharge/override when urgent.
     feeAmount: z.number().positive().optional(),
     preConsultationNotes: z.string().optional(),
     notifyChannels: z.array(z.enum(["email", "sms"])).optional(),
+    // Urgent (admin fast-track): schedule now, skip the lead's slot queue.
+    urgent: z.boolean().optional(),
+    scheduledAt: z.string().datetime().optional(),
   })
   .superRefine((val, ctx) => {
     if (val.mode === "in_person" && !val.locationId) {
@@ -153,6 +158,13 @@ export const initiateConsultationBodySchema = z
         code: z.ZodIssueCode.custom,
         message: "A location is required for in-person consultations",
         path: ["locationId"],
+      });
+    }
+    if (val.urgent && !val.scheduledAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "A time is required for urgent scheduling",
+        path: ["scheduledAt"],
       });
     }
   });

@@ -1,4 +1,5 @@
 import {
+  boolean,
   integer,
   numeric,
   pgEnum,
@@ -61,6 +62,10 @@ export const consultations = pgTable("consultations", {
   scheduledAt: timestamp("scheduled_at"),
   duration: integer("duration").notNull(),
   mode: consultationModeEnum("mode").notNull(),
+  // Urgent (admin fast-track): the lead skips the slot queue and is connected
+  // ASAP; scheduledAt is set at creation and finalization happens on pay
+  // (fee case) or immediately at initiate (no-fee case).
+  isUrgent: boolean("is_urgent").notNull().default(false),
   leadAttorneyId: uuid("lead_attorney_id").references(() => staff.id),
   // Required when mode = in_person.
   locationId: uuid("location_id").references(() => consultationLocations.id),

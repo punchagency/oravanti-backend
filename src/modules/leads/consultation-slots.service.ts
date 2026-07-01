@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { db } from "../../db/client";
 import { consultations } from "../../db/schema/consultations";
 import { StaffAvailabilityService } from "../staff-availability/staff-availability.service";
@@ -144,4 +144,100 @@ export const generateConsultationSlots = async (
   }
 
   return slots;
+};
+
+export type TimeConflictCheck = {
+  outsideAvailability: boolean;
+  overlapsBooking: boolean;
+  warnings: string[];
+};
+
+/**
+ * Non-blocking conflict check for a specific proposed time (used by urgent
+ * scheduling, which lets an admin book outside the normal slot queue). Reuses
+ * the same availability windows/breaks/overrides and booked-interval logic as
+ * slot generation, but for an arbitrary start rather than aligned slots.
+ */
+export const checkAttorneyTimeConflicts = async (
+  organizationId: string,
+  leadAttorneyId: string,
+  start: Date,
+  durationMinutes: number,
+  excludeConsultationId?: string,
+): Promise<TimeConflictCheck> => {
+  const startMs = start.getTime();
+  const endMs = startMs + durationMinutes * 60_000;
+  const dateStr = start.toISOString().slice(0, 10);
+  const weekday = start.getUTCDay();
+
+  const { windows, breaks, overrides } =
+    await availabilityService.getAvailability(organizationId, leadAttorneyId);
+
+  const override = overrides.find((o) => o.date === dateStr);
+  let dayWindows: { startTime: string; endTime: string }[];
+  let applyBreaks = true;
+  if (override) {
+    dayWindows =
+      override.type === "closed" || !override.startTime || !override.endTime
+        ? []
+        : [{ startTime: override.startTime, endTime: override.endTime }];
+    applyBreaks = false;
+  } else {
+    dayWindows = windows.filter((w) => w.dayOfWeek === weekday);
+  }
+
+  const withinWindow = dayWindows.some(
+    (w) =>
+      toEpoch(dateStr, w.startTime) <= startMs &&
+      endMs <= toEpoch(dateStr, w.endTime),
+  );
+  const dayBreaks = applyBreaks
+    ? breaks.filter((b) => b.dayOfWeek === weekday)
+    : [];
+  const hitsBreak = dayBreaks.some((b) =>
+    overlaps(
+      startMs,
+      endMs,
+      toEpoch(dateStr, b.startTime),
+      toEpoch(dateStr, b.endTime),
+    ),
+  );
+  const outsideAvailability = !withinWindow || hitsBreak;
+
+  const booked = await db
+    .select({
+      scheduledAt: consultations.scheduledAt,
+      duration: consultations.duration,
+    })
+    .from(consultations)
+    .where(
+      and(
+        eq(consultations.organizationId, organizationId),
+        eq(consultations.leadAttorneyId, leadAttorneyId),
+        isNotNull(consultations.scheduledAt),
+        inArray(consultations.status, ["scheduled", "in_progress"]),
+        excludeConsultationId
+          ? ne(consultations.id, excludeConsultationId)
+          : undefined,
+      ),
+    );
+
+  const overlapsBooking = booked
+    .filter((b) => b.scheduledAt)
+    .some((b) => {
+      const bStart = b.scheduledAt!.getTime();
+      return overlaps(startMs, endMs, bStart, bStart + b.duration * 60_000);
+    });
+
+  const warnings: string[] = [];
+  if (outsideAvailability)
+    warnings.push(
+      "The selected time is outside the attorney's available hours.",
+    );
+  if (overlapsBooking)
+    warnings.push(
+      "The selected time overlaps another booked consultation for this attorney.",
+    );
+
+  return { outsideAvailability, overlapsBooking, warnings };
 };
