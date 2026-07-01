@@ -50,6 +50,15 @@ export class LeadsRouter {
       ctrl.getLeadStageCounts,
     );
 
+    // Registered before "/:id" so "/consultations" isn't captured as an id.
+    this.router.get(
+      "/consultations",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      ctrl.getConsultations,
+    );
+
     this.router.get(
       "/:id",
       requireAuth,
@@ -160,9 +169,9 @@ export class LeadsRouter {
       setFirmContext,
       validateRequest({
         params: v.idParamsSchema,
-        body: v.createConsultationBodySchema,
+        body: v.initiateConsultationBodySchema,
       }),
-      ctrl.createConsultation,
+      ctrl.initiateConsultation,
     );
 
     this.router.get(
@@ -289,6 +298,45 @@ export class WebhooksRouter {
       "/esignature",
       validateRequest({ body: v.esignatureWebhookBodySchema }),
       ctrl.handleESignatureWebhook,
+    );
+  }
+}
+
+// Public, token-gated lead-facing consultation booking at /consultation-booking.
+export class ConsultationBookingRouter {
+  public router: Router;
+  public path: string;
+  private ctrl: LeadsController;
+
+  constructor(ctrl: LeadsController) {
+    this.router = Router();
+    this.path = "/consultation-booking";
+    this.ctrl = ctrl;
+    this.initializeRoutes();
+  }
+
+  private initializeRoutes() {
+    const { ctrl } = this;
+
+    this.router.get(
+      "/:token",
+      validateRequest({ params: v.bookingTokenParamsSchema }),
+      ctrl.getConsultationBooking,
+    );
+
+    this.router.post(
+      "/:token/pay",
+      validateRequest({ params: v.bookingTokenParamsSchema }),
+      ctrl.payConsultationFee,
+    );
+
+    this.router.post(
+      "/:token/select-slot",
+      validateRequest({
+        params: v.bookingTokenParamsSchema,
+        body: v.selectSlotBodySchema,
+      }),
+      ctrl.selectConsultationSlot,
     );
   }
 }
