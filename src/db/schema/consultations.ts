@@ -83,6 +83,10 @@ export const consultations = pgTable("consultations", {
   preConsultationNotes: text("pre_consultation_notes"),
   attorneyNotes: text("attorney_notes"),
   outcome: consultationOutcomeEnum("outcome"),
+  // Cancellation audit (set by the cancel flow, which also revokes the booking
+  // link and removes the Meet event).
+  cancelledAt: timestamp("cancelled_at"),
+  cancellationReason: text("cancellation_reason"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

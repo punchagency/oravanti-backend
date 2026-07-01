@@ -195,6 +195,18 @@ export class LeadsRouter {
       ctrl.updateConsultation,
     );
 
+    this.router.post(
+      "/:id/consultation/cancel",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.idParamsSchema,
+        body: v.cancelConsultationBodySchema,
+      }),
+      ctrl.cancelConsultation,
+    );
+
     // ── Fee Agreement ─────────────────────────────────────────────────────────
 
     this.router.post(

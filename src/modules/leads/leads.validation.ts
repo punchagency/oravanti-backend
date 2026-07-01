@@ -192,6 +192,10 @@ export const updateConsultationBodySchema = z.object({
     .optional(),
 });
 
+export const cancelConsultationBodySchema = z.object({
+  reason: z.string().max(1000).optional(),
+});
+
 export const generateFeeAgreementBodySchema = z.object({
   agreementType: z.string().optional(),
   generatedFrom: z.enum(["questionnaire_auto", "manual"]).optional(),

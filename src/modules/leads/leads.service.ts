@@ -2206,7 +2206,10 @@ const payConsultationFee = async (token: string) => {
   return { success: true };
 };
 
-const sendConsultationConfirmation = async (
+// Gathers the people to notify about a consultation: the lead, the lead
+// attorney (email + phone), and any additional participants. Shared by the
+// confirmation and cancellation emails.
+const getConsultationRecipients = async (
   consultation: typeof consultations.$inferSelect,
 ) => {
   const [lead] = await db
@@ -2214,11 +2217,6 @@ const sendConsultationConfirmation = async (
     .from(leads)
     .where(eq(leads.id, consultation.leadId))
     .limit(1);
-  if (!lead) return;
-
-  const scheduledStr = consultation.scheduledAt
-    ? consultation.scheduledAt.toLocaleString("en-US", { timeZone: "UTC" })
-    : "TBD";
 
   let attorney:
     | { firstName: string; email: string | null; phone: string | null }
@@ -2242,6 +2240,25 @@ const sendConsultationConfirmation = async (
     .leftJoin(staff, eq(consultationParticipants.staffId, staff.id))
     .leftJoin(user, eq(staff.userId, user.id))
     .where(eq(consultationParticipants.consultationId, consultation.id));
+
+  const staffEmails = [
+    attorney?.email,
+    ...participants.map((p) => p.email),
+  ].filter((email): email is string => Boolean(email));
+
+  return { lead, attorney, staffEmails };
+};
+
+const sendConsultationConfirmation = async (
+  consultation: typeof consultations.$inferSelect,
+) => {
+  const { lead, attorney, staffEmails } =
+    await getConsultationRecipients(consultation);
+  if (!lead) return;
+
+  const scheduledStr = consultation.scheduledAt
+    ? consultation.scheduledAt.toLocaleString("en-US", { timeZone: "UTC" })
+    : "TBD";
 
   // Mode-specific meeting detail.
   let meetingDetail = "";
@@ -2284,9 +2301,6 @@ const sendConsultationConfirmation = async (
     })
     .catch(console.error);
 
-  const staffEmails = [attorney?.email, ...participants.map((p) => p.email)].filter(
-    (email): email is string => Boolean(email),
-  );
   for (const email of staffEmails) {
     emailService
       .sendEmail({
@@ -2378,6 +2392,98 @@ const selectConsultationSlot = async (token: string, startIso: string) => {
   await finalizeConsultation(consultation);
 
   return { success: true, scheduledAt: start.toISOString() };
+};
+
+// Cancels the lead's active consultation with side effects: revoke the booking
+// link, remove the Google Meet event, and notify the lead + attorney +
+// participants. The active-consultation guard in initiateConsultation then lets
+// the lead be re-scheduled. `leadId` is the lead id (route :id).
+const cancelConsultation = async (
+  leadId: string,
+  organizationId: string,
+  data: { reason?: string } = {},
+) => {
+  const [lead] = await db
+    .select({ consultationId: leads.consultationId })
+    .from(leads)
+    .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)))
+    .limit(1);
+  if (!lead?.consultationId)
+    throw new NotFoundError("No consultation found for this lead");
+
+  const [consultation] = await db
+    .select()
+    .from(consultations)
+    .where(
+      and(
+        eq(consultations.id, lead.consultationId),
+        eq(consultations.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+  if (!consultation) throw new NotFoundError("Consultation not found");
+
+  const terminal = ["cancelled", "completed", "no_show"];
+  if (terminal.includes(consultation.status))
+    throw new ConflictError(
+      `Consultation is already ${consultation.status.replace(/_/g, " ")}`,
+    );
+
+  const [updated] = await db
+    .update(consultations)
+    .set({
+      status: "cancelled",
+      bookingStatus: "revoked",
+      cancelledAt: new Date(),
+      cancellationReason: data.reason ?? null,
+      updatedAt: new Date(),
+    })
+    .where(eq(consultations.id, consultation.id))
+    .returning();
+
+  // Remove the calendar/Meet event (no-op for placeholder/unconfigured).
+  await googleMeetService.deleteMeetEvent(consultation.meetExternalId);
+
+  // Dummy fee: no real refund is processed this phase; feeStatus is left as-is.
+
+  const { lead: leadRow, staffEmails } =
+    await getConsultationRecipients(updated);
+  const scheduledStr = updated.scheduledAt
+    ? updated.scheduledAt.toLocaleString("en-US", { timeZone: "UTC" })
+    : null;
+  const when = scheduledStr
+    ? ` scheduled for <strong>${scheduledStr} UTC</strong>`
+    : "";
+  const reasonLine = data.reason
+    ? `<p><strong>Reason:</strong> ${data.reason}</p>`
+    : "";
+
+  if (leadRow) {
+    emailService
+      .sendEmail({
+        to: leadRow.email,
+        subject: "Your consultation has been cancelled",
+        html: `<p>Dear ${leadRow.name},</p>
+          <p>Your consultation${when} has been cancelled.</p>
+          ${reasonLine}
+          <p>Please contact our office if you would like to re-schedule.</p>`,
+      })
+      .catch(console.error);
+  }
+  for (const email of staffEmails) {
+    emailService
+      .sendEmail({
+        to: email,
+        subject: `Consultation cancelled: ${leadRow?.name ?? "client"}`,
+        html: `<p>The consultation with <strong>${
+          leadRow?.name ?? "the client"
+        }</strong>${when} has been cancelled.</p>
+          ${reasonLine}`,
+      })
+      .catch(console.error);
+  }
+
+  return updated;
 };
 
 // ─── Fee Agreement ─────────────────────────────────────────────────────────────
@@ -3041,6 +3147,7 @@ export class LeadsService {
   getConsultation = getConsultation;
   getConsultations = getConsultations;
   updateConsultation = updateConsultation;
+  cancelConsultation = cancelConsultation;
   getConsultationBooking = getConsultationBooking;
   payConsultationFee = payConsultationFee;
   selectConsultationSlot = selectConsultationSlot;
