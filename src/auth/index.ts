@@ -52,6 +52,7 @@ export const auth = betterAuth({
     cookiePrefix: "oravanti",
     defaultCookieAttributes: {
       sameSite: isProduction ? "none" : "lax",
+      secure: isProduction,
     },
   },
   database: drizzleAdapter(db, {
