@@ -216,6 +216,14 @@ export class LeadsController {
     res.json({ success: true, data: result });
   };
 
+  getFeeAgreementPreview = async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.getFeeAgreementPreview(
+      req.params.agreementId as string,
+      req.organizationId!,
+    );
+    res.json({ success: true, data: result });
+  };
+
   nudgeClient = async (req: AuthRequest, res: Response) => {
     const result = await this.svc.nudgeClient(
       req.params.agreementId as string,
