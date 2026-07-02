@@ -2551,18 +2551,21 @@ const generateFeeAgreement = async (
     .limit(1);
 
   if (!lead) throw new NotFoundError("Lead not found");
-  if (!lead.consultationId)
-    throw new BadRequestError(
-      "A consultation must be scheduled before generating a fee agreement",
-    );
-  const [consultation] = await db
-    .select({ status: consultations.status })
+  // Unlocks once the lead has completed *any* consultation — a later follow-up
+  // being cancelled (which detaches lead.consultationId) must not re-block this.
+  const [completedConsultation] = await db
+    .select({ id: consultations.id })
     .from(consultations)
-    .where(eq(consultations.id, lead.consultationId))
+    .where(
+      and(
+        eq(consultations.leadId, leadId),
+        eq(consultations.status, "completed"),
+      ),
+    )
     .limit(1);
-  if (!consultation || consultation.status !== "completed")
+  if (!completedConsultation)
     throw new BadRequestError(
-      "The consultation must be completed before generating a fee agreement",
+      "A consultation must be completed before generating a fee agreement",
     );
   if (lead.feeAgreementId)
     throw new ConflictError("Fee agreement already exists for this lead");
