@@ -72,6 +72,8 @@ import {
   generateConsultationSlots,
 } from "./consultation-slots.service";
 import { assembleFeeAgreementDocument } from "./fee-agreement-document";
+import { renderFeeAgreementPdf } from "./fee-agreement-pdf";
+import { storageService } from "../../utils/storage/storage.service";
 import { googleMeetService } from "../../utils/google-meet/google-meet.service";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -2674,6 +2676,18 @@ const sendFeeAgreement = async (
     .limit(1);
   if (!lead) throw new NotFoundError("Lead not found");
 
+  // Render the fee-agreement PDF server-side and persist it to R2. This is the
+  // document that gets sent for signature; the stub provider is still used to
+  // mint the (fake) envelope until the Dropbox Sign provider is wired in.
+  const documentData = await assembleFeeAgreementDocument(agreement, organizationId);
+  const pdfBuffer = await renderFeeAgreementPdf(documentData);
+  const documentKey = `fee-agreements/${organizationId}/${agreement.id}/generated.pdf`;
+  await storageService.upload({
+    key: documentKey,
+    body: pdfBuffer,
+    contentType: "application/pdf",
+  });
+
   const documentContent = `Fee Agreement for ${lead.name} — ${agreement.agreementType ?? "Standard Retainer"}`;
   const { envelopeId, signingLink } =
     await stubESignatureProvider.createEnvelope(lead.email, documentContent);
@@ -2685,6 +2699,7 @@ const sendFeeAgreement = async (
       status: "pending_signature",
       envelopeId,
       signingLink,
+      documentUrl: documentKey,
       updatedAt: now,
     })
     .where(eq(feeAgreements.id, agreementId))
