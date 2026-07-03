@@ -27,7 +27,10 @@ import {
 } from "../../db/schema/consultations";
 import { consultationLocations } from "../../db/schema/consultation-locations";
 import { consultationSettings } from "../../db/schema/consultation-settings";
-import { feeAgreements } from "../../db/schema/fee-agreements";
+import {
+  feeAgreements,
+  type FeeAgreementDetails,
+} from "../../db/schema/fee-agreements";
 import { leads } from "../../db/schema/leads";
 import { cases } from "../../db/schema/cases";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
@@ -68,6 +71,7 @@ import {
   checkAttorneyTimeConflicts,
   generateConsultationSlots,
 } from "./consultation-slots.service";
+import { assembleFeeAgreementDocument } from "./fee-agreement-document";
 import { googleMeetService } from "../../utils/google-meet/google-meet.service";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -2542,6 +2546,11 @@ const generateFeeAgreement = async (
   data: {
     agreementType?: string;
     generatedFrom?: "questionnaire_auto" | "manual";
+    attorneyFee: FeeAgreementDetails["attorneyFee"];
+    governmentFees?: FeeAgreementDetails["governmentFees"];
+    paymentPlan: FeeAgreementDetails["paymentPlan"];
+    applyConsultationCredit?: boolean;
+    accountSplit: FeeAgreementDetails["accountSplit"];
   },
 ) => {
   const [lead] = await db
@@ -2570,6 +2579,46 @@ const generateFeeAgreement = async (
   if (lead.feeAgreementId)
     throw new ConflictError("Fee agreement already exists for this lead");
 
+  // Resolve the consultation fee for the credit note: the lead's own
+  // consultation fee if set, else the firm's default.
+  let consultationFeeAmount: number | null = null;
+  if (lead.consultationId) {
+    const [c] = await db
+      .select({ feeAmount: consultations.feeAmount })
+      .from(consultations)
+      .where(eq(consultations.id, lead.consultationId))
+      .limit(1);
+    if (c?.feeAmount != null) consultationFeeAmount = Number(c.feeAmount);
+  }
+  if (consultationFeeAmount == null) {
+    const [settings] = await db
+      .select({ defaultAmount: consultationSettings.defaultAmount })
+      .from(consultationSettings)
+      .where(eq(consultationSettings.organizationId, organizationId))
+      .limit(1);
+    if (settings?.defaultAmount != null)
+      consultationFeeAmount = Number(settings.defaultAmount);
+  }
+
+  // Per-firm document reference, e.g. FA-2026-0011.
+  const [countRow] = await db
+    .select({ total: count() })
+    .from(feeAgreements)
+    .where(eq(feeAgreements.organizationId, organizationId));
+  const docRef = `FA-${new Date().getFullYear()}-${String(
+    Number(countRow?.total ?? 0) + 1,
+  ).padStart(4, "0")}`;
+
+  const details: FeeAgreementDetails = {
+    attorneyFee: data.attorneyFee,
+    governmentFees: data.governmentFees ?? [],
+    paymentPlan: data.paymentPlan,
+    applyConsultationCredit: data.applyConsultationCredit ?? false,
+    accountSplit: data.accountSplit,
+    consultationFeeAmount,
+    docRef,
+  };
+
   // Create the agreement as a draft only. The signing envelope is minted and the
   // client is emailed at the separate "send" step; the lead stays in the
   // consultation stage until the signed document is received.
@@ -2580,7 +2629,8 @@ const generateFeeAgreement = async (
       leadId,
       practiceAreaId: lead.practiceAreaId ?? undefined,
       caseTypeId: lead.caseTypeId ?? undefined,
-      agreementType: data.agreementType,
+      agreementType: data.agreementType ?? "retainer",
+      details,
       generatedFrom: (data.generatedFrom ?? "manual") as any,
       status: "draft",
     })
@@ -2591,7 +2641,8 @@ const generateFeeAgreement = async (
     .set({ feeAgreementId: agreement.id, updatedAt: new Date() })
     .where(eq(leads.id, leadId));
 
-  return agreement;
+  const document = await assembleFeeAgreementDocument(agreement, organizationId);
+  return { agreement, document };
 };
 
 // Dispatch a drafted agreement: mint the e-signature envelope, email the client
@@ -2710,6 +2761,29 @@ const getFeeAgreement = async (leadId: string, organizationId: string) => {
     .limit(1);
 
   return agreement ?? null;
+};
+
+// Returns a drafted agreement plus its assembled preview document (so the
+// preview modal can be reopened for a draft).
+const getFeeAgreementPreview = async (
+  agreementId: string,
+  organizationId: string,
+) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+
+  const document = await assembleFeeAgreementDocument(agreement, organizationId);
+  return { agreement, document };
 };
 
 const nudgeClient = async (agreementId: string, organizationId: string) => {
@@ -3203,6 +3277,7 @@ export class LeadsService {
   payConsultationFee = payConsultationFee;
   selectConsultationSlot = selectConsultationSlot;
   generateFeeAgreement = generateFeeAgreement;
+  getFeeAgreementPreview = getFeeAgreementPreview;
   sendFeeAgreement = sendFeeAgreement;
   markFeeAgreementReceived = markFeeAgreementReceived;
   getFeeAgreement = getFeeAgreement;

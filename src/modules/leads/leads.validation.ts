@@ -201,6 +201,46 @@ export const cancelConsultationBodySchema = z.object({
 export const generateFeeAgreementBodySchema = z.object({
   agreementType: z.string().optional(),
   generatedFrom: z.enum(["questionnaire_auto", "manual"]).optional(),
+  attorneyFee: z
+    .object({
+      type: z.enum(["flat", "hourly", "flat_hourly"]),
+      flatRate: z.number().nonnegative().optional(),
+      hourlyRate: z.number().nonnegative().optional(),
+    })
+    .superRefine((val, ctx) => {
+      if (
+        (val.type === "flat" || val.type === "flat_hourly") &&
+        val.flatRate == null
+      )
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A flat rate is required",
+          path: ["flatRate"],
+        });
+      if (
+        (val.type === "hourly" || val.type === "flat_hourly") &&
+        val.hourlyRate == null
+      )
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "An hourly rate is required",
+          path: ["hourlyRate"],
+        });
+    }),
+  governmentFees: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        amount: z.number().nonnegative(),
+      }),
+    )
+    .default([]),
+  paymentPlan: z.enum(["pay_in_full", "two_payments", "installments"]),
+  applyConsultationCredit: z.boolean().default(false),
+  accountSplit: z.object({
+    operating: z.number().nonnegative(),
+    trust: z.number().nonnegative(),
+  }),
 });
 
 export const openCaseBodySchema = z.object({

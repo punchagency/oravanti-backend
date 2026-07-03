@@ -260,6 +260,15 @@ export class AgreementsRouter {
   private initializeRoutes() {
     const { ctrl } = this;
 
+    this.router.get(
+      "/:agreementId/preview",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.agreementIdParamsSchema }),
+      ctrl.getFeeAgreementPreview,
+    );
+
     this.router.post(
       "/:agreementId/nudge-client",
       requireAuth,

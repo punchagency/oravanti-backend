@@ -1,8 +1,30 @@
-import { pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import {
+  jsonb,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { organization } from "./auth-schema";
 import { leads } from "./leads";
 import { practiceAreaCaseTypes } from "./practice-area-case-types";
 import { practiceAreas } from "./practice-areas";
+
+// Structured fee-agreement form data captured before generation.
+export type FeeAgreementDetails = {
+  attorneyFee: {
+    type: "flat" | "hourly" | "flat_hourly";
+    flatRate?: number;
+    hourlyRate?: number;
+  };
+  governmentFees: { name: string; amount: number }[];
+  paymentPlan: "pay_in_full" | "two_payments" | "installments";
+  applyConsultationCredit: boolean;
+  accountSplit: { operating: number; trust: number };
+  consultationFeeAmount: number | null;
+  docRef: string;
+};
 
 export const feeAgreementGeneratedFromEnum = pgEnum(
   "fee_agreement_generated_from",
@@ -27,6 +49,9 @@ export const feeAgreements = pgTable("fee_agreements", {
   practiceAreaId: uuid("practice_area_id").references(() => practiceAreas.id),
   caseTypeId: uuid("case_type_id").references(() => practiceAreaCaseTypes.id),
   agreementType: text("agreement_type"),
+  // Structured form captured before generation (attorney/government fees,
+  // payment plan, consultation credit, account split, docRef).
+  details: jsonb("details").$type<FeeAgreementDetails>(),
   generatedFrom: feeAgreementGeneratedFromEnum("generated_from")
     .notNull()
     .default("questionnaire_auto"),
