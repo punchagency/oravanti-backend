@@ -164,6 +164,15 @@ export class LeadsController {
     res.json({ success: true, data: result });
   };
 
+  cancelConsultation = async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.cancelConsultation(
+      req.params.id as string,
+      req.organizationId!,
+      { reason: req.body?.reason },
+    );
+    res.json({ success: true, data: result });
+  };
+
   // ─── Public booking flow (token-gated, no auth) ──────────────────────────────
 
   getConsultationBooking = async (req: Request, res: Response) => {

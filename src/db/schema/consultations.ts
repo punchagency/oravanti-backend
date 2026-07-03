@@ -1,4 +1,5 @@
 import {
+  boolean,
   integer,
   numeric,
   pgEnum,
@@ -6,6 +7,7 @@ import {
   text,
   timestamp,
   uuid,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { organization } from "./auth-schema";
 import { consultationLocations } from "./consultation-locations";
@@ -57,10 +59,18 @@ export const consultations = pgTable("consultations", {
   leadId: uuid("lead_id")
     .notNull()
     .references(() => leads.id),
+  // Set when this consultation is a follow-up of a prior (completed) one.
+  parentConsultationId: uuid("parent_consultation_id").references(
+    (): AnyPgColumn => consultations.id,
+  ),
   // Null until the lead selects a slot in the booking flow.
   scheduledAt: timestamp("scheduled_at"),
   duration: integer("duration").notNull(),
   mode: consultationModeEnum("mode").notNull(),
+  // Urgent (admin fast-track): the lead skips the slot queue and is connected
+  // ASAP; scheduledAt is set at creation and finalization happens on pay
+  // (fee case) or immediately at initiate (no-fee case).
+  isUrgent: boolean("is_urgent").notNull().default(false),
   leadAttorneyId: uuid("lead_attorney_id").references(() => staff.id),
   // Required when mode = in_person.
   locationId: uuid("location_id").references(() => consultationLocations.id),
@@ -78,6 +88,10 @@ export const consultations = pgTable("consultations", {
   preConsultationNotes: text("pre_consultation_notes"),
   attorneyNotes: text("attorney_notes"),
   outcome: consultationOutcomeEnum("outcome"),
+  // Cancellation audit (set by the cancel flow, which also revokes the booking
+  // link and removes the Meet event).
+  cancelledAt: timestamp("cancelled_at"),
+  cancellationReason: text("cancellation_reason"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

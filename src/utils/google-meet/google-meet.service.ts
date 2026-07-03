@@ -36,6 +36,17 @@ export class GoogleMeetService {
     );
   }
 
+  private calendarClient() {
+    const auth = new google.auth.JWT({
+      email: env.GOOGLE_MEET_CLIENT_EMAIL,
+      // Private keys are commonly stored with escaped newlines in env files.
+      key: env.GOOGLE_MEET_PRIVATE_KEY!.replace(/\\n/g, "\n"),
+      scopes: CALENDAR_SCOPES,
+      subject: env.GOOGLE_MEET_IMPERSONATED_USER,
+    });
+    return google.calendar({ version: "v3", auth });
+  }
+
   async createMeetLink(
     input: CreateMeetLinkInput = {},
   ): Promise<MeetLinkResult> {
@@ -44,15 +55,7 @@ export class GoogleMeetService {
     }
 
     try {
-      const auth = new google.auth.JWT({
-        email: env.GOOGLE_MEET_CLIENT_EMAIL,
-        // Private keys are commonly stored with escaped newlines in env files.
-        key: env.GOOGLE_MEET_PRIVATE_KEY!.replace(/\\n/g, "\n"),
-        scopes: CALENDAR_SCOPES,
-        subject: env.GOOGLE_MEET_IMPERSONATED_USER,
-      });
-
-      const calendar = google.calendar({ version: "v3", auth });
+      const calendar = this.calendarClient();
 
       const start = input.startTime ?? new Date();
       const end = new Date(
@@ -93,6 +96,24 @@ export class GoogleMeetService {
     } catch (error) {
       console.error("[google-meet] failed to create Meet link", error);
       return this.placeholder();
+    }
+  }
+
+  /**
+   * Removes a previously created calendar/Meet event. Tolerant by design: a
+   * no-op when unconfigured or when no external id was stored (e.g. placeholder
+   * links), and swallows "already gone" errors so cancellation never fails on
+   * a stale/missing event.
+   */
+  async deleteMeetEvent(externalId: string | null | undefined): Promise<void> {
+    if (!externalId || !this.isConfigured()) return;
+    try {
+      await this.calendarClient().events.delete({
+        calendarId: "primary",
+        eventId: externalId,
+      });
+    } catch (error) {
+      console.error("[google-meet] failed to delete Meet event", error);
     }
   }
 
