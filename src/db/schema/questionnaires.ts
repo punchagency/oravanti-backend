@@ -13,14 +13,11 @@ import {
 import { organization } from "./auth-schema";
 import { cases } from "./cases";
 import { clients } from "./clients";
+import { leads } from "./leads";
 import { practiceAreaCaseTypes } from "./practice-area-case-types";
 import { staff } from "./staff";
 
-export const questionnaireStatusEnum = pgEnum("questionnaire_status", [
-  "draft",
-  "published",
-  "archived",
-]);
+// ─── Shared Enums ────────────────────────────────────────────────────────────
 
 export const questionnaireQuestionTypeEnum = pgEnum(
   "questionnaire_question_type",
@@ -70,240 +67,174 @@ export const questionnaireResponseStatusEnum = pgEnum(
   ["draft", "submitted"],
 );
 
-export const questionnaires = pgTable(
-  "questionnaires",
+export const questionSourceEnum = pgEnum("question_source", ["system", "firm"]);
+
+export const questionnaireFileScanStatusEnum = pgEnum(
+  "questionnaire_file_scan_status",
+  ["pending", "scanning", "clean", "issues_found", "failed"],
+);
+
+// ─── System Questionnaires (platform-owned, one per case type) ────────────────
+
+export const caseTypeQuestionnaires = pgTable(
+  "case_type_questionnaires",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    organizationId: text("organization_id")
-      .notNull()
-      .references(() => organization.id),
-    title: text("title").notNull(),
+    id:          uuid("id").primaryKey().defaultRandom(),
+    caseTypeId:  uuid("case_type_id").notNull().unique().references(() => practiceAreaCaseTypes.id),
+    title:       text("title").notNull(),
     description: text("description"),
-    status: questionnaireStatusEnum("status").notNull().default("draft"),
-    createdById: uuid("created_by_id").references(() => staff.id),
-    sourceQuestionnaireId: uuid("source_questionnaire_id"),
-    publishedVersionId: uuid("published_version_id"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    createdAt:   timestamp("created_at").notNull().defaultNow(),
+    updatedAt:   timestamp("updated_at").notNull().defaultNow(),
+  },
+);
+
+export const caseTypeQuestionnaireSections = pgTable(
+  "case_type_questionnaire_sections",
+  {
+    id:              uuid("id").primaryKey().defaultRandom(),
+    questionnaireId: uuid("questionnaire_id").notNull().references(() => caseTypeQuestionnaires.id),
+    title:           text("title").notNull(),
+    description:     text("description"),
+    orderIndex:      integer("order_index").notNull(),
+    createdAt:       timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [
-    index("questionnaires_organization_idx").on(table.organizationId),
-    index("questionnaires_status_idx").on(table.status),
+    index("ctqs_questionnaire_idx").on(table.questionnaireId),
   ],
 );
 
-export const questionnaireVersions = pgTable(
-  "questionnaire_versions",
+export const caseTypeQuestionnaireQuestions = pgTable(
+  "case_type_questionnaire_questions",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    questionnaireId: uuid("questionnaire_id")
-      .notNull()
-      .references(() => questionnaires.id),
-    organizationId: text("organization_id")
-      .notNull()
-      .references(() => organization.id),
-    versionNumber: integer("version_number").notNull(),
-    title: text("title").notNull(),
-    description: text("description"),
-    schemaSnapshot: jsonb("schema_snapshot"),
-    publishedAt: timestamp("published_at").notNull().defaultNow(),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
+    id:              uuid("id").primaryKey().defaultRandom(),
+    questionnaireId: uuid("questionnaire_id").notNull().references(() => caseTypeQuestionnaires.id),
+    sectionId:       uuid("section_id").notNull().references(() => caseTypeQuestionnaireSections.id),
+    label:           text("label").notNull(),
+    description:     text("description"),
+    type:            questionnaireQuestionTypeEnum("type").notNull(),
+    orderIndex:      integer("order_index").notNull(),
+    isRequired:      boolean("is_required").notNull().default(false),
+    config:          jsonb("config").notNull().default({}),
+    createdAt:       timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [
-    unique("questionnaire_versions_number_unique").on(
-      table.questionnaireId,
-      table.versionNumber,
-    ),
-    index("questionnaire_versions_questionnaire_idx").on(table.questionnaireId),
-    index("questionnaire_versions_organization_idx").on(table.organizationId),
+    index("ctqq_questionnaire_idx").on(table.questionnaireId),
+    index("ctqq_section_idx").on(table.sectionId),
   ],
 );
 
-export const questionnaireCaseTypes = pgTable(
-  "questionnaire_case_types",
+export const caseTypeQuestionnaireLogicRules = pgTable(
+  "case_type_questionnaire_logic_rules",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    questionnaireId: uuid("questionnaire_id")
-      .notNull()
-      .references(() => questionnaires.id),
-    caseTypeId: uuid("case_type_id")
-      .notNull()
-      .references(() => practiceAreaCaseTypes.id),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
+    id:               uuid("id").primaryKey().defaultRandom(),
+    questionnaireId:  uuid("questionnaire_id").notNull().references(() => caseTypeQuestionnaires.id),
+    sourceQuestionId: uuid("source_question_id").notNull().references(() => caseTypeQuestionnaireQuestions.id),
+    condition:        jsonb("condition").notNull().default({}),
+    actionType:       questionnaireLogicActionEnum("action_type").notNull(),
+    action:           jsonb("action").notNull().default({}),
+    priority:         integer("priority").notNull().default(0),
+    createdAt:        timestamp("created_at").notNull().defaultNow(),
+    updatedAt:        timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
-    unique("questionnaire_case_types_unique").on(
-      table.questionnaireId,
-      table.caseTypeId,
-    ),
-    index("questionnaire_case_types_questionnaire_idx").on(
-      table.questionnaireId,
-    ),
-    index("questionnaire_case_types_case_type_idx").on(table.caseTypeId),
+    index("ctqlr_questionnaire_idx").on(table.questionnaireId),
   ],
 );
 
-export const questionnaireVersionCaseTypes = pgTable(
-  "questionnaire_version_case_types",
+// ─── Firm Questionnaire Additions (org-scoped, addable not removable system qs)
+
+export const firmQuestionnaireSections = pgTable(
+  "firm_questionnaire_sections",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    questionnaireVersionId: uuid("questionnaire_version_id")
-      .notNull()
-      .references(() => questionnaireVersions.id),
-    questionnaireId: uuid("questionnaire_id")
-      .notNull()
-      .references(() => questionnaires.id),
-    caseTypeId: uuid("case_type_id")
-      .notNull()
-      .references(() => practiceAreaCaseTypes.id),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
+    id:             uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id").notNull().references(() => organization.id),
+    caseTypeId:     uuid("case_type_id").notNull().references(() => practiceAreaCaseTypes.id),
+    title:          text("title").notNull(),
+    description:    text("description"),
+    orderIndex:     integer("order_index").notNull(),
+    createdAt:      timestamp("created_at").notNull().defaultNow(),
+    updatedAt:      timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
-    unique("questionnaire_version_case_types_unique").on(
-      table.questionnaireVersionId,
-      table.caseTypeId,
-    ),
-    index("questionnaire_version_case_types_version_idx").on(
-      table.questionnaireVersionId,
-    ),
-    index("questionnaire_version_case_types_questionnaire_idx").on(
-      table.questionnaireId,
-    ),
-    index("questionnaire_version_case_types_case_type_idx").on(
-      table.caseTypeId,
-    ),
+    unique("fqs_org_case_type_order_unique").on(table.organizationId, table.caseTypeId, table.orderIndex),
+    index("fqs_org_case_type_idx").on(table.organizationId, table.caseTypeId),
   ],
 );
 
-export const questionnaireSections = pgTable(
-  "questionnaire_sections",
+export const firmQuestionnaireQuestions = pgTable(
+  "firm_questionnaire_questions",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    questionnaireId: uuid("questionnaire_id")
-      .notNull()
-      .references(() => questionnaires.id),
-    versionId: uuid("version_id").references(() => questionnaireVersions.id),
-    title: text("title").notNull(),
-    description: text("description"),
-    orderIndex: integer("order_index").notNull(),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    id:             uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id").notNull().references(() => organization.id),
+    caseTypeId:     uuid("case_type_id").notNull().references(() => practiceAreaCaseTypes.id),
+    // Exactly one of these is set — attaches to a system section OR a firm section
+    systemSectionId: uuid("system_section_id").references(() => caseTypeQuestionnaireSections.id),
+    firmSectionId:   uuid("firm_section_id").references(() => firmQuestionnaireSections.id),
+    label:          text("label").notNull(),
+    description:    text("description"),
+    type:           questionnaireQuestionTypeEnum("type").notNull(),
+    orderIndex:     integer("order_index").notNull(),
+    isRequired:     boolean("is_required").notNull().default(false),
+    config:         jsonb("config").notNull().default({}),
+    createdAt:      timestamp("created_at").notNull().defaultNow(),
+    updatedAt:      timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
-    index("questionnaire_sections_questionnaire_idx").on(table.questionnaireId),
-    index("questionnaire_sections_version_idx").on(table.versionId),
+    index("fqq_org_case_type_idx").on(table.organizationId, table.caseTypeId),
   ],
 );
 
-export const questionnaireQuestions = pgTable(
-  "questionnaire_questions",
+export const firmQuestionnaireLogicRules = pgTable(
+  "firm_questionnaire_logic_rules",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    questionnaireId: uuid("questionnaire_id")
-      .notNull()
-      .references(() => questionnaires.id),
-    sectionId: uuid("section_id")
-      .notNull()
-      .references(() => questionnaireSections.id),
-    versionId: uuid("version_id").references(() => questionnaireVersions.id),
-    label: text("label").notNull(),
-    description: text("description"),
-    type: questionnaireQuestionTypeEnum("type").notNull(),
-    orderIndex: integer("order_index").notNull(),
-    isRequired: boolean("is_required").notNull().default(false),
-    config: jsonb("config").notNull().default({}),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    id:                   uuid("id").primaryKey().defaultRandom(),
+    organizationId:       text("organization_id").notNull().references(() => organization.id),
+    caseTypeId:           uuid("case_type_id").notNull().references(() => practiceAreaCaseTypes.id),
+    sourceQuestionId:     uuid("source_question_id").notNull().references(() => firmQuestionnaireQuestions.id),
+    targetQuestionSource: questionSourceEnum("target_question_source").notNull(),
+    targetQuestionId:     uuid("target_question_id").notNull(),
+    condition:            jsonb("condition").notNull().default({}),
+    actionType:           questionnaireLogicActionEnum("action_type").notNull(),
+    action:               jsonb("action").notNull().default({}),
+    priority:             integer("priority").notNull().default(0),
+    createdAt:            timestamp("created_at").notNull().defaultNow(),
+    updatedAt:            timestamp("updated_at").notNull().defaultNow(),
   },
-  (table) => [
-    index("questionnaire_questions_questionnaire_idx").on(table.questionnaireId),
-    index("questionnaire_questions_section_idx").on(table.sectionId),
-    index("questionnaire_questions_version_idx").on(table.versionId),
-  ],
 );
 
-export const questionnaireQuestionOptions = pgTable(
-  "questionnaire_question_options",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    questionId: uuid("question_id")
-      .notNull()
-      .references(() => questionnaireQuestions.id),
-    label: text("label").notNull(),
-    value: text("value").notNull(),
-    orderIndex: integer("order_index").notNull(),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
-  },
-  (table) => [
-    index("questionnaire_options_question_idx").on(table.questionId),
-    unique("questionnaire_options_value_unique").on(
-      table.questionId,
-      table.value,
-    ),
-  ],
-);
-
-export const questionnaireLogicRules = pgTable(
-  "questionnaire_logic_rules",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    questionnaireId: uuid("questionnaire_id")
-      .notNull()
-      .references(() => questionnaires.id),
-    versionId: uuid("version_id").references(() => questionnaireVersions.id),
-    sourceQuestionId: uuid("source_question_id").references(
-      () => questionnaireQuestions.id,
-    ),
-    condition: jsonb("condition").notNull().default({}),
-    actionType: questionnaireLogicActionEnum("action_type").notNull(),
-    action: jsonb("action").notNull().default({}),
-    priority: integer("priority").notNull().default(0),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
-  },
-  (table) => [
-    index("questionnaire_logic_questionnaire_idx").on(table.questionnaireId),
-    index("questionnaire_logic_version_idx").on(table.versionId),
-    index("questionnaire_logic_source_question_idx").on(
-      table.sourceQuestionId,
-    ),
-  ],
-);
+// ─── Sends & Responses ────────────────────────────────────────────────────────
 
 export const questionnaireSends = pgTable(
   "questionnaire_sends",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    organizationId: text("organization_id")
-      .notNull()
-      .references(() => organization.id),
-    questionnaireId: uuid("questionnaire_id")
-      .notNull()
-      .references(() => questionnaires.id),
-    questionnaireVersionId: uuid("questionnaire_version_id")
-      .notNull()
-      .references(() => questionnaireVersions.id),
-    clientId: uuid("client_id")
-      .notNull()
-      .references(() => clients.id),
-    caseId: uuid("case_id").references(() => cases.id),
-    caseTypeId: uuid("case_type_id")
-      .notNull()
-      .references(() => practiceAreaCaseTypes.id),
-    sentById: uuid("sent_by_id").references(() => staff.id),
-    status: questionnaireSendStatusEnum("status").notNull().default("sent"),
+    id:                      uuid("id").primaryKey().defaultRandom(),
+    organizationId:          text("organization_id").notNull().references(() => organization.id),
+    caseTypeQuestionnaireId: uuid("case_type_questionnaire_id").notNull().references(() => caseTypeQuestionnaires.id),
+    // leadId populated for intake sends; clientId/caseId populated after conversion
+    leadId:   uuid("lead_id").references(() => leads.id),
+    clientId: uuid("client_id").references(() => clients.id),
+    caseId:   uuid("case_id").references(() => cases.id),
+    caseTypeId: uuid("case_type_id").notNull().references(() => practiceAreaCaseTypes.id),
+    sentById:   uuid("sent_by_id").references(() => staff.id),
+    status:     questionnaireSendStatusEnum("status").notNull().default("sent"),
     accessTokenHash: text("access_token_hash").notNull().unique(),
-    expiresAt: timestamp("expires_at"),
-    sentAt: timestamp("sent_at").notNull().defaultNow(),
-    openedAt: timestamp("opened_at"),
+    schemaSnapshot:  jsonb("schema_snapshot"),
+    // Delivery + reminder configuration captured from the send wizard.
+    deliveryChannels: jsonb("delivery_channels").notNull().default(["email"]),
+    language:         text("language").notNull().default("english"),
+    autoReminderDays: integer("auto_reminder_days"), // null = never
+    reminderJobId:    text("reminder_job_id"),        // BullMQ delayed-job id
+    lastReminderAt:   timestamp("last_reminder_at"),
+    expiresAt:  timestamp("expires_at"),
+    sentAt:     timestamp("sent_at").notNull().defaultNow(),
+    openedAt:   timestamp("opened_at"),
     submittedAt: timestamp("submitted_at"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    createdAt:  timestamp("created_at").notNull().defaultNow(),
+    updatedAt:  timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
     index("questionnaire_sends_organization_idx").on(table.organizationId),
-    index("questionnaire_sends_questionnaire_idx").on(table.questionnaireId),
+    index("questionnaire_sends_lead_idx").on(table.leadId),
     index("questionnaire_sends_client_idx").on(table.clientId),
     index("questionnaire_sends_case_type_idx").on(table.caseTypeId),
   ],
@@ -312,63 +243,43 @@ export const questionnaireSends = pgTable(
 export const questionnaireResponses = pgTable(
   "questionnaire_responses",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    organizationId: text("organization_id")
-      .notNull()
-      .references(() => organization.id),
-    questionnaireSendId: uuid("questionnaire_send_id")
-      .notNull()
-      .references(() => questionnaireSends.id),
-    questionnaireId: uuid("questionnaire_id")
-      .notNull()
-      .references(() => questionnaires.id),
-    questionnaireVersionId: uuid("questionnaire_version_id")
-      .notNull()
-      .references(() => questionnaireVersions.id),
-    clientId: uuid("client_id")
-      .notNull()
-      .references(() => clients.id),
-    caseId: uuid("case_id").references(() => cases.id),
-    caseTypeId: uuid("case_type_id")
-      .notNull()
-      .references(() => practiceAreaCaseTypes.id),
-    status: questionnaireResponseStatusEnum("status").notNull().default("draft"),
-    currentSectionId: uuid("current_section_id").references(
-      () => questionnaireSections.id,
-    ),
-    startedAt: timestamp("started_at").notNull().defaultNow(),
-    lastSavedAt: timestamp("last_saved_at").notNull().defaultNow(),
-    submittedAt: timestamp("submitted_at"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    id:                      uuid("id").primaryKey().defaultRandom(),
+    organizationId:          text("organization_id").notNull().references(() => organization.id),
+    questionnaireSendId:     uuid("questionnaire_send_id").notNull().references(() => questionnaireSends.id),
+    caseTypeQuestionnaireId: uuid("case_type_questionnaire_id").notNull().references(() => caseTypeQuestionnaires.id),
+    leadId:   uuid("lead_id").references(() => leads.id),
+    clientId: uuid("client_id").references(() => clients.id),
+    caseId:   uuid("case_id").references(() => cases.id),
+    caseTypeId: uuid("case_type_id").notNull().references(() => practiceAreaCaseTypes.id),
+    status:     questionnaireResponseStatusEnum("status").notNull().default("draft"),
+    // { source: 'system' | 'firm', id: string }
+    currentSectionRef: jsonb("current_section_ref"),
+    startedAt:    timestamp("started_at").notNull().defaultNow(),
+    lastSavedAt:  timestamp("last_saved_at").notNull().defaultNow(),
+    submittedAt:  timestamp("submitted_at"),
+    createdAt:    timestamp("created_at").notNull().defaultNow(),
+    updatedAt:    timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
-    unique("questionnaire_responses_send_client_unique").on(
-      table.questionnaireSendId,
-      table.clientId,
-    ),
+    unique("questionnaire_responses_send_unique").on(table.questionnaireSendId),
     index("questionnaire_responses_organization_idx").on(table.organizationId),
-    index("questionnaire_responses_questionnaire_idx").on(
-      table.questionnaireId,
-    ),
     index("questionnaire_responses_send_idx").on(table.questionnaireSendId),
-    index("questionnaire_responses_case_type_idx").on(table.caseTypeId),
+    index("questionnaire_responses_lead_idx").on(table.leadId),
   ],
 );
 
 export const questionnaireAnswers = pgTable(
   "questionnaire_answers",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    responseId: uuid("response_id")
-      .notNull()
-      .references(() => questionnaireResponses.id),
-    questionId: uuid("question_id")
-      .notNull()
-      .references(() => questionnaireQuestions.id),
-    value: jsonb("value").notNull(),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    id:             uuid("id").primaryKey().defaultRandom(),
+    responseId:     uuid("response_id").notNull().references(() => questionnaireResponses.id),
+    // questionId references caseTypeQuestionnaireQuestions OR firmQuestionnaireQuestions
+    // based on questionSource — no FK constraint to allow dual-table reference
+    questionId:     uuid("question_id").notNull(),
+    questionSource: questionSourceEnum("question_source").notNull(),
+    value:          jsonb("value").notNull(),
+    createdAt:      timestamp("created_at").notNull().defaultNow(),
+    updatedAt:      timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
     unique("questionnaire_answers_response_question_unique").on(
@@ -376,52 +287,45 @@ export const questionnaireAnswers = pgTable(
       table.questionId,
     ),
     index("questionnaire_answers_response_idx").on(table.responseId),
-    index("questionnaire_answers_question_idx").on(table.questionId),
   ],
 );
 
 export const questionnaireResponseFiles = pgTable(
   "questionnaire_response_files",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    organizationId: text("organization_id")
-      .notNull()
-      .references(() => organization.id),
-    responseId: uuid("response_id")
-      .notNull()
-      .references(() => questionnaireResponses.id),
-    questionId: uuid("question_id")
-      .notNull()
-      .references(() => questionnaireQuestions.id),
-    storagePath: text("storage_path").notNull(),
-    fileUrl: text("file_url").notNull(),
-    mimeType: text("mime_type").notNull(),
-    fileSize: integer("file_size").notNull(),
+    id:             uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id").notNull().references(() => organization.id),
+    responseId:     uuid("response_id").notNull().references(() => questionnaireResponses.id),
+    questionId:     uuid("question_id").notNull(),
+    questionSource: questionSourceEnum("question_source").notNull(),
+    storagePath:    text("storage_path").notNull(),
+    fileUrl:        text("file_url").notNull(),
+    mimeType:       text("mime_type").notNull(),
+    fileSize:       integer("file_size").notNull(),
     originalFilename: text("original_filename").notNull(),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
+    // AI document scan (stubbed until the AI service is wired). scanResult holds
+    // an array of { severity, title, description, affectedField? } findings.
+    scanStatus:     questionnaireFileScanStatusEnum("scan_status").notNull().default("pending"),
+    scanResult:     jsonb("scan_result"),
+    scannedAt:      timestamp("scanned_at"),
+    createdAt:      timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [
     index("questionnaire_response_files_response_idx").on(table.responseId),
-    index("questionnaire_response_files_question_idx").on(table.questionId),
-    index("questionnaire_response_files_organization_idx").on(
-      table.organizationId,
-    ),
+    index("questionnaire_response_files_organization_idx").on(table.organizationId),
   ],
 );
 
-export type Questionnaire = typeof questionnaires.$inferSelect;
-export type NewQuestionnaire = typeof questionnaires.$inferInsert;
-export type QuestionnaireVersion = typeof questionnaireVersions.$inferSelect;
-export type QuestionnaireCaseType = typeof questionnaireCaseTypes.$inferSelect;
-export type QuestionnaireVersionCaseType =
-  typeof questionnaireVersionCaseTypes.$inferSelect;
-export type QuestionnaireSection = typeof questionnaireSections.$inferSelect;
-export type QuestionnaireQuestion = typeof questionnaireQuestions.$inferSelect;
-export type QuestionnaireQuestionOption =
-  typeof questionnaireQuestionOptions.$inferSelect;
-export type QuestionnaireLogicRule = typeof questionnaireLogicRules.$inferSelect;
-export type QuestionnaireSend = typeof questionnaireSends.$inferSelect;
-export type QuestionnaireResponse = typeof questionnaireResponses.$inferSelect;
-export type QuestionnaireAnswer = typeof questionnaireAnswers.$inferSelect;
-export type QuestionnaireResponseFile =
-  typeof questionnaireResponseFiles.$inferSelect;
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type CaseTypeQuestionnaire        = typeof caseTypeQuestionnaires.$inferSelect;
+export type CaseTypeQuestionnaireSection = typeof caseTypeQuestionnaireSections.$inferSelect;
+export type CaseTypeQuestionnaireQuestion = typeof caseTypeQuestionnaireQuestions.$inferSelect;
+export type CaseTypeQuestionnaireLogicRule = typeof caseTypeQuestionnaireLogicRules.$inferSelect;
+export type FirmQuestionnaireSection     = typeof firmQuestionnaireSections.$inferSelect;
+export type FirmQuestionnaireQuestion    = typeof firmQuestionnaireQuestions.$inferSelect;
+export type FirmQuestionnaireLogicRule   = typeof firmQuestionnaireLogicRules.$inferSelect;
+export type QuestionnaireSend            = typeof questionnaireSends.$inferSelect;
+export type QuestionnaireResponse        = typeof questionnaireResponses.$inferSelect;
+export type QuestionnaireAnswer          = typeof questionnaireAnswers.$inferSelect;
+export type QuestionnaireResponseFile    = typeof questionnaireResponseFiles.$inferSelect;

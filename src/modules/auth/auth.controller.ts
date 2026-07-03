@@ -25,8 +25,6 @@ export class AuthController {
       >,
       res: Response,
     ) => {
-      const { email, password, rememberMe = false } = req.body;
-
       const authResponse = await this.authService.signUpWithEmail(
         req.body,
         req,

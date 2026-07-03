@@ -9,12 +9,6 @@ export class QuestionnairesValidation {
     limit: z.string().optional(),
   });
 
-  public questionnaireStatusSchema = z.enum([
-    "draft",
-    "published",
-    "archived",
-  ]);
-
   public questionTypeSchema = z.enum([
     "short_text",
     "long_text",
@@ -33,23 +27,7 @@ export class QuestionnairesValidation {
     "signature",
   ]);
 
-  public logicActionTypeSchema = z.enum([
-    "show_question",
-    "hide_question",
-    "skip_to_question",
-    "skip_to_section",
-    "require_question",
-    "branch_to_section",
-    "end_questionnaire",
-  ]);
-
   private jsonObjectSchema = z.record(z.string(), z.unknown());
-
-  private questionOptionSchema = z.object({
-    label: z.string().min(1, "Option label is required"),
-    value: z.string().min(1, "Option value is required"),
-    orderIndex: z.number().int().nonnegative().optional(),
-  });
 
   private baseQuestionSchema = z.object({
     label: z.string().min(1, "Question label is required"),
@@ -58,72 +36,36 @@ export class QuestionnairesValidation {
     orderIndex: z.number().int().nonnegative().optional(),
     isRequired: z.boolean().optional(),
     config: this.jsonObjectSchema.optional(),
-    options: z.array(this.questionOptionSchema).optional(),
-  });
-
-  private questionWithSectionSchema = this.baseQuestionSchema.extend({
-    sectionId: this.uuidParam,
   });
 
   private initialSectionSchema = z.object({
     title: z.string().min(1, "Section title is required"),
     description: z.string().nullable().optional(),
-    orderIndex: z.number().int().nonnegative().optional(),
     questions: z.array(this.baseQuestionSchema).optional(),
   });
 
-  private reorderItemSchema = z.object({
-    id: this.uuidParam,
-    orderIndex: z.number().int().nonnegative(),
-    sectionId: this.uuidParam.optional(),
-  });
+  // ── Params ─────────────────────────────────────────────────────────────────
 
-  public questionnaireIdParamsSchema = z.object({
-    id: this.uuidParam,
-  });
+  public systemQuestionnaireIdParamsSchema = z.object({ id: this.uuidParam });
+  public systemSectionParamsSchema = z.object({ id: this.uuidParam, sectionId: this.uuidParam });
+  public systemQuestionParamsSchema = z.object({ id: this.uuidParam, sectionId: this.uuidParam });
+  public caseTypeIdParamsSchema = z.object({ caseTypeId: this.uuidParam });
+  public firmSectionParamsSchema = z.object({ caseTypeId: this.uuidParam, sectionId: this.uuidParam });
+  public firmQuestionParamsSchema = z.object({ caseTypeId: this.uuidParam, questionId: this.uuidParam });
+  public questionnaireIdParamsSchema = z.object({ id: this.uuidParam });
+  public questionnaireClientTokenParamsSchema = z.object({ token: z.string().min(1) });
+  public eligibleForCaseParamsSchema = z.object({ caseId: this.uuidParam });
+  public responseIdParamsSchema = z.object({ responseId: this.uuidParam });
+  public sendIdParamsSchema = z.object({ sendId: this.uuidParam });
+  public fileIdParamsSchema = z.object({ fileId: this.uuidParam });
 
-  public questionnaireQuestionParamsSchema = z.object({
-    id: this.uuidParam,
-    questionId: this.uuidParam,
-  });
+  // ── Bodies ─────────────────────────────────────────────────────────────────
 
-  public questionnaireClientTokenParamsSchema = z.object({
-    token: z.string().min(1, "token is required"),
-  });
-
-  public eligibleForCaseParamsSchema = z.object({
-    caseId: this.uuidParam,
-  });
-
-  public listQuestionnairesQuerySchema = this.paginationQuerySchema.extend({
-    search: z.string().optional(),
-    status: this.questionnaireStatusSchema.optional(),
-    caseTypeId: this.uuidParam.optional(),
-  });
-
-  public createQuestionnaireBodySchema = z.object({
+  public createSystemQuestionnaireBodySchema = z.object({
+    caseTypeId: this.uuidParam,
     title: z.string().min(1, "title is required"),
     description: z.string().nullable().optional(),
-    firstSectionTitle: z.string().min(1).optional(),
-    caseTypeIds: z.array(this.uuidParam).optional(),
     sections: z.array(this.initialSectionSchema).optional(),
-  });
-
-  public updateQuestionnaireBodySchema = z.object({
-    title: z.string().min(1).optional(),
-    description: z.string().nullable().optional(),
-    status: this.questionnaireStatusSchema.optional(),
-    caseTypeIds: z.array(this.uuidParam).optional(),
-  });
-
-  public duplicateQuestionnaireBodySchema = z
-    .object({
-      title: z.string().min(1).optional(),
-    })
-    .default({});
-
-  public setQuestionnaireCaseTypesBodySchema = z.object({
-    caseTypeIds: z.array(this.uuidParam),
   });
 
   public addSectionBodySchema = z.object({
@@ -132,33 +74,20 @@ export class QuestionnairesValidation {
     orderIndex: z.number().int().nonnegative().optional(),
   });
 
-  public reorderItemsBodySchema = z.object({
-    items: z.array(this.reorderItemSchema),
+  public addFirmQuestionBodySchema = this.baseQuestionSchema.extend({
+    systemSectionId: this.optionalNullableUuid,
+    firmSectionId: this.optionalNullableUuid,
   });
 
-  public addQuestionBodySchema = this.questionWithSectionSchema;
-
-  public updateQuestionBodySchema = this.baseQuestionSchema.partial().extend({
-    sectionId: this.uuidParam.optional(),
-  });
-
-  public addLogicRuleBodySchema = z.object({
-    sourceQuestionId: this.optionalNullableUuid,
-    condition: this.jsonObjectSchema,
-    actionType: this.logicActionTypeSchema,
-    action: this.jsonObjectSchema,
-    priority: z.number().int().optional(),
-  });
-
-  public sendQuestionnaireBodySchema = z.object({
-    clientId: this.uuidParam,
-    caseTypeId: this.uuidParam,
-    caseId: this.optionalNullableUuid,
-    expiresAt: z.coerce.date().optional().nullable(),
-  });
+  public updateFirmQuestionBodySchema = this.baseQuestionSchema.partial();
 
   public listResponsesQuerySchema = this.paginationQuerySchema.extend({
     caseTypeId: this.uuidParam.optional(),
+  });
+
+  private sectionRefSchema = z.object({
+    source: z.enum(["system", "firm"]),
+    id: this.uuidParam,
   });
 
   private answerSchema = z.object({
@@ -167,12 +96,19 @@ export class QuestionnairesValidation {
   });
 
   public responseBodySchema = z.object({
-    currentSectionId: this.optionalNullableUuid,
+    currentSectionRef: this.sectionRefSchema.nullable().optional(),
     answers: z.array(this.answerSchema).optional(),
   });
 
   public uploadResponseFileBodySchema = z.object({
     responseId: this.uuidParam,
     questionId: this.uuidParam,
+    questionSource: z.enum(["system", "firm"]).optional(),
+  });
+
+  // Staff manual upload — responseId comes from the route param.
+  public uploadResponseFileStaffBodySchema = z.object({
+    questionId: this.uuidParam,
+    questionSource: z.enum(["system", "firm"]).optional(),
   });
 }

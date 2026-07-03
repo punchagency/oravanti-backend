@@ -5,6 +5,8 @@
  *     description: Organization invitations & membership
  */
 import { Router } from "express";
+import { requireAuth } from "../../middleware/auth.middleware";
+import { requirePermission } from "../../middleware/permission.middleware";
 import { OrganizationController } from "./organization.controller";
 
 export class OrganizationRouter {
@@ -21,8 +23,6 @@ export class OrganizationRouter {
   }
 
   initializeRoutes() {
-    this.router.use(this.path, this.router);
-
     /**
      * @openapi
      * /organization/invite:
@@ -46,49 +46,119 @@ export class OrganizationRouter {
      *               $ref: "#/components/schemas/MessageResponse"
      *       400: { description: Validation error }
      */
-    this.router.post("/invite", this.organizationController.invite);
-
-    /**
-     * @openapi
-     * /organization/accept-invitation:
-     *   post:
-     *     tags: [Organization]
-     *     summary: Accept an organization invitation
-     *     requestBody:
-     *       required: true
-     *       content:
-     *         application/json:
-     *           schema:
-     *             $ref: "#/components/schemas/AcceptInvitationRequest"
-     *     responses:
-     *       200:
-     *         description: Invitation accepted
-     *         content:
-     *           application/json:
-     *             schema:
-     *               $ref: "#/components/schemas/MessageResponse"
-     */
+    this.router.get(
+      "/teams",
+      requireAuth,
+      requirePermission("staffs", "read"),
+      this.organizationController.getTeams,
+    );
+    this.router.get(
+      "/teams/:teamId",
+      requireAuth,
+      requirePermission("staffs", "read"),
+      this.organizationController.getTeam,
+    );
     this.router.post(
-      "/accept-invitation",
+      "/teams",
+      requireAuth,
+      requirePermission("staffs", "create"),
+      this.organizationController.createTeam,
+    );
+    this.router.get(
+      "/staff",
+      requireAuth,
+      requirePermission("staffs", "read"),
+      this.organizationController.getAll,
+    );
+    this.router.get(
+      "/staff/:staffId",
+      requireAuth,
+      requirePermission("staffs", "read"),
+      this.organizationController.getStaff,
+    );
+    this.router.post(
+      "/invite",
+      requireAuth,
+      requirePermission("staffs", "create"),
+      this.organizationController.invite,
+    );
+    this.router.post(
+      "/accept-invite",
+      requireAuth,
       this.organizationController.acceptInvite,
     );
-
-    /**
-     * @openapi
-     * /organization/invitations:
-     *   get:
-     *     tags: [Organization]
-     *     summary: List pending invitations for the current user
-     *     responses:
-     *       200:
-     *         description: List of invitations
-     *         content:
-     *           application/json:
-     *             schema:
-     *               type: array
-     *               items:
-     *                 $ref: "#/components/schemas/Invitation"
-     */
-    this.router.get("/invitations", this.organizationController.getInvitations);
+    this.router.get(
+      "/my-pending-invitation",
+      requireAuth,
+      this.organizationController.getMyPendingInvitation,
+    );
+    this.router.get(
+      "/needs-setup",
+      requireAuth,
+      this.organizationController.needsSetup,
+    );
+    this.router.get(
+      "/invitations",
+      requireAuth,
+      requirePermission("staffs", "create"),
+      this.organizationController.getInvitations,
+    );
+    this.router.post(
+      "/cancel-invitation",
+      requireAuth,
+      this.organizationController.cancelInvitation,
+    );
+    this.router.delete(
+      "/staff/:staffId",
+      requireAuth,
+      requirePermission("staffs", "delete"),
+      this.organizationController.deleteStaff,
+    );
+    this.router.patch(
+      "/staff/:staffId",
+      requireAuth,
+      requirePermission("staffs", "update"),
+      this.organizationController.updateStaff,
+    );
+    this.router.patch(
+      "/staff/:staffId/role",
+      requireAuth,
+      requirePermission("staffs", "update"),
+      this.organizationController.updateStaffRole,
+    );
+    this.router.post(
+      "/resend-invitation",
+      requireAuth,
+      this.organizationController.resendInvitation,
+    );
+    this.router.patch(
+      "/teams/:teamId",
+      requireAuth,
+      requirePermission("staffs", "update"),
+      this.organizationController.updateTeam,
+    );
+    this.router.post(
+      "/teams/:teamId/members",
+      requireAuth,
+      requirePermission("staffs", "update"),
+      this.organizationController.addTeamMembers,
+    );
+    this.router.delete(
+      "/teams/:teamId",
+      requireAuth,
+      requirePermission("staffs", "delete"),
+      this.organizationController.deleteTeam,
+    );
+    this.router.delete(
+      "/teams/:teamId/members/:memberId",
+      requireAuth,
+      requirePermission("staffs", "update"),
+      this.organizationController.removeTeamMember,
+    );
+    this.router.post(
+      "/set-password",
+      requireAuth,
+      this.organizationController.setPassword,
+    );
   }
 }

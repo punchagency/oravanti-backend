@@ -1,27 +1,33 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { symmetricDecrypt } from "better-auth/crypto";
 import {
+  customSession,
   emailOTP,
   openAPI,
   organization,
   twoFactor,
 } from "better-auth/plugins";
+import { and, eq } from "drizzle-orm";
 import { env } from "../config/env";
 import { db } from "../db/client";
+import { staff } from "../db/schema";
 import {
   account,
   invitation,
   member,
   organization as organizationSchema,
   session,
+  team,
+  teamMember,
   twoFactor as twoFactorSchema,
   user,
   verification,
 } from "../db/schema/auth-schema";
 import { emailService } from "../utils/email/email.service";
+import { databaseHooks } from "./database-hooks";
 import { ac, admin, attorney, owner, paralegal } from "./permissions";
 import { cryptoKeyPlugin } from "./plugins/cryptoKeyPlugin";
-import { databaseHooks } from "./database-hooks";
 
 const { isProduction } = env;
 
@@ -46,6 +52,7 @@ export const auth = betterAuth({
     cookiePrefix: "oravanti",
     defaultCookieAttributes: {
       sameSite: isProduction ? "none" : "lax",
+      secure: isProduction,
     },
   },
   database: drizzleAdapter(db, {
@@ -59,6 +66,8 @@ export const auth = betterAuth({
       organization: organizationSchema,
       invitation,
       twoFactor: twoFactorSchema,
+      team,
+      teamMember,
     },
   }),
   emailAndPassword: {
@@ -69,6 +78,8 @@ export const auth = betterAuth({
   },
   emailVerification: {
     sendVerificationEmail: async ({ user, url }) => {
+      console.log({ user });
+
       await emailService.sendVerificationEmail({ email: user.email, url });
     },
     sendOnSignUp: true,
@@ -85,7 +96,6 @@ export const auth = betterAuth({
       encryptedDEK: { type: "string", required: false },
       dekIv: { type: "string", required: false },
       dekTag: { type: "string", required: false },
-      userType: { type: "string", required: false, input: true },
     },
   },
   session: {
@@ -124,8 +134,41 @@ export const auth = betterAuth({
   },
   plugins: [
     organization({
+      // cancelPendingInvitationsOnReInvite: true,
+      teams: {
+        enabled: true,
+        defaultTeam: { enabled: false },
+      },
       async sendInvitationEmail(data) {
         const inviteLink = `http://localhost:5137/accept-invitation?id=${data.id}`;
+
+        const [staffRecord] = await db
+          .select({ tempPassword: staff.tempPassword })
+          .from(staff)
+          .where(
+            and(
+              eq(staff.email, data.email),
+              eq(staff.organizationId, data.organization.id),
+            ),
+          )
+          .limit(1);
+
+        if (staffRecord?.tempPassword) {
+          const plaintextPassword = await symmetricDecrypt({
+            key: env.BETTER_AUTH_SECRET,
+            data: staffRecord.tempPassword,
+          });
+
+          await emailService.sendInvitationWithCredentials({
+            email: data.email,
+            tempPassword: plaintextPassword,
+            inviteLink,
+            invitedByUsername: data.inviter.user.name,
+            invitedByEmail: data.inviter.user.email,
+            teamName: data.organization.name,
+          });
+          return;
+        }
 
         await emailService.sendOrganizationInvitationEmail({
           email: data.email,
@@ -134,6 +177,20 @@ export const auth = betterAuth({
           teamName: data.organization.name,
           inviteLink,
         });
+      },
+      organizationHooks: {
+        afterAcceptInvitation: async ({ member, user }) => {
+          await db
+            .update(staff)
+            .set({ role: member.role as any, status: "active" })
+            .where(eq(staff.userId, user.id));
+        },
+        afterUpdateMemberRole: async ({ member }) => {
+          await db
+            .update(staff)
+            .set({ role: member.role as any })
+            .where(eq(staff.userId, member.userId));
+        },
       },
       ac,
       roles: {
@@ -155,6 +212,16 @@ export const auth = betterAuth({
             taxId: { type: "string", input: true, required: false },
           },
         },
+        team: {
+          additionalFields: {
+            leadId: { type: "string", required: false },
+            description: { type: "string", required: false },
+            maxCaseload: { type: "number", required: false },
+            workloadPercentage: { type: "number", required: false },
+            status: { type: "string", required: false },
+            activeCases: { type: "number", required: false },
+          },
+        },
       },
     }),
     twoFactor(),
@@ -165,6 +232,31 @@ export const auth = betterAuth({
       },
     }),
     cryptoKeyPlugin(),
+    // Surface the active organization member role (owner/admin/attorney/
+    // paralegal) on the session so the frontend can gate conflict review
+    // without an extra request. The backend permission remains the real gate.
+    customSession(async ({ user, session }) => {
+      const activeOrganizationId = (
+        session as { activeOrganizationId?: string }
+      ).activeOrganizationId;
+
+      let memberRole: string | null = null;
+      if (activeOrganizationId) {
+        const [membership] = await db
+          .select({ role: member.role })
+          .from(member)
+          .where(
+            and(
+              eq(member.userId, user.id),
+              eq(member.organizationId, activeOrganizationId),
+            ),
+          )
+          .limit(1);
+        memberRole = membership?.role ?? null;
+      }
+
+      return { user, session, memberRole };
+    }),
   ],
   databaseHooks,
   telemetry: { enabled: false },

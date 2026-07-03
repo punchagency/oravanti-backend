@@ -1,7 +1,7 @@
-import { relations } from "drizzle-orm";
 import {
   boolean,
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -24,6 +24,7 @@ export const onboardingStatusEnum = pgEnum("onboarding_status", [
   "email_unverified",
   "email_verified",
   "completed",
+  "password_reset_required",
 ]);
 
 export const user = pgTable("user", {
@@ -38,92 +39,14 @@ export const user = pgTable("user", {
     .$onUpdate(() => /* @__PURE__ */ new Date())
     .notNull(),
   twoFactorEnabled: boolean("two_factor_enabled").default(false),
-
-  // Custom App Extensions
-  accountType: accountTypeEnum("user_account_type"),
-  onboardingState: onboardingStatusEnum("onboarding_state")
-    .default("email_unverified")
-    .notNull(),
-  tosAccepted: boolean("tos_accepted").default(false).notNull(),
-  tosAcceptedAt: timestamp("tos_accepted_at"),
-
-  // // To be removed later
-  // firstName: text("first_name"),
-  // lastName: text("last_name"),
-  // phoneNumber: text("phone_number"),
-  // jobTitle: text("job_title"),
-  // barNumber: text("bar_number"),
-
-  // Crypto key management
   encryptedDEK: text("encrypted_dek"),
   dekIv: text("dek_iv"),
   dekTag: text("dek_tag"),
+  accountType: accountTypeEnum("account_type"),
+  onboardingState: onboardingStatusEnum("onboarding_state"),
+  tosAccepted: boolean("tos_accepted"),
+  tosAcceptedAt: timestamp("tos_accepted_at"),
 });
-
-export const domainStatusEnum = pgEnum("domain_status", [
-  "pending",
-  "verified",
-  "failed",
-]);
-
-// // FIRM PROFILES (B2B Hub)
-export const organization = pgTable(
-  "organization",
-  {
-    id: text("id").primaryKey(),
-    name: text("name").notNull(),
-    slug: text("slug").notNull().unique(),
-    logo: text("logo"),
-    createdAt: timestamp("created_at").notNull(),
-    metadata: text("metadata"),
-
-    // Domain Verification Additions ---
-    domain: text("domain"),
-    isDomainVerified: boolean("is_domain_verified").default(false).notNull(),
-    verificationToken: text("verification_token"),
-    // White-labeling
-    espDomainId: text("esp_domain_id"),
-    dnsRecords: jsonb("dns_records"),
-    domainStatus: domainStatusEnum("domain_status").default("pending"),
-
-    emailAddress: text("email_address"),
-    phoneNumber: text("phone_number"),
-    address: text("address"),
-    city: text("city"),
-    state: text("state"),
-    zipCode: text("zip_code"),
-    website: text("website"),
-    taxId: text("tax_id"),
-  },
-  (table) => [uniqueIndex("organization_slug_uidx").on(table.slug)],
-);
-
-// // FIRM PROFILES (B2B Hub)
-// export const firmProfiles = pgTable("firm_profiles", {
-//   id: uuid("id").defaultRandom().primaryKey(),
-//   creatorId: text("creator_id")
-//     .references(() => user.id)
-//     .notNull(),
-//
-//   // Step 1: Domain Check Data
-//   domain: text("domain").unique(),
-//   isDomainVerified: boolean("is_domain_verified").default(false).notNull(),
-//   verificationToken: text("verification_token"),
-//
-//   // Step 3: Full Firm Details
-//   firmName: text("firm_name"),
-//   firmEmail: text("firm_email"),
-//   firmPhoneNumber: text("firm_phone_number"),
-//   address: text("address"),
-//   city: text("city"),
-//   state: text("state"),
-//   zipcode: text("zipcode"),
-//   website: text("website"),
-//   taxId: text("tax_id"),
-//
-//   createdAt: timestamp("created_at").defaultNow().notNull(),
-//   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-// });
 
 export const session = pgTable(
   "session",
@@ -141,6 +64,7 @@ export const session = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
     activeOrganizationId: text("active_organization_id"),
+    activeTeamId: text("active_team_id"),
     location: text("location"),
   },
   (table) => [index("session_userId_idx").on(table.userId)],
@@ -186,6 +110,85 @@ export const verification = pgTable(
   (table) => [index("verification_identifier_idx").on(table.identifier)],
 );
 
+export const domainStatusEnum = pgEnum("domain_status", [
+  "pending",
+  "verified",
+  "failed",
+]);
+
+export const organization = pgTable(
+  "organization",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    slug: text("slug").notNull().unique(),
+    logo: text("logo"),
+    createdAt: timestamp("created_at").notNull(),
+    metadata: text("metadata"),
+    emailAddress: text("email_address"),
+    phoneNumber: text("phone_number"),
+    address: text("address"),
+    city: text("city"),
+    state: text("state"),
+    zipCode: text("zip_code"),
+    website: text("website"),
+    taxId: text("tax_id"),
+
+    // Referral / Source
+    referralSource: text("referral_source"),
+
+    // Domain Verification Additions ---
+    domain: text("domain"),
+    isDomainVerified: boolean("is_domain_verified").default(false).notNull(),
+    verificationToken: text("verification_token"),
+    // White-labeling
+    espDomainId: text("esp_domain_id"),
+    dnsRecords: jsonb("dns_records"),
+    domainStatus: domainStatusEnum("domain_status").default("pending"),
+  },
+  (table) => [uniqueIndex("organization_slug_uidx").on(table.slug)],
+);
+
+export const team = pgTable(
+  "team",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").notNull(),
+    updatedAt: timestamp("updated_at").$onUpdate(
+      () => /* @__PURE__ */ new Date(),
+    ),
+    leadId: text("lead_id"),
+    description: text("description"),
+    maxCaseload: integer("max_caseload"),
+    workloadPercentage: integer("workload_percentage"),
+    status: text("status"),
+    activeCases: integer("active_cases"),
+  },
+  (table) => [index("team_organizationId_idx").on(table.organizationId)],
+);
+
+export const teamMember = pgTable(
+  "team_member",
+  {
+    id: text("id").primaryKey(),
+    teamId: text("team_id")
+      .notNull()
+      .references(() => team.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at"),
+  },
+  (table) => [
+    index("teamMember_teamId_idx").on(table.teamId),
+    index("teamMember_userId_idx").on(table.userId),
+  ],
+);
+
 export const member = pgTable(
   "member",
   {
@@ -214,6 +217,7 @@ export const invitation = pgTable(
       .references(() => organization.id, { onDelete: "cascade" }),
     email: text("email").notNull(),
     role: text("role"),
+    teamId: text("team_id"),
     status: text("status").default("pending").notNull(),
     expiresAt: timestamp("expires_at").notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -243,59 +247,3 @@ export const twoFactor = pgTable(
     index("twoFactor_userId_idx").on(table.userId),
   ],
 );
-
-export const userRelations = relations(user, ({ many }) => ({
-  sessions: many(session),
-  accounts: many(account),
-  members: many(member),
-  invitations: many(invitation),
-  twoFactors: many(twoFactor),
-}));
-
-export const sessionRelations = relations(session, ({ one }) => ({
-  user: one(user, {
-    fields: [session.userId],
-    references: [user.id],
-  }),
-}));
-
-export const accountRelations = relations(account, ({ one }) => ({
-  user: one(user, {
-    fields: [account.userId],
-    references: [user.id],
-  }),
-}));
-
-export const organizationRelations = relations(organization, ({ many }) => ({
-  members: many(member),
-  invitations: many(invitation),
-}));
-
-export const memberRelations = relations(member, ({ one }) => ({
-  organization: one(organization, {
-    fields: [member.organizationId],
-    references: [organization.id],
-  }),
-  user: one(user, {
-    fields: [member.userId],
-    references: [user.id],
-  }),
-}));
-
-export const invitationRelations = relations(invitation, ({ one }) => ({
-  organization: one(organization, {
-    fields: [invitation.organizationId],
-    references: [organization.id],
-  }),
-  user: one(user, {
-    fields: [invitation.inviterId],
-    references: [user.id],
-  }),
-}));
-
-export const twoFactorRelations = relations(twoFactor, ({ one }) => ({
-  user: one(user, {
-    fields: [twoFactor.userId],
-    references: [user.id],
-  }),
-}));

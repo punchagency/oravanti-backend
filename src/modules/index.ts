@@ -16,18 +16,27 @@ import { QuestionnairesModule } from "./questionnaires/questionnaires.module";
 import { RevenueAnalyticsModule } from "./revenue-analytics/revenue-analytics.module";
 import { AccessControlModule } from "./settings/access-control/access-control.module";
 import { ApprovalWorkflowsModule } from "./settings/approval-workflows/approval-workflows.module";
+import { ConsultationSettingsModule } from "./settings/consultation/consultation-settings.module";
 import { DataAccessModule } from "./settings/data-access/data-access.module";
 import { FinancialAccessModule } from "./settings/financial-access/financial-access.module";
 import { FirmInfoModule } from "./settings/firm-info/firm-info.module";
 import { PermissionAuditLogModule } from "./settings/permission-audit-log/permission-audit-log.module";
 import { ProfileModule } from "./settings/profile/profile.module";
 import { SecurityModule } from "./settings/security/security.module";
+import { StaffAvailabilityModule } from "./staff-availability/staff-availability.module";
 import { TasksModule } from "./tasks/tasks.module";
+import {
+  AgreementsModule,
+  ConsultationBookingModule,
+  LeadsModule,
+  WebhooksModule,
+} from "./leads/leads.module";
 import type { Module } from "../app";
 
 export const modules: Module[] = [
   new AuthModule(),
   new StaffModule(),
+  new StaffAvailabilityModule(),
   new TeamsModule(),
   new AssignmentsModule(),
   new DocumentsModule(),
@@ -44,6 +53,7 @@ export const modules: Module[] = [
   new PermissionAuditLogModule(),
   new ProfileModule(),
   new FirmInfoModule(),
+  new ConsultationSettingsModule(),
   new AccessControlModule(),
   new FinancialAccessModule(),
   new ApprovalWorkflowsModule(),
@@ -51,4 +61,8 @@ export const modules: Module[] = [
   new SecurityModule(),
   new OrganizationModule(),
   new OnboardingModule(),
+  new LeadsModule(),
+  new AgreementsModule(),
+  new WebhooksModule(),
+  new ConsultationBookingModule(),
 ];

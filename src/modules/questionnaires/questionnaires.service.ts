@@ -1,40 +1,32 @@
 import { createHash, randomBytes } from "crypto";
-import {
-  and,
-  asc,
-  count,
-  desc,
-  eq,
-  ilike,
-  inArray,
-  isNull,
-  max,
-  or,
-} from "drizzle-orm";
-import { supabaseAdmin } from "../../config/supabase";
-import { env } from "../../config/env";
+import PDFDocument from "pdfkit";
+import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
+import { conflictChecks } from "../../db/schema/conflict-checks";
+import { leads } from "../../db/schema/leads";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
-import { practiceAreaSubcategories } from "../../db/schema/practice-area-subcategories";
 import {
+  caseTypeQuestionnaires,
+  caseTypeQuestionnaireSections,
+  caseTypeQuestionnaireQuestions,
+  caseTypeQuestionnaireLogicRules,
+  firmQuestionnaireSections,
+  firmQuestionnaireQuestions,
   questionnaireAnswers,
-  questionnaireCaseTypes,
-  questionnaireLogicRules,
-  questionnaireQuestionOptions,
-  questionnaireQuestions,
   questionnaireResponseFiles,
   questionnaireResponses,
-  questionnaireSections,
   questionnaireSends,
-  questionnaireVersionCaseTypes,
-  questionnaireVersions,
-  questionnaires,
 } from "../../db/schema/questionnaires";
+import {
+  cancelQuestionnaireReminder,
+  enqueueDocumentScan,
+} from "../../queue/queues";
+import { sendQuestionnaireReminder } from "../../queue/workers/reminder.worker";
+import { emailService } from "../../utils/email/email.service";
 import {
   BadRequestError,
   ConflictError,
-  ExternalServiceError,
   NotFoundError,
 } from "../../utils/error/app-error";
 import {
@@ -42,181 +34,39 @@ import {
   getPaginationOffset,
   PaginationParams,
 } from "../../utils/pagination";
-
-const { SUPABASE_STORAGE_BUCKET } = env;
+import { storageService } from "../../utils/storage/storage.service";
 
 type JsonObject = Record<string, unknown>;
-type AnswerInput = {
-  questionId: string;
-  value: unknown;
-};
+type AnswerInput = { questionId: string; value: unknown };
 
-type QuestionOptionInput = {
-  label: string;
-  value: string;
-  orderIndex?: number;
-};
-
-type BaseQuestionInput = {
+type QuestionInput = {
   label: string;
   description?: string | null;
   type:
-    | "short_text"
-    | "long_text"
-    | "number"
-    | "email"
-    | "phone"
-    | "date"
-    | "time"
-    | "single_choice"
-    | "multiple_choice"
-    | "dropdown"
-    | "rating_scale"
-    | "file_upload"
-    | "yes_no"
-    | "matrix_grid"
-    | "signature";
-  orderIndex?: number;
+    | "short_text" | "long_text" | "number" | "email" | "phone"
+    | "date" | "time" | "single_choice" | "multiple_choice" | "dropdown"
+    | "rating_scale" | "file_upload" | "yes_no" | "matrix_grid" | "signature";
   isRequired?: boolean;
   config?: JsonObject;
-  options?: QuestionOptionInput[];
 };
 
-type QuestionInput = BaseQuestionInput & {
-  sectionId: string;
-};
-
-type InitialSectionInput = {
+type SectionInput = {
   title: string;
   description?: string | null;
-  orderIndex?: number;
-  questions?: BaseQuestionInput[];
+  questions?: QuestionInput[];
 };
-
-type ReorderItem = {
-  id: string;
-  orderIndex: number;
-  sectionId?: string;
-};
-
-const draftVersionCondition = isNull(questionnaireSections.versionId);
-const questionDraftVersionCondition = isNull(questionnaireQuestions.versionId);
-const logicDraftVersionCondition = isNull(questionnaireLogicRules.versionId);
 
 const tokenHash = (token: string) =>
   createHash("sha256").update(token).digest("hex");
 
 const generateAccessToken = () => randomBytes(32).toString("base64url");
 
-const versionCondition = (column: any, versionId?: string | null) =>
-  versionId ? eq(column, versionId) : isNull(column);
-
 const isEmptyAnswer = (value: unknown) => {
   if (value === null || value === undefined) return true;
   if (typeof value === "string") return value.trim() === "";
   if (Array.isArray(value)) return value.length === 0;
-  if (typeof value === "object") return Object.keys(value).length === 0;
+  if (typeof value === "object") return Object.keys(value as object).length === 0;
   return false;
-};
-
-const remapJsonIds = (value: unknown, idMap: Map<string, string>): unknown => {
-  if (typeof value === "string") return idMap.get(value) ?? value;
-  if (Array.isArray(value)) return value.map((item) => remapJsonIds(item, idMap));
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, currentValue]) => [
-        idMap.get(key) ?? key,
-        remapJsonIds(currentValue, idMap),
-      ]),
-    );
-  }
-  return value;
-};
-
-const compareValues = (
-  left: unknown,
-  operator: string,
-  right: unknown,
-): boolean => {
-  switch (operator) {
-    case "equals":
-      return left === right;
-    case "not_equals":
-      return left !== right;
-    case "contains":
-      return typeof left === "string" && typeof right === "string"
-        ? left.includes(right)
-        : Array.isArray(left) && left.includes(right);
-    case "not_contains":
-      return !compareValues(left, "contains", right);
-    case "greater_than":
-      return Number(left) > Number(right);
-    case "less_than":
-      return Number(left) < Number(right);
-    case "between":
-      return (
-        Array.isArray(right) &&
-        right.length === 2 &&
-        Number(left) >= Number(right[0]) &&
-        Number(left) <= Number(right[1])
-      );
-    case "empty":
-      return isEmptyAnswer(left);
-    case "not_empty":
-      return !isEmptyAnswer(left);
-    case "includes_any":
-      return (
-        Array.isArray(left) &&
-        Array.isArray(right) &&
-        right.some((value) => left.includes(value))
-      );
-    case "includes_all":
-      return (
-        Array.isArray(left) &&
-        Array.isArray(right) &&
-        right.every((value) => left.includes(value))
-      );
-    default:
-      return false;
-  }
-};
-
-const evaluateCondition = (
-  condition: unknown,
-  answersByQuestionId: Map<string, unknown>,
-): boolean => {
-  if (!condition || typeof condition !== "object") return false;
-  const current = condition as JsonObject;
-
-  if (Array.isArray(current.all)) {
-    return current.all.every((item) =>
-      evaluateCondition(item, answersByQuestionId),
-    );
-  }
-
-  if (Array.isArray(current.any)) {
-    return current.any.some((item) =>
-      evaluateCondition(item, answersByQuestionId),
-    );
-  }
-
-  if (Array.isArray(current.none)) {
-    return current.none.every(
-      (item) => !evaluateCondition(item, answersByQuestionId),
-    );
-  }
-
-  const questionId = current.questionId;
-  const operator = current.operator;
-  if (typeof questionId !== "string" || typeof operator !== "string") {
-    return false;
-  }
-
-  return compareValues(
-    answersByQuestionId.get(questionId),
-    operator,
-    current.value,
-  );
 };
 
 const buildResponseFileStoragePath = (
@@ -226,684 +76,402 @@ const buildResponseFileStoragePath = (
   filename: string,
 ) => `questionnaire-responses/${organizationId}/${responseId}/${questionId}/${filename}`;
 
+/**
+ * Response files store the storage object key (not a permanent URL). Replace
+ * each `fileUrl` with a short-lived presigned download URL for client responses.
+ */
+const presignResponseFiles = <T extends { storagePath: string }>(files: T[]) =>
+  Promise.all(
+    files.map(async (file) => ({
+      ...file,
+      fileUrl: await storageService.getSignedDownloadUrl(file.storagePath),
+    })),
+  );
+
+const getQuestionSourceFromSnapshot = (
+  snapshot: unknown,
+  questionId: string,
+): "system" | "firm" => {
+  if (!snapshot || typeof snapshot !== "object") return "system";
+  const s = snapshot as {
+    sections?: Array<{ questions?: Array<{ id: string; source?: string }> }>;
+  };
+  for (const section of s.sections ?? []) {
+    for (const q of section.questions ?? []) {
+      if (q.id === questionId) return (q.source as "system" | "firm") ?? "system";
+    }
+  }
+  return "system";
+};
+
+const validateSubmissionAnswers = (snapshot: unknown, answers: AnswerInput[]) => {
+  if (!snapshot || typeof snapshot !== "object") return;
+  const s = snapshot as {
+    sections?: Array<{ questions?: Array<{ id: string; isRequired?: boolean }> }>;
+  };
+  const allQuestions = (s.sections ?? []).flatMap((sec) => sec.questions ?? []);
+  const answerMap = new Map(answers.map((a) => [a.questionId, a.value]));
+  const missing = allQuestions
+    .filter((q) => q.isRequired)
+    .filter((q) => isEmptyAnswer(answerMap.get(q.id)));
+
+  if (missing.length) {
+    throw new BadRequestError("Required answers are missing", {
+      questionIds: missing.map((q) => q.id),
+    });
+  }
+};
+
+const computeCompletion = (
+  snapshot: unknown,
+  answers: { questionId: string; value: unknown }[],
+  files: { questionId: string }[],
+) => {
+  if (!snapshot || typeof snapshot !== "object") {
+    return { answered: 0, total: 0 };
+  }
+  const s = snapshot as {
+    sections?: Array<{ questions?: Array<{ id: string }> }>;
+  };
+  const allQuestions = (s.sections ?? []).flatMap((sec) => sec.questions ?? []);
+  const answeredIds = new Set<string>();
+  for (const a of answers) {
+    if (!isEmptyAnswer(a.value)) answeredIds.add(a.questionId);
+  }
+  for (const f of files) answeredIds.add(f.questionId);
+  const answered = allQuestions.filter((q) => answeredIds.has(q.id)).length;
+  return { answered, total: allQuestions.length };
+};
+
 export class QuestionnairesService {
-  getAllQuestionnaires = async (
-    organizationId: string,
-    filters: Partial<PaginationParams> & {
-      search?: string;
-      status?: string;
-      caseTypeId?: string;
-    } = {},
-  ) => {
-    const page = filters.page ?? 1;
-    const limit = filters.limit ?? 20;
-    const offset = getPaginationOffset({ page, limit });
-    const conditions = [eq(questionnaires.organizationId, organizationId)];
+  // ── System Questionnaire Read ──────────────────────────────────────────────
 
-    if (filters.status) {
-      conditions.push(eq(questionnaires.status, filters.status as any));
-    }
-
-    if (filters.search) {
-      const search = `%${filters.search}%`;
-      const searchCondition = or(
-        ilike(questionnaires.title, search),
-        ilike(questionnaires.description, search),
-      );
-      if (searchCondition) conditions.push(searchCondition);
-    }
-
-    if (filters.caseTypeId) {
-      const matchingLinks = await db
-        .select({ questionnaireId: questionnaireCaseTypes.questionnaireId })
-        .from(questionnaireCaseTypes)
-        .where(eq(questionnaireCaseTypes.caseTypeId, filters.caseTypeId));
-
-      if (!matchingLinks.length) {
-        return buildPaginatedResponse([], {
-          page,
-          limit,
-          total: 0,
-        });
-      }
-
-      conditions.push(
-        inArray(
-          questionnaires.id,
-          matchingLinks.map((link) => link.questionnaireId),
-        ),
-      );
-    }
-
-    const where = and(...conditions);
-    const [{ total }] = await db
-      .select({ total: count() })
-      .from(questionnaires)
-      .where(where);
-
-    const rows = await db
-      .select()
-      .from(questionnaires)
-      .where(where)
-      .orderBy(desc(questionnaires.createdAt))
-      .limit(limit)
-      .offset(offset);
-
-    return buildPaginatedResponse(rows, {
-      page,
-      limit,
-      total: Number(total),
-    });
+  getSystemQuestionnaires = async () => {
+    return db.select().from(caseTypeQuestionnaires).orderBy(asc(caseTypeQuestionnaires.createdAt));
   };
 
-  createQuestionnaire = async (
-    organizationId: string,
-    data: {
-      title: string;
-      description?: string | null;
-      createdById?: string | null;
-      firstSectionTitle?: string;
-      caseTypeIds?: string[];
-      sections?: InitialSectionInput[];
-    },
-  ) => {
-    return db.transaction(async (tx) => {
-      if (data.caseTypeIds?.length) {
-        await this.ensureCaseTypes(data.caseTypeIds, tx);
-      }
-
-      const [created] = await tx
-        .insert(questionnaires)
-        .values({
-          organizationId,
-          title: data.title,
-          description: data.description,
-          createdById: data.createdById,
-        })
-        .returning();
-
-      if (data.sections?.length) {
-        for (const [sectionIndex, section] of data.sections.entries()) {
-          const [createdSection] = await tx
-            .insert(questionnaireSections)
-            .values({
-              questionnaireId: created.id,
-              title: section.title,
-              description: section.description,
-              orderIndex: section.orderIndex ?? sectionIndex,
-            })
-            .returning();
-
-          for (const [questionIndex, question] of (
-            section.questions ?? []
-          ).entries()) {
-            await this.insertQuestionWithOptions(
-              tx,
-              created.id,
-              createdSection.id,
-              question,
-              question.orderIndex ?? questionIndex,
-            );
-          }
-        }
-      } else {
-        await tx.insert(questionnaireSections).values({
-          questionnaireId: created.id,
-          title: data.firstSectionTitle || "Section 1",
-          description: null,
-          orderIndex: 0,
-        });
-      }
-
-      if (data.caseTypeIds?.length) {
-        await this.insertQuestionnaireCaseTypes(
-          created.id,
-          data.caseTypeIds,
-          tx,
-        );
-      }
-
-      return this.getQuestionnaireById(created.id, organizationId, tx);
-    });
-  };
-
-  getQuestionnaireById = async (
-    id: string,
-    organizationId: string,
-    database: any = db,
-  ) => {
-    const [questionnaire] = await database
+  getSystemQuestionnaireByCaseType = async (caseTypeId: string) => {
+    const [questionnaire] = await db
       .select()
-      .from(questionnaires)
-      .where(
-        and(
-          eq(questionnaires.id, id),
-          eq(questionnaires.organizationId, organizationId),
-        ),
-      )
+      .from(caseTypeQuestionnaires)
+      .where(eq(caseTypeQuestionnaires.caseTypeId, caseTypeId))
       .limit(1);
 
     if (!questionnaire) return null;
+    return this.buildSystemQuestionnaireStructure(questionnaire.id);
+  };
 
-    const versionId = questionnaire.publishedVersionId ?? null;
-    const [publishedVersion] = versionId
-      ? await database
-          .select()
-          .from(questionnaireVersions)
-          .where(eq(questionnaireVersions.id, versionId))
-          .limit(1)
-      : [null];
+  getSystemQuestionnaireById = async (id: string) => {
+    const [questionnaire] = await db
+      .select()
+      .from(caseTypeQuestionnaires)
+      .where(eq(caseTypeQuestionnaires.id, id))
+      .limit(1);
 
-    const structure = await this.getQuestionnaireStructure(
-      questionnaire.id,
-      organizationId,
-      null,
-      database,
-    );
+    if (!questionnaire) return null;
+    return this.buildSystemQuestionnaireStructure(id);
+  };
 
-    const publishedCaseTypes = versionId
-      ? await this.getQuestionnaireCaseTypes(questionnaire.id, versionId, database)
-      : [];
+  // ── System Questionnaire Management (platform admin) ─────────────────────
+
+  createSystemQuestionnaire = async (data: {
+    caseTypeId: string;
+    title: string;
+    description?: string | null;
+    sections?: SectionInput[];
+  }) => {
+    return db.transaction(async (tx) => {
+      const [ct] = await tx
+        .select()
+        .from(practiceAreaCaseTypes)
+        .where(eq(practiceAreaCaseTypes.id, data.caseTypeId))
+        .limit(1);
+      if (!ct) throw new BadRequestError("Case type not found");
+
+      const [existing] = await tx
+        .select()
+        .from(caseTypeQuestionnaires)
+        .where(eq(caseTypeQuestionnaires.caseTypeId, data.caseTypeId))
+        .limit(1);
+      if (existing) {
+        throw new ConflictError("A questionnaire already exists for this case type");
+      }
+
+      const [questionnaire] = await tx
+        .insert(caseTypeQuestionnaires)
+        .values({ caseTypeId: data.caseTypeId, title: data.title, description: data.description })
+        .returning();
+
+      for (const [i, section] of (data.sections ?? []).entries()) {
+        const [s] = await tx
+          .insert(caseTypeQuestionnaireSections)
+          .values({
+            questionnaireId: questionnaire.id,
+            title: section.title,
+            description: section.description,
+            orderIndex: i,
+          })
+          .returning();
+
+        for (const [j, question] of (section.questions ?? []).entries()) {
+          await tx.insert(caseTypeQuestionnaireQuestions).values({
+            questionnaireId: questionnaire.id,
+            sectionId: s.id,
+            label: question.label,
+            description: question.description,
+            type: question.type,
+            orderIndex: j,
+            isRequired: question.isRequired ?? false,
+            config: (question.config ?? {}) as any,
+          });
+        }
+      }
+
+      return this.buildSystemQuestionnaireStructure(questionnaire.id, tx);
+    });
+  };
+
+  addSystemSection = async (
+    questionnaireId: string,
+    data: { title: string; description?: string | null; orderIndex?: number },
+  ) => {
+    const orderIndex =
+      data.orderIndex ??
+      (await this.getNextSectionOrderIndex(caseTypeQuestionnaireSections, questionnaireId));
+
+    const [created] = await db
+      .insert(caseTypeQuestionnaireSections)
+      .values({ questionnaireId, title: data.title, description: data.description, orderIndex })
+      .returning();
+
+    return created;
+  };
+
+  addSystemQuestion = async (
+    questionnaireId: string,
+    sectionId: string,
+    data: QuestionInput & { orderIndex?: number },
+  ) => {
+    const orderIndex =
+      data.orderIndex ??
+      (await this.getNextQuestionOrderIndex(
+        caseTypeQuestionnaireQuestions,
+        questionnaireId,
+        sectionId,
+      ));
+
+    const [created] = await db
+      .insert(caseTypeQuestionnaireQuestions)
+      .values({
+        questionnaireId,
+        sectionId,
+        label: data.label,
+        description: data.description,
+        type: data.type,
+        orderIndex,
+        isRequired: data.isRequired ?? false,
+        config: (data.config ?? {}) as any,
+      })
+      .returning();
+
+    return created;
+  };
+
+  // ── Firm Questionnaire Additions ────────────────────────────────────────────
+
+  getMergedQuestionnaire = async (organizationId: string, caseTypeId: string) => {
+    const systemQ = await this.getSystemQuestionnaireByCaseType(caseTypeId);
+
+    const firmSections = await db
+      .select()
+      .from(firmQuestionnaireSections)
+      .where(
+        and(
+          eq(firmQuestionnaireSections.organizationId, organizationId),
+          eq(firmQuestionnaireSections.caseTypeId, caseTypeId),
+        ),
+      )
+      .orderBy(asc(firmQuestionnaireSections.orderIndex));
+
+    const firmQuestions = await db
+      .select()
+      .from(firmQuestionnaireQuestions)
+      .where(
+        and(
+          eq(firmQuestionnaireQuestions.organizationId, organizationId),
+          eq(firmQuestionnaireQuestions.caseTypeId, caseTypeId),
+        ),
+      )
+      .orderBy(asc(firmQuestionnaireQuestions.orderIndex));
+
+    const systemSections = (systemQ?.sections ?? []).map((section: any) => ({
+      ...section,
+      source: "system" as const,
+      questions: [
+        ...section.questions.map((q: any) => ({ ...q, source: "system" as const, isLocked: true })),
+        ...firmQuestions
+          .filter((fq) => fq.systemSectionId === section.id)
+          .map((fq) => ({ ...fq, source: "firm" as const, isLocked: false })),
+      ],
+    }));
+
+    const appendedFirmSections = firmSections.map((fs) => ({
+      ...fs,
+      source: "firm" as const,
+      questions: firmQuestions
+        .filter((fq) => fq.firmSectionId === fs.id)
+        .map((fq) => ({ ...fq, source: "firm" as const, isLocked: false })),
+    }));
 
     return {
-      ...questionnaire,
-      publishedVersion,
-      publishedCaseTypes,
-      ...structure,
+      systemQuestionnaire: systemQ,
+      sections: [...systemSections, ...appendedFirmSections],
     };
   };
 
-  updateQuestionnaire = async (
-    id: string,
+  addFirmSection = async (
     organizationId: string,
-    data: {
-      title?: string;
-      description?: string | null;
-      status?: "draft" | "published" | "archived";
-      caseTypeIds?: string[];
-    },
+    caseTypeId: string,
+    data: { title: string; description?: string | null; orderIndex?: number },
   ) => {
-    const existing = await this.ensureQuestionnaire(id, organizationId);
+    await this.ensureCaseTypeExists(caseTypeId);
 
-    if (data.status === "published") {
-      throw new BadRequestError("Use the publish endpoint to publish questionnaires");
-    }
+    const orderIndex =
+      data.orderIndex ?? (await this.getNextFirmSectionOrderIndex(organizationId, caseTypeId));
 
-    if (existing.status !== "draft") {
-      const onlyArchiving =
-        Object.keys(data).length === 1 && data.status === "archived";
-      if (!onlyArchiving) {
-        throw new ConflictError("Only draft questionnaires can be edited");
-      }
-    }
+    const [created] = await db
+      .insert(firmQuestionnaireSections)
+      .values({ organizationId, caseTypeId, title: data.title, description: data.description, orderIndex })
+      .returning();
 
-    return db.transaction(async (tx) => {
-      const { caseTypeIds, ...questionnaireData } = data;
-
-      const [updated] = await tx
-        .update(questionnaires)
-        .set({
-          ...questionnaireData,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(questionnaires.id, id),
-            eq(questionnaires.organizationId, organizationId),
-          ),
-        )
-        .returning();
-
-      if (caseTypeIds) {
-        if (existing.status !== "draft") {
-          throw new ConflictError(
-            "Case types can only be changed on draft questionnaires",
-          );
-        }
-
-        await this.replaceQuestionnaireCaseTypes(id, caseTypeIds, tx);
-      }
-
-      return updated;
-    });
+    return created;
   };
 
-  publishQuestionnaire = async (id: string, organizationId: string) => {
-    return db.transaction(async (tx) => {
-      const questionnaire = await this.ensureQuestionnaire(id, organizationId, tx);
-      if (questionnaire.status === "archived") {
-        throw new ConflictError("Archived questionnaires cannot be published");
-      }
+  updateFirmSection = async (
+    organizationId: string,
+    sectionId: string,
+    data: { title?: string; description?: string | null; orderIndex?: number },
+  ) => {
+    const [updated] = await db
+      .update(firmQuestionnaireSections)
+      .set({ ...data, updatedAt: new Date() })
+      .where(
+        and(
+          eq(firmQuestionnaireSections.id, sectionId),
+          eq(firmQuestionnaireSections.organizationId, organizationId),
+        ),
+      )
+      .returning();
 
-      const draftSections = await tx
-        .select()
-        .from(questionnaireSections)
-        .where(
-          and(
-            eq(questionnaireSections.questionnaireId, id),
-            draftVersionCondition,
-          ),
-        );
+    if (!updated) throw new NotFoundError("Section not found");
+    return updated;
+  };
 
-      if (!draftSections.length) {
-        throw new BadRequestError(
-          "Questionnaire must have at least one section before publishing",
-        );
-      }
-
-      const draftCaseTypes = await this.getQuestionnaireCaseTypes(id, null, tx);
-      if (!draftCaseTypes.length) {
-        throw new BadRequestError(
-          "Questionnaire must have at least one case type before publishing",
-        );
-      }
-
-      const [{ total: questionCount }] = await tx
-        .select({ total: count() })
-        .from(questionnaireQuestions)
-        .where(
-          and(
-            eq(questionnaireQuestions.questionnaireId, id),
-            questionDraftVersionCondition,
-          ),
-        );
-
-      if (!Number(questionCount)) {
-        throw new BadRequestError(
-          "Questionnaire must have at least one question before publishing",
-        );
-      }
-
-      const [{ currentVersion }] = await tx
-        .select({ currentVersion: max(questionnaireVersions.versionNumber) })
-        .from(questionnaireVersions)
-        .where(eq(questionnaireVersions.questionnaireId, id));
-
-      const [version] = await tx
-        .insert(questionnaireVersions)
-        .values({
-          questionnaireId: id,
-          organizationId,
-          versionNumber: Number(currentVersion ?? 0) + 1,
-          title: questionnaire.title,
-          description: questionnaire.description,
-        })
-        .returning();
-
-      const snapshot = await this.copyQuestionnaireStructure({
-        tx,
-        organizationId,
-        sourceQuestionnaireId: id,
-        targetQuestionnaireId: id,
-        sourceVersionId: null,
-        targetVersionId: version.id,
-      });
-
-      await tx.insert(questionnaireVersionCaseTypes).values(
-        draftCaseTypes.map((caseType: { id: string }) => ({
-          questionnaireId: id,
-          questionnaireVersionId: version.id,
-          caseTypeId: caseType.id,
-        })),
+  deleteFirmSection = async (organizationId: string, sectionId: string) => {
+    await db
+      .delete(firmQuestionnaireQuestions)
+      .where(
+        and(
+          eq(firmQuestionnaireQuestions.firmSectionId, sectionId),
+          eq(firmQuestionnaireQuestions.organizationId, organizationId),
+        ),
       );
 
-      const versionCaseTypes = await this.getQuestionnaireCaseTypes(
-        id,
-        version.id,
-        tx,
+    await db
+      .delete(firmQuestionnaireSections)
+      .where(
+        and(
+          eq(firmQuestionnaireSections.id, sectionId),
+          eq(firmQuestionnaireSections.organizationId, organizationId),
+        ),
       );
-      const versionSnapshot = {
-        ...snapshot,
-        caseTypes: versionCaseTypes,
-      };
-
-      await tx
-        .update(questionnaireVersions)
-        .set({ schemaSnapshot: versionSnapshot as any })
-        .where(eq(questionnaireVersions.id, version.id));
-
-      const [updated] = await tx
-        .update(questionnaires)
-        .set({
-          status: "published",
-          publishedVersionId: version.id,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(questionnaires.id, id),
-            eq(questionnaires.organizationId, organizationId),
-          ),
-        )
-        .returning();
-
-      return {
-        questionnaire: updated,
-        version: {
-          ...version,
-          schemaSnapshot: versionSnapshot,
-        },
-      };
-    });
   };
 
-  duplicateQuestionnaire = async (
-    id: string,
+  addFirmQuestion = async (
     organizationId: string,
-    data: {
-      title?: string;
-      createdById?: string | null;
-    } = {},
-  ) => {
-    return db.transaction(async (tx) => {
-      const source = await this.ensureQuestionnaire(id, organizationId, tx);
-      const sourceVersionId =
-        source.status === "draft" ? null : source.publishedVersionId;
-
-      const [created] = await tx
-        .insert(questionnaires)
-        .values({
-          organizationId,
-          title: data.title || `${source.title} Copy`,
-          description: source.description,
-          status: "draft",
-          createdById: data.createdById,
-          sourceQuestionnaireId: source.id,
-        })
-        .returning();
-
-      await this.copyQuestionnaireStructure({
-        tx,
-        organizationId,
-        sourceQuestionnaireId: source.id,
-        targetQuestionnaireId: created.id,
-        sourceVersionId,
-        targetVersionId: null,
-      });
-
-      await this.copyQuestionnaireCaseTypes({
-        tx,
-        sourceQuestionnaireId: source.id,
-        targetQuestionnaireId: created.id,
-        sourceVersionId,
-      });
-
-      return this.getQuestionnaireById(created.id, organizationId, tx);
-    });
-  };
-
-  addSection = async (
-    questionnaireId: string,
-    organizationId: string,
-    data: {
-      title: string;
-      description?: string | null;
+    caseTypeId: string,
+    data: QuestionInput & {
+      systemSectionId?: string | null;
+      firmSectionId?: string | null;
       orderIndex?: number;
     },
   ) => {
-    await this.ensureEditableQuestionnaire(questionnaireId, organizationId);
+    if (!data.systemSectionId && !data.firmSectionId) {
+      throw new BadRequestError("Either systemSectionId or firmSectionId must be provided");
+    }
+
     const orderIndex =
       data.orderIndex ??
-      (await this.getNextSectionOrderIndex(questionnaireId, null));
+      (await this.getNextFirmQuestionOrderIndex(
+        organizationId,
+        caseTypeId,
+        data.systemSectionId ?? null,
+        data.firmSectionId ?? null,
+      ));
 
     const [created] = await db
-      .insert(questionnaireSections)
+      .insert(firmQuestionnaireQuestions)
       .values({
-        questionnaireId,
-        title: data.title,
+        organizationId,
+        caseTypeId,
+        systemSectionId: data.systemSectionId ?? undefined,
+        firmSectionId: data.firmSectionId ?? undefined,
+        label: data.label,
         description: data.description,
+        type: data.type,
         orderIndex,
+        isRequired: data.isRequired ?? false,
+        config: (data.config ?? {}) as any,
       })
       .returning();
 
     return created;
   };
 
-  reorderSections = async (
-    questionnaireId: string,
+  updateFirmQuestion = async (
     organizationId: string,
-    items: ReorderItem[],
-  ) => {
-    await this.ensureEditableQuestionnaire(questionnaireId, organizationId);
-    await db.transaction(async (tx) => {
-      for (const item of items) {
-        await tx
-          .update(questionnaireSections)
-          .set({ orderIndex: item.orderIndex, updatedAt: new Date() })
-          .where(
-            and(
-              eq(questionnaireSections.id, item.id),
-              eq(questionnaireSections.questionnaireId, questionnaireId),
-              draftVersionCondition,
-            ),
-          );
-      }
-    });
-
-    return this.getQuestionnaireStructure(questionnaireId, organizationId);
-  };
-
-  addQuestion = async (
-    questionnaireId: string,
-    organizationId: string,
-    data: QuestionInput,
-  ) => {
-    await this.ensureEditableQuestionnaire(questionnaireId, organizationId);
-    await this.ensureDraftSection(data.sectionId, questionnaireId);
-
-    const orderIndex =
-      data.orderIndex ??
-      (await this.getNextQuestionOrderIndex(questionnaireId, data.sectionId, null));
-
-    return db.transaction(async (tx) => {
-      const created = await this.insertQuestionWithOptions(
-        tx,
-        questionnaireId,
-        data.sectionId,
-        data,
-        orderIndex,
-      );
-
-      return this.getQuestionById(created.id, tx);
-    });
-  };
-
-  updateQuestion = async (
-    questionnaireId: string,
     questionId: string,
-    organizationId: string,
     data: Partial<QuestionInput>,
   ) => {
-    await this.ensureEditableQuestionnaire(questionnaireId, organizationId);
-    const existing = await this.ensureDraftQuestion(questionId, questionnaireId);
-
-    if (data.sectionId && data.sectionId !== existing.sectionId) {
-      await this.ensureDraftSection(data.sectionId, questionnaireId);
-    }
-
-    return db.transaction(async (tx) => {
-      const [updated] = await tx
-        .update(questionnaireQuestions)
-        .set({
-          sectionId: data.sectionId,
-          label: data.label,
-          description: data.description,
-          type: data.type,
-          orderIndex: data.orderIndex,
-          isRequired: data.isRequired,
-          config: data.config as any,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(questionnaireQuestions.id, questionId),
-            eq(questionnaireQuestions.questionnaireId, questionnaireId),
-            questionDraftVersionCondition,
-          ),
-        )
-        .returning();
-
-      if (data.options) {
-        await tx
-          .delete(questionnaireQuestionOptions)
-          .where(eq(questionnaireQuestionOptions.questionId, questionId));
-
-        if (data.options.length) {
-          await tx.insert(questionnaireQuestionOptions).values(
-            data.options.map((option, index) => ({
-              questionId,
-              label: option.label,
-              value: option.value,
-              orderIndex: option.orderIndex ?? index,
-            })),
-          );
-        }
-      }
-
-      return this.getQuestionById(updated.id, tx);
-    });
-  };
-
-  reorderQuestions = async (
-    questionnaireId: string,
-    organizationId: string,
-    items: ReorderItem[],
-  ) => {
-    await this.ensureEditableQuestionnaire(questionnaireId, organizationId);
-
-    await db.transaction(async (tx) => {
-      for (const item of items) {
-        if (item.sectionId) {
-          await this.ensureDraftSection(item.sectionId, questionnaireId, tx);
-        }
-
-        await tx
-          .update(questionnaireQuestions)
-          .set({
-            sectionId: item.sectionId,
-            orderIndex: item.orderIndex,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(questionnaireQuestions.id, item.id),
-              eq(questionnaireQuestions.questionnaireId, questionnaireId),
-              questionDraftVersionCondition,
-            ),
-          );
-      }
-    });
-
-    return this.getQuestionnaireStructure(questionnaireId, organizationId);
-  };
-
-  addLogicRule = async (
-    questionnaireId: string,
-    organizationId: string,
-    data: {
-      sourceQuestionId?: string | null;
-      condition: JsonObject;
-      actionType:
-        | "show_question"
-        | "hide_question"
-        | "skip_to_question"
-        | "skip_to_section"
-        | "require_question"
-        | "branch_to_section"
-        | "end_questionnaire";
-      action: JsonObject;
-      priority?: number;
-    },
-  ) => {
-    await this.ensureEditableQuestionnaire(questionnaireId, organizationId);
-    if (data.sourceQuestionId) {
-      await this.ensureDraftQuestion(data.sourceQuestionId, questionnaireId);
-    }
-
-    const [created] = await db
-      .insert(questionnaireLogicRules)
-      .values({
-        questionnaireId,
-        sourceQuestionId: data.sourceQuestionId,
-        condition: data.condition as any,
-        actionType: data.actionType,
-        action: data.action as any,
-        priority: data.priority ?? 0,
-      })
+    const [updated] = await db
+      .update(firmQuestionnaireQuestions)
+      .set({ ...data, config: data.config as any, updatedAt: new Date() })
+      .where(
+        and(
+          eq(firmQuestionnaireQuestions.id, questionId),
+          eq(firmQuestionnaireQuestions.organizationId, organizationId),
+        ),
+      )
       .returning();
 
-    return created;
+    if (!updated) throw new NotFoundError("Question not found");
+    return updated;
   };
 
-  sendToClient = async (
-    questionnaireId: string,
-    organizationId: string,
-    data: {
-      clientId: string;
-      caseTypeId: string;
-      caseId?: string | null;
-      sentById?: string | null;
-      expiresAt?: Date | null;
-    },
-  ) => {
-    const questionnaire = await this.ensureQuestionnaire(
-      questionnaireId,
-      organizationId,
-    );
-
-    if (questionnaire.status !== "published" || !questionnaire.publishedVersionId) {
-      throw new BadRequestError("Only published questionnaires can be sent");
-    }
-
-    await this.ensureVersionCaseType(
-      questionnaire.id,
-      questionnaire.publishedVersionId,
-      data.caseTypeId,
-    );
-
-    if (data.caseId) {
-      await this.ensureCaseMatchesSendContext({
-        caseId: data.caseId,
-        organizationId,
-        clientId: data.clientId,
-        caseTypeId: data.caseTypeId,
-      });
-    }
-
-    const accessToken = generateAccessToken();
-    const [send] = await db
-      .insert(questionnaireSends)
-      .values({
-        organizationId,
-        questionnaireId,
-        questionnaireVersionId: questionnaire.publishedVersionId,
-        clientId: data.clientId,
-        caseTypeId: data.caseTypeId,
-        caseId: data.caseId,
-        sentById: data.sentById,
-        accessTokenHash: tokenHash(accessToken),
-        expiresAt: data.expiresAt,
-      })
-      .returning();
-
-    return {
-      ...send,
-      accessToken,
-    };
+  deleteFirmQuestion = async (organizationId: string, questionId: string) => {
+    await db
+      .delete(firmQuestionnaireQuestions)
+      .where(
+        and(
+          eq(firmQuestionnaireQuestions.id, questionId),
+          eq(firmQuestionnaireQuestions.organizationId, organizationId),
+        ),
+      );
   };
+
+  // ── Responses ─────────────────────────────────────────────────────────────
 
   getResponses = async (
-    questionnaireId: string,
     organizationId: string,
+    caseTypeQuestionnaireId: string,
     filters: Partial<PaginationParams> & { caseTypeId?: string } = {},
   ) => {
-    await this.ensureQuestionnaire(questionnaireId, organizationId);
     const page = filters.page ?? 1;
     const limit = filters.limit ?? 20;
     const offset = getPaginationOffset({ page, limit });
     const conditions = [
-      eq(questionnaireResponses.questionnaireId, questionnaireId),
       eq(questionnaireResponses.organizationId, organizationId),
+      eq(questionnaireResponses.caseTypeQuestionnaireId, caseTypeQuestionnaireId),
     ];
 
     if (filters.caseTypeId) {
@@ -911,7 +479,6 @@ export class QuestionnairesService {
     }
 
     const where = and(...conditions);
-
     const [{ total }] = await db
       .select({ total: count() })
       .from(questionnaireResponses)
@@ -925,79 +492,31 @@ export class QuestionnairesService {
       .limit(limit)
       .offset(offset);
 
-    return buildPaginatedResponse(rows, {
-      page,
-      limit,
-      total: Number(total),
-    });
+    return buildPaginatedResponse(rows, { page, limit, total: Number(total) });
   };
 
-  setQuestionnaireCaseTypes = async (
-    questionnaireId: string,
-    organizationId: string,
-    caseTypeIds: string[],
-  ) => {
-    await this.ensureEditableQuestionnaire(questionnaireId, organizationId);
+  getEligibleQuestionnairesForCase = async (organizationId: string, caseId: string) => {
+    const [caseRow] = await db
+      .select()
+      .from(cases)
+      .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
+      .limit(1);
 
-    await db.transaction(async (tx) => {
-      await this.replaceQuestionnaireCaseTypes(
-        questionnaireId,
-        caseTypeIds,
-        tx,
-      );
-    });
+    if (!caseRow) throw new NotFoundError("Case not found");
+    if (!caseRow.caseTypeId) return null;
 
-    return this.getQuestionnaireById(questionnaireId, organizationId);
+    return this.getSystemQuestionnaireByCaseType(caseRow.caseTypeId);
   };
 
-  getQuestionnairesByCaseType = async (
-    organizationId: string,
-    caseTypeId: string,
-    filters: Partial<PaginationParams> & {
-      search?: string;
-      status?: string;
-    } = {},
-  ) => {
-    return this.getAllQuestionnaires(organizationId, {
-      ...filters,
-      caseTypeId,
-    });
-  };
-
-  getEligibleQuestionnairesForCase = async (
-    organizationId: string,
-    caseId: string,
-    filters: Partial<PaginationParams> = {},
-  ) => {
-    const caseRow = await this.ensureCaseForOrganization(caseId, organizationId);
-    const caseType = await this.findCaseTypeForCase(
-      caseRow.caseType,
-      caseRow.practiceAreaId,
-    );
-
-    if (!caseType) {
-      throw new NotFoundError("Matching case type not found");
-    }
-
-    return this.getAllQuestionnaires(organizationId, {
-      ...filters,
-      status: "published",
-      caseTypeId: caseType.id,
-    });
-  };
+  // ── Token-Based Client Flow ────────────────────────────────────────────────
 
   getClientQuestionnaireByToken = async (accessToken: string) => {
     const send = await this.getActiveSendByToken(accessToken, true);
-    const questionnaire = await this.getQuestionnaireStructure(
-      send.questionnaireId,
-      send.organizationId,
-      send.questionnaireVersionId,
-    );
     const response = await this.getResponseForSend(send.id);
 
     return {
       send,
-      questionnaire,
+      questionnaire: send.schemaSnapshot,
       response,
     };
   };
@@ -1005,14 +524,14 @@ export class QuestionnairesService {
   saveDraftResponseByToken = async (
     accessToken: string,
     data: {
-      currentSectionId?: string | null;
+      currentSectionRef?: { source: string; id: string } | null;
       answers?: AnswerInput[];
     },
   ) => {
     const send = await this.getActiveSendByToken(accessToken);
     return this.saveResponse(send, {
       status: "draft",
-      currentSectionId: data.currentSectionId,
+      currentSectionRef: data.currentSectionRef,
       answers: data.answers ?? [],
     });
   };
@@ -1020,16 +539,23 @@ export class QuestionnairesService {
   submitResponseByToken = async (
     accessToken: string,
     data: {
-      currentSectionId?: string | null;
+      currentSectionRef?: { source: string; id: string } | null;
       answers?: AnswerInput[];
     },
   ) => {
     const send = await this.getActiveSendByToken(accessToken);
-    return this.saveResponse(send, {
+    const result = await this.saveResponse(send, {
       status: "submitted",
-      currentSectionId: data.currentSectionId,
+      currentSectionRef: data.currentSectionRef,
       answers: data.answers ?? [],
     });
+
+    // Response is in — cancel the pending auto-reminder so it never fires.
+    if (send.reminderJobId) {
+      await cancelQuestionnaireReminder(send.reminderJobId).catch(console.error);
+    }
+
+    return result;
   };
 
   uploadResponseFileByToken = async (
@@ -1037,6 +563,7 @@ export class QuestionnairesService {
     data: {
       responseId: string;
       questionId: string;
+      questionSource?: "system" | "firm";
       fileBuffer: Buffer;
       mimeType: string;
       fileSize: number;
@@ -1044,21 +571,14 @@ export class QuestionnairesService {
     },
   ) => {
     const send = await this.getActiveSendByToken(accessToken);
-    const response = await this.ensureResponseForSend(
-      data.responseId,
-      send.id,
-      send.organizationId,
-    );
+    const response = await this.ensureResponseForSend(data.responseId, send.id, send.organizationId);
 
     if (response.status === "submitted") {
       throw new ConflictError("Submitted responses cannot be changed");
     }
 
-    await this.ensureVersionQuestion(
-      data.questionId,
-      send.questionnaireId,
-      send.questionnaireVersionId,
-    );
+    const questionSource =
+      data.questionSource ?? getQuestionSourceFromSnapshot(send.schemaSnapshot, data.questionId);
 
     const safeFilename = `${Date.now()}-${data.originalFilename.replace(/\s+/g, "_")}`;
     const storagePath = buildResponseFileStoragePath(
@@ -1068,18 +588,11 @@ export class QuestionnairesService {
       safeFilename,
     );
 
-    const { error: uploadError } = await supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .upload(storagePath, data.fileBuffer, {
-        contentType: data.mimeType,
-        upsert: false,
-      });
-
-    if (uploadError) throw new ExternalServiceError(uploadError.message);
-
-    const { data: urlData } = supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .getPublicUrl(storagePath);
+    await storageService.upload({
+      key: storagePath,
+      body: data.fileBuffer,
+      contentType: data.mimeType,
+    });
 
     const [file] = await db
       .insert(questionnaireResponseFiles)
@@ -1087,701 +600,606 @@ export class QuestionnairesService {
         organizationId: send.organizationId,
         responseId: response.id,
         questionId: data.questionId,
+        questionSource,
         storagePath,
-        fileUrl: urlData.publicUrl,
+        fileUrl: storagePath,
         mimeType: data.mimeType,
         fileSize: data.fileSize,
         originalFilename: data.originalFilename,
       })
       .returning();
 
+    // Kick off the (stubbed) AI document scan asynchronously.
+    await enqueueDocumentScan(file.id).catch(console.error);
+
     return file;
   };
 
-  private ensureQuestionnaire = async (
-    id: string,
+  /**
+   * Staff-side manual upload of a document received outside the client portal
+   * (e.g. in-person, by email, or via scan). Attaches the file to the response's
+   * question so the consultation card reflects it as received.
+   */
+  uploadResponseFileByStaff = async (
     organizationId: string,
-    database: any = db,
+    data: {
+      responseId: string;
+      questionId: string;
+      questionSource?: "system" | "firm";
+      fileBuffer: Buffer;
+      mimeType: string;
+      fileSize: number;
+      originalFilename: string;
+    },
   ) => {
-    const [questionnaire] = await database
+    const [response] = await db
       .select()
-      .from(questionnaires)
+      .from(questionnaireResponses)
       .where(
         and(
-          eq(questionnaires.id, id),
-          eq(questionnaires.organizationId, organizationId),
+          eq(questionnaireResponses.id, data.responseId),
+          eq(questionnaireResponses.organizationId, organizationId),
         ),
       )
       .limit(1);
+    if (!response) throw new NotFoundError("Response not found");
 
-    if (!questionnaire) throw new NotFoundError("Questionnaire not found");
-    return questionnaire;
-  };
-
-  private ensureEditableQuestionnaire = async (
-    id: string,
-    organizationId: string,
-  ) => {
-    const questionnaire = await this.ensureQuestionnaire(id, organizationId);
-    if (questionnaire.status !== "draft") {
-      throw new ConflictError("Only draft questionnaires can be edited");
-    }
-    return questionnaire;
-  };
-
-  private ensureCaseTypes = async (caseTypeIds: string[], database: any = db) => {
-    const uniqueCaseTypeIds = Array.from(new Set(caseTypeIds));
-    if (!uniqueCaseTypeIds.length) return [];
-
-    const rows = await database
+    const [send] = await db
       .select()
-      .from(practiceAreaCaseTypes)
-      .where(inArray(practiceAreaCaseTypes.id, uniqueCaseTypeIds));
-
-    if (rows.length !== uniqueCaseTypeIds.length) {
-      throw new BadRequestError("One or more case types are invalid");
-    }
-
-    return rows;
-  };
-
-  private insertQuestionnaireCaseTypes = async (
-    questionnaireId: string,
-    caseTypeIds: string[],
-    database: any = db,
-  ) => {
-    const uniqueCaseTypeIds = Array.from(new Set(caseTypeIds));
-    if (!uniqueCaseTypeIds.length) return;
-
-    await database.insert(questionnaireCaseTypes).values(
-      uniqueCaseTypeIds.map((caseTypeId) => ({
-        questionnaireId,
-        caseTypeId,
-      })),
-    );
-  };
-
-  private replaceQuestionnaireCaseTypes = async (
-    questionnaireId: string,
-    caseTypeIds: string[],
-    database: any = db,
-  ) => {
-    const uniqueCaseTypeIds = Array.from(new Set(caseTypeIds));
-    await this.ensureCaseTypes(uniqueCaseTypeIds, database);
-
-    await database
-      .delete(questionnaireCaseTypes)
-      .where(eq(questionnaireCaseTypes.questionnaireId, questionnaireId));
-
-    await this.insertQuestionnaireCaseTypes(
-      questionnaireId,
-      uniqueCaseTypeIds,
-      database,
-    );
-  };
-
-  private getQuestionnaireCaseTypes = async (
-    questionnaireId: string,
-    versionId?: string | null,
-    database: any = db,
-  ) => {
-    const rows = versionId
-      ? await database
-          .select({
-            id: practiceAreaCaseTypes.id,
-            practiceAreaId: practiceAreaSubcategories.practiceAreaId,
-            subcategoryId: practiceAreaCaseTypes.subcategoryId,
-            code: practiceAreaCaseTypes.code,
-            name: practiceAreaCaseTypes.name,
-            caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
-            jurisdiction: practiceAreaCaseTypes.jurisdiction,
-            createdAt: practiceAreaCaseTypes.createdAt,
-            updatedAt: practiceAreaCaseTypes.updatedAt,
-          })
-          .from(questionnaireVersionCaseTypes)
-          .innerJoin(
-            practiceAreaCaseTypes,
-            eq(
-              practiceAreaCaseTypes.id,
-              questionnaireVersionCaseTypes.caseTypeId,
-            ),
-          )
-          .innerJoin(
-            practiceAreaSubcategories,
-            eq(
-              practiceAreaSubcategories.id,
-              practiceAreaCaseTypes.subcategoryId,
-            ),
-          )
-          .where(
-            and(
-              eq(questionnaireVersionCaseTypes.questionnaireId, questionnaireId),
-              eq(questionnaireVersionCaseTypes.questionnaireVersionId, versionId),
-            ),
-          )
-      : await database
-          .select({
-            id: practiceAreaCaseTypes.id,
-            practiceAreaId: practiceAreaSubcategories.practiceAreaId,
-            subcategoryId: practiceAreaCaseTypes.subcategoryId,
-            code: practiceAreaCaseTypes.code,
-            name: practiceAreaCaseTypes.name,
-            caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
-            jurisdiction: practiceAreaCaseTypes.jurisdiction,
-            createdAt: practiceAreaCaseTypes.createdAt,
-            updatedAt: practiceAreaCaseTypes.updatedAt,
-          })
-          .from(questionnaireCaseTypes)
-          .innerJoin(
-            practiceAreaCaseTypes,
-            eq(practiceAreaCaseTypes.id, questionnaireCaseTypes.caseTypeId),
-          )
-          .innerJoin(
-            practiceAreaSubcategories,
-            eq(
-              practiceAreaSubcategories.id,
-              practiceAreaCaseTypes.subcategoryId,
-            ),
-          )
-          .where(eq(questionnaireCaseTypes.questionnaireId, questionnaireId));
-
-    return rows;
-  };
-
-  private copyQuestionnaireCaseTypes = async ({
-    tx,
-    sourceQuestionnaireId,
-    targetQuestionnaireId,
-    sourceVersionId,
-  }: {
-    tx: any;
-    sourceQuestionnaireId: string;
-    targetQuestionnaireId: string;
-    sourceVersionId?: string | null;
-  }) => {
-    const sourceCaseTypes = await this.getQuestionnaireCaseTypes(
-      sourceQuestionnaireId,
-      sourceVersionId,
-      tx,
-    );
-
-    await this.insertQuestionnaireCaseTypes(
-      targetQuestionnaireId,
-      sourceCaseTypes.map((caseType: { id: string }) => caseType.id),
-      tx,
-    );
-  };
-
-  private ensureVersionCaseType = async (
-    questionnaireId: string,
-    questionnaireVersionId: string,
-    caseTypeId: string,
-    database: any = db,
-  ) => {
-    const [link] = await database
-      .select()
-      .from(questionnaireVersionCaseTypes)
-      .where(
-        and(
-          eq(questionnaireVersionCaseTypes.questionnaireId, questionnaireId),
-          eq(
-            questionnaireVersionCaseTypes.questionnaireVersionId,
-            questionnaireVersionId,
-          ),
-          eq(questionnaireVersionCaseTypes.caseTypeId, caseTypeId),
-        ),
-      )
+      .from(questionnaireSends)
+      .where(eq(questionnaireSends.id, response.questionnaireSendId))
       .limit(1);
 
-    if (!link) {
-      throw new BadRequestError(
-        "Questionnaire version is not linked to this case type",
-      );
-    }
+    const questionSource =
+      data.questionSource ??
+      getQuestionSourceFromSnapshot(send?.schemaSnapshot, data.questionId);
 
-    return link;
-  };
-
-  private ensureCaseForOrganization = async (
-    caseId: string,
-    organizationId: string,
-    database: any = db,
-  ) => {
-    const [caseRow] = await database
-      .select()
-      .from(cases)
-      .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
-      .limit(1);
-
-    if (!caseRow) throw new NotFoundError("Case not found");
-    return caseRow;
-  };
-
-  private findCaseTypeForCase = async (
-    caseType: string,
-    practiceAreaId?: string,
-    database: any = db,
-  ) => {
-    const caseTypeCondition = or(
-      eq(practiceAreaCaseTypes.code, caseType),
-      eq(practiceAreaCaseTypes.name, caseType),
+    const safeFilename = `${Date.now()}-${data.originalFilename.replace(/\s+/g, "_")}`;
+    const storagePath = buildResponseFileStoragePath(
+      organizationId,
+      response.id,
+      data.questionId,
+      safeFilename,
     );
 
-    const [caseTypeRow] = await database
-      .select({
-        id: practiceAreaCaseTypes.id,
-        subcategoryId: practiceAreaCaseTypes.subcategoryId,
-        code: practiceAreaCaseTypes.code,
-        name: practiceAreaCaseTypes.name,
-        caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
-        jurisdiction: practiceAreaCaseTypes.jurisdiction,
-        createdAt: practiceAreaCaseTypes.createdAt,
-        updatedAt: practiceAreaCaseTypes.updatedAt,
+    await storageService.upload({
+      key: storagePath,
+      body: data.fileBuffer,
+      contentType: data.mimeType,
+    });
+
+    const [file] = await db
+      .insert(questionnaireResponseFiles)
+      .values({
+        organizationId,
+        responseId: response.id,
+        questionId: data.questionId,
+        questionSource,
+        storagePath,
+        fileUrl: storagePath,
+        mimeType: data.mimeType,
+        fileSize: data.fileSize,
+        originalFilename: data.originalFilename,
       })
-      .from(practiceAreaCaseTypes)
+      .returning();
+
+    await enqueueDocumentScan(file.id).catch(console.error);
+
+    return file;
+  };
+
+  // ── Intake: eligible leads, question bank, response review ──────────────────
+
+  /**
+   * Leads that are ready to receive a questionnaire: in the questionnaire stage,
+   * conflict-cleared, with a case type, and not yet sent one. Shaped for the send
+   * wizard's "<name> — <case type>" dropdown.
+   */
+  getEligibleLeadsForQuestionnaire = async (organizationId: string) => {
+    const rows = await db
+      .select({
+        id: leads.id,
+        name: leads.name,
+        email: leads.email,
+        caseTypeId: leads.caseTypeId,
+        caseTypeName: practiceAreaCaseTypes.name,
+        conflictStatus: conflictChecks.status,
+        supervisorOverrideById: conflictChecks.supervisorOverrideById,
+      })
+      .from(leads)
+      .leftJoin(
+        practiceAreaCaseTypes,
+        eq(practiceAreaCaseTypes.id, leads.caseTypeId),
+      )
+      .leftJoin(conflictChecks, eq(conflictChecks.id, leads.conflictCheckId))
+      .where(
+        and(
+          eq(leads.organizationId, organizationId),
+          eq(leads.pipelineStage, "questionnaire"),
+          isNull(leads.questionnaireSendId),
+        ),
+      );
+
+    return rows
+      .filter((r) => r.caseTypeId)
+      .filter(
+        (r) =>
+          r.conflictStatus === "pass" ||
+          r.conflictStatus === null || // no conflict check on file
+          r.supervisorOverrideById !== null,
+      )
+      .map((r) => ({
+        id: r.id,
+        name: r.name,
+        email: r.email,
+        caseTypeId: r.caseTypeId,
+        caseTypeName: r.caseTypeName,
+      }));
+  };
+
+  /**
+   * System question library grouped by case type, for the wizard's "browse
+   * snippets" picker.
+   */
+  getQuestionBank = async () => {
+    const rows = await db
+      .select({
+        caseTypeId: caseTypeQuestionnaires.caseTypeId,
+        caseTypeName: practiceAreaCaseTypes.name,
+        questionnaireTitle: caseTypeQuestionnaires.title,
+        questionLabel: caseTypeQuestionnaireQuestions.label,
+        questionType: caseTypeQuestionnaireQuestions.type,
+        questionDescription: caseTypeQuestionnaireQuestions.description,
+        orderIndex: caseTypeQuestionnaireQuestions.orderIndex,
+      })
+      .from(caseTypeQuestionnaireQuestions)
       .innerJoin(
-        practiceAreaSubcategories,
-        eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
-      )
-      .where(
-        practiceAreaId
-          ? and(
-              eq(practiceAreaSubcategories.practiceAreaId, practiceAreaId),
-              caseTypeCondition,
-            )
-          : caseTypeCondition,
-      )
-      .limit(1);
-
-    return caseTypeRow ?? null;
-  };
-
-  private ensureCaseMatchesSendContext = async ({
-    caseId,
-    organizationId,
-    clientId,
-    caseTypeId,
-  }: {
-    caseId: string;
-    organizationId: string;
-    clientId: string;
-    caseTypeId: string;
-  }) => {
-    const caseRow = await this.ensureCaseForOrganization(caseId, organizationId);
-    if (caseRow.clientId !== clientId) {
-      throw new BadRequestError("Case does not belong to this client");
-    }
-
-    const caseType = await this.findCaseTypeForCase(
-      caseRow.caseType,
-      caseRow.practiceAreaId,
-    );
-    if (!caseType) {
-      throw new BadRequestError("Case type could not be resolved");
-    }
-
-    if (caseType.id !== caseTypeId) {
-      throw new BadRequestError("Case type does not match the selected case");
-    }
-
-    return caseRow;
-  };
-
-  private ensureDraftSection = async (
-    sectionId: string,
-    questionnaireId: string,
-    database: any = db,
-  ) => {
-    const [section] = await database
-      .select()
-      .from(questionnaireSections)
-      .where(
-        and(
-          eq(questionnaireSections.id, sectionId),
-          eq(questionnaireSections.questionnaireId, questionnaireId),
-          draftVersionCondition,
+        caseTypeQuestionnaires,
+        eq(
+          caseTypeQuestionnaires.id,
+          caseTypeQuestionnaireQuestions.questionnaireId,
         ),
       )
-      .limit(1);
-
-    if (!section) throw new NotFoundError("Section not found");
-    return section;
-  };
-
-  private ensureDraftQuestion = async (
-    questionId: string,
-    questionnaireId: string,
-    database: any = db,
-  ) => {
-    const [question] = await database
-      .select()
-      .from(questionnaireQuestions)
-      .where(
-        and(
-          eq(questionnaireQuestions.id, questionId),
-          eq(questionnaireQuestions.questionnaireId, questionnaireId),
-          questionDraftVersionCondition,
-        ),
+      .leftJoin(
+        practiceAreaCaseTypes,
+        eq(practiceAreaCaseTypes.id, caseTypeQuestionnaires.caseTypeId),
       )
-      .limit(1);
+      .orderBy(asc(caseTypeQuestionnaireQuestions.orderIndex));
 
-    if (!question) throw new NotFoundError("Question not found");
-    return question;
+    const grouped = new Map<
+      string,
+      {
+        caseTypeId: string;
+        caseTypeName: string | null;
+        questions: { label: string; type: string; description: string | null }[];
+      }
+    >();
+    for (const r of rows) {
+      const key = r.caseTypeId;
+      const entry = grouped.get(key) ?? {
+        caseTypeId: r.caseTypeId,
+        caseTypeName: r.caseTypeName,
+        questions: [],
+      };
+      entry.questions.push({
+        label: r.questionLabel,
+        type: r.questionType,
+        description: r.questionDescription,
+      });
+      grouped.set(key, entry);
+    }
+    return Array.from(grouped.values());
   };
 
-  private ensureVersionQuestion = async (
-    questionId: string,
-    questionnaireId: string,
-    versionId: string,
-    database: any = db,
-  ) => {
-    const [question] = await database
-      .select()
-      .from(questionnaireQuestions)
-      .where(
-        and(
-          eq(questionnaireQuestions.id, questionId),
-          eq(questionnaireQuestions.questionnaireId, questionnaireId),
-          eq(questionnaireQuestions.versionId, versionId),
-        ),
-      )
-      .limit(1);
-
-    if (!question) throw new NotFoundError("Question not found");
-    return question;
-  };
-
-  private ensureResponseForSend = async (
-    responseId: string,
-    sendId: string,
-    organizationId: string,
-    database: any = db,
-  ) => {
-    const [response] = await database
+  /**
+   * Full response detail for the admin review modal: send (with snapshot),
+   * response, answers, files (incl. scan results) and a completion summary.
+   */
+  getResponseDetailById = async (organizationId: string, responseId: string) => {
+    const [response] = await db
       .select()
       .from(questionnaireResponses)
       .where(
         and(
           eq(questionnaireResponses.id, responseId),
-          eq(questionnaireResponses.questionnaireSendId, sendId),
           eq(questionnaireResponses.organizationId, organizationId),
         ),
       )
       .limit(1);
-
     if (!response) throw new NotFoundError("Response not found");
-    return response;
-  };
 
-  private getQuestionById = async (questionId: string, database: any = db) => {
-    const [question] = await database
+    const [send] = await db
       .select()
-      .from(questionnaireQuestions)
-      .where(eq(questionnaireQuestions.id, questionId))
+      .from(questionnaireSends)
+      .where(eq(questionnaireSends.id, response.questionnaireSendId))
       .limit(1);
 
-    const options = await database
+    const answers = await db
       .select()
-      .from(questionnaireQuestionOptions)
-      .where(eq(questionnaireQuestionOptions.questionId, questionId))
-      .orderBy(asc(questionnaireQuestionOptions.orderIndex));
+      .from(questionnaireAnswers)
+      .where(eq(questionnaireAnswers.responseId, response.id));
 
-    return { ...question, options };
+    const files = await db
+      .select()
+      .from(questionnaireResponseFiles)
+      .where(eq(questionnaireResponseFiles.responseId, response.id));
+
+    const completion = computeCompletion(send?.schemaSnapshot, answers, files);
+
+    return {
+      response,
+      send,
+      answers,
+      files: await presignResponseFiles(files),
+      completion,
+    };
   };
 
-  private insertQuestionWithOptions = async (
-    database: any,
-    questionnaireId: string,
-    sectionId: string,
-    data: BaseQuestionInput,
-    orderIndex: number,
+  /**
+   * Mark a response complete and advance its lead to the consultation stage.
+   * Requires every required question/document to be answered.
+   */
+  acceptResponseAndAdvance = async (
+    organizationId: string,
+    responseId: string,
   ) => {
-    const [created] = await database
-      .insert(questionnaireQuestions)
-      .values({
-        questionnaireId,
-        sectionId,
-        label: data.label,
-        description: data.description,
-        type: data.type,
-        orderIndex,
-        isRequired: data.isRequired ?? false,
-        config: (data.config ?? {}) as any,
-      })
-      .returning();
+    const [response] = await db
+      .select()
+      .from(questionnaireResponses)
+      .where(
+        and(
+          eq(questionnaireResponses.id, responseId),
+          eq(questionnaireResponses.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!response) throw new NotFoundError("Response not found");
 
-    if (data.options?.length) {
-      await database.insert(questionnaireQuestionOptions).values(
-        data.options.map((option, index) => ({
-          questionId: created.id,
-          label: option.label,
-          value: option.value,
-          orderIndex: option.orderIndex ?? index,
-        })),
-      );
+    const [send] = await db
+      .select()
+      .from(questionnaireSends)
+      .where(eq(questionnaireSends.id, response.questionnaireSendId))
+      .limit(1);
+
+    const answers = await db
+      .select()
+      .from(questionnaireAnswers)
+      .where(eq(questionnaireAnswers.responseId, response.id));
+    const files = await db
+      .select()
+      .from(questionnaireResponseFiles)
+      .where(eq(questionnaireResponseFiles.responseId, response.id));
+
+    // File-upload questions are "answered" by an uploaded file.
+    const merged = [
+      ...answers.map((a) => ({ questionId: a.questionId, value: a.value })),
+      ...files.map((f) => ({ questionId: f.questionId, value: "file" })),
+    ];
+    validateSubmissionAnswers(send?.schemaSnapshot, merged);
+
+    if (response.leadId) {
+      await db
+        .update(leads)
+        .set({ pipelineStage: "consultation", updatedAt: new Date() })
+        .where(eq(leads.id, response.leadId));
     }
 
-    return created;
+    return { advanced: true, leadId: response.leadId };
   };
 
-  private getNextSectionOrderIndex = async (
-    questionnaireId: string,
-    versionId: string | null,
-    database: any = db,
-  ) => {
-    const [{ currentOrderIndex }] = await database
-      .select({ currentOrderIndex: max(questionnaireSections.orderIndex) })
-      .from(questionnaireSections)
-      .where(
-        and(
-          eq(questionnaireSections.questionnaireId, questionnaireId),
-          versionCondition(questionnaireSections.versionId, versionId),
-        ),
-      );
-
-    return Number(currentOrderIndex ?? -1) + 1;
-  };
-
-  private getNextQuestionOrderIndex = async (
-    questionnaireId: string,
-    sectionId: string,
-    versionId: string | null,
-    database: any = db,
-  ) => {
-    const [{ currentOrderIndex }] = await database
-      .select({ currentOrderIndex: max(questionnaireQuestions.orderIndex) })
-      .from(questionnaireQuestions)
-      .where(
-        and(
-          eq(questionnaireQuestions.questionnaireId, questionnaireId),
-          eq(questionnaireQuestions.sectionId, sectionId),
-          versionCondition(questionnaireQuestions.versionId, versionId),
-        ),
-      );
-
-    return Number(currentOrderIndex ?? -1) + 1;
-  };
-
-  private getQuestionnaireStructure = async (
-    questionnaireId: string,
+  /**
+   * Render the response answers to a PDF (documents excluded). Returns a Buffer.
+   */
+  generateResponsePdf = async (
     organizationId: string,
-    versionId?: string | null,
-    database: any = db,
-  ) => {
-    await this.ensureQuestionnaire(questionnaireId, organizationId, database);
+    responseId: string,
+  ): Promise<{ buffer: Buffer; filename: string }> => {
+    const { response, send, answers } = await this.getResponseDetailById(
+      organizationId,
+      responseId,
+    );
+
+    const answerMap = new Map(answers.map((a) => [a.questionId, a.value]));
+    const snapshot = (send?.schemaSnapshot ?? {}) as {
+      title?: string;
+      sections?: Array<{
+        title?: string;
+        questions?: Array<{ id: string; label: string; type: string }>;
+      }>;
+    };
+
+    const doc = new PDFDocument({ margin: 50, size: "A4" });
+    const chunks: Buffer[] = [];
+    doc.on("data", (c: Buffer) => chunks.push(c));
+    const done = new Promise<Buffer>((resolve) => {
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+    });
+
+    doc
+      .fontSize(18)
+      .text(snapshot.title ?? "Questionnaire response", { underline: false });
+    doc
+      .fontSize(10)
+      .fillColor("#666")
+      .text(`Status: ${response.status}`)
+      .text(
+        `Submitted: ${response.submittedAt ? new Date(response.submittedAt).toLocaleString() : "—"}`,
+      )
+      .moveDown(1)
+      .fillColor("#000");
+
+    for (const section of snapshot.sections ?? []) {
+      doc.moveDown(0.5).fontSize(13).fillColor("#1a1a1a").text(section.title ?? "Section");
+      doc.moveDown(0.25);
+      for (const q of section.questions ?? []) {
+        if (q.type === "file_upload") continue; // documents excluded from PDF
+        const raw = answerMap.get(q.id);
+        const value =
+          raw == null || (typeof raw === "string" && raw.trim() === "")
+            ? "Not yet answered"
+            : typeof raw === "string"
+              ? raw
+              : JSON.stringify(raw);
+        doc.fontSize(10).fillColor("#444").text(q.label, { continued: false });
+        doc.fontSize(11).fillColor("#000").text(value).moveDown(0.4);
+      }
+    }
+
+    doc.end();
+    const buffer = await done;
+    return { buffer, filename: `questionnaire-response-${responseId}.pdf` };
+  };
+
+  /**
+   * Fetch an uploaded response document for a gated download (proxied from
+   * storage so access can be permission-checked rather than relying on the
+   * public URL). Caller must have the documents:download permission.
+   */
+  getResponseFileForDownload = async (
+    organizationId: string,
+    fileId: string,
+  ): Promise<{ buffer: Buffer; mimeType: string; filename: string }> => {
+    const [file] = await db
+      .select()
+      .from(questionnaireResponseFiles)
+      .where(
+        and(
+          eq(questionnaireResponseFiles.id, fileId),
+          eq(questionnaireResponseFiles.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!file) throw new NotFoundError("Document not found");
+
+    const buffer = await storageService.download(file.storagePath);
+    return {
+      buffer,
+      mimeType: file.mimeType,
+      filename: file.originalFilename,
+    };
+  };
+
+  /** Manually send a reminder for an outstanding questionnaire send. */
+  sendManualReminder = async (organizationId: string, sendId: string) => {
+    const [send] = await db
+      .select()
+      .from(questionnaireSends)
+      .where(
+        and(
+          eq(questionnaireSends.id, sendId),
+          eq(questionnaireSends.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!send) throw new NotFoundError("Questionnaire send not found");
+
+    const sent = await sendQuestionnaireReminder(sendId);
+    if (!sent) {
+      throw new BadRequestError(
+        "No reminder sent — the questionnaire is already submitted.",
+      );
+    }
+    return { reminderSentAt: new Date() };
+  };
+
+  /**
+   * Email the lead a targeted list of the documents they still owe — the
+   * file_upload questions in the send's snapshot that have no uploaded file.
+   * Returns the missing document labels; sends nothing when none are missing.
+   */
+  requestMissingDocuments = async (organizationId: string, sendId: string) => {
+    const [send] = await db
+      .select()
+      .from(questionnaireSends)
+      .where(
+        and(
+          eq(questionnaireSends.id, sendId),
+          eq(questionnaireSends.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!send) throw new NotFoundError("Questionnaire send not found");
+
+    const snapshot = (send.schemaSnapshot ?? {}) as {
+      sections?: Array<{
+        questions?: Array<{ id: string; label: string; type: string }>;
+      }>;
+    };
+    const fileQuestions = (snapshot.sections ?? []).flatMap(
+      (section) =>
+        section.questions?.filter((q) => q.type === "file_upload") ?? [],
+    );
+
+    const [response] = await db
+      .select()
+      .from(questionnaireResponses)
+      .where(eq(questionnaireResponses.questionnaireSendId, sendId))
+      .limit(1);
+
+    const uploadedQuestionIds = new Set<string>();
+    if (response) {
+      const files = await db
+        .select({ questionId: questionnaireResponseFiles.questionId })
+        .from(questionnaireResponseFiles)
+        .where(eq(questionnaireResponseFiles.responseId, response.id));
+      for (const f of files) uploadedQuestionIds.add(f.questionId);
+    }
+
+    const missingQuestions = fileQuestions.filter(
+      (q) => !uploadedQuestionIds.has(q.id),
+    );
+    const missing = missingQuestions.map((q) => q.label);
+
+    if (missing.length === 0) return { missing };
+
+    if (send.leadId) {
+      const [lead] = await db
+        .select()
+        .from(leads)
+        .where(eq(leads.id, send.leadId))
+        .limit(1);
+      if (lead) {
+        emailService
+          .sendEmail({
+            to: lead.email,
+            subject: "Outstanding documents for your intake",
+            html: `<p>Dear ${lead.name},</p>
+              <p>To continue with your intake, we still need the following document(s):</p>
+              <ul>${missing.map((label) => `<li>${label}</li>`).join("")}</ul>
+              <p>Please upload them using your intake questionnaire link. If you have
+              misplaced your link, please contact your attorney's office.</p>`,
+          })
+          .catch(console.error);
+
+        const channels = (send.deliveryChannels as string[] | null) ?? [];
+        if (channels.includes("sms") && lead.phone) {
+          console.log(
+            `[sms-stub] missing-documents request to ${lead.phone} for send ${sendId}`,
+          );
+        }
+      }
+    }
+
+    return { missing };
+  };
+
+  // ── Private Helpers ────────────────────────────────────────────────────────
+
+  private buildSystemQuestionnaireStructure = async (id: string, database: any = db) => {
+    const [questionnaire] = await database
+      .select()
+      .from(caseTypeQuestionnaires)
+      .where(eq(caseTypeQuestionnaires.id, id))
+      .limit(1);
+
+    if (!questionnaire) return null;
 
     const sections = await database
       .select()
-      .from(questionnaireSections)
-      .where(
-        and(
-          eq(questionnaireSections.questionnaireId, questionnaireId),
-          versionCondition(questionnaireSections.versionId, versionId),
-        ),
-      )
-      .orderBy(asc(questionnaireSections.orderIndex));
+      .from(caseTypeQuestionnaireSections)
+      .where(eq(caseTypeQuestionnaireSections.questionnaireId, id))
+      .orderBy(asc(caseTypeQuestionnaireSections.orderIndex));
 
     const questions = await database
       .select()
-      .from(questionnaireQuestions)
-      .where(
-        and(
-          eq(questionnaireQuestions.questionnaireId, questionnaireId),
-          versionCondition(questionnaireQuestions.versionId, versionId),
-        ),
-      )
-      .orderBy(asc(questionnaireQuestions.orderIndex));
-
-    const questionIds = questions.map((question: any) => question.id);
-    const options = questionIds.length
-      ? await database
-          .select()
-          .from(questionnaireQuestionOptions)
-          .where(inArray(questionnaireQuestionOptions.questionId, questionIds))
-          .orderBy(asc(questionnaireQuestionOptions.orderIndex))
-      : [];
+      .from(caseTypeQuestionnaireQuestions)
+      .where(eq(caseTypeQuestionnaireQuestions.questionnaireId, id))
+      .orderBy(asc(caseTypeQuestionnaireQuestions.orderIndex));
 
     const logicRules = await database
       .select()
-      .from(questionnaireLogicRules)
-      .where(
-        and(
-          eq(questionnaireLogicRules.questionnaireId, questionnaireId),
-          versionCondition(questionnaireLogicRules.versionId, versionId),
-        ),
-      )
-      .orderBy(asc(questionnaireLogicRules.priority));
+      .from(caseTypeQuestionnaireLogicRules)
+      .where(eq(caseTypeQuestionnaireLogicRules.questionnaireId, id))
+      .orderBy(asc(caseTypeQuestionnaireLogicRules.priority));
 
-    const caseTypes = await this.getQuestionnaireCaseTypes(
-      questionnaireId,
-      versionId,
-      database,
-    );
-
-    const optionsByQuestion = new Map<string, typeof options>();
-    for (const option of options) {
-      const current = optionsByQuestion.get(option.questionId) ?? [];
-      current.push(option);
-      optionsByQuestion.set(option.questionId, current);
-    }
-
-    const questionsBySection = new Map<string, typeof questions>();
-    for (const question of questions) {
-      const current = questionsBySection.get(question.sectionId) ?? [];
-      current.push({
-        ...question,
-        options: optionsByQuestion.get(question.id) ?? [],
-      });
-      questionsBySection.set(question.sectionId, current);
+    const questionsBySection = new Map<string, (typeof questions)[number][]>();
+    for (const q of questions) {
+      const arr = questionsBySection.get(q.sectionId) ?? [];
+      arr.push(q);
+      questionsBySection.set(q.sectionId, arr);
     }
 
     return {
-      caseTypes,
-      sections: sections.map((section: any) => ({
-        ...section,
-        questions: questionsBySection.get(section.id) ?? [],
+      ...questionnaire,
+      sections: sections.map((s: any) => ({
+        ...s,
+        questions: questionsBySection.get(s.id) ?? [],
       })),
       logicRules,
     };
   };
 
-  private copyQuestionnaireStructure = async ({
-    tx,
-    organizationId,
-    sourceQuestionnaireId,
-    targetQuestionnaireId,
-    sourceVersionId,
-    targetVersionId,
-  }: {
-    tx: any;
-    organizationId: string;
-    sourceQuestionnaireId: string;
-    targetQuestionnaireId: string;
-    sourceVersionId?: string | null;
-    targetVersionId?: string | null;
-  }) => {
-    const sectionIdMap = new Map<string, string>();
-    const questionIdMap = new Map<string, string>();
-
-    const sourceSections = await tx
+  private ensureCaseTypeExists = async (caseTypeId: string, database: any = db) => {
+    const [ct] = await database
       .select()
-      .from(questionnaireSections)
-      .where(
-        and(
-          eq(questionnaireSections.questionnaireId, sourceQuestionnaireId),
-          versionCondition(questionnaireSections.versionId, sourceVersionId),
-        ),
-      )
-      .orderBy(asc(questionnaireSections.orderIndex));
-
-    for (const section of sourceSections) {
-      const [created] = await tx
-        .insert(questionnaireSections)
-        .values({
-          questionnaireId: targetQuestionnaireId,
-          versionId: targetVersionId,
-          title: section.title,
-          description: section.description,
-          orderIndex: section.orderIndex,
-        })
-        .returning();
-      sectionIdMap.set(section.id, created.id);
-    }
-
-    const sourceQuestions = await tx
-      .select()
-      .from(questionnaireQuestions)
-      .where(
-        and(
-          eq(questionnaireQuestions.questionnaireId, sourceQuestionnaireId),
-          versionCondition(questionnaireQuestions.versionId, sourceVersionId),
-        ),
-      )
-      .orderBy(asc(questionnaireQuestions.orderIndex));
-
-    for (const question of sourceQuestions) {
-      const sectionId = sectionIdMap.get(question.sectionId);
-      if (!sectionId) continue;
-
-      const [created] = await tx
-        .insert(questionnaireQuestions)
-        .values({
-          questionnaireId: targetQuestionnaireId,
-          sectionId,
-          versionId: targetVersionId,
-          label: question.label,
-          description: question.description,
-          type: question.type,
-          orderIndex: question.orderIndex,
-          isRequired: question.isRequired,
-          config: question.config as any,
-        })
-        .returning();
-      questionIdMap.set(question.id, created.id);
-    }
-
-    if (sourceQuestions.length) {
-      const sourceQuestionIds = sourceQuestions.map((question: any) => question.id);
-      const sourceOptions = await tx
-        .select()
-        .from(questionnaireQuestionOptions)
-        .where(inArray(questionnaireQuestionOptions.questionId, sourceQuestionIds))
-        .orderBy(asc(questionnaireQuestionOptions.orderIndex));
-
-      for (const option of sourceOptions) {
-        const questionId = questionIdMap.get(option.questionId);
-        if (!questionId) continue;
-        await tx.insert(questionnaireQuestionOptions).values({
-          questionId,
-          label: option.label,
-          value: option.value,
-          orderIndex: option.orderIndex,
-        });
-      }
-    }
-
-    const idMap = new Map<string, string>([
-      ...sectionIdMap.entries(),
-      ...questionIdMap.entries(),
-    ]);
-
-    const sourceLogicRules = await tx
-      .select()
-      .from(questionnaireLogicRules)
-      .where(
-        and(
-          eq(questionnaireLogicRules.questionnaireId, sourceQuestionnaireId),
-          versionCondition(questionnaireLogicRules.versionId, sourceVersionId),
-        ),
-      )
-      .orderBy(asc(questionnaireLogicRules.priority));
-
-    for (const rule of sourceLogicRules) {
-      await tx.insert(questionnaireLogicRules).values({
-        questionnaireId: targetQuestionnaireId,
-        versionId: targetVersionId,
-        sourceQuestionId: rule.sourceQuestionId
-          ? questionIdMap.get(rule.sourceQuestionId)
-          : null,
-        condition: remapJsonIds(rule.condition, idMap) as any,
-        actionType: rule.actionType,
-        action: remapJsonIds(rule.action, idMap) as any,
-        priority: rule.priority,
-      });
-    }
-
-    return this.getQuestionnaireStructure(
-      targetQuestionnaireId,
-      organizationId,
-      targetVersionId,
-      tx,
-    );
+      .from(practiceAreaCaseTypes)
+      .where(eq(practiceAreaCaseTypes.id, caseTypeId))
+      .limit(1);
+    if (!ct) throw new BadRequestError("Case type not found");
+    return ct;
   };
 
-  private getActiveSendByToken = async (
-    accessToken: string,
-    markOpened = false,
+  private getNextSectionOrderIndex = async (table: any, questionnaireId: string, database: any = db) => {
+    const [{ total }] = await database
+      .select({ total: count() })
+      .from(table)
+      .where(eq(table.questionnaireId, questionnaireId));
+    return Number(total);
+  };
+
+  private getNextQuestionOrderIndex = async (
+    table: any,
+    questionnaireId: string,
+    sectionId: string,
+    database: any = db,
   ) => {
+    const [{ total }] = await database
+      .select({ total: count() })
+      .from(table)
+      .where(and(eq(table.questionnaireId, questionnaireId), eq(table.sectionId, sectionId)));
+    return Number(total);
+  };
+
+  private getNextFirmSectionOrderIndex = async (
+    organizationId: string,
+    caseTypeId: string,
+    database: any = db,
+  ) => {
+    const [{ total }] = await database
+      .select({ total: count() })
+      .from(firmQuestionnaireSections)
+      .where(
+        and(
+          eq(firmQuestionnaireSections.organizationId, organizationId),
+          eq(firmQuestionnaireSections.caseTypeId, caseTypeId),
+        ),
+      );
+    return Number(total);
+  };
+
+  private getNextFirmQuestionOrderIndex = async (
+    organizationId: string,
+    caseTypeId: string,
+    systemSectionId: string | null,
+    firmSectionId: string | null,
+    database: any = db,
+  ) => {
+    const conditions: any[] = [
+      eq(firmQuestionnaireQuestions.organizationId, organizationId),
+      eq(firmQuestionnaireQuestions.caseTypeId, caseTypeId),
+    ];
+    if (systemSectionId) conditions.push(eq(firmQuestionnaireQuestions.systemSectionId, systemSectionId));
+    if (firmSectionId) conditions.push(eq(firmQuestionnaireQuestions.firmSectionId, firmSectionId));
+
+    const [{ total }] = await database
+      .select({ total: count() })
+      .from(firmQuestionnaireQuestions)
+      .where(and(...conditions));
+
+    return Number(total);
+  };
+
+  private getActiveSendByToken = async (accessToken: string, markOpened = false) => {
     const [send] = await db
       .select()
       .from(questionnaireSends)
@@ -1789,9 +1207,7 @@ export class QuestionnairesService {
       .limit(1);
 
     if (!send) throw new NotFoundError("Questionnaire send not found");
-    if (send.status === "revoked") {
-      throw new ConflictError("Questionnaire send has been revoked");
-    }
+    if (send.status === "revoked") throw new ConflictError("Questionnaire send has been revoked");
     if (send.expiresAt && send.expiresAt.getTime() < Date.now()) {
       await db
         .update(questionnaireSends)
@@ -1803,11 +1219,7 @@ export class QuestionnairesService {
     if (markOpened && send.status === "sent") {
       const [updated] = await db
         .update(questionnaireSends)
-        .set({
-          status: "opened",
-          openedAt: new Date(),
-          updatedAt: new Date(),
-        })
+        .set({ status: "opened", openedAt: new Date(), updatedAt: new Date() })
         .where(eq(questionnaireSends.id, send.id))
         .returning();
       return updated;
@@ -1835,18 +1247,36 @@ export class QuestionnairesService {
       .from(questionnaireResponseFiles)
       .where(eq(questionnaireResponseFiles.responseId, response.id));
 
-    return {
-      ...response,
-      answers,
-      files,
-    };
+    return { ...response, answers, files: await presignResponseFiles(files) };
+  };
+
+  private ensureResponseForSend = async (
+    responseId: string,
+    sendId: string,
+    organizationId: string,
+    database: any = db,
+  ) => {
+    const [response] = await database
+      .select()
+      .from(questionnaireResponses)
+      .where(
+        and(
+          eq(questionnaireResponses.id, responseId),
+          eq(questionnaireResponses.questionnaireSendId, sendId),
+          eq(questionnaireResponses.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!response) throw new NotFoundError("Response not found");
+    return response;
   };
 
   private saveResponse = async (
     send: typeof questionnaireSends.$inferSelect,
     data: {
       status: "draft" | "submitted";
-      currentSectionId?: string | null;
+      currentSectionRef?: { source: string; id: string } | null;
       answers: AnswerInput[];
     },
   ) => {
@@ -1856,24 +1286,27 @@ export class QuestionnairesService {
         throw new ConflictError("Client has already submitted a response");
       }
 
-      const answerMap = new Map<string, unknown>();
+      // Merge answers: existing base + incoming updates
+      const answerMap = new Map<string, { value: unknown; source: "system" | "firm" }>();
       for (const answer of existing?.answers ?? []) {
-        answerMap.set(answer.questionId, answer.value);
+        answerMap.set(answer.questionId, {
+          value: answer.value,
+          source: answer.questionSource as "system" | "firm",
+        });
       }
       for (const answer of data.answers) {
-        answerMap.set(answer.questionId, answer.value);
+        const source = getQuestionSourceFromSnapshot(send.schemaSnapshot, answer.questionId);
+        answerMap.set(answer.questionId, { value: answer.value, source });
       }
 
-      const mergedAnswers = Array.from(answerMap.entries()).map(
-        ([questionId, value]) => ({ questionId, value }),
-      );
+      const mergedAnswers = Array.from(answerMap.entries()).map(([questionId, a]) => ({
+        questionId,
+        value: a.value,
+      }));
 
-      await this.validateResponseAnswers(
-        send,
-        mergedAnswers,
-        data.status,
-        tx,
-      );
+      if (data.status === "submitted") {
+        validateSubmissionAnswers(send.schemaSnapshot, mergedAnswers);
+      }
 
       const now = new Date();
       const [response] = existing
@@ -1881,7 +1314,7 @@ export class QuestionnairesService {
             .update(questionnaireResponses)
             .set({
               status: data.status,
-              currentSectionId: data.currentSectionId,
+              currentSectionRef: data.currentSectionRef as any,
               lastSavedAt: now,
               submittedAt: data.status === "submitted" ? now : null,
               updatedAt: now,
@@ -1893,43 +1326,32 @@ export class QuestionnairesService {
             .values({
               organizationId: send.organizationId,
               questionnaireSendId: send.id,
-              questionnaireId: send.questionnaireId,
-              questionnaireVersionId: send.questionnaireVersionId,
+              caseTypeQuestionnaireId: send.caseTypeQuestionnaireId,
+              leadId: send.leadId,
               clientId: send.clientId,
               caseId: send.caseId,
               caseTypeId: send.caseTypeId,
               status: data.status,
-              currentSectionId: data.currentSectionId,
+              currentSectionRef: data.currentSectionRef as any,
               lastSavedAt: now,
               submittedAt: data.status === "submitted" ? now : null,
             })
             .returning();
 
-      for (const answer of data.answers) {
+      for (const [questionId, { value, source }] of answerMap.entries()) {
         await tx
           .insert(questionnaireAnswers)
-          .values({
-            responseId: response.id,
-            questionId: answer.questionId,
-            value: answer.value as any,
-          })
+          .values({ responseId: response.id, questionId, questionSource: source, value: value as any })
           .onConflictDoUpdate({
-            target: [
-              questionnaireAnswers.responseId,
-              questionnaireAnswers.questionId,
-            ],
-            set: {
-              value: answer.value as any,
-              updatedAt: now,
-            },
+            target: [questionnaireAnswers.responseId, questionnaireAnswers.questionId],
+            set: { value: value as any, updatedAt: now },
           });
       }
 
       await tx
         .update(questionnaireSends)
         .set({
-          status:
-            data.status === "submitted" ? "submitted" : "draft_response",
+          status: data.status === "submitted" ? "submitted" : "draft_response",
           submittedAt: data.status === "submitted" ? now : null,
           updatedAt: now,
         })
@@ -1937,77 +1359,5 @@ export class QuestionnairesService {
 
       return this.getResponseForSend(send.id, tx);
     });
-  };
-
-  private validateResponseAnswers = async (
-    send: typeof questionnaireSends.$inferSelect,
-    answers: AnswerInput[],
-    status: "draft" | "submitted",
-    database: any,
-  ) => {
-    const questions = await database
-      .select()
-      .from(questionnaireQuestions)
-      .where(
-        and(
-          eq(questionnaireQuestions.questionnaireId, send.questionnaireId),
-          eq(questionnaireQuestions.versionId, send.questionnaireVersionId),
-        ),
-      );
-
-    const questionById = new Map(
-      questions.map((question: any) => [question.id, question]),
-    );
-
-    for (const answer of answers) {
-      if (!questionById.has(answer.questionId)) {
-        throw new BadRequestError("Answer contains an unknown question");
-      }
-    }
-
-    if (status !== "submitted") return;
-
-    const answerByQuestionId = new Map(
-      answers.map((answer) => [answer.questionId, answer.value]),
-    );
-
-    const logicRules = await database
-      .select()
-      .from(questionnaireLogicRules)
-      .where(
-        and(
-          eq(questionnaireLogicRules.questionnaireId, send.questionnaireId),
-          eq(questionnaireLogicRules.versionId, send.questionnaireVersionId),
-        ),
-      );
-
-    const requiredQuestionIds = new Set(
-      questions
-        .filter((question: any) => question.isRequired)
-        .map((question: any) => question.id),
-    );
-
-    for (const rule of logicRules) {
-      if (rule.actionType !== "require_question") continue;
-      if (!evaluateCondition(rule.condition, answerByQuestionId)) continue;
-
-      const action = rule.action as JsonObject;
-      const targetQuestionId = action.targetQuestionId ?? action.questionId;
-      if (typeof targetQuestionId === "string") {
-        requiredQuestionIds.add(targetQuestionId);
-      }
-    }
-
-    const missingRequired = questions
-      .filter((question: any) => requiredQuestionIds.has(question.id))
-      .filter((question: any) =>
-        isEmptyAnswer(answerByQuestionId.get(question.id)),
-      );
-
-    if (missingRequired.length) {
-      throw new BadRequestError("Required answers are missing", {
-        questionIds: missingRequired.map((question: any) => question.id),
-      });
-    }
   };
 }

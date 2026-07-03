@@ -20,7 +20,7 @@ export class AccessControlService {
           .where(
             and(
               eq(staff.organizationId, organizationId),
-              inArray(staff.role, [
+              inArray(staff.jobTitle, [
                 "junior_paralegal",
                 "paralegal",
                 "senior_paralegal",

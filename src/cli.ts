@@ -12,20 +12,31 @@ import {
 } from "@clack/prompts";
 import { Command } from "commander";
 import { createHash, randomUUID } from "crypto";
-import { and, asc, eq, inArray, ilike, or } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, or } from "drizzle-orm";
 import { env } from "./config/env";
 import { closeDb, db } from "./db/client";
 import { admins } from "./db/schema/admins";
+import { adverseParties } from "./db/schema/adverse-parties";
 import { aiErrorFlags } from "./db/schema/ai-error-flags";
 import { aiSystemConfig } from "./db/schema/ai-system-config";
 import { assignments } from "./db/schema/assignments";
-import { member, organization as organizations, user } from "./db/schema/auth-schema";
+import {
+  invitation,
+  member,
+  organization as organizations,
+  team,
+  teamMember,
+  user,
+} from "./db/schema/auth-schema";
 import { calendarEvents } from "./db/schema/calendar-events";
 import { cases } from "./db/schema/cases";
 import { certifications } from "./db/schema/certifications";
+import { clientCompanies } from "./db/schema/client-companies";
+import { clientContacts } from "./db/schema/client-contacts";
 import { clientRequests } from "./db/schema/client-requests";
 import { clients } from "./db/schema/clients";
-import { companies } from "./db/schema/companies";
+import { conflictChecks } from "./db/schema/conflict-checks";
+import { consultations } from "./db/schema/consultations";
 import { contractors } from "./db/schema/contractors";
 import {
   documentAccess,
@@ -36,14 +47,28 @@ import {
   documentVersions,
   externalSubmissions,
 } from "./db/schema/documents";
+import { feeAgreements } from "./db/schema/fee-agreements";
 import { firmPracticeAreas } from "./db/schema/firm-practice-areas";
+import { leads } from "./db/schema/leads";
 import { leaveRequests } from "./db/schema/leave-requests";
 import { paralegalProfiles } from "./db/schema/paralegal-profiles";
 import { practiceAreaCaseTypes } from "./db/schema/practice-area-case-types";
 import { practiceAreaSubcategories } from "./db/schema/practice-area-subcategories";
 import { practiceAreas } from "./db/schema/practice-areas";
-import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
 import { profiles } from "./db/schema/profiles";
+import {
+  caseTypeQuestionnaireLogicRules,
+  caseTypeQuestionnaireQuestions,
+  caseTypeQuestionnaires,
+  caseTypeQuestionnaireSections,
+  firmQuestionnaireLogicRules,
+  firmQuestionnaireQuestions,
+  firmQuestionnaireSections,
+  questionnaireAnswers,
+  questionnaireResponseFiles,
+  questionnaireResponses,
+  questionnaireSends,
+} from "./db/schema/questionnaires";
 import { staff } from "./db/schema/staff";
 import { staffCertifications } from "./db/schema/staff-certifications";
 import { subscriptions, SubscriptionStatus } from "./db/schema/subscriptions";
@@ -51,24 +76,16 @@ import { tasks } from "./db/schema/tasks";
 import { teamMembers } from "./db/schema/team-members";
 import { teams } from "./db/schema/teams";
 import { timeEntries } from "./db/schema/time-entries";
-
-const DEFAULT_PRACTICE_AREAS = [
-  "Immigration",
-  "Family",
-  "Business",
-  "Estate",
-  "Real Estate",
-  "Personal Injury",
-  "Criminal",
-  "Employment",
-  "Tax",
-  "Intellectual Property",
-  "Bankruptcy",
-  "Healthcare",
-  "Civil Litigation",
-  "Corporate",
-  "Environmental",
-] as const;
+import {
+  caseWorkflowSteps,
+  workflowTemplates,
+  workflowTemplateSteps,
+} from "./db/schema/workflow";
+import { seedMasterQuestionnaires } from "./db/seeds/master-questionnaires.seed";
+import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
+import { seedStaffAndTeams } from "./db/seeds/staff-and-teams.seed";
+import { seedSystemQuestionnaires } from "./db/seeds/system-questionnaires.seed";
+import { StaffAvailabilityService } from "./modules/staff-availability/staff-availability.service";
 
 const DEFAULT_IMMIGRATION_CASE_TYPES = [
   { code: "h1b_visa", name: "H-1B Visa", caseNumberPrefix: "H1B" },
@@ -126,13 +143,18 @@ type NewAssignmentRow = typeof assignments.$inferInsert;
 type NewCalendarEventRow = typeof calendarEvents.$inferInsert;
 type NewClientRequestRow = typeof clientRequests.$inferInsert;
 type NewClientRow = typeof clients.$inferInsert;
-type NewCompanyRow = typeof companies.$inferInsert;
+type NewClientCompanyRow = typeof clientCompanies.$inferInsert;
+type NewClientContactRow = typeof clientContacts.$inferInsert;
 type NewContractorRow = typeof contractors.$inferInsert;
 type NewDocumentRow = typeof documents.$inferInsert;
 type NewDocumentAccessRow = typeof documentAccess.$inferInsert;
 type NewDocumentActivityLogRow = typeof documentActivityLogs.$inferInsert;
 type NewDocumentCaseLinkRow = typeof documentCaseLinks.$inferInsert;
 type NewDocumentVersionRow = typeof documentVersions.$inferInsert;
+type NewLeadRow = typeof leads.$inferInsert;
+type NewConflictCheckRow = typeof conflictChecks.$inferInsert;
+type NewConsultationRow = typeof consultations.$inferInsert;
+type NewFeeAgreementRow = typeof feeAgreements.$inferInsert;
 type NewLeaveRequestRow = typeof leaveRequests.$inferInsert;
 type NewParalegalProfileRow = typeof paralegalProfiles.$inferInsert;
 type NewTaskRow = typeof tasks.$inferInsert;
@@ -153,7 +175,11 @@ type CaseTypeInput = {
   jurisdiction: CaseTypeJurisdictionInput;
 };
 
-type CaseTypeJurisdictionInput = "federal" | "state" | "federal & state" | "varies";
+type CaseTypeJurisdictionInput =
+  | "federal"
+  | "state"
+  | "federal & state"
+  | "varies";
 
 type DemoSeedResult = {
   firm: Pick<FirmRow, "id" | "firmName">;
@@ -174,6 +200,10 @@ type DemoSeedResult = {
   companyCount: number;
   clientCount: number;
   caseCount: number;
+  leadCount: number;
+  conflictCheckCount: number;
+  consultationCount: number;
+  feeAgreementCount: number;
   contractorCount: number;
   assignmentCount: number;
   documentCount: number;
@@ -259,25 +289,6 @@ const assertDevelopment = () => {
   if (env.NODE_ENV !== "development") {
     throw new Error("Demo data seeding is only available in development.");
   }
-};
-
-const parseNames = (input: string | readonly string[]) => {
-  const rawNames = typeof input === "string" ? input.split(/\r?\n|,/) : input;
-
-  const names: string[] = [];
-  const seen = new Set<string>();
-
-  for (const rawName of rawNames) {
-    const name = normalizeName(rawName);
-    const key = normalizeKey(name);
-
-    if (!name || seen.has(key)) continue;
-
-    seen.add(key);
-    names.push(name);
-  }
-
-  return names;
 };
 
 const getPracticeAreas = () =>
@@ -437,52 +448,6 @@ const parseCaseTypeDefinitions = (
   return definitions;
 };
 
-const promptForNames = async () => {
-  const names = abortIfCancelled(
-    await text({
-      message: "Enter one or more practice area names",
-      placeholder: "Immigration, Family, Business",
-      validate(value) {
-        return parseNames(value).length ? undefined : "Enter at least one name.";
-      },
-    }),
-  );
-
-  return parseNames(names);
-};
-
-const createPracticeAreas = async (names: readonly string[]) => {
-  const cleanedNames = parseNames(names);
-
-  if (!cleanedNames.length) {
-    note("No valid practice area names were provided.");
-    return;
-  }
-
-  const existingAreas = await getPracticeAreas();
-  const existingNames = new Set(existingAreas.map((area) => normalizeKey(area.name)));
-  const skipped = cleanedNames.filter((name) => existingNames.has(normalizeKey(name)));
-  const namesToCreate = cleanedNames.filter(
-    (name) => !existingNames.has(normalizeKey(name)),
-  );
-
-  if (!namesToCreate.length) {
-    note(`All provided names already exist: ${skipped.join(", ")}`);
-    return;
-  }
-
-  const created = await db
-    .insert(practiceAreas)
-    .values(namesToCreate.map((name) => ({ name })))
-    .returning();
-
-  printPracticeAreas(created);
-
-  if (skipped.length) {
-    note(`Skipped existing practice areas: ${skipped.join(", ")}`);
-  }
-};
-
 const resolvePracticeArea = async (id?: string) => {
   const areas = await getPracticeAreas();
 
@@ -549,10 +514,15 @@ const resolveFirm = async (id?: string) => {
 
 const resolvePracticeAreaByName = async (name: string) => {
   const areas = await getPracticeAreas();
-  return areas.find((area) => normalizeKey(area.name) === normalizeKey(name)) ?? null;
+  return (
+    areas.find((area) => normalizeKey(area.name) === normalizeKey(name)) ?? null
+  );
 };
 
-const resolveSubcategory = async (practiceAreaId?: string, subcategoryId?: string) => {
+const resolveSubcategory = async (
+  practiceAreaId?: string,
+  subcategoryId?: string,
+) => {
   const area = await resolvePracticeArea(practiceAreaId);
   if (!area) return null;
 
@@ -586,8 +556,9 @@ const resolveSubcategory = async (practiceAreaId?: string, subcategoryId?: strin
   );
 
   const subcategory =
-    subcategories.find((currentSubcategory) => currentSubcategory.id === selectedId) ??
-    null;
+    subcategories.find(
+      (currentSubcategory) => currentSubcategory.id === selectedId,
+    ) ?? null;
 
   return subcategory ? { area, subcategory } : null;
 };
@@ -623,14 +594,20 @@ const createCaseTypes = async (
   }
 
   const existingCaseTypes = await getCaseTypes(resolved.subcategory.id);
-  const existingCodes = new Set(existingCaseTypes.map((caseType) => caseType.code));
-  const skipped = parsedDefinitions.filter((item) => existingCodes.has(item.code));
+  const existingCodes = new Set(
+    existingCaseTypes.map((caseType) => caseType.code),
+  );
+  const skipped = parsedDefinitions.filter((item) =>
+    existingCodes.has(item.code),
+  );
   const definitionsToCreate = parsedDefinitions.filter(
     (item) => !existingCodes.has(item.code),
   );
 
   if (!definitionsToCreate.length) {
-    note(`All provided case types already exist: ${skipped.map((item) => item.code).join(", ")}`);
+    note(
+      `All provided case types already exist: ${skipped.map((item) => item.code).join(", ")}`,
+    );
     return;
   }
 
@@ -650,7 +627,9 @@ const createCaseTypes = async (
   printCaseTypes(created);
 
   if (skipped.length) {
-    note(`Skipped existing case types: ${skipped.map((item) => item.code).join(", ")}`);
+    note(
+      `Skipped existing case types: ${skipped.map((item) => item.code).join(", ")}`,
+    );
   }
 };
 
@@ -660,7 +639,9 @@ const createDefaultImmigrationCaseTypes = async (practiceAreaId?: string) => {
     : await resolvePracticeAreaByName("Immigration");
 
   if (!area) {
-    note("Immigration practice area not found. Create it first or pass its id.");
+    note(
+      "Immigration practice area not found. Create it first or pass its id.",
+    );
     return;
   }
 
@@ -672,12 +653,19 @@ const createDefaultImmigrationCaseTypes = async (practiceAreaId?: string) => {
       name: "General",
     })
     .onConflictDoUpdate({
-      target: [practiceAreaSubcategories.practiceAreaId, practiceAreaSubcategories.code],
+      target: [
+        practiceAreaSubcategories.practiceAreaId,
+        practiceAreaSubcategories.code,
+      ],
       set: { name: "General", updatedAt: new Date() },
     })
     .returning();
 
-  await createCaseTypes(area.id, subcategory.id, DEFAULT_IMMIGRATION_CASE_TYPES);
+  await createCaseTypes(
+    area.id,
+    subcategory.id,
+    DEFAULT_IMMIGRATION_CASE_TYPES,
+  );
 };
 
 const resolveCaseType = async (
@@ -695,7 +683,9 @@ const resolveCaseType = async (
   }
 
   if (caseTypeId) {
-    const caseType = caseTypes.find((currentCaseType) => currentCaseType.id === caseTypeId);
+    const caseType = caseTypes.find(
+      (currentCaseType) => currentCaseType.id === caseTypeId,
+    );
     if (!caseType) {
       note(`Case type not found: ${caseTypeId}`);
       return null;
@@ -715,7 +705,9 @@ const resolveCaseType = async (
     }),
   );
 
-  const caseType = caseTypes.find((currentCaseType) => currentCaseType.id === selectedId);
+  const caseType = caseTypes.find(
+    (currentCaseType) => currentCaseType.id === selectedId,
+  );
   return caseType ? { ...resolved, caseType } : null;
 };
 
@@ -723,9 +715,18 @@ const editCaseType = async (
   practiceAreaId?: string,
   subcategoryId?: string,
   caseTypeId?: string,
-  options?: { code?: string; name?: string; prefix?: string; jurisdiction?: string },
+  options?: {
+    code?: string;
+    name?: string;
+    prefix?: string;
+    jurisdiction?: string;
+  },
 ) => {
-  const resolved = await resolveCaseType(practiceAreaId, subcategoryId, caseTypeId);
+  const resolved = await resolveCaseType(
+    practiceAreaId,
+    subcategoryId,
+    caseTypeId,
+  );
   if (!resolved) return;
 
   const nextCode = options?.code
@@ -737,7 +738,9 @@ const editCaseType = async (
             placeholder: resolved.caseType.code,
             defaultValue: resolved.caseType.code,
             validate(value) {
-              return normalizeCode(value) ? undefined : "Enter a case type code.";
+              return normalizeCode(value)
+                ? undefined
+                : "Enter a case type code.";
             },
           }),
         ),
@@ -751,7 +754,9 @@ const editCaseType = async (
             placeholder: resolved.caseType.name,
             defaultValue: resolved.caseType.name,
             validate(value) {
-              return normalizeName(value) ? undefined : "Enter a case type name.";
+              return normalizeName(value)
+                ? undefined
+                : "Enter a case type name.";
             },
           }),
         ),
@@ -875,7 +880,9 @@ const deleteCaseTypes = async (
 
   note(
     caseTypes
-      .map((caseType) => `- ${caseType.name} (${caseType.code}, ${caseType.id})`)
+      .map(
+        (caseType) => `- ${caseType.name} (${caseType.code}, ${caseType.id})`,
+      )
       .join("\n"),
     "Deleting case types can affect case creation and existing case filters.",
   );
@@ -934,7 +941,10 @@ const seedPracticeAreaTaxonomy = async () => {
       practiceAreaCount += 1;
 
       for (const taxonomySubcategory of taxonomyArea.subcategories) {
-        const subcategoryCode = codeFromParts(taxonomyArea.name, taxonomySubcategory.name);
+        const subcategoryCode = codeFromParts(
+          taxonomyArea.name,
+          taxonomySubcategory.name,
+        );
         let [subcategory] = await tx
           .select()
           .from(practiceAreaSubcategories)
@@ -1021,6 +1031,7 @@ const DEMO_TARGETS = {
   companies: 15,
   clients: 60,
   cases: 100,
+  leads: 40,
   contractors: 15,
   assignments: 100,
   documents: 120,
@@ -1073,64 +1084,108 @@ const DEMO_STAFF = [
   ["Tara", "Singh", "junior_paralegal"],
 ] as const;
 
-const filingTypes = ["I-130", "I-485", "I-765", "I-140", "N-400", "I-131"] as const;
-const caseStatuses = ["active", "pending_review", "on_hold", "completed"] as const;
+const filingTypes = [
+  "I-130",
+  "I-485",
+  "I-765",
+  "I-140",
+  "N-400",
+  "I-131",
+] as const;
+const caseStatuses = [
+  "active",
+  "pending_review",
+  "on_hold",
+  "completed",
+  "cancelled",
+] as const;
 const casePriorities = ["low", "medium", "high", "critical"] as const;
-const documentCategories = ["application", "supporting", "identity", "uscis_response"] as const;
+const documentCategories = [
+  "application",
+  "supporting",
+  "identity",
+  "uscis_response",
+] as const;
 const documentStatuses = ["active", "archived"] as const;
-const taskStatuses = ["pending", "in_progress", "completed", "cancelled"] as const;
+const taskStatuses = [
+  "pending",
+  "in_progress",
+  "completed",
+  "cancelled",
+] as const;
 const eventTypes = [
   "client_meeting",
+  "master_calendar_hearing",
+  "individual_hearing",
   "uscis_interview",
   "biometric",
   "filing_deadline",
+  "service_request",
   "internal_event",
 ] as const;
 const leaveTypes = ["annual", "sick", "emergency", "unpaid"] as const;
 const leaveStatuses = ["pending", "approved", "rejected"] as const;
 const errorSeverities = ["critical", "high", "medium", "low"] as const;
 const errorStatuses = ["pending_review", "under_review", "resolved"] as const;
+const leadSources = [
+  "education_flywheel",
+  "referral",
+  "direct",
+  "walk_in",
+  "phone_enquiry",
+  "client_portal",
+] as const;
+const leadPipelineStages = [
+  "lead_inbox",
+  "lead_inbox",
+  "lead_inbox",
+  "conflict_check",
+  "conflict_check",
+  "questionnaire",
+  "consultation",
+  "fee_agreement",
+  "case_opening",
+] as const;
+const conflictCheckStatuses = [
+  "pass",
+  "pass",
+  "needs_review",
+  "conflict_found",
+] as const;
+const consultationStatuses = [
+  "completed",
+  "completed",
+  "scheduled",
+  "cancelled",
+] as const;
+const consultationOutcomes = [
+  "proceed",
+  "proceed",
+  "follow_up",
+  "close_no_case",
+] as const;
+const feeAgreementStatuses = ["draft", "pending_signature", "signed"] as const;
 
-const pick = <T>(items: readonly T[], index: number) => items[index % items.length];
+const DEMO_LEAD_NAMES = [
+  ["James", "OBrien"],
+  ["Amina", "Diallo"],
+  ["Carlos", "Reyes"],
+  ["Wei", "Zhang"],
+  ["Fatou", "Ndiaye"],
+  ["Olena", "Kovalenko"],
+  ["Ravi", "Sharma"],
+  ["Lucia", "Ferreira"],
+  ["Ahmed", "AlAmin"],
+  ["Ingrid", "Lindqvist"],
+] as const;
 
-const range = (count: number) => Array.from({ length: count }, (_, index) => index);
+const pick = <T>(items: readonly T[], index: number) =>
+  items[index % items.length];
+
+const range = (count: number) =>
+  Array.from({ length: count }, (_, index) => index);
 
 const pad = (value: number, width = 3) => String(value).padStart(width, "0");
-
-const caseTypesForPracticeArea = (practiceAreaName: string): CaseTypeInput[] => {
-  if (normalizeKey(practiceAreaName) === "immigration") {
-    return [...DEFAULT_IMMIGRATION_CASE_TYPES];
-  }
-
-  const slug = slugify(practiceAreaName).replace(/-/g, "_");
-  const prefix = practiceAreaName
-    .split(/\s+/)
-    .map((part) => part[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 4);
-
-  return [
-    {
-      code: `${slug}_consultation`,
-      name: `${practiceAreaName} Consultation`,
-      caseNumberPrefix: `${prefix}C`,
-      jurisdiction: "varies",
-    },
-    {
-      code: `${slug}_matter`,
-      name: `${practiceAreaName} Matter`,
-      caseNumberPrefix: `${prefix}M`,
-      jurisdiction: "varies",
-    },
-    {
-      code: `${slug}_review`,
-      name: `${practiceAreaName} Review`,
-      caseNumberPrefix: `${prefix}R`,
-      jurisdiction: "varies",
-    },
-  ];
-};
 
 const ensureAuthUser = async (
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
@@ -1143,7 +1198,11 @@ const ensureAuthUser = async (
     jobTitle?: string;
   },
 ) => {
-  const [existingById] = await tx.select().from(user).where(eq(user.id, input.id)).limit(1);
+  const [existingById] = await tx
+    .select()
+    .from(user)
+    .where(eq(user.id, input.id))
+    .limit(1);
   if (existingById) return existingById;
 
   const [existingByEmail] = await tx
@@ -1160,10 +1219,6 @@ const ensureAuthUser = async (
       name: `${input.firstName} ${input.lastName}`,
       email: input.email,
       emailVerified: true,
-      firstName: input.firstName,
-      lastName: input.lastName,
-      phoneNumber: input.phone,
-      jobTitle: input.jobTitle,
     })
     .returning();
 
@@ -1219,7 +1274,9 @@ const ensureMember = async (
   const [existingMember] = await tx
     .select()
     .from(member)
-    .where(and(eq(member.organizationId, organizationId), eq(member.userId, userId)))
+    .where(
+      and(eq(member.organizationId, organizationId), eq(member.userId, userId)),
+    )
     .limit(1);
   if (existingMember) return existingMember;
 
@@ -1260,76 +1317,50 @@ const seedDemoData = async (organizationId?: string) => {
     return;
   }
 
+  const existingPracticeAreas = await db
+    .select()
+    .from(practiceAreas)
+    .orderBy(asc(practiceAreas.name));
+
+  if (!existingPracticeAreas.length) {
+    note(
+      "No practice areas found. Run 'Seed practice area taxonomy' first.",
+      "Missing taxonomy data",
+    );
+    return;
+  }
+
+  const existingCaseTypes = await db
+    .select({
+      id: practiceAreaCaseTypes.id,
+      subcategoryId: practiceAreaCaseTypes.subcategoryId,
+      code: practiceAreaCaseTypes.code,
+      name: practiceAreaCaseTypes.name,
+      caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
+      jurisdiction: practiceAreaCaseTypes.jurisdiction,
+      createdAt: practiceAreaCaseTypes.createdAt,
+      updatedAt: practiceAreaCaseTypes.updatedAt,
+      practiceAreaId: practiceAreaSubcategories.practiceAreaId,
+    })
+    .from(practiceAreaCaseTypes)
+    .innerJoin(
+      practiceAreaSubcategories,
+      eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
+    );
+
+  if (!existingCaseTypes.length) {
+    note(
+      "No case types found. Run 'Seed practice area taxonomy' first.",
+      "Missing taxonomy data",
+    );
+    return;
+  }
+
   const suffix = `${slugify(firm.firmName) || "firm"}-${Date.now()}`;
 
   const result = await db.transaction(async (tx) => {
-    const practiceAreaRows: PracticeAreaRow[] = [];
-    for (const name of DEFAULT_PRACTICE_AREAS) {
-      let [area] = await tx
-        .select()
-        .from(practiceAreas)
-        .where(ilike(practiceAreas.name, name))
-        .limit(1);
-
-      if (!area) {
-        [area] = await tx.insert(practiceAreas).values({ name }).returning();
-      }
-
-      practiceAreaRows.push(area);
-    }
-
-    const caseTypeRows: Array<PracticeAreaCaseTypeRow & { practiceAreaId: string }> = [];
-    for (const area of practiceAreaRows) {
-      let [generalSubcategory] = await tx
-        .select()
-        .from(practiceAreaSubcategories)
-        .where(
-          and(
-            eq(practiceAreaSubcategories.practiceAreaId, area.id),
-            eq(practiceAreaSubcategories.code, "general"),
-          ),
-        )
-        .limit(1);
-
-      if (!generalSubcategory) {
-        [generalSubcategory] = await tx
-          .insert(practiceAreaSubcategories)
-          .values({
-            practiceAreaId: area.id,
-            code: "general",
-            name: "General",
-          })
-          .returning();
-      }
-
-      for (const caseType of caseTypesForPracticeArea(area.name)) {
-        let [caseTypeRow] = await tx
-          .select()
-          .from(practiceAreaCaseTypes)
-          .where(
-            and(
-              eq(practiceAreaCaseTypes.subcategoryId, generalSubcategory.id),
-              eq(practiceAreaCaseTypes.code, caseType.code),
-            ),
-          )
-          .limit(1);
-
-        if (!caseTypeRow) {
-          [caseTypeRow] = await tx
-            .insert(practiceAreaCaseTypes)
-            .values({
-              subcategoryId: generalSubcategory.id,
-              code: caseType.code,
-              name: caseType.name,
-              caseNumberPrefix: caseType.caseNumberPrefix,
-              jurisdiction: caseType.jurisdiction,
-            })
-            .returning();
-        }
-
-        caseTypeRows.push({ ...caseTypeRow, practiceAreaId: area.id });
-      }
-    }
+    const practiceAreaRows = existingPracticeAreas;
+    const caseTypeRows = existingCaseTypes;
 
     const subscriptionRows = [];
     const firmPracticeAreaRows = [];
@@ -1459,7 +1490,12 @@ const seedDemoData = async (organizationId?: string) => {
       phone: "+1-555-0100",
       jobTitle: "Firm Administrator",
     });
-    const adminMember = await ensureMember(tx, firm.id, adminAuthUser.id, "owner");
+    const adminMember = await ensureMember(
+      tx,
+      firm.id,
+      adminAuthUser.id,
+      "owner",
+    );
 
     const createdUsers = [adminAuthUser];
     const createdProfiles = [adminProfile];
@@ -1495,6 +1531,11 @@ const seedDemoData = async (organizationId?: string) => {
         role === "admin" ? "admin" : "member",
       );
 
+      const staffRole = role.includes("paralegal")
+        ? "paralegal"
+        : role === "attorney"
+          ? "attorney"
+          : "admin";
       const [createdStaffMember] = await tx
         .insert(staff)
         .values({
@@ -1502,18 +1543,10 @@ const seedDemoData = async (organizationId?: string) => {
           userId: authUser.id,
           firstName,
           lastName,
-          email: authUser.email,
           phone,
-          role,
+          jobTitle: role,
+          role: staffRole,
           status: index % 11 === 0 ? "on_leave" : "active",
-          maxCaseload: role === "attorney" ? 18 : 14,
-          startDate: isoDateFromNow(-720 + index * 21),
-          performanceScore: 72 + (index % 25),
-          certificationsCount: role.includes("paralegal") ? 3 : 2,
-          activeCases: 1 + (index % 6),
-          totalCases: 20 + index * 4,
-          monthlySalary: role === "attorney" ? "9400" : role === "admin" ? "10200" : "5800",
-          hourlyRate: role === "attorney" ? "135" : role === "admin" ? "150" : "72",
         })
         .returning();
 
@@ -1529,7 +1562,8 @@ const seedDemoData = async (organizationId?: string) => {
         createdStaff.flatMap((staffMember, staffIndex) =>
           range(3).map((offset) => ({
             staffId: staffMember.id,
-            certificationCode: pick(certificationRows, staffIndex + offset).code,
+            certificationCode: pick(certificationRows, staffIndex + offset)
+              .code,
             certifiedAt: isoDateFromNow(-365 + staffIndex * 7 + offset),
           })),
         ),
@@ -1537,14 +1571,14 @@ const seedDemoData = async (organizationId?: string) => {
       .returning();
 
     const paralegalStaff = createdStaff.filter((staffMember) =>
-      staffMember.role.includes("paralegal"),
+      staffMember.jobTitle?.includes("paralegal"),
     );
     const paralegalProfileValues: NewParalegalProfileRow[] = paralegalStaff
       .slice(0, 15)
       .map((staffMember) => ({
         organizationId: firm.id,
         staffId: staffMember.id,
-        type: staffMember.role === "senior_paralegal" ? "senior" : "junior",
+        type: staffMember.jobTitle === "senior_paralegal" ? "senior" : "junior",
         isCertified: true,
       }));
     const createdParalegalProfiles = await tx
@@ -1553,19 +1587,18 @@ const seedDemoData = async (organizationId?: string) => {
       .returning();
 
     const teamValues: NewTeamRow[] = range(DEMO_TARGETS.teams).map((index) => ({
+      id: randomUUID(),
       organizationId: firm.id,
       name: `Demo ${pick(practiceAreaRows, index).name} Team ${suffix}-${pad(index + 1)}`,
       leadId: pick(createdStaff, index + 1).id,
       description: `Demo team handling ${pick(practiceAreaRows, index).name.toLowerCase()} workflows.`,
       maxCaseload: 35 + (index % 5) * 5,
       workloadPercentage: 35 + (index % 10) * 5,
-      status: index % 8 === 0 ? "full" : index % 9 === 0 ? "overloaded" : "available",
+      status:
+        index % 8 === 0 ? "full" : index % 9 === 0 ? "overloaded" : "available",
       activeCases: 2 + (index % 12),
     }));
-    const createdTeams = await tx
-      .insert(teams)
-      .values(teamValues)
-      .returning();
+    const createdTeams = await tx.insert(teams).values(teamValues).returning();
 
     const createdTeamMembers = await tx
       .insert(teamMembers)
@@ -1599,26 +1632,45 @@ const seedDemoData = async (organizationId?: string) => {
       "Hospitality",
       "Energy",
     ] as const;
-    const companyValues: NewCompanyRow[] = range(DEMO_TARGETS.companies).map((index) => ({
-      organizationId: firm.id,
-      companyName: `Demo ${pick(industries, index)} Company ${suffix}-${pad(index + 1)}`,
-      companyType: pick(companyTypes, index),
-      ein: `9${index}-${String(Date.now()).slice(-7)}`,
-      industry: pick(industries, index),
-      numberOfEmployees: 15 + index * 23,
-      address: `${100 + index} Market Street`,
-      city: pick(["Austin", "Dallas", "Houston", "Chicago", "Atlanta"] as const, index),
-      state: pick(["TX", "TX", "TX", "IL", "GA"] as const, index),
-      zipCode: `${77000 + index}`,
-      country: "United States",
-      phone: `+1-555-${pad(2100 + index, 4)}`,
-      website: `https://demo-company-${pad(index + 1)}.example`,
-      primaryContactName: `Demo Contact ${pad(index + 1)}`,
-      primaryContactEmail: `company.contact.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
-      primaryContactPhone: `+1-555-${pad(2200 + index, 4)}`,
-      status: index % 13 === 0 ? "inactive" : "active",
-    }));
-    const createdCompanies = await tx.insert(companies).values(companyValues).returning();
+    // Create company-type client entities first, then link client_companies
+    const companyClientEntities = await tx
+      .insert(clients)
+      .values(
+        range(DEMO_TARGETS.companies).map((index) => ({
+          organizationId: firm.id,
+          entityType: "company" as const,
+          displayName: `Demo ${pick(industries, index)} Company ${suffix}-${pad(index + 1)}`,
+          status: (index % 13 === 0 ? "inactive" : "active") as
+            | "active"
+            | "inactive",
+        })),
+      )
+      .returning();
+    const companyValues: NewClientCompanyRow[] = companyClientEntities.map(
+      (clientEntity, index) => ({
+        organizationId: firm.id,
+        clientId: clientEntity.id,
+        companyName: clientEntity.displayName,
+        companyType: pick(companyTypes, index),
+        ein: `9${index}-${String(Date.now()).slice(-7)}`,
+        industry: pick(industries, index),
+        numberOfEmployees: 15 + index * 23,
+        address: `${100 + index} Market Street`,
+        city: pick(
+          ["Austin", "Dallas", "Houston", "Chicago", "Atlanta"] as const,
+          index,
+        ),
+        state: pick(["TX", "TX", "TX", "IL", "GA"] as const, index),
+        zipCode: `${77000 + index}`,
+        country: "United States",
+        phone: `+1-555-${pad(2100 + index, 4)}`,
+        website: `https://demo-company-${pad(index + 1)}.example`,
+      }),
+    );
+    const createdCompanies = await tx
+      .insert(clientCompanies)
+      .values(companyValues)
+      .returning();
 
     const firstNames = [
       "Sofia",
@@ -1656,29 +1708,85 @@ const seedDemoData = async (organizationId?: string) => {
       "Italian",
       "Czech",
     ] as const;
-    const clientValues: NewClientRow[] = range(DEMO_TARGETS.clients).map((index) => {
+
+    // Create primary contacts for company-type clients
+    await tx.insert(clientContacts).values(
+      companyClientEntities.map(
+        (clientEntity, index) =>
+          ({
+            organizationId: firm.id,
+            clientId: clientEntity.id,
+            role: "primary" as const,
+            isPrimary: true,
+            firstName: pick(firstNames, index + 2),
+            lastName: pick(lastNames, index + 2),
+            email: `company.contact.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
+            phone: `+1-555-${pad(2200 + index, 4)}`,
+          }) satisfies NewClientContactRow,
+      ),
+    );
+
+    const clientData = range(DEMO_TARGETS.clients).map((index) => {
       const firstName = pick(firstNames, index);
       const lastName = pick(lastNames, index);
-      const isCompanyRepresentative = index < createdCompanies.length || index % 4 === 0;
-      const company = isCompanyRepresentative ? pick(createdCompanies, index) : undefined;
-
+      const entityType = pick(
+        [
+          "individual",
+          "individual",
+          "individual",
+          "individual",
+          "trust",
+          "estate",
+          "other",
+        ] as const,
+        index,
+      );
+      const displayName =
+        entityType === "individual"
+          ? `${firstName} ${lastName}`
+          : entityType === "trust"
+            ? `${lastName} Family Trust`
+            : entityType === "estate"
+              ? `Estate of ${firstName} ${lastName}`
+              : `${lastName} Holdings`;
       return {
-        organizationId: firm.id,
+        clientValues: {
+          organizationId: firm.id,
+          entityType,
+          displayName,
+          status: (index % 17 === 0
+            ? "pending"
+            : index % 19 === 0
+              ? "inactive"
+              : "active") as "active" | "inactive" | "pending",
+        } satisfies NewClientRow,
         firstName,
         lastName,
-        email: `client.${firstName}.${lastName}.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`.toLowerCase(),
-        phone: `+1-555-${pad(3100 + index, 4)}`,
-        dateOfBirth: `${1975 + (index % 24)}-${pad((index % 12) + 1, 2)}-${pad((index % 27) + 1, 2)}`,
         nationality: pick(nationalities, index),
-        countryOfOrigin: pick(nationalities, index).replace("South Korean", "South Korea"),
-        passportNumber: `P${pad(index + 1, 6)}${String(Date.now()).slice(-3)}`,
-        currentAddress: `${200 + index} Client Ave, ${pick(["Austin", "Dallas", "Houston"] as const, index)}, TX`,
-        clientType: isCompanyRepresentative ? "company_representative" : "individual",
-        companyId: company?.id,
-        status: index % 17 === 0 ? "pending" : index % 19 === 0 ? "inactive" : "active",
       };
     });
-    const createdClients = await tx.insert(clients).values(clientValues).returning();
+
+    const createdClients = await tx
+      .insert(clients)
+      .values(clientData.map((d) => d.clientValues))
+      .returning();
+
+    await tx.insert(clientContacts).values(
+      createdClients.map(
+        (client, index) =>
+          ({
+            organizationId: firm.id,
+            clientId: client.id,
+            role: "primary" as const,
+            isPrimary: true,
+            firstName: clientData[index].firstName,
+            lastName: clientData[index].lastName,
+            email: `client.${clientData[index].firstName.toLowerCase()}.${clientData[index].lastName.toLowerCase()}.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
+            phone: `+1-555-${pad(5100 + index, 4)}`,
+            nationality: clientData[index].nationality,
+          }) satisfies NewClientContactRow,
+      ),
+    );
 
     const createdCases = await tx
       .insert(cases)
@@ -1701,7 +1809,8 @@ const seedDemoData = async (organizationId?: string) => {
             caseType: caseType.code,
             status: pick(caseStatuses, index),
             priority: pick(casePriorities, index + 1),
-            assignmentType: index % 5 === 0 ? "external_contractor" : "internal_team",
+            assignmentType:
+              index % 5 === 0 ? "external_contractor" : "internal_team",
             teamId: team.id,
             assignedStaffId: assignedStaff.id,
             requiredCertifications: [pick(certificationRows, index).code],
@@ -1709,9 +1818,8 @@ const seedDemoData = async (organizationId?: string) => {
             filingDate: isoDateFromNow(-90 + index),
             estimatedCompletionDate: isoDateFromNow(45 + index),
             nextAppointment: isoDateFromNow(7 + (index % 30)),
-            description: `Demo ${practiceArea.name.toLowerCase()} case for ${client.firstName} ${client.lastName}.`,
+            description: `Demo ${practiceArea.name.toLowerCase()} case for ${client.displayName}.`,
             notes: `Generated demo matter ${pad(index + 1)} for workflow coverage.`,
-            currentEmployer: client.companyId ? pick(createdCompanies, index).companyName : undefined,
             createdByAdminId: firmAdmin.id,
             createdByStaffId: assignedStaff.id,
           };
@@ -1743,7 +1851,10 @@ const seedDemoData = async (organizationId?: string) => {
         consentedToBackgroundCheck: true,
         recognizedDirectoryListingVerificationAccepted: true,
         bio: `Demo contractor profile ${contractorNumber} for marketplace coverage.`,
-        availability: pick(["full-time", "part-time", "project-based"] as const, index),
+        availability: pick(
+          ["full-time", "part-time", "project-based"] as const,
+          index,
+        ),
         status: index % 5 === 0 ? "pending" : "active",
       });
     }
@@ -1752,18 +1863,26 @@ const seedDemoData = async (organizationId?: string) => {
       .values(contractorValues)
       .returning();
 
-    const assignmentValues: NewAssignmentRow[] = range(DEMO_TARGETS.assignments).map((index) => {
+    const assignmentValues: NewAssignmentRow[] = range(
+      DEMO_TARGETS.assignments,
+    ).map((index) => {
       const isExternal = index % 4 === 0;
       return {
         organizationId: firm.id,
         caseId: pick(createdCases, index).id,
         assignmentType: isExternal ? "external_contractor" : "internal_team",
         filingType: pick(filingTypes, index),
-        urgencyLevel: index % 11 === 0 ? "critical" : index % 5 === 0 ? "urgent" : "normal",
-        status: pick(["pending", "active", "completed", "cancelled"] as const, index),
+        urgencyLevel:
+          index % 11 === 0 ? "critical" : index % 5 === 0 ? "urgent" : "normal",
+        status: pick(
+          ["pending", "active", "completed", "cancelled"] as const,
+          index,
+        ),
         teamId: isExternal ? undefined : pick(createdTeams, index).id,
         assignedStaffId: isExternal ? undefined : pick(createdStaff, index).id,
-        contractorId: isExternal ? pick(createdContractors, index).id : undefined,
+        contractorId: isExternal
+          ? pick(createdContractors, index).id
+          : undefined,
       };
     });
     const createdAssignments = await tx
@@ -1771,40 +1890,44 @@ const seedDemoData = async (organizationId?: string) => {
       .values(assignmentValues)
       .returning();
 
-    const documentValues: NewDocumentRow[] = range(DEMO_TARGETS.documents).map((index) => {
-      const currentCase = pick(createdCases, index);
-      const uploader = pick(createdStaff, index);
-      return {
-        title: `Demo ${pick(documentCategories, index)} document ${pad(index + 1)}.pdf`,
-        category: pick(documentCategories, index),
-        createdByUserId: uploader.userId,
-        status: pick(documentStatuses, index),
-      };
-    });
+    const documentValues: NewDocumentRow[] = range(DEMO_TARGETS.documents).map(
+      (index) => {
+        const currentCase = pick(createdCases, index);
+        const uploader = pick(createdStaff, index);
+        return {
+          title: `Demo ${pick(documentCategories, index)} document ${pad(index + 1)}.pdf`,
+          category: pick(documentCategories, index),
+          createdByUserId: uploader.userId,
+          status: pick(documentStatuses, index),
+        };
+      },
+    );
     const createdDocuments = await tx
       .insert(documents)
       .values(documentValues)
       .returning();
 
-    const documentVersionValues: NewDocumentVersionRow[] = createdDocuments.map((document, index) => {
-      const uploader = pick(createdStaff, index);
-      return {
-        documentId: document.id,
-        filePath: `${firm.id}/documents/${document.id}/v1/demo-${pad(index + 1)}.pdf`,
-        fileUrl: `https://${DEMO_EMAIL_DOMAIN}/documents/${suffix}/${pad(index + 1)}.pdf`,
-        originalFileName: document.title,
-        mimeType: "application/pdf",
-        fileSize: 128000 + index * 1536,
-        versionNumber: 1,
-        uploadedByUserId: uploader.userId,
-        scanStatus: index % 3 !== 0 ? "CLEAN" : "SKIPPED",
-        scanProvider: "demo",
-        scanResult: "Generated demo document",
-        scannedAt: index % 3 !== 0 ? timestampFromNow(-index) : undefined,
-        createdAt: document.createdAt,
-        updatedAt: document.updatedAt,
-      };
-    });
+    const documentVersionValues: NewDocumentVersionRow[] = createdDocuments.map(
+      (document, index) => {
+        const uploader = pick(createdStaff, index);
+        return {
+          documentId: document.id,
+          filePath: `${firm.id}/documents/${document.id}/v1/demo-${pad(index + 1)}.pdf`,
+          fileUrl: `https://${DEMO_EMAIL_DOMAIN}/documents/${suffix}/${pad(index + 1)}.pdf`,
+          originalFileName: document.title,
+          mimeType: "application/pdf",
+          fileSize: 128000 + index * 1536,
+          versionNumber: 1,
+          uploadedByUserId: uploader.userId,
+          scanStatus: index % 3 !== 0 ? "CLEAN" : "SKIPPED",
+          scanProvider: "demo",
+          scanResult: "Generated demo document",
+          scannedAt: index % 3 !== 0 ? timestampFromNow(-index) : undefined,
+          createdAt: document.createdAt,
+          updatedAt: document.updatedAt,
+        };
+      },
+    );
     const createdDocumentVersions = await tx
       .insert(documentVersions)
       .values(documentVersionValues)
@@ -1817,15 +1940,16 @@ const seedDemoData = async (organizationId?: string) => {
         .where(eq(documents.id, document.id));
     }
 
-    const documentCaseLinkValues: NewDocumentCaseLinkRow[] = createdDocuments.map((document, index) => {
-      const currentCase = pick(createdCases, index);
-      const uploader = pick(createdStaff, index);
-      return {
-        documentId: document.id,
-        caseId: currentCase.id,
-        linkedByUserId: uploader.userId,
-      };
-    });
+    const documentCaseLinkValues: NewDocumentCaseLinkRow[] =
+      createdDocuments.map((document, index) => {
+        const currentCase = pick(createdCases, index);
+        const uploader = pick(createdStaff, index);
+        return {
+          documentId: document.id,
+          caseId: currentCase.id,
+          linkedByUserId: uploader.userId,
+        };
+      });
     await tx.insert(documentCaseLinks).values(documentCaseLinkValues);
 
     const documentAccessValues: NewDocumentAccessRow[] = [];
@@ -1843,16 +1967,17 @@ const seedDemoData = async (organizationId?: string) => {
       await tx.insert(documentAccess).values(documentAccessValues);
     }
 
-    const documentActivityValues: NewDocumentActivityLogRow[] = createdDocuments.map((document, index) => ({
-      documentId: document.id,
-      actorUserId: pick(createdStaff, index).userId,
-      action: "CREATED",
-      metadata: {
-        source: "demo_seed",
-        versionId: createdDocumentVersions[index].id,
-        caseId: pick(createdCases, index).id,
-      },
-    }));
+    const documentActivityValues: NewDocumentActivityLogRow[] =
+      createdDocuments.map((document, index) => ({
+        documentId: document.id,
+        actorUserId: pick(createdStaff, index).userId,
+        action: "CREATED",
+        metadata: {
+          source: "demo_seed",
+          versionId: createdDocumentVersions[index].id,
+          caseId: pick(createdCases, index).id,
+        },
+      }));
     await tx.insert(documentActivityLogs).values(documentActivityValues);
 
     const taskValues: NewTaskRow[] = range(DEMO_TARGETS.tasks).map((index) => ({
@@ -1869,59 +1994,61 @@ const seedDemoData = async (organizationId?: string) => {
       progress: (index * 9) % 100,
       requiredCertifications: [pick(certificationRows, index).code],
     }));
-    const createdTasks = await tx
-      .insert(tasks)
-      .values(taskValues)
-      .returning();
+    const createdTasks = await tx.insert(tasks).values(taskValues).returning();
 
-    const calendarEventValues: NewCalendarEventRow[] = range(DEMO_TARGETS.calendarEvents).map(
-      (index) => {
-        const start = timestampFromNow(1 + index, 9 + (index % 8));
-        const end = new Date(start);
-        end.setHours(start.getHours() + 1);
+    const calendarEventValues: NewCalendarEventRow[] = range(
+      DEMO_TARGETS.calendarEvents,
+    ).map((index) => {
+      const start = timestampFromNow(1 + index, 9 + (index % 8));
+      const end = new Date(start);
+      end.setHours(start.getHours() + 1);
 
-        return {
-          organizationId: firm.id,
-          eventType: pick(eventTypes, index),
-          status: index % 13 === 0 ? "completed" : "scheduled",
-          title: `Demo calendar event ${pad(index + 1)}`,
-          startTime: start,
-          endTime: end,
-          clientId: pick(createdClients, index).id,
-          caseId: pick(createdCases, index).id,
-          assignedStaffId: pick(createdStaff, index).id,
-          teamId: pick(createdTeams, index).id,
-          location: index % 2 === 0 ? "Office" : "Zoom",
-          zoomLink: index % 2 === 0 ? undefined : `https://zoom.example/${suffix}-${pad(index + 1)}`,
-          notes: `Generated demo calendar event ${pad(index + 1)}.`,
-          isAutoGenerated: index % 5 === 0,
-        };
-      },
-    );
+      return {
+        organizationId: firm.id,
+        eventType: pick(eventTypes, index),
+        status: index % 13 === 0 ? "completed" : "scheduled",
+        title: `Demo calendar event ${pad(index + 1)}`,
+        startTime: start,
+        endTime: end,
+        clientId: pick(createdClients, index).id,
+        caseId: pick(createdCases, index).id,
+        assignedStaffId: pick(createdStaff, index).id,
+        teamId: pick(createdTeams, index).id,
+        location: index % 2 === 0 ? "Office" : "Zoom",
+        zoomLink:
+          index % 2 === 0
+            ? undefined
+            : `https://zoom.example/${suffix}-${pad(index + 1)}`,
+        notes: `Generated demo calendar event ${pad(index + 1)}.`,
+        isAutoGenerated: index % 5 === 0,
+      };
+    });
     const createdCalendarEvents = await tx
       .insert(calendarEvents)
       .values(calendarEventValues)
       .returning();
 
-    const clientRequestValues: NewClientRequestRow[] = range(DEMO_TARGETS.clientRequests).map(
-      (index) => {
-        const currentCase = pick(createdCases, index);
-        return {
-          organizationId: firm.id,
-          clientId: currentCase.clientId,
-          caseId: currentCase.id,
-          description: `Upload demo evidence item ${pad(index + 1)}.`,
-          requestedAt: isoDateFromNow(-(index % 12)),
-          status: index % 3 === 0 ? "fulfilled" : "pending",
-        };
-      },
-    );
+    const clientRequestValues: NewClientRequestRow[] = range(
+      DEMO_TARGETS.clientRequests,
+    ).map((index) => {
+      const currentCase = pick(createdCases, index);
+      return {
+        organizationId: firm.id,
+        clientId: currentCase.clientId,
+        caseId: currentCase.id,
+        description: `Upload demo evidence item ${pad(index + 1)}.`,
+        requestedAt: isoDateFromNow(-(index % 12)),
+        status: index % 3 === 0 ? "fulfilled" : "pending",
+      };
+    });
     const createdClientRequests = await tx
       .insert(clientRequests)
       .values(clientRequestValues)
       .returning();
 
-    const timeEntryValues: NewTimeEntryRow[] = range(DEMO_TARGETS.timeEntries).map((index) => ({
+    const timeEntryValues: NewTimeEntryRow[] = range(
+      DEMO_TARGETS.timeEntries,
+    ).map((index) => ({
       organizationId: firm.id,
       staffId: pick(createdStaff, index).id,
       caseId: pick(createdCases, index).id,
@@ -1934,21 +2061,134 @@ const seedDemoData = async (organizationId?: string) => {
       .values(timeEntryValues)
       .returning();
 
-    const leaveRequestValues: NewLeaveRequestRow[] = range(DEMO_TARGETS.leaveRequests).map(
-      (index) => ({
-        organizationId: firm.id,
-        staffId: pick(createdStaff, index).id,
-        type: pick(leaveTypes, index),
-        startDate: isoDateFromNow(10 + index),
-        endDate: isoDateFromNow(11 + index),
-        status: pick(leaveStatuses, index),
-        reason: `Demo leave request ${pad(index + 1)}.`,
-      }),
-    );
+    const leaveRequestValues: NewLeaveRequestRow[] = range(
+      DEMO_TARGETS.leaveRequests,
+    ).map((index) => ({
+      organizationId: firm.id,
+      staffId: pick(createdStaff, index).id,
+      type: pick(leaveTypes, index),
+      startDate: isoDateFromNow(10 + index),
+      endDate: isoDateFromNow(11 + index),
+      status: pick(leaveStatuses, index),
+      reason: `Demo leave request ${pad(index + 1)}.`,
+    }));
     const createdLeaveRequests = await tx
       .insert(leaveRequests)
       .values(leaveRequestValues)
       .returning();
+
+    const createdLeads: (typeof leads.$inferSelect)[] = [];
+    const createdConflictChecks: (typeof conflictChecks.$inferSelect)[] = [];
+    const createdConsultations: (typeof consultations.$inferSelect)[] = [];
+    const createdFeeAgreements: (typeof feeAgreements.$inferSelect)[] = [];
+
+    const conflictCheckStages = new Set([
+      "conflict_check",
+      "questionnaire",
+      "consultation",
+      "fee_agreement",
+      "case_opening",
+    ]);
+    const consultationStages = new Set([
+      "consultation",
+      "fee_agreement",
+      "case_opening",
+    ]);
+    const feeAgreementStages = new Set(["fee_agreement", "case_opening"]);
+
+    for (const index of range(DEMO_TARGETS.leads)) {
+      const [firstName, lastName] = pick(DEMO_LEAD_NAMES, index);
+      const pipelineStage = pick(leadPipelineStages, index);
+      const caseType = pick(caseTypeRows, index + 3);
+      const practiceArea = practiceAreaRows.find(
+        (a) => a.id === caseType.practiceAreaId,
+      )!;
+      const assignedStaff = pick(createdStaff, index + 2);
+      const email = `lead.${firstName.toLowerCase()}.${lastName.toLowerCase()}.${suffix}@${DEMO_EMAIL_DOMAIN}`;
+
+      const [lead] = await tx
+        .insert(leads)
+        .values({
+          organizationId: firm.id,
+          name: `${firstName} ${lastName}`,
+          email,
+          phone: `+1-555-${pad(4100 + index, 4)}`,
+          entityType: "individual",
+          practiceAreaId: practiceArea.id,
+          caseTypeId: caseType.id,
+          source: pick(leadSources, index),
+          situationSummary: `Demo intake for ${practiceArea.name.toLowerCase()} matters.`,
+          status: pick(["new", "new", "reviewed", "archived"] as const, index),
+          pipelineStage,
+          assignedStaffId: assignedStaff.id,
+        } satisfies NewLeadRow)
+        .returning();
+
+      createdLeads.push(lead);
+
+      if (conflictCheckStages.has(pipelineStage)) {
+        const [cc] = await tx
+          .insert(conflictChecks)
+          .values({
+            organizationId: firm.id,
+            leadId: lead.id,
+            status: pick(conflictCheckStatuses, index),
+            checkedById: assignedStaff.id,
+            checkedAt: timestampFromNow(-7 + (index % 5)),
+          } satisfies NewConflictCheckRow)
+          .returning();
+        createdConflictChecks.push(cc);
+        await tx
+          .update(leads)
+          .set({ conflictCheckId: cc.id })
+          .where(eq(leads.id, lead.id));
+      }
+
+      if (consultationStages.has(pipelineStage)) {
+        const status = pick(consultationStatuses, index);
+        const [consult] = await tx
+          .insert(consultations)
+          .values({
+            organizationId: firm.id,
+            leadId: lead.id,
+            scheduledAt: timestampFromNow(3 + (index % 14)),
+            duration: pick([30, 45, 60] as const, index),
+            mode: pick(["video", "in_person"] as const, index),
+            leadAttorneyId: assignedStaff.id,
+            status,
+            outcome:
+              status === "completed"
+                ? pick(consultationOutcomes, index)
+                : undefined,
+          } satisfies NewConsultationRow)
+          .returning();
+        createdConsultations.push(consult);
+        await tx
+          .update(leads)
+          .set({ consultationId: consult.id })
+          .where(eq(leads.id, lead.id));
+      }
+
+      if (feeAgreementStages.has(pipelineStage)) {
+        const [fa] = await tx
+          .insert(feeAgreements)
+          .values({
+            organizationId: firm.id,
+            leadId: lead.id,
+            practiceAreaId: practiceArea.id,
+            caseTypeId: caseType.id,
+            agreementType: "standard_retainer",
+            generatedFrom: "manual",
+            status: pick(feeAgreementStatuses, index),
+          } satisfies NewFeeAgreementRow)
+          .returning();
+        createdFeeAgreements.push(fa);
+        await tx
+          .update(leads)
+          .set({ feeAgreementId: fa.id })
+          .where(eq(leads.id, lead.id));
+      }
+    }
 
     const [existingAiConfig] = await tx
       .select()
@@ -1994,7 +2234,10 @@ const seedDemoData = async (organizationId?: string) => {
             description: `Generated AI validation flag ${pad(index + 1)} for demo review queues.`,
             severity: pick(errorSeverities, index),
             status: pick(errorStatuses, index),
-            affectedField: pick(["name", "date_of_birth", "address", "signature"] as const, index),
+            affectedField: pick(
+              ["name", "date_of_birth", "address", "signature"] as const,
+              index,
+            ),
             documentRef: document.title,
             resolvedById: isResolved ? firmAdmin.id : undefined,
             resolvedAt: isResolved ? timestampFromNow(-index) : undefined,
@@ -2005,9 +2248,9 @@ const seedDemoData = async (organizationId?: string) => {
 
     return {
       firm: {
-          id: firm.id,
-          firmName: firm.firmName,
-        },
+        id: firm.id,
+        firmName: firm.firmName,
+      },
       practiceAreaCount: practiceAreaRows.length,
       caseTypeCount: caseTypeRows.length,
       subscriptionCount: subscriptionRows.length,
@@ -2025,6 +2268,10 @@ const seedDemoData = async (organizationId?: string) => {
       companyCount: createdCompanies.length,
       clientCount: createdClients.length,
       caseCount: createdCases.length,
+      leadCount: createdLeads.length,
+      conflictCheckCount: createdConflictChecks.length,
+      consultationCount: createdConsultations.length,
+      feeAgreementCount: createdFeeAgreements.length,
       contractorCount: createdContractors.length,
       assignmentCount: createdAssignments.length,
       documentCount: createdDocuments.length,
@@ -2080,10 +2327,6 @@ const dropDemoData = async (organizationId?: string) => {
       .select({ id: staff.id })
       .from(staff)
       .where(eq(staff.organizationId, firm.id));
-    const orgTeams = await tx
-      .select({ id: teams.id })
-      .from(teams)
-      .where(eq(teams.organizationId, firm.id));
     const demoUsers = await tx
       .select({ id: user.id })
       .from(user)
@@ -2091,9 +2334,33 @@ const dropDemoData = async (organizationId?: string) => {
       .where(
         and(
           eq(member.organizationId, firm.id),
-          ilike(user.email, `%@${DEMO_EMAIL_DOMAIN}`),
+          or(
+            ilike(user.email, `%@${DEMO_EMAIL_DOMAIN}`),
+            ilike(user.email, `%@seed.oravanti.test`),
+          ),
         ),
       );
+    const [ownerMember] = await tx
+      .select({ userId: member.userId })
+      .from(member)
+      .where(and(eq(member.organizationId, firm.id), eq(member.role, "owner")))
+      .limit(1);
+
+    let ownerStaffId: string | undefined;
+    if (ownerMember) {
+      const [ownerStaff] = await tx
+        .select({ id: staff.id })
+        .from(staff)
+        .where(
+          and(
+            eq(staff.organizationId, firm.id),
+            eq(staff.userId, ownerMember.userId),
+          ),
+        )
+        .limit(1);
+      ownerStaffId = ownerStaff?.id;
+    }
+
     const orgDocuments = await tx
       .select({ id: documents.id })
       .from(documentCaseLinks)
@@ -2107,8 +2374,9 @@ const dropDemoData = async (organizationId?: string) => {
       .innerJoin(member, eq(member.userId, user.id))
       .where(eq(member.organizationId, firm.id));
 
-    const staffIds = orgStaff.map((row) => row.id);
-    const teamIds = orgTeams.map((row) => row.id);
+    const staffIds = orgStaff
+      .map((row) => row.id)
+      .filter((id) => id !== ownerStaffId);
     const demoUserIds = demoUsers.map((row) => row.id);
     const documentIds = orgDocuments.map((row) => row.id);
     const documentRequestIds = orgDocumentRequests.map((row) => row.id);
@@ -2201,12 +2469,18 @@ const dropDemoData = async (organizationId?: string) => {
     record(
       "documents",
       documentIds.length
-        ? await tx.delete(documents).where(inArray(documents.id, documentIds)).returning()
+        ? await tx
+            .delete(documents)
+            .where(inArray(documents.id, documentIds))
+            .returning()
         : [],
     );
     record(
       "tasks",
-      await tx.delete(tasks).where(eq(tasks.organizationId, firm.id)).returning(),
+      await tx
+        .delete(tasks)
+        .where(eq(tasks.organizationId, firm.id))
+        .returning(),
     );
     record(
       "calendarEvents",
@@ -2263,22 +2537,33 @@ const dropDemoData = async (organizationId?: string) => {
       deleted.staffCertifications = 0;
     }
 
-    if (teamIds.length) {
-      record(
-        "teamMembers",
-        await tx
-          .delete(teamMembers)
-          .where(inArray(teamMembers.teamId, teamIds))
-          .returning(),
-      );
-    } else {
-      deleted.teamMembers = 0;
-    }
-
-    record("cases", await tx.delete(cases).where(eq(cases.organizationId, firm.id)).returning());
+    record(
+      "cases",
+      await tx
+        .delete(cases)
+        .where(eq(cases.organizationId, firm.id))
+        .returning(),
+    );
+    record(
+      "clientCompanies",
+      await tx
+        .delete(clientCompanies)
+        .where(eq(clientCompanies.organizationId, firm.id))
+        .returning(),
+    );
+    record(
+      "clientContacts",
+      await tx
+        .delete(clientContacts)
+        .where(eq(clientContacts.organizationId, firm.id))
+        .returning(),
+    );
     record(
       "clients",
-      await tx.delete(clients).where(eq(clients.organizationId, firm.id)).returning(),
+      await tx
+        .delete(clients)
+        .where(eq(clients.organizationId, firm.id))
+        .returning(),
     );
     record(
       "contractors",
@@ -2287,11 +2572,47 @@ const dropDemoData = async (organizationId?: string) => {
         .where(ilike(contractors.email, `contractor.%@${DEMO_EMAIL_DOMAIN}`))
         .returning(),
     );
-    record("teams", await tx.delete(teams).where(eq(teams.organizationId, firm.id)).returning());
-    record("staff", await tx.delete(staff).where(eq(staff.organizationId, firm.id)).returning());
+    const authTeamIds = (
+      await tx
+        .select({ id: team.id })
+        .from(team)
+        .where(eq(team.organizationId, firm.id))
+    ).map((r) => r.id);
+
+    if (authTeamIds.length) {
+      record(
+        "teamMember",
+        await tx
+          .delete(teamMember)
+          .where(inArray(teamMember.teamId, authTeamIds))
+          .returning(),
+      );
+    } else {
+      deleted.teamMember = 0;
+    }
+
     record(
-      "companies",
-      await tx.delete(companies).where(eq(companies.organizationId, firm.id)).returning(),
+      "invitations",
+      await tx
+        .delete(invitation)
+        .where(eq(invitation.organizationId, firm.id))
+        .returning(),
+    );
+
+    if (authTeamIds.length) {
+      record(
+        "authTeams",
+        await tx.delete(team).where(inArray(team.id, authTeamIds)).returning(),
+      );
+    } else {
+      deleted.authTeams = 0;
+    }
+
+    record(
+      "staff",
+      staffIds.length
+        ? await tx.delete(staff).where(inArray(staff.id, staffIds)).returning()
+        : [],
     );
     record(
       "firmPracticeAreas",
@@ -2318,20 +2639,34 @@ const dropDemoData = async (organizationId?: string) => {
       "admins",
       await tx
         .delete(admins)
-        .where(and(eq(admins.organizationId, firm.id), ilike(admins.email, `%@${DEMO_EMAIL_DOMAIN}`)))
+        .where(
+          and(
+            eq(admins.organizationId, firm.id),
+            ilike(admins.email, `%@${DEMO_EMAIL_DOMAIN}`),
+          ),
+        )
         .returning(),
     );
 
     if (demoUserIds.length) {
       record(
         "profiles",
-        await tx.delete(profiles).where(inArray(profiles.userId, demoUserIds)).returning(),
+        await tx
+          .delete(profiles)
+          .where(inArray(profiles.userId, demoUserIds))
+          .returning(),
       );
       record(
         "members",
-        await tx.delete(member).where(inArray(member.userId, demoUserIds)).returning(),
+        await tx
+          .delete(member)
+          .where(inArray(member.userId, demoUserIds))
+          .returning(),
       );
-      record("users", await tx.delete(user).where(inArray(user.id, demoUserIds)).returning());
+      record(
+        "users",
+        await tx.delete(user).where(inArray(user.id, demoUserIds)).returning(),
+      );
     } else {
       deleted.profiles = 0;
       deleted.members = 0;
@@ -2363,7 +2698,9 @@ const editPracticeArea = async (id?: string, name?: string) => {
             message: `Rename "${area.name}"`,
             placeholder: area.name,
             validate(value) {
-              return normalizeName(value) ? undefined : "Enter a practice area name.";
+              return normalizeName(value)
+                ? undefined
+                : "Enter a practice area name.";
             },
           }),
         ),
@@ -2418,6 +2755,14 @@ const promptForDeleteIds = async () => {
 };
 
 const deletePracticeAreas = async (ids: readonly string[]) => {
+  if (env.NODE_ENV !== "development") {
+    note(
+      "Deleting practice areas is only available in development.",
+      "Forbidden",
+    );
+    return;
+  }
+
   const selectedIds = ids.length ? [...ids] : await promptForDeleteIds();
 
   if (!selectedIds.length) return;
@@ -2433,13 +2778,25 @@ const deletePracticeAreas = async (ids: readonly string[]) => {
   }
 
   note(
-    areas.map((area) => `- ${area.name} (${area.id})`).join("\n"),
-    "Deleting practice areas can affect firms, cases, and subscriptions that reference them.",
+    [
+      "WARNING: This action is irreversible.",
+      "",
+      "The following practice areas and ALL associated data will be permanently deleted:",
+      "  - Subcategories and case types",
+      "  - Leads and their conflict checks, consultations, and fee agreements",
+      "  - Cases and their tasks, assignments, time entries, calendar events, and documents",
+      "  - Questionnaire templates, sends, and responses",
+      "  - Workflow templates and steps",
+      "  - Subscriptions and firm practice area links",
+      "",
+      ...areas.map((area) => `  · ${area.name} (${area.id})`),
+    ].join("\n"),
+    "Destructive action",
   );
 
   const shouldDelete = abortIfCancelled(
     await confirm({
-      message: `Delete ${areas.length} practice area${areas.length === 1 ? "" : "s"}?`,
+      message: `Permanently delete ${areas.length} practice area${areas.length === 1 ? "" : "s"} and all associated data?`,
       initialValue: false,
     }),
   );
@@ -2449,104 +2806,857 @@ const deletePracticeAreas = async (ids: readonly string[]) => {
     return;
   }
 
-  const deleted = await db
-    .delete(practiceAreas)
-    .where(
-      inArray(
-        practiceAreas.id,
-        areas.map((area) => area.id),
-      ),
-    )
-    .returning();
+  const areaIds = areas.map((a) => a.id);
+
+  const deleted = await db.transaction(async (tx) => {
+    // ─── Gather dependent IDs ───────────────────────────────────────────────
+    const subcategoryRows = await tx
+      .select({ id: practiceAreaSubcategories.id })
+      .from(practiceAreaSubcategories)
+      .where(inArray(practiceAreaSubcategories.practiceAreaId, areaIds));
+    const subcategoryIds = subcategoryRows.map((r) => r.id);
+
+    const caseTypeRows = subcategoryIds.length
+      ? await tx
+          .select({ id: practiceAreaCaseTypes.id })
+          .from(practiceAreaCaseTypes)
+          .where(inArray(practiceAreaCaseTypes.subcategoryId, subcategoryIds))
+      : [];
+    const caseTypeIds = caseTypeRows.map((r) => r.id);
+
+    const caseRows = await tx
+      .select({ id: cases.id })
+      .from(cases)
+      .where(inArray(cases.practiceAreaId, areaIds));
+    const caseIds = caseRows.map((r) => r.id);
+
+    const leadRows = await tx
+      .select({ id: leads.id })
+      .from(leads)
+      .where(inArray(leads.practiceAreaId, areaIds));
+    const leadIds = leadRows.map((r) => r.id);
+
+    const ctqRows = caseTypeIds.length
+      ? await tx
+          .select({ id: caseTypeQuestionnaires.id })
+          .from(caseTypeQuestionnaires)
+          .where(inArray(caseTypeQuestionnaires.caseTypeId, caseTypeIds))
+      : [];
+    const ctqIds = ctqRows.map((r) => r.id);
+
+    const sendConditions = [
+      ...(caseTypeIds.length
+        ? [inArray(questionnaireSends.caseTypeId, caseTypeIds)]
+        : []),
+      ...(leadIds.length ? [inArray(questionnaireSends.leadId, leadIds)] : []),
+      ...(caseIds.length ? [inArray(questionnaireSends.caseId, caseIds)] : []),
+    ];
+    const sendRows = sendConditions.length
+      ? await tx
+          .select({ id: questionnaireSends.id })
+          .from(questionnaireSends)
+          .where(or(...sendConditions))
+      : [];
+    const sendIds = sendRows.map((r) => r.id);
+
+    const responseRows = sendIds.length
+      ? await tx
+          .select({ id: questionnaireResponses.id })
+          .from(questionnaireResponses)
+          .where(inArray(questionnaireResponses.questionnaireSendId, sendIds))
+      : [];
+    const responseIds = responseRows.map((r) => r.id);
+
+    const templateRows = caseTypeIds.length
+      ? await tx
+          .select({ id: workflowTemplates.id })
+          .from(workflowTemplates)
+          .where(inArray(workflowTemplates.caseTypeId, caseTypeIds))
+      : [];
+    const templateIds = templateRows.map((r) => r.id);
+
+    const templateStepRows = templateIds.length
+      ? await tx
+          .select({ id: workflowTemplateSteps.id })
+          .from(workflowTemplateSteps)
+          .where(inArray(workflowTemplateSteps.templateId, templateIds))
+      : [];
+    const templateStepIds = templateStepRows.map((r) => r.id);
+
+    const docRequestRows = caseIds.length
+      ? await tx
+          .select({ id: documentRequests.id })
+          .from(documentRequests)
+          .where(inArray(documentRequests.caseId, caseIds))
+      : [];
+    const docRequestIds = docRequestRows.map((r) => r.id);
+
+    // ─── Delete in reverse dependency order ─────────────────────────────────
+
+    if (responseIds.length) {
+      await tx
+        .delete(questionnaireAnswers)
+        .where(inArray(questionnaireAnswers.responseId, responseIds));
+      await tx
+        .delete(questionnaireResponseFiles)
+        .where(inArray(questionnaireResponseFiles.responseId, responseIds));
+      await tx
+        .delete(questionnaireResponses)
+        .where(inArray(questionnaireResponses.id, responseIds));
+    }
+    if (sendIds.length) {
+      await tx
+        .delete(questionnaireSends)
+        .where(inArray(questionnaireSends.id, sendIds));
+    }
+    if (caseTypeIds.length) {
+      await tx
+        .delete(firmQuestionnaireLogicRules)
+        .where(inArray(firmQuestionnaireLogicRules.caseTypeId, caseTypeIds));
+      await tx
+        .delete(firmQuestionnaireQuestions)
+        .where(inArray(firmQuestionnaireQuestions.caseTypeId, caseTypeIds));
+      await tx
+        .delete(firmQuestionnaireSections)
+        .where(inArray(firmQuestionnaireSections.caseTypeId, caseTypeIds));
+    }
+    if (ctqIds.length) {
+      await tx
+        .delete(caseTypeQuestionnaireLogicRules)
+        .where(
+          inArray(caseTypeQuestionnaireLogicRules.questionnaireId, ctqIds),
+        );
+      await tx
+        .delete(caseTypeQuestionnaireQuestions)
+        .where(inArray(caseTypeQuestionnaireQuestions.questionnaireId, ctqIds));
+      await tx
+        .delete(caseTypeQuestionnaireSections)
+        .where(inArray(caseTypeQuestionnaireSections.questionnaireId, ctqIds));
+      await tx
+        .delete(caseTypeQuestionnaires)
+        .where(inArray(caseTypeQuestionnaires.id, ctqIds));
+    }
+    const caseStepConditions = [
+      ...(caseIds.length ? [inArray(caseWorkflowSteps.caseId, caseIds)] : []),
+      ...(templateStepIds.length
+        ? [inArray(caseWorkflowSteps.templateStepId, templateStepIds)]
+        : []),
+    ];
+    if (caseStepConditions.length) {
+      await tx.delete(caseWorkflowSteps).where(or(...caseStepConditions));
+    }
+    if (templateStepIds.length) {
+      await tx
+        .delete(workflowTemplateSteps)
+        .where(inArray(workflowTemplateSteps.id, templateStepIds));
+    }
+    if (templateIds.length) {
+      await tx
+        .delete(workflowTemplates)
+        .where(inArray(workflowTemplates.id, templateIds));
+    }
+    if (caseIds.length) {
+      await tx
+        .delete(aiErrorFlags)
+        .where(inArray(aiErrorFlags.caseId, caseIds));
+      await tx
+        .delete(adverseParties)
+        .where(inArray(adverseParties.caseId, caseIds));
+      await tx.delete(assignments).where(inArray(assignments.caseId, caseIds));
+      await tx.delete(tasks).where(inArray(tasks.caseId, caseIds));
+      await tx.delete(timeEntries).where(inArray(timeEntries.caseId, caseIds));
+      await tx
+        .delete(calendarEvents)
+        .where(inArray(calendarEvents.caseId, caseIds));
+      await tx
+        .delete(clientRequests)
+        .where(inArray(clientRequests.caseId, caseIds));
+      await tx
+        .delete(documentCaseLinks)
+        .where(inArray(documentCaseLinks.caseId, caseIds));
+      if (docRequestIds.length) {
+        await tx
+          .delete(externalSubmissions)
+          .where(inArray(externalSubmissions.requestId, docRequestIds));
+        await tx
+          .delete(documentRequests)
+          .where(inArray(documentRequests.id, docRequestIds));
+      }
+      await tx.delete(cases).where(inArray(cases.id, caseIds));
+    }
+    if (leadIds.length) {
+      await tx
+        .delete(conflictChecks)
+        .where(inArray(conflictChecks.leadId, leadIds));
+      await tx
+        .delete(consultations)
+        .where(inArray(consultations.leadId, leadIds));
+      await tx
+        .delete(feeAgreements)
+        .where(inArray(feeAgreements.leadId, leadIds));
+      await tx
+        .delete(clientContacts)
+        .where(inArray(clientContacts.leadId, leadIds));
+      await tx.delete(leads).where(inArray(leads.id, leadIds));
+    }
+    await tx
+      .delete(subscriptions)
+      .where(inArray(subscriptions.practiceAreaId, areaIds));
+
+    // DB CASCADE handles: firm_practice_areas, subcategories → case_types → contractors
+    return tx
+      .delete(practiceAreas)
+      .where(inArray(practiceAreas.id, areaIds))
+      .returning();
+  });
 
   printPracticeAreas(deleted);
+};
+
+const browseCases = async () => {
+  // Step 1 – firm
+  const firm = await resolveFirm();
+  if (!firm) return;
+
+  // Step 2 – practice area (only areas that have cases for this firm)
+  const firmPracticeAreaRows = await db
+    .selectDistinct({ id: practiceAreas.id, name: practiceAreas.name })
+    .from(cases)
+    .innerJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
+    .where(eq(cases.organizationId, firm.id))
+    .orderBy(asc(practiceAreas.name));
+
+  if (!firmPracticeAreaRows.length) {
+    note(`No cases found for ${firm.firmName}.`);
+    return;
+  }
+
+  const selectedPracticeAreaId = abortIfCancelled(
+    await select({
+      message: "Select a practice area",
+      options: firmPracticeAreaRows.map((pa) => ({
+        value: pa.id,
+        label: pa.name,
+      })),
+    }),
+  ) as string;
+
+  const selectedPracticeArea = firmPracticeAreaRows.find(
+    (pa) => pa.id === selectedPracticeAreaId,
+  )!;
+
+  // Step 3 – case type (only types that have cases for this firm + practice area)
+  const firmCaseTypeRows = await db
+    .selectDistinct({
+      id: practiceAreaCaseTypes.id,
+      name: practiceAreaCaseTypes.name,
+      code: practiceAreaCaseTypes.code,
+    })
+    .from(cases)
+    .innerJoin(
+      practiceAreaCaseTypes,
+      eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+    )
+    .where(
+      and(
+        eq(cases.organizationId, firm.id),
+        eq(cases.practiceAreaId, selectedPracticeAreaId),
+      ),
+    )
+    .orderBy(asc(practiceAreaCaseTypes.name));
+
+  if (!firmCaseTypeRows.length) {
+    note(`No case types found for ${selectedPracticeArea.name}.`);
+    return;
+  }
+
+  const selectedCaseTypeId = abortIfCancelled(
+    await select({
+      message: "Select a case type",
+      options: firmCaseTypeRows.map((ct) => ({
+        value: ct.id,
+        label: ct.name,
+        hint: ct.code,
+      })),
+    }),
+  ) as string;
+
+  const selectedCaseType = firmCaseTypeRows.find(
+    (ct) => ct.id === selectedCaseTypeId,
+  )!;
+
+  // Step 4 – case
+  const caseListRows = await db
+    .select({
+      id: cases.id,
+      caseNumber: cases.caseNumber,
+      clientName: clients.displayName,
+      status: cases.status,
+    })
+    .from(cases)
+    .innerJoin(clients, eq(clients.id, cases.clientId))
+    .where(
+      and(
+        eq(cases.organizationId, firm.id),
+        eq(cases.practiceAreaId, selectedPracticeAreaId),
+        eq(cases.caseTypeId, selectedCaseTypeId),
+      ),
+    )
+    .orderBy(desc(cases.createdAt));
+
+  if (!caseListRows.length) {
+    note(`No cases found for ${selectedCaseType.name}.`);
+    return;
+  }
+
+  const selectedCaseId = abortIfCancelled(
+    await select({
+      message: "Select a case",
+      options: caseListRows.map((c) => ({
+        value: c.id,
+        label: c.caseNumber,
+        hint: `${c.clientName} — ${c.status}`,
+      })),
+    }),
+  ) as string;
+
+  // Step 5 – fetch expanded details
+  const [detail] = await db
+    .select({
+      id: cases.id,
+      caseNumber: cases.caseNumber,
+      status: cases.status,
+      priority: cases.priority,
+      caseProgress: cases.caseProgress,
+      assignmentType: cases.assignmentType,
+      filingDate: cases.filingDate,
+      estimatedCompletionDate: cases.estimatedCompletionDate,
+      nextAppointment: cases.nextAppointment,
+      description: cases.description,
+      notes: cases.notes,
+      createdAt: cases.createdAt,
+      updatedAt: cases.updatedAt,
+      firmName: organizations.name,
+      practiceAreaName: practiceAreas.name,
+      caseTypeName: practiceAreaCaseTypes.name,
+      clientName: clients.displayName,
+      assignedStaffFirstName: staff.firstName,
+      assignedStaffLastName: staff.lastName,
+      teamName: teams.name,
+    })
+    .from(cases)
+    .innerJoin(organizations, eq(organizations.id, cases.organizationId))
+    .innerJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
+    .innerJoin(
+      practiceAreaCaseTypes,
+      eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+    )
+    .innerJoin(clients, eq(clients.id, cases.clientId))
+    .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
+    .leftJoin(teams, eq(teams.id, cases.teamId))
+    .where(eq(cases.id, selectedCaseId))
+    .limit(1);
+
+  if (!detail) {
+    note("Case not found.");
+    return;
+  }
+
+  const assignedStaff =
+    detail.assignedStaffFirstName && detail.assignedStaffLastName
+      ? `${detail.assignedStaffFirstName} ${detail.assignedStaffLastName}`
+      : "—";
+
+  note(
+    [
+      `Case Number:          ${detail.caseNumber}`,
+      `Firm:                 ${detail.firmName}`,
+      `Practice Area:        ${detail.practiceAreaName}`,
+      `Case Type:            ${detail.caseTypeName}`,
+      `Client:               ${detail.clientName}`,
+      `Status:               ${detail.status}`,
+      `Priority:             ${detail.priority}`,
+      `Progress:             ${detail.caseProgress}%`,
+      `Assignment Type:      ${detail.assignmentType}`,
+      `Assigned Staff:       ${assignedStaff}`,
+      `Team:                 ${detail.teamName ?? "—"}`,
+      `Filing Date:          ${detail.filingDate}`,
+      `Est. Completion:      ${detail.estimatedCompletionDate ?? "—"}`,
+      `Next Appointment:     ${detail.nextAppointment ?? "—"}`,
+      `Description:          ${detail.description}`,
+      `Notes:                ${detail.notes ?? "—"}`,
+      `Created:              ${detail.createdAt.toISOString()}`,
+      `Updated:              ${detail.updatedAt.toISOString()}`,
+    ].join("\n"),
+    "Case Details",
+  );
+};
+
+const waitForEnter = async () => {
+  abortIfCancelled(
+    await text({
+      message: "Press Enter to return to the menu...",
+      defaultValue: "",
+    }),
+  );
+};
+
+const staffAvailabilityService = new StaffAvailabilityService();
+
+const DAY_LABELS = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+] as const;
+
+const AVAILABILITY_TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+type AvailabilityLine = {
+  dayOfWeek: number;
+  startTime: string;
+  endTime: string;
+  label?: string;
+};
+
+// Parses lines of "day|HH:MM|HH:MM" (optionally "|label"), skipping invalid
+// rows. day: 0 = Sunday … 6 = Saturday.
+const parseAvailabilityLines = (
+  input: string,
+  withLabel = false,
+): AvailabilityLine[] => {
+  const rows: AvailabilityLine[] = [];
+
+  for (const rawLine of input.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const [rawDay, start, end, label] = line.split("|").map((part) =>
+      part.trim(),
+    );
+    const dayOfWeek = Number(rawDay);
+
+    if (!Number.isInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6) continue;
+    if (
+      !AVAILABILITY_TIME_REGEX.test(start ?? "") ||
+      !AVAILABILITY_TIME_REGEX.test(end ?? "")
+    ) {
+      continue;
+    }
+    if (start >= end) continue;
+
+    rows.push(
+      withLabel
+        ? { dayOfWeek, startTime: start, endTime: end, label: label || undefined }
+        : { dayOfWeek, startTime: start, endTime: end },
+    );
+  }
+
+  return rows;
+};
+
+const getStaffForFirm = (organizationId: string) =>
+  db
+    .select({
+      id: staff.id,
+      firstName: staff.firstName,
+      lastName: staff.lastName,
+      role: staff.role,
+      status: staff.status,
+    })
+    .from(staff)
+    .where(eq(staff.organizationId, organizationId))
+    .orderBy(asc(staff.firstName), asc(staff.lastName));
+
+const resolveStaffMember = async (organizationId: string) => {
+  const members = await getStaffForFirm(organizationId);
+
+  if (!members.length) {
+    note("No staff members found for this firm.");
+    return null;
+  }
+
+  const selectedId = abortIfCancelled(
+    await select({
+      message: "Select a staff member",
+      options: members.map((member) => ({
+        value: member.id,
+        label: `${member.firstName} ${member.lastName}`,
+        hint: `${member.role ?? "—"} · ${member.status}`,
+      })),
+    }),
+  );
+
+  return members.find((member) => member.id === selectedId) ?? null;
+};
+
+const printStaffAvailability = (
+  data: Awaited<ReturnType<typeof staffAvailabilityService.getAvailability>>,
+) => {
+  if (data.windows.length) {
+    note("Weekly working hours");
+    console.table(
+      data.windows.map((window) => ({
+        day: DAY_LABELS[window.dayOfWeek] ?? window.dayOfWeek,
+        start: window.startTime,
+        end: window.endTime,
+      })),
+    );
+  } else {
+    note("No weekly working hours set.");
+  }
+
+  if (data.breaks.length) {
+    note("Breaks");
+    console.table(
+      data.breaks.map((entry) => ({
+        day: DAY_LABELS[entry.dayOfWeek] ?? entry.dayOfWeek,
+        start: entry.startTime,
+        end: entry.endTime,
+        label: entry.label ?? "",
+      })),
+    );
+  } else {
+    note("No breaks set.");
+  }
+
+  if (data.overrides.length) {
+    note("Date overrides");
+    console.table(
+      data.overrides.map((override) => ({
+        date: override.date,
+        type: override.type,
+        start: override.startTime ?? "",
+        end: override.endTime ?? "",
+        reason: override.reason ?? "",
+      })),
+    );
+  } else {
+    note("No date overrides set.");
+  }
+};
+
+const setStaffAvailabilityFlow = async (organizationId?: string) => {
+  const firm = await resolveFirm(organizationId);
+  if (!firm) return;
+
+  const member = await resolveStaffMember(firm.id);
+  if (!member) return;
+
+  const who = `${member.firstName} ${member.lastName}`;
+
+  while (true) {
+    const choice = abortIfCancelled(
+      await select({
+        message: `Availability for ${who} (${firm.firmName})`,
+        options: [
+          { value: "view", label: "View current availability" },
+          {
+            value: "weekly",
+            label: "Set weekly working hours (replaces existing)",
+          },
+          { value: "breaks", label: "Set break times (replaces existing)" },
+          { value: "override", label: "Add a date override" },
+          { value: "delete-override", label: "Remove a date override" },
+          { value: "back", label: "Back to main menu" },
+        ],
+      }),
+    );
+
+    if (choice === "back") return;
+
+    if (choice === "view") {
+      printStaffAvailability(
+        await staffAvailabilityService.getAvailability(firm.id, member.id),
+      );
+    }
+
+    if (choice === "weekly") {
+      const input = abortIfCancelled(
+        await text({
+          message:
+            "Working hours as day|HH:MM|HH:MM, one per line (day: 0=Sun … 6=Sat)",
+          placeholder: "1|09:00|17:00",
+          validate(value) {
+            return parseAvailabilityLines(value).length
+              ? undefined
+              : "Enter at least one valid window, e.g. 1|09:00|17:00.";
+          },
+        }),
+      );
+      const saved = await staffAvailabilityService.setWeeklyAvailability(
+        firm.id,
+        member.id,
+        { windows: parseAvailabilityLines(input) },
+      );
+      note(`Saved ${saved.length} working window(s) for ${who}.`);
+    }
+
+    if (choice === "breaks") {
+      const input = abortIfCancelled(
+        await text({
+          message:
+            "Breaks as day|HH:MM|HH:MM|label (label optional), one per line",
+          placeholder: "1|12:00|13:00|Lunch",
+          validate(value) {
+            return parseAvailabilityLines(value, true).length
+              ? undefined
+              : "Enter at least one valid break, e.g. 1|12:00|13:00|Lunch.";
+          },
+        }),
+      );
+      const saved = await staffAvailabilityService.setBreaks(firm.id, member.id, {
+        breaks: parseAvailabilityLines(input, true),
+      });
+      note(`Saved ${saved.length} break(s) for ${who}.`);
+    }
+
+    if (choice === "override") {
+      const date = abortIfCancelled(
+        await text({
+          message: "Override date (YYYY-MM-DD)",
+          placeholder: isoDateFromNow(7),
+          validate(value) {
+            return /^\d{4}-\d{2}-\d{2}$/.test(value.trim())
+              ? undefined
+              : "Enter a date as YYYY-MM-DD.";
+          },
+        }),
+      ).trim();
+
+      const type = abortIfCancelled(
+        await select({
+          message: "Override type",
+          options: [
+            { value: "closed", label: "Closed (unavailable all day)" },
+            { value: "custom_hours", label: "Custom hours for this date" },
+          ],
+        }),
+      );
+
+      let startTime: string | undefined;
+      let endTime: string | undefined;
+
+      if (type === "custom_hours") {
+        startTime = abortIfCancelled(
+          await text({
+            message: "Start time (HH:MM)",
+            placeholder: "09:00",
+            validate(value) {
+              return AVAILABILITY_TIME_REGEX.test(value.trim())
+                ? undefined
+                : "Enter a time as HH:MM.";
+            },
+          }),
+        ).trim();
+        endTime = abortIfCancelled(
+          await text({
+            message: "End time (HH:MM)",
+            placeholder: "13:00",
+            validate(value) {
+              if (!AVAILABILITY_TIME_REGEX.test(value.trim())) {
+                return "Enter a time as HH:MM.";
+              }
+              if (startTime && value.trim() <= startTime) {
+                return "End time must be after start time.";
+              }
+              return undefined;
+            },
+          }),
+        ).trim();
+      }
+
+      const reason = abortIfCancelled(
+        await text({
+          message: "Reason (optional)",
+          placeholder: "Out of office",
+          defaultValue: "",
+        }),
+      ).trim();
+
+      const created = await staffAvailabilityService.createOverride(
+        firm.id,
+        member.id,
+        { date, type, startTime, endTime, reason: reason || undefined },
+      );
+      note(`Added ${created.type} override on ${created.date} for ${who}.`);
+    }
+
+    if (choice === "delete-override") {
+      const { overrides } = await staffAvailabilityService.getAvailability(
+        firm.id,
+        member.id,
+      );
+
+      if (!overrides.length) {
+        note("No date overrides to remove.");
+      } else {
+        const overrideId = abortIfCancelled(
+          await select({
+            message: "Select an override to remove",
+            options: overrides.map((override) => ({
+              value: override.id,
+              label: `${override.date} — ${override.type}`,
+              hint: override.reason ?? undefined,
+            })),
+          }),
+        );
+        await staffAvailabilityService.deleteOverride(
+          firm.id,
+          member.id,
+          overrideId,
+        );
+        note("Override removed.");
+      }
+    }
+
+    await waitForEnter();
+  }
 };
 
 const runInteractive = async () => {
   intro("Oravanti CLI");
 
-  const action = abortIfCancelled(
-    await select({
+  while (true) {
+    const action = await select({
       message: "What do you want to do?",
       options: [
         { value: "list", label: "Fetch practice areas" },
-        { value: "create", label: "Create practice areas" },
-        { value: "defaults", label: "Create default practice areas" },
         { value: "seed-taxonomy", label: "Seed practice area taxonomy" },
         { value: "edit", label: "Edit a practice area" },
         { value: "delete", label: "Delete practice areas" },
         { value: "case-types-list", label: "Fetch case types" },
         { value: "case-types-create", label: "Create case types" },
-        { value: "case-types-defaults", label: "Create Immigration case types" },
+        {
+          value: "case-types-defaults",
+          label: "Create Immigration case types",
+        },
         { value: "case-types-edit", label: "Edit a case type" },
         { value: "case-types-delete", label: "Delete case types" },
+        {
+          value: "seed-questionnaires",
+          label: "Seed system questionnaires (one per case type)",
+        },
+        {
+          value: "seed-master-questionnaires",
+          label:
+            "Seed master intake questionnaires (from PDF question library)",
+        },
         { value: "demo-data", label: "Seed demo data for an organization" },
-        { value: "demo-data-drop", label: "Drop demo data for an organization" },
+        {
+          value: "demo-data-drop",
+          label: "Drop demo data for an organization",
+        },
+        {
+          value: "seed-staff-teams",
+          label: "Seed staff & teams for an organization",
+        },
+        {
+          value: "staff-availability",
+          label: "Set staff availability (hours, breaks, overrides)",
+        },
+        {
+          value: "browse-cases",
+          label: "Browse cases (firm → practice area → case type → case)",
+        },
+        { value: "exit", label: "Exit" },
       ],
-    }),
-  );
+    });
 
-  if (action === "list") {
-    printPracticeAreas(await getPracticeAreas());
-  }
+    if (isCancel(action) || action === "exit") {
+      outro("Goodbye.");
+      return;
+    }
 
-  if (action === "create") {
-    await createPracticeAreas(await promptForNames());
-  }
+    try {
+      if (action === "list") {
+        printPracticeAreas(await getPracticeAreas());
+      }
 
-  if (action === "defaults") {
-    await createPracticeAreas(DEFAULT_PRACTICE_AREAS);
-  }
+      if (action === "seed-taxonomy") {
+        await seedPracticeAreaTaxonomy();
+      }
 
-  if (action === "seed-taxonomy") {
-    await seedPracticeAreaTaxonomy();
-  }
+      if (action === "edit") {
+        await editPracticeArea();
+      }
 
-  if (action === "edit") {
-    await editPracticeArea();
-  }
+      if (action === "delete") {
+        await deletePracticeAreas([]);
+      }
 
-  if (action === "delete") {
-    await deletePracticeAreas([]);
-  }
+      if (action === "case-types-list") {
+        const resolved = await resolveSubcategory();
+        if (resolved)
+          printCaseTypes(await getCaseTypes(resolved.subcategory.id));
+      }
 
-  if (action === "case-types-list") {
-    const resolved = await resolveSubcategory();
-    if (resolved) printCaseTypes(await getCaseTypes(resolved.subcategory.id));
-  }
+      if (action === "case-types-create") {
+        const resolved = await resolveSubcategory();
+        if (resolved) {
+          await createCaseTypes(
+            resolved.area.id,
+            resolved.subcategory.id,
+            await promptForCaseTypeDefinitions(),
+          );
+        }
+      }
 
-  if (action === "case-types-create") {
-    const resolved = await resolveSubcategory();
-    if (resolved) {
-      await createCaseTypes(
-        resolved.area.id,
-        resolved.subcategory.id,
-        await promptForCaseTypeDefinitions(),
-      );
+      if (action === "case-types-defaults") {
+        await createDefaultImmigrationCaseTypes();
+      }
+
+      if (action === "case-types-edit") {
+        await editCaseType();
+      }
+
+      if (action === "case-types-delete") {
+        await deleteCaseTypes();
+      }
+
+      if (action === "seed-questionnaires") {
+        await seedSystemQuestionnaires();
+      }
+
+      if (action === "seed-master-questionnaires") {
+        await seedMasterQuestionnaires();
+      }
+
+      if (action === "demo-data") {
+        await seedDemoData();
+      }
+
+      if (action === "demo-data-drop") {
+        await dropDemoData();
+      }
+
+      if (action === "browse-cases") {
+        await browseCases();
+      }
+
+      if (action === "seed-staff-teams") {
+        const firm = await resolveFirm();
+        if (firm) await seedStaffAndTeams(firm.id);
+      }
+
+      if (action === "staff-availability") {
+        await setStaffAvailabilityFlow();
+        continue;
+      }
+
+      await waitForEnter();
+    } catch (err) {
+      // Cancellation within a sub-action: return to the main menu
+      if (err instanceof Error && err.message === "cancelled") {
+        process.exitCode = 0;
+        continue;
+      }
+      throw err;
     }
   }
-
-  if (action === "case-types-defaults") {
-    await createDefaultImmigrationCaseTypes();
-  }
-
-  if (action === "case-types-edit") {
-    await editCaseType();
-  }
-
-  if (action === "case-types-delete") {
-    await deleteCaseTypes();
-  }
-
-  if (action === "demo-data") {
-    await seedDemoData();
-  }
-
-  if (action === "demo-data-drop") {
-    await dropDemoData();
-  }
-
-  outro("Done.");
 };
 
 const runWithSpinner = async (message: string, action: () => Promise<void>) => {
@@ -2577,24 +3687,23 @@ program
   });
 
 program
-  .command("create")
-  .description("Create one or more practice areas")
-  .argument("[names...]", "Practice area names")
-  .option("--defaults", "Create the default practice areas")
-  .action(async (names: string[], options: { defaults?: boolean }) => {
-    const namesToCreate = options.defaults
-      ? DEFAULT_PRACTICE_AREAS
-      : names.length
-        ? names
-        : await promptForNames();
-
-    await createPracticeAreas(namesToCreate);
-  });
-
-program
   .command("seed-taxonomy")
   .description("Seed the full practice area taxonomy from the bundled catalog")
   .action(seedPracticeAreaTaxonomy);
+
+program
+  .command("seed-questionnaires")
+  .description("Seed system questionnaires (one per case type, idempotent)")
+  .action(seedSystemQuestionnaires);
+
+program
+  .command("seed-master-questionnaires")
+  .description(
+    "Seed case-type questionnaires from the master intake PDF question library (idempotent)",
+  )
+  .action(async () => {
+    await seedMasterQuestionnaires();
+  });
 
 program
   .command("edit")
@@ -2635,9 +3744,9 @@ caseTypesCommand
       subcategoryId?: string,
       definitions: string[] = [],
     ) => {
-    const definitionsToCreate = definitions.length
-      ? definitions
-      : await promptForCaseTypeDefinitions();
+      const definitionsToCreate = definitions.length
+        ? definitions
+        : await promptForCaseTypeDefinitions();
 
       await createCaseTypes(practiceAreaId, subcategoryId, definitionsToCreate);
     },
@@ -2645,7 +3754,9 @@ caseTypesCommand
 
 caseTypesCommand
   .command("add-immigration-defaults")
-  .description("Add the existing immigration case types to Immigration or a practice area id")
+  .description(
+    "Add the existing immigration case types to Immigration or a practice area id",
+  )
   .argument("[practiceAreaId]", "Practice area id")
   .action(createDefaultImmigrationCaseTypes);
 
@@ -2684,6 +3795,29 @@ demoDataCommand
   .description("Select an organization and delete tenant-scoped demo data")
   .argument("[organizationId]", "Organization id")
   .action(dropDemoData);
+
+const casesCommand = program
+  .command("cases")
+  .description("Browse and inspect cases");
+
+casesCommand
+  .command("browse")
+  .description(
+    "Interactively browse cases by firm, practice area, and case type",
+  )
+  .action(browseCases);
+
+const staffTeamsCommand = program
+  .command("seed-staff-teams")
+  .description("Seed staff members and teams for an organization")
+  .argument("[organizationId]", "Organization id")
+  .action(seedStaffAndTeams);
+
+program
+  .command("staff-availability")
+  .description("Set a staff member's consultation availability")
+  .argument("[organizationId]", "Organization id")
+  .action(setStaffAvailabilityFlow);
 
 program
   .parseAsync(process.argv)

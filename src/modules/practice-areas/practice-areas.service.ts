@@ -458,9 +458,84 @@ export const cancelSubscriptions = async (
   });
 };
 
+type PracticeAreaTreeNode = {
+  id: string;
+  name: string;
+  children: PracticeAreaTreeNode[];
+};
+
+type PracticeAreaTreeData = {
+  practiceAreaTreeNodes: PracticeAreaTreeNode[];
+  practiceAreaIds: string[];
+  subcategoryIds: string[];
+  caseTypeIds: string[];
+  practiceAreaNameLookup: Record<string, string>;
+};
+
+export const getTreeData = async (): Promise<PracticeAreaTreeData> => {
+  const areas = await db
+    .select({
+      id: practiceAreas.id,
+      name: practiceAreas.name,
+    })
+    .from(practiceAreas)
+    .orderBy(asc(practiceAreas.name));
+
+  const subcategoriesByPracticeArea = await getSubcategoriesByPracticeArea(
+    areas.map((a) => a.id),
+  );
+
+  const practiceAreaIds: string[] = [];
+  const subcategoryIds: string[] = [];
+  const caseTypeIds: string[] = [];
+  const practiceAreaNameLookup: Record<string, string> = {};
+  const practiceAreaTreeNodes: PracticeAreaTreeNode[] = [];
+
+  for (const area of areas) {
+    practiceAreaIds.push(area.id);
+    practiceAreaNameLookup[area.id] = area.name;
+
+    const subcategories = subcategoriesByPracticeArea.get(area.id) ?? [];
+    const children: PracticeAreaTreeNode[] = [];
+
+    for (const sub of subcategories as {
+      id: string;
+      name: string;
+      caseTypes: { id: string; name: string }[];
+    }[]) {
+      subcategoryIds.push(sub.id);
+      practiceAreaNameLookup[sub.id] = sub.name;
+
+      const grandchildren: PracticeAreaTreeNode[] = [];
+      for (const ct of sub.caseTypes ?? []) {
+        caseTypeIds.push(ct.id);
+        practiceAreaNameLookup[ct.id] = ct.name;
+        grandchildren.push({ id: ct.id, name: ct.name, children: [] });
+      }
+
+      children.push({ id: sub.id, name: sub.name, children: grandchildren });
+    }
+
+    practiceAreaTreeNodes.push({
+      id: area.id,
+      name: area.name,
+      children,
+    });
+  }
+
+  return {
+    practiceAreaTreeNodes,
+    practiceAreaIds,
+    subcategoryIds,
+    caseTypeIds,
+    practiceAreaNameLookup,
+  };
+};
+
 export class PracticeAreasService {
   getAllPracticeAreas = getAllPracticeAreas;
   getFirmPracticeAreas = getFirmPracticeAreas;
   createSubscriptions = createSubscriptions;
   cancelSubscriptions = cancelSubscriptions;
+  getTreeData = getTreeData;
 }

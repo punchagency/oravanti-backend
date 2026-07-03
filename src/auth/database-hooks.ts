@@ -2,8 +2,9 @@ import type { BetterAuthOptions } from "better-auth";
 import { symmetricDecrypt } from "better-auth/crypto";
 import { desc, eq } from "drizzle-orm";
 import { google } from "googleapis";
-import { db } from "../db/client";
 import { env } from "../config/env";
+import { db } from "../db/client";
+import { staff } from "../db/schema";
 import { member, session } from "../db/schema/auth-schema";
 import { connectedEmailAccount } from "../db/schema/email";
 import { getActiveOrganization } from "./helpers";
@@ -43,6 +44,16 @@ async function getOrgId(userId: string) {
 }
 
 export const databaseHooks = {
+  user: {
+    update: {
+      after: async (user) => {
+        await db
+          .update(staff)
+          .set({ email: user.email })
+          .where(eq(staff.userId, user.id));
+      },
+    },
+  },
   account: {
     create: {
       after: async (account: any) => {

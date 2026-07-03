@@ -5,14 +5,14 @@ const REQUIRED_ENV_KEYS = [
   "PORT",
   "CORS_ORIGIN",
   "DATABASE_URL",
-  "SUPABASE_URL",
-  "SUPABASE_ANON_KEY",
-  "SUPABASE_SERVICE_ROLE_KEY",
+  "R2_ACCOUNT_ID",
+  "R2_ACCESS_KEY_ID",
+  "R2_SECRET_ACCESS_KEY",
+  "R2_BUCKET",
   "BETTER_AUTH_SECRET",
   "BETTER_AUTH_URL",
   "SMTP_EMAIL_ADDRESS",
   "SMTP_PASSWORD",
-  "SUPABASE_STORAGE_BUCKET",
   "SERVER_MASTER_KEY_PRIMARY",
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",
@@ -20,7 +20,9 @@ const REQUIRED_ENV_KEYS = [
   "MICROSOFT_CLIENT_SECRET",
   "EMAIL_ENCRYPTION_KEY",
   "PAYMENT_ENCRYPTION_KEY",
-  "EMAIL_VERIFICATION_CALLBACK_URL"
+  "EMAIL_VERIFICATION_CALLBACK_URL",
+  "FRONTEND_APP_URL",
+  "REDIS_URL"
 ] as const;
 
 type RequiredEnvKey = (typeof REQUIRED_ENV_KEYS)[number];
@@ -29,6 +31,13 @@ type AppEnv = Record<RequiredEnvKey, string> & {
   PROD_DATABASE_URL?: string;
   SERVER_MASTER_KEY_OLD?: string;
   CONTRACTOR_PAYMENT_ENCRYPTION_KEY?: string;
+  RESEND_API_KEY?: string;
+  // Platform-owned Google Workspace service account used to mint Google Meet
+  // links for all firms. Optional: when unset the Meet service falls back to a
+  // placeholder link so non-Workspace/dev environments still function.
+  GOOGLE_MEET_CLIENT_EMAIL?: string;
+  GOOGLE_MEET_PRIVATE_KEY?: string;
+  GOOGLE_MEET_IMPERSONATED_USER?: string;
   databaseUrl: string;
   isProduction: boolean;
 };
@@ -75,11 +84,20 @@ const validateEnv = (): AppEnv => {
     throw new Error("Missing required environment variable: PROD_DATABASE_URL");
   }
 
+  const resendApiKey = readEnv("RESEND_API_KEY");
+  const googleMeetClientEmail = readEnv("GOOGLE_MEET_CLIENT_EMAIL");
+  const googleMeetPrivateKey = readEnv("GOOGLE_MEET_PRIVATE_KEY");
+  const googleMeetImpersonatedUser = readEnv("GOOGLE_MEET_IMPERSONATED_USER");
+
   return {
     ...values,
     ...(prodDatabaseUrl ? { PROD_DATABASE_URL: prodDatabaseUrl } : {}),
     ...(serverMasterKeyOld ? { SERVER_MASTER_KEY_OLD: serverMasterKeyOld } : {}),
     ...(contractorPaymentEncryptionKey ? { CONTRACTOR_PAYMENT_ENCRYPTION_KEY: contractorPaymentEncryptionKey } : {}),
+    ...(resendApiKey ? { RESEND_API_KEY: resendApiKey } : {}),
+    ...(googleMeetClientEmail ? { GOOGLE_MEET_CLIENT_EMAIL: googleMeetClientEmail } : {}),
+    ...(googleMeetPrivateKey ? { GOOGLE_MEET_PRIVATE_KEY: googleMeetPrivateKey } : {}),
+    ...(googleMeetImpersonatedUser ? { GOOGLE_MEET_IMPERSONATED_USER: googleMeetImpersonatedUser } : {}),
     databaseUrl: isProduction ? prodDatabaseUrl! : values.DATABASE_URL,
     isProduction,
   };

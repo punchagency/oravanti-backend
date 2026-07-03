@@ -17,6 +17,7 @@ export class OnboardingService {
     userId: string,
     body: {
       accountType: AccountType;
+      referralSource?: string;
       profile: {
         firstName: string;
         lastName: string;
@@ -36,7 +37,7 @@ export class OnboardingService {
       };
     },
   ) => {
-    const { accountType, profile, firmDetails } = body;
+    const { accountType, referralSource, profile, firmDetails } = body;
 
     if (accountType !== "firm_admin") {
       throw new BadRequestError(
@@ -45,7 +46,7 @@ export class OnboardingService {
     }
 
     const [userRecord] = await db
-      .select({ onboardingState: user.onboardingState })
+      .select({ onboardingState: user.onboardingState, email: user.email })
       .from(user)
       .where(eq(user.id, userId))
       .limit(1);
@@ -83,6 +84,10 @@ export class OnboardingService {
         userId,
         firstName: profile.firstName,
         lastName: profile.lastName,
+        email: userRecord.email ?? "",
+        role: "admin",
+        orgEmail: userRecord.email ?? "",
+        startDate: new Date(),
         phone: profile.phone ?? "",
         jobTitle: profile.jobTitle || "Firm Administrator",
         status: "active",
@@ -102,6 +107,7 @@ export class OnboardingService {
           zipCode: firmDetails.zipcode,
           website: firmDetails.website,
           taxId: firmDetails.taxId,
+          referralSource: referralSource ?? null,
         })
         .where(eq(organization.id, newOrg.id));
 

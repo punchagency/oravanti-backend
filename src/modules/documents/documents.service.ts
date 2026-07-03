@@ -10,8 +10,6 @@ import {
   max,
   or,
 } from "drizzle-orm";
-import { env } from "../../config/env";
-import { supabaseAdmin } from "../../config/supabase";
 import { db } from "../../db/client";
 import { user } from "../../db/schema/auth-schema";
 import { cases } from "../../db/schema/cases";
@@ -28,15 +26,13 @@ import {
 import {
   AuthorizationError,
   ConflictError,
-  ExternalServiceError,
   NotFoundError,
 } from "../../utils/error/app-error";
 import {
   buildPaginatedResponse,
   getPaginationOffset,
 } from "../../utils/pagination";
-
-const { SUPABASE_STORAGE_BUCKET } = env;
+import { storageService } from "../../utils/storage/storage.service";
 
 type DocumentPermission = "VIEW" | "COMMENT" | "EDIT" | "ADMIN";
 type DocumentStatus = "active" | "archived" | "deleted";
@@ -174,26 +170,15 @@ export class DocumentsService {
     fileBuffer: Buffer;
     mimeType: string;
   }) => {
-    const { error: uploadError } = await supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .upload(data.storagePath, data.fileBuffer, {
-        contentType: data.mimeType,
-        upsert: false,
-      });
-
-    if (uploadError) throw new ExternalServiceError(uploadError.message);
-
-    const { data: urlData } = supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .getPublicUrl(data.storagePath);
-
-    return urlData.publicUrl;
+    await storageService.upload({
+      key: data.storagePath,
+      body: data.fileBuffer,
+      contentType: data.mimeType,
+    });
   };
 
   private removeFromStorage = async (storagePath: string) => {
-    await supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .remove([storagePath]);
+    await storageService.remove([storagePath]);
   };
 
   uploadDocument = async (
@@ -220,7 +205,7 @@ export class DocumentsService {
       versionNumber,
       safeFilename,
     );
-    const fileUrl = await this.uploadToStorage({
+    await this.uploadToStorage({
       storagePath,
       fileBuffer: data.fileBuffer,
       mimeType: data.mimeType,
@@ -243,7 +228,6 @@ export class DocumentsService {
           .values({
             documentId: doc.id,
             filePath: storagePath,
-            fileUrl,
             originalFileName: data.originalFilename,
             mimeType: data.mimeType,
             fileSize: data.fileSize,
@@ -324,8 +308,7 @@ export class DocumentsService {
       const searchCondition = or(
         ilike(documents.title, search),
         ilike(documentVersions.originalFileName, search),
-        ilike(clients.firstName, search),
-        ilike(clients.lastName, search),
+        ilike(clients.displayName, search),
       );
 
       if (searchCondition) {
@@ -361,7 +344,7 @@ export class DocumentsService {
         updatedAt: documents.updatedAt,
         permission: documentAccess.permission,
         versionId: documentVersions.id,
-        fileUrl: documentVersions.fileUrl,
+        filePath: documentVersions.filePath,
         fileSize: documentVersions.fileSize,
         mimeType: documentVersions.mimeType,
         originalFileName: documentVersions.originalFileName,
@@ -370,8 +353,7 @@ export class DocumentsService {
         caseId: cases.id,
         caseType: cases.caseType,
         clientId: clients.id,
-        clientFirst: clients.firstName,
-        clientLast: clients.lastName,
+        clientDisplayName: clients.displayName,
       })
       .from(documents)
       .innerJoin(documentAccess, eq(documentAccess.documentId, documents.id))
@@ -390,8 +372,8 @@ export class DocumentsService {
       .limit(limit)
       .offset(offset);
 
-    return buildPaginatedResponse(
-      rows.map((row) => ({
+    const items = await Promise.all(
+      rows.map(async (row) => ({
         id: row.id,
         title: row.title,
         name: row.title,
@@ -404,7 +386,9 @@ export class DocumentsService {
           ? {
               id: row.versionId,
               versionNumber: row.versionNumber,
-              fileUrl: row.fileUrl,
+              fileUrl: row.filePath
+                ? await storageService.getSignedDownloadUrl(row.filePath)
+                : null,
               fileSize: row.fileSize,
               mimeType: row.mimeType,
               originalFileName: row.originalFileName,
@@ -418,9 +402,13 @@ export class DocumentsService {
             }
           : null,
         client: row.clientId
-          ? { id: row.clientId, name: `${row.clientFirst} ${row.clientLast}` }
+          ? { id: row.clientId, name: row.clientDisplayName ?? '' }
           : null,
       })),
+    );
+
+    return buildPaginatedResponse(
+      items,
       {
         page,
         limit,
@@ -468,19 +456,25 @@ export class DocumentsService {
 
     if (!row) return null;
 
-    const versions = await db
+    const versionRows = await db
       .select()
       .from(documentVersions)
       .where(eq(documentVersions.documentId, id))
       .orderBy(desc(documentVersions.versionNumber));
+
+    const versions = await Promise.all(
+      versionRows.map(async (version) => ({
+        ...version,
+        fileUrl: await storageService.getSignedDownloadUrl(version.filePath),
+      })),
+    );
 
     const linkedCases = await db
       .select({
         id: cases.id,
         caseType: cases.caseType,
         clientId: clients.id,
-        clientFirst: clients.firstName,
-        clientLast: clients.lastName,
+        clientDisplayName: clients.displayName,
       })
       .from(documentCaseLinks)
       .innerJoin(cases, eq(cases.id, documentCaseLinks.caseId))
@@ -501,7 +495,7 @@ export class DocumentsService {
         client: linkedCase.clientId
           ? {
               id: linkedCase.clientId,
-              name: `${linkedCase.clientFirst} ${linkedCase.clientLast}`,
+              name: linkedCase.clientDisplayName ?? '',
             }
           : null,
       })),
@@ -570,7 +564,7 @@ export class DocumentsService {
       versionNumber,
       safeStorageName(`version-${versionNumber}`, data.originalFilename),
     );
-    const fileUrl = await this.uploadToStorage({
+    await this.uploadToStorage({
       storagePath,
       fileBuffer: data.fileBuffer,
       mimeType: data.mimeType,
@@ -583,7 +577,6 @@ export class DocumentsService {
           .values({
             documentId: id,
             filePath: storagePath,
-            fileUrl,
             originalFileName: data.originalFilename,
             mimeType: data.mimeType,
             fileSize: data.fileSize,
@@ -800,7 +793,7 @@ export class DocumentsService {
       request.id,
       safeStorageName(title, data.originalFilename),
     );
-    const fileUrl = await this.uploadToStorage({
+    await this.uploadToStorage({
       storagePath,
       fileBuffer: data.fileBuffer,
       mimeType: data.mimeType,
@@ -822,7 +815,6 @@ export class DocumentsService {
           .values({
             documentId: doc.id,
             filePath: storagePath,
-            fileUrl,
             originalFileName: data.originalFilename,
             mimeType: data.mimeType,
             fileSize: data.fileSize,
@@ -916,11 +908,7 @@ export class DocumentsService {
 
     if (!doc) throw new NotFoundError("Document not found");
 
-    const { data, error } = await supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .createSignedUrl(doc.filePath, 60 * 60);
-
-    if (error) throw new ExternalServiceError(error.message);
+    const signedUrl = await storageService.getSignedDownloadUrl(doc.filePath);
 
     await this.logActivity({
       documentId: id,
@@ -928,7 +916,7 @@ export class DocumentsService {
       action: "DOWNLOADED",
     }).catch(() => undefined);
 
-    return data.signedUrl;
+    return signedUrl;
   };
 
   getActivityLogs = async (id: string, userId: string) => {

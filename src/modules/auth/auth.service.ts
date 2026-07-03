@@ -4,7 +4,6 @@ import { inArray } from "drizzle-orm";
 import { Request } from "express";
 import { auth } from "../../auth";
 import { env } from "../../config/env";
-import { supabaseAdmin } from "../../config/supabase";
 import { db } from "../../db/client";
 import {
   contractorCertificationDocuments,
@@ -28,9 +27,8 @@ import {
   ExternalServiceError,
   ValidationError,
 } from "../../utils/error/app-error";
+import { storageService } from "../../utils/storage/storage.service";
 import { AccountType } from "./enums";
-
-const { SUPABASE_STORAGE_BUCKET } = env;
 
 type AuthServiceError = {
   message: string;
@@ -56,8 +54,7 @@ const normalizeEmail = (email: string) => email.toLowerCase().trim();
 
 const getPaymentEncryptionKey = () => {
   const secret =
-    env.CONTRACTOR_PAYMENT_ENCRYPTION_KEY ||
-    env.PAYMENT_ENCRYPTION_KEY;
+    env.CONTRACTOR_PAYMENT_ENCRYPTION_KEY || env.PAYMENT_ENCRYPTION_KEY;
 
   if (!secret) {
     throw new ExternalServiceError("Payment encryption key is not configured");
@@ -130,34 +127,23 @@ export class AuthService {
     fileBuffer: Buffer;
     mimeType: string;
   }) => {
-    const { error: uploadError } = await supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .upload(data.storagePath, data.fileBuffer, {
-        contentType: data.mimeType,
-        upsert: false,
-      });
-
-    if (uploadError) throw new ExternalServiceError(uploadError.message);
-
-    const { data: urlData } = supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .getPublicUrl(data.storagePath);
-
-    return urlData.publicUrl;
+    await storageService.upload({
+      key: data.storagePath,
+      body: data.fileBuffer,
+      contentType: data.mimeType,
+    });
   };
 
   private removeFromStorage = async (storagePaths: string[]) => {
-    if (!storagePaths.length) return;
-
-    await supabaseAdmin.storage
-      .from(SUPABASE_STORAGE_BUCKET)
-      .remove(storagePaths);
+    await storageService.remove(storagePaths);
   };
 
   signUpWithEmail = async (
     body: {
       email: string;
       password: string;
+      firstName?: string;
+      lastName?: string;
       rememberMe?: boolean;
     },
     req: Request<any, any, any, { account_type?: AccountType }>,
@@ -174,22 +160,35 @@ export class AuthService {
       );
     }
 
-    const response = await auth.api.signUpEmail({
-      headers: clientHeaders,
-      body: {
-        ...body,
-        name: "User",
-        accountType: accountType,
-        onboardingState: "email_unverified",
-        callbackURL: env.EMAIL_VERIFICATION_CALLBACK_URL,
-      },
-      asResponse: true,
-    });
+    const displayName = [body.firstName, body.lastName]
+      .filter(Boolean)
+      .join(" ")
+      .trim() || "User";
+
+    let response;
+    try {
+      response = await auth.api.signUpEmail({
+        headers: clientHeaders,
+        body: {
+          email: body.email,
+          password: body.password,
+          name: displayName,
+          accountType: accountType,
+          onboardingState: "email_unverified",
+          callbackURL: env.EMAIL_VERIFICATION_CALLBACK_URL,
+        },
+        asResponse: true,
+      });
+    } catch (e) {
+      console.log(e);
+      throw e;
+    }
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const errorCode = errorData.code;
       const message = errorData.message || "Registration failed";
+      console.log(message);
 
       switch (errorCode) {
         case "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL":
@@ -334,7 +333,6 @@ export class AuthService {
       documentId: string;
       title: string;
       storagePath: string;
-      fileUrl: string;
       originalFilename: string;
       mimeType: string;
       fileSize: number;
@@ -349,7 +347,6 @@ export class AuthService {
       documentId: string;
       title: string;
       storagePath: string;
-      fileUrl: string;
       originalFilename: string;
       mimeType: string;
       fileSize: number;
@@ -367,7 +364,7 @@ export class AuthService {
           documentId,
           safeStorageName(title, file.originalname),
         );
-        const fileUrl = await this.uploadToStorage({
+        await this.uploadToStorage({
           storagePath,
           fileBuffer: file.buffer,
           mimeType: file.mimetype,
@@ -377,7 +374,6 @@ export class AuthService {
           documentId,
           title,
           storagePath,
-          fileUrl,
           originalFilename: file.originalname,
           mimeType: file.mimetype,
           fileSize: file.size,
@@ -394,7 +390,7 @@ export class AuthService {
           documentId,
           safeStorageName(title, file.originalname),
         );
-        const fileUrl = await this.uploadToStorage({
+        await this.uploadToStorage({
           storagePath,
           fileBuffer: file.buffer,
           mimeType: file.mimetype,
@@ -404,7 +400,6 @@ export class AuthService {
           documentId,
           title,
           storagePath,
-          fileUrl,
           originalFilename: file.originalname,
           mimeType: file.mimetype,
           fileSize: file.size,
@@ -473,7 +468,6 @@ export class AuthService {
             .values({
               documentId: document.id,
               filePath: identification.storagePath,
-              fileUrl: identification.fileUrl,
               originalFileName: identification.originalFilename,
               mimeType: identification.mimeType,
               fileSize: identification.fileSize,
@@ -512,7 +506,6 @@ export class AuthService {
             .values({
               documentId: document.id,
               filePath: certification.storagePath,
-              fileUrl: certification.fileUrl,
               originalFileName: certification.originalFilename,
               mimeType: certification.mimeType,
               fileSize: certification.fileSize,
