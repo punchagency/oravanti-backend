@@ -56,9 +56,22 @@ export const feeAgreements = pgTable("fee_agreements", {
     .notNull()
     .default("questionnaire_auto"),
   status: feeAgreementStatusEnum("status").notNull().default("draft"),
+  // R2 key of the generated (unsigned) PDF sent for signature.
   documentUrl: text("document_url"),
+  // Dropbox Sign signature_request_id (reused from the stub's envelope concept).
   envelopeId: text("envelope_id"),
   signingLink: text("signing_link"),
+  // Dropbox Sign signature_id for the client signer; used to mint fresh embedded
+  // sign URLs on demand (they expire ~60 min).
+  signerSignatureId: text("signer_signature_id"),
+  // Opaque token for the public client-facing signing page URL, so the client
+  // link never exposes the agreement id or signature id.
+  signingToken: text("signing_token").unique(),
+  // R2 key of the final signed PDF downloaded from Dropbox Sign after completion.
+  signedDocumentUrl: text("signed_document_url"),
+  // Last raw provider event type + timestamp, for observability.
+  providerStatus: text("provider_status"),
+  lastWebhookEventAt: timestamp("last_webhook_event_at"),
   clientSignedAt: timestamp("client_signed_at"),
   nudgedAt: timestamp("nudged_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
