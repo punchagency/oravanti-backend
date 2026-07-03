@@ -1,4 +1,5 @@
 import { Router } from "express";
+import multer from "multer";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { requirePermission } from "../../middleware/permission.middleware";
@@ -304,6 +305,9 @@ export class WebhooksRouter {
   public router: Router;
   public path: string;
   private ctrl: LeadsController;
+  // Dropbox Sign posts multipart/form-data with a single `json` field and no
+  // files; memory storage + .none() parses that text field onto req.body.
+  private upload = multer({ storage: multer.memoryStorage() });
 
   constructor(ctrl: LeadsController) {
     this.router = Router();
@@ -316,9 +320,34 @@ export class WebhooksRouter {
     const { ctrl } = this;
 
     this.router.post(
-      "/esignature",
-      validateRequest({ body: v.esignatureWebhookBodySchema }),
-      ctrl.handleESignatureWebhook,
+      "/dropbox-sign",
+      this.upload.none(),
+      ctrl.handleDropboxSignWebhook,
+    );
+  }
+}
+
+// ── Agreement signing router (public, token-gated client signing page) ───────
+
+export class AgreementSigningRouter {
+  public router: Router;
+  public path: string;
+  private ctrl: LeadsController;
+
+  constructor(ctrl: LeadsController) {
+    this.router = Router();
+    this.path = "/agreement-signing";
+    this.ctrl = ctrl;
+    this.initializeRoutes();
+  }
+
+  private initializeRoutes() {
+    const { ctrl } = this;
+
+    this.router.post(
+      "/:token/session",
+      validateRequest({ params: v.agreementSigningTokenParamsSchema }),
+      ctrl.getEmbeddedSignSession,
     );
   }
 }

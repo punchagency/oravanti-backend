@@ -279,9 +279,7 @@ export const updateAdversePartyBodySchema = z.object({
   notes: z.string().optional(),
 });
 
-export const esignatureWebhookBodySchema = z.object({
-  envelopeId: z.string().min(1),
-  status: z.string().min(1),
-  signedAt: z.string().optional(),
-  signedBy: z.string().optional(),
+// Public signing page: the opaque token that resolves to a fee agreement.
+export const agreementSigningTokenParamsSchema = z.object({
+  token: z.string().min(1),
 });

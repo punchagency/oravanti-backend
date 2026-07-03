@@ -63,7 +63,7 @@ import {
   getPaginationOffset,
   PaginationParams,
 } from "../../utils/pagination";
-import { stubESignatureProvider } from "./esignature.provider";
+import { getESignatureProvider } from "./dropbox-sign.provider";
 import { generateCaseNumber } from "../cases/cases.service";
 import { organization, user } from "../../db/schema/auth-schema";
 import { env } from "../../config/env";
@@ -2688,16 +2688,37 @@ const sendFeeAgreement = async (
     contentType: "application/pdf",
   });
 
-  const documentContent = `Fee Agreement for ${lead.name} — ${agreement.agreementType ?? "Standard Retainer"}`;
-  const { envelopeId, signingLink } =
-    await stubESignatureProvider.createEnvelope(lead.email, documentContent);
+  // Create the embedded signature request (Dropbox Sign, or the stub fallback).
+  // No email is sent by the provider — the client signs on our own signing page.
+  const provider = getESignatureProvider();
+  const { signatureRequestId, signerSignatureId } =
+    await provider.createEmbeddedRequest({
+      signer: { email: lead.email, name: lead.name },
+      file: pdfBuffer,
+      fileName: `${documentData.docRef || agreement.id}.pdf`,
+      title: `Fee Agreement — ${lead.name}`,
+      subject: "Please sign your fee agreement",
+      metadata: {
+        agreementId: agreement.id,
+        leadId: agreement.leadId,
+        organizationId,
+      },
+      testMode: env.DROPBOX_SIGN_TEST_MODE,
+    });
+
+  // Opaque token backing the public, client-facing signing page URL (the raw
+  // embedded sign URL is minted on demand and never emailed — it expires fast).
+  const signingToken = randomUUID();
+  const signingLink = `${env.FRONTEND_APP_URL}/sign/${signingToken}`;
 
   const now = new Date();
   const [updated] = await db
     .update(feeAgreements)
     .set({
       status: "pending_signature",
-      envelopeId,
+      envelopeId: signatureRequestId,
+      signerSignatureId,
+      signingToken,
       signingLink,
       documentUrl: documentKey,
       updatedAt: now,
@@ -2843,51 +2864,152 @@ const nudgeClient = async (agreementId: string, organizationId: string) => {
   return { reminderSentAt: now };
 };
 
-// ─── eSignature Webhook ────────────────────────────────────────────────────────
+// ─── Embedded signing session (public, token-gated) ─────────────────────────
 
-const handleESignatureWebhook = async (data: {
-  envelopeId: string;
-  status: string;
-  signedAt?: string;
-  signedBy?: string;
-}) => {
+// Mint a fresh embedded sign URL for the client-facing signing page. Sign URLs
+// are short-lived, so they are generated on demand rather than persisted.
+const getEmbeddedSignSession = async (signingToken: string) => {
   const [agreement] = await db
     .select()
     .from(feeAgreements)
-    .where(eq(feeAgreements.envelopeId, data.envelopeId))
+    .where(eq(feeAgreements.signingToken, signingToken))
     .limit(1);
 
-  if (!agreement)
-    return { ignored: true, reason: "No agreement found for envelope" };
-
-  // Idempotent: already processed
+  if (!agreement) throw new NotFoundError("Signing session not found");
   if (agreement.status === "signed")
-    return { ignored: true, reason: "Already signed" };
+    throw new ConflictError("This agreement has already been signed");
+  if (agreement.status === "voided")
+    throw new BadRequestError(
+      "This agreement is no longer available for signing",
+    );
+  if (!agreement.signerSignatureId)
+    throw new BadRequestError(
+      "This agreement has not been sent for signature yet",
+    );
 
-  if (data.status !== "completed") {
-    return {
-      ignored: true,
-      reason: `Envelope status ${data.status} not actionable`,
-    };
+  const provider = getESignatureProvider();
+  const { signUrl, expiresAt } = await provider.getEmbeddedSignUrl(
+    agreement.signerSignatureId,
+  );
+  return { signUrl, clientId: env.DROPBOX_SIGN_CLIENT_ID ?? null, expiresAt };
+};
+
+// ─── Dropbox Sign Webhook ───────────────────────────────────────────────────
+
+type DropboxSignEvent = {
+  event?: {
+    event_time?: string;
+    event_type?: string;
+    event_hash?: string;
+  };
+  signature_request?: {
+    signature_request_id?: string;
+  };
+};
+
+// Authoritative completion signal. The controller parses the multipart `json`
+// field and passes the decoded event here. Must be idempotent — Dropbox Sign
+// retries and may deliver duplicates.
+const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
+  const event = payload?.event;
+  if (!event?.event_time || !event?.event_type || !event?.event_hash) {
+    throw new BadRequestError("Malformed Dropbox Sign event");
+  }
+
+  const provider = getESignatureProvider();
+  if (
+    !provider.verifyWebhook(
+      event.event_time,
+      event.event_type,
+      event.event_hash,
+    )
+  ) {
+    throw new AuthorizationError("Invalid Dropbox Sign event signature");
+  }
+
+  // Dashboard "test" callback: acknowledge without side effects.
+  if (event.event_type === "callback_test") {
+    return { processed: false, test: true };
+  }
+
+  const signatureRequestId = payload.signature_request?.signature_request_id;
+  if (!signatureRequestId) {
+    return { ignored: true, reason: "No signature_request in event" };
+  }
+
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(eq(feeAgreements.envelopeId, signatureRequestId))
+    .limit(1);
+  if (!agreement) {
+    return { ignored: true, reason: "No agreement for signature request" };
   }
 
   const now = new Date();
+  // Record the latest provider event for observability.
   await db
     .update(feeAgreements)
     .set({
-      status: "signed",
-      clientSignedAt: data.signedAt ? new Date(data.signedAt) : now,
+      providerStatus: event.event_type,
+      lastWebhookEventAt: now,
       updatedAt: now,
     })
     .where(eq(feeAgreements.id, agreement.id));
 
-  // Auto-advance lead to case_opening
-  await db
-    .update(leads)
-    .set({ pipelineStage: "case_opening", updatedAt: now })
-    .where(eq(leads.id, agreement.leadId));
+  if (event.event_type === "signature_request_all_signed") {
+    if (agreement.status === "signed") {
+      return { ignored: true, reason: "Already signed" };
+    }
 
-  return { processed: true, agreementId: agreement.id };
+    // Archive the completed, signed PDF. Non-fatal on failure — the signature
+    // is still valid and can be re-fetched later.
+    let signedKey: string | null = null;
+    try {
+      const signedPdf = await provider.downloadSignedPdf(signatureRequestId);
+      signedKey = `fee-agreements/${agreement.organizationId}/${agreement.id}/signed.pdf`;
+      await storageService.upload({
+        key: signedKey,
+        body: signedPdf,
+        contentType: "application/pdf",
+      });
+    } catch (err) {
+      console.error("Failed to archive signed fee-agreement PDF", err);
+    }
+
+    await db
+      .update(feeAgreements)
+      .set({
+        status: "signed",
+        clientSignedAt: now,
+        ...(signedKey ? { signedDocumentUrl: signedKey } : {}),
+        updatedAt: now,
+      })
+      .where(eq(feeAgreements.id, agreement.id));
+
+    // Auto-advance lead to case_opening.
+    await db
+      .update(leads)
+      .set({ pipelineStage: "case_opening", updatedAt: now })
+      .where(eq(leads.id, agreement.leadId));
+
+    return { processed: true, agreementId: agreement.id };
+  }
+
+  if (
+    event.event_type === "signature_request_declined" ||
+    event.event_type === "signature_request_canceled"
+  ) {
+    if (agreement.status !== "signed") {
+      await db
+        .update(feeAgreements)
+        .set({ status: "voided", updatedAt: now })
+        .where(eq(feeAgreements.id, agreement.id));
+    }
+    return { processed: true, agreementId: agreement.id, voided: true };
+  }
+
+  return { processed: false, eventType: event.event_type };
 };
 
 // ─── Case Opening ──────────────────────────────────────────────────────────────
@@ -3297,7 +3419,8 @@ export class LeadsService {
   markFeeAgreementReceived = markFeeAgreementReceived;
   getFeeAgreement = getFeeAgreement;
   nudgeClient = nudgeClient;
-  handleESignatureWebhook = handleESignatureWebhook;
+  getEmbeddedSignSession = getEmbeddedSignSession;
+  handleDropboxSignWebhook = handleDropboxSignWebhook;
   openCase = openCase;
   getCaseWorkflowSteps = getCaseWorkflowSteps;
   updateCaseWorkflowStep = updateCaseWorkflowStep;
