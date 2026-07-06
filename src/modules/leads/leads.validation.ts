@@ -1,7 +1,11 @@
 import { z } from "zod";
+import { isValidTimezone } from "../../utils/date";
 
 const uuid = z.string().uuid();
 const optionalUuid = z.string().uuid().optional();
+const timezone = z
+  .string()
+  .refine(isValidTimezone, { message: "Invalid IANA timezone" });
 
 export const idParamsSchema = z.object({ id: uuid });
 
@@ -39,6 +43,7 @@ export const createLeadBodySchema = z.object({
   assignedStaffId: optionalUuid,
   intakeAdversePartyName: z.string().min(1).optional(),
   intakeAdversePartyEmail: z.string().email().optional(),
+  timezone: timezone.optional(),
 });
 
 export const updateLeadBodySchema = z.object({
@@ -62,6 +67,12 @@ export const updateLeadBodySchema = z.object({
   assignedStaffId: optionalUuid,
   intakeAdversePartyName: z.string().min(1).optional(),
   intakeAdversePartyEmail: z.string().email().optional(),
+  timezone: timezone.optional(),
+});
+
+// Public (booking-page) reconciliation of the lead's timezone.
+export const updateBookingTimezoneBodySchema = z.object({
+  timezone,
 });
 
 export const updateLeadStatusSchema = z.object({
