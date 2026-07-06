@@ -5,71 +5,61 @@ import { certifications } from "../../db/schema/certifications";
 import { staff } from "../../db/schema/staff";
 import { staffCertifications } from "../../db/schema/staff-certifications";
 import { timeEntries } from "../../db/schema/time-entries";
+import { dayjs } from "../../utils/date";
+import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type Period = "month" | "quarter" | "year" | "all";
 
-// ─── Period Helpers ───────────────────────────────────────────────────────────
+// ─── Period Helpers ─────────────────────────────────────────────────────────
+// Reporting periods are bucketed against the firm's local calendar, so all
+// boundaries are computed in the firm timezone (`tz`) and emitted as
+// "YYYY-MM-DD" strings.
 
-function toDateStr(d: Date): string {
-  return d.toISOString().split("T")[0];
-}
+const DATE_FMT = "YYYY-MM-DD";
 
-function getPeriodRange(period: Period): {
+function getPeriodRange(
+  period: Period,
+  tz: string,
+): {
   startStr: string | null;
   endStr: string | null;
   label: string;
   months: number;
 } {
-  const now = new Date();
+  const now = dayjs().tz(tz);
 
   if (period === "month") {
-    const start = new Date(now.getFullYear(), now.getMonth(), 1);
-    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    const label = `${start.toLocaleString("en-US", { month: "long" })} ${now.getFullYear()}`;
+    const start = now.startOf("month");
+    const end = now.endOf("month");
     return {
-      startStr: toDateStr(start),
-      endStr: toDateStr(end),
-      label,
+      startStr: start.format(DATE_FMT),
+      endStr: end.format(DATE_FMT),
+      label: start.format("MMMM YYYY"),
       months: 1,
     };
   }
 
   if (period === "quarter") {
-    const q = Math.floor(now.getMonth() / 3);
-    const start = new Date(now.getFullYear(), q * 3, 1);
-    const end = new Date(now.getFullYear(), (q + 1) * 3, 0);
-    const MONTHS = [
-      "Jan",
-      "Feb",
-      "Mar",
-      "Apr",
-      "May",
-      "Jun",
-      "Jul",
-      "Aug",
-      "Sep",
-      "Oct",
-      "Nov",
-      "Dec",
-    ];
-    const label = `Q${q + 1} ${now.getFullYear()} (${MONTHS[q * 3]} - ${MONTHS[q * 3 + 2]})`;
+    const q = Math.floor(now.month() / 3);
+    const start = now.month(q * 3).startOf("month");
+    const end = now.month(q * 3 + 2).endOf("month");
     return {
-      startStr: toDateStr(start),
-      endStr: toDateStr(end),
-      label,
+      startStr: start.format(DATE_FMT),
+      endStr: end.format(DATE_FMT),
+      label: `Q${q + 1} ${now.year()} (${start.format("MMM")} - ${end.format("MMM")})`,
       months: 3,
     };
   }
 
   if (period === "year") {
-    const start = new Date(now.getFullYear(), 0, 1);
-    const end = new Date(now.getFullYear(), 11, 31);
+    const start = now.startOf("year");
+    const end = now.endOf("year");
     return {
-      startStr: toDateStr(start),
-      endStr: toDateStr(end),
-      label: String(now.getFullYear()),
+      startStr: start.format(DATE_FMT),
+      endStr: end.format(DATE_FMT),
+      label: String(now.year()),
       months: 12,
     };
   }
@@ -77,35 +67,37 @@ function getPeriodRange(period: Period): {
   return { startStr: null, endStr: null, label: "All Time", months: 0 };
 }
 
-function getPreviousPeriodRange(period: Period): {
+function getPreviousPeriodRange(
+  period: Period,
+  tz: string,
+): {
   startStr: string | null;
   endStr: string | null;
 } {
-  const now = new Date();
+  const now = dayjs().tz(tz);
 
   if (period === "month") {
-    const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const end = new Date(now.getFullYear(), now.getMonth(), 0);
-    return { startStr: toDateStr(start), endStr: toDateStr(end) };
+    const prev = now.subtract(1, "month");
+    return {
+      startStr: prev.startOf("month").format(DATE_FMT),
+      endStr: prev.endOf("month").format(DATE_FMT),
+    };
   }
 
   if (period === "quarter") {
-    const q = Math.floor(now.getMonth() / 3);
-    const prevQ = q - 1;
-    if (prevQ < 0) {
-      const start = new Date(now.getFullYear() - 1, 9, 1);
-      const end = new Date(now.getFullYear() - 1, 11, 31);
-      return { startStr: toDateStr(start), endStr: toDateStr(end) };
-    }
-    const start = new Date(now.getFullYear(), prevQ * 3, 1);
-    const end = new Date(now.getFullYear(), (prevQ + 1) * 3, 0);
-    return { startStr: toDateStr(start), endStr: toDateStr(end) };
+    const prevQuarterMonth = now.month(Math.floor(now.month() / 3) * 3).subtract(3, "month");
+    return {
+      startStr: prevQuarterMonth.startOf("month").format(DATE_FMT),
+      endStr: prevQuarterMonth.add(2, "month").endOf("month").format(DATE_FMT),
+    };
   }
 
   if (period === "year") {
-    const start = new Date(now.getFullYear() - 1, 0, 1);
-    const end = new Date(now.getFullYear() - 1, 11, 31);
-    return { startStr: toDateStr(start), endStr: toDateStr(end) };
+    const prev = now.subtract(1, "year");
+    return {
+      startStr: prev.startOf("year").format(DATE_FMT),
+      endStr: prev.endOf("year").format(DATE_FMT),
+    };
   }
 
   return { startStr: null, endStr: null };
@@ -205,8 +197,9 @@ export const getRevenueAnalytics = async (
   period: Period = "month",
   teamId?: string,
 ) => {
-  const { startStr, endStr, label, months } = getPeriodRange(period);
-  const prevRange = getPreviousPeriodRange(period);
+  const tz = await getFirmTimezone(organizationId);
+  const { startStr, endStr, label, months } = getPeriodRange(period, tz);
+  const prevRange = getPreviousPeriodRange(period, tz);
 
   const baseConditions = and(
     eq(staff.organizationId, organizationId),
