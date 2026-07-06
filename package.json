@@ -47,6 +47,7 @@
     "bullmq": "^5.79.1",
     "commander": "^12.1.0",
     "cors": "^2.8.6",
+    "dayjs": "^1.11.21",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",

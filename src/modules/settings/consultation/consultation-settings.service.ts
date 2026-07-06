@@ -18,9 +18,25 @@ const toSettingsDTO = (row: ConsultationSettings) => ({
   defaultAmount: row.defaultAmount != null ? Number(row.defaultAmount) : null,
   feeStructure: row.feeStructure,
   waiverWindowDays: row.waiverWindowDays,
+  timezone: row.timezone,
   smsEnabled: row.smsEnabled,
   updatedAt: row.updatedAt,
 });
+
+/**
+ * Resolve the firm's IANA timezone, defaulting to UTC when unset. Shared by
+ * scheduling and business-logic code that must compute in the firm zone.
+ */
+export const getFirmTimezone = async (
+  organizationId: string,
+): Promise<string> => {
+  const [row] = await db
+    .select({ timezone: consultationSettings.timezone })
+    .from(consultationSettings)
+    .where(eq(consultationSettings.organizationId, organizationId))
+    .limit(1);
+  return row?.timezone ?? "UTC";
+};
 
 export class ConsultationSettingsService {
   getSettings = async (organizationId: string) => {
@@ -38,6 +54,7 @@ export class ConsultationSettingsService {
         defaultAmount: null,
         feeStructure: null,
         waiverWindowDays: null,
+        timezone: "UTC",
         smsEnabled: false,
         updatedAt: null,
       };
@@ -64,6 +81,7 @@ export class ConsultationSettingsService {
         chargesFee && feeStructure === "waived_if_retainer"
           ? body.waiverWindowDays ?? null
           : null,
+      ...(body.timezone !== undefined ? { timezone: body.timezone } : {}),
       smsEnabled: body.smsEnabled ?? false,
       updatedAt: new Date(),
     };

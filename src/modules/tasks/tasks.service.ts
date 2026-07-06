@@ -1,6 +1,8 @@
 import { and, count, desc, eq, gte, lte, or } from "drizzle-orm";
 import { db } from "../../db/client";
 import { admins, cases, clients, staff, tasks } from "../../db/schema";
+import { dayjs } from "../../utils/date";
+import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 
 export class TasksService {
   // ─── Stats ───────────────────────────────────────────────────────────────────
@@ -16,13 +18,11 @@ export class TasksService {
         ),
       );
 
-    const startOfWeek = new Date();
-    startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
-    startOfWeek.setHours(0, 0, 0, 0);
-
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(endOfWeek.getDate() + 6);
-    endOfWeek.setHours(23, 59, 59, 999);
+    // "This week" is bounded by the firm's local calendar week.
+    const tz = await getFirmTimezone(organizationId);
+    const weekStart = dayjs().tz(tz).startOf("week");
+    const startOfWeek = weekStart.utc().toDate();
+    const endOfWeek = weekStart.endOf("week").utc().toDate();
 
     const [completedResult] = await db
       .select({ count: count() })

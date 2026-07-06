@@ -49,6 +49,11 @@ export const leads = pgTable('leads', {
   status:         leadStatusEnum('status').notNull().default('new'),
   pipelineStage:  leadPipelineStageEnum('pipeline_stage').notNull().default('lead_inbox'),
 
+  // IANA timezone the lead operates in. Optional on creation (defaults to the
+  // firm timezone in the service layer); reconciled with the browser-detected
+  // zone when the lead books a consultation. Used to localize lead-facing emails.
+  timezone:       text('timezone'),
+
   // Stage-linked IDs — plain uuid, no FK (avoids circular deps with pipeline tables)
   conflictCheckId:     uuid('conflict_check_id'),
   questionnaireSendId: uuid('questionnaire_send_id'),

@@ -359,6 +359,15 @@ export class ConsultationBookingRouter {
       }),
       ctrl.selectConsultationSlot,
     );
+
+    this.router.patch(
+      "/:token/timezone",
+      validateRequest({
+        params: v.bookingTokenParamsSchema,
+        body: v.updateBookingTimezoneBodySchema,
+      }),
+      ctrl.updateBookingTimezone,
+    );
   }
 }
 

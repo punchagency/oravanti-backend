@@ -10,6 +10,9 @@ export const profiles = pgTable('profiles', {
   jobTitle: text('job_title'),
   barNumber: text('bar_number'),
   avatarUrl: text('avatar_url'),
+  // IANA timezone preference (e.g. "America/New_York"). When null, the UI falls
+  // back to the browser-detected zone.
+  timezone: text('timezone'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });

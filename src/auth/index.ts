@@ -12,6 +12,8 @@ import { and, eq } from "drizzle-orm";
 import { env } from "../config/env";
 import { db } from "../db/client";
 import { staff } from "../db/schema";
+import { consultationSettings } from "../db/schema/consultation-settings";
+import { profiles } from "../db/schema/profiles";
 import {
   account,
   invitation,
@@ -241,6 +243,7 @@ export const auth = betterAuth({
       ).activeOrganizationId;
 
       let memberRole: string | null = null;
+      let firmTimezone = "UTC";
       if (activeOrganizationId) {
         const [membership] = await db
           .select({ role: member.role })
@@ -253,9 +256,29 @@ export const auth = betterAuth({
           )
           .limit(1);
         memberRole = membership?.role ?? null;
+
+        // Firm timezone drives business-logic and coordination (firm) display.
+        const [settings] = await db
+          .select({ timezone: consultationSettings.timezone })
+          .from(consultationSettings)
+          .where(eq(consultationSettings.organizationId, activeOrganizationId))
+          .limit(1);
+        firmTimezone = settings?.timezone ?? "UTC";
       }
 
-      return { user, session, memberRole };
+      // User's own timezone preference (null → client falls back to browser).
+      const [profile] = await db
+        .select({ timezone: profiles.timezone })
+        .from(profiles)
+        .where(eq(profiles.userId, user.id))
+        .limit(1);
+
+      return {
+        user: { ...user, timezone: profile?.timezone ?? null },
+        session,
+        memberRole,
+        firmTimezone,
+      };
     }),
   ],
   databaseHooks,
