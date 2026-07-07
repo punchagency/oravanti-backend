@@ -2,6 +2,8 @@ import { createHash, randomBytes } from "crypto";
 import PDFDocument from "pdfkit";
 import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/client";
+import { formatWithZone } from "../../utils/date";
+import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 import { cases } from "../../db/schema/cases";
 import { conflictChecks } from "../../db/schema/conflict-checks";
 import { leads } from "../../db/schema/leads";
@@ -899,6 +901,8 @@ export class QuestionnairesService {
       responseId,
     );
 
+    // The PDF is a firm-facing document; render timestamps in the firm zone.
+    const tz = await getFirmTimezone(organizationId);
     const answerMap = new Map(answers.map((a) => [a.questionId, a.value]));
     const snapshot = (send?.schemaSnapshot ?? {}) as {
       title?: string;
@@ -923,7 +927,7 @@ export class QuestionnairesService {
       .fillColor("#666")
       .text(`Status: ${response.status}`)
       .text(
-        `Submitted: ${response.submittedAt ? new Date(response.submittedAt).toLocaleString() : "—"}`,
+        `Submitted: ${response.submittedAt ? formatWithZone(response.submittedAt, tz) : "—"}`,
       )
       .moveDown(1)
       .fillColor("#000");

@@ -75,6 +75,8 @@ import { assembleFeeAgreementDocument } from "./fee-agreement-document";
 import { renderFeeAgreementPdf } from "./fee-agreement-pdf";
 import { storageService } from "../../utils/storage/storage.service";
 import { googleMeetService } from "../../utils/google-meet/google-meet.service";
+import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
+import { formatDualZone, formatWithZone } from "../../utils/date";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -399,8 +401,13 @@ const createLead = async (
     assignedStaffId?: string;
     intakeAdversePartyName?: string;
     intakeAdversePartyEmail?: string;
+    timezone?: string;
   },
 ) => {
+  // Timezone is optional on creation; default to the firm's zone so lead-facing
+  // emails have a sensible localization until the lead reconciles it at booking.
+  const timezone = data.timezone ?? (await getFirmTimezone(organizationId));
+
   const [lead] = await db
     .insert(leads)
     .values({
@@ -417,6 +424,7 @@ const createLead = async (
       assignedStaffId: data.assignedStaffId,
       intakeAdversePartyName: data.intakeAdversePartyName,
       intakeAdversePartyEmail: data.intakeAdversePartyEmail,
+      timezone,
     })
     .returning();
 
@@ -636,6 +644,7 @@ const updateLead = async (
     assignedStaffId: string;
     intakeAdversePartyName: string;
     intakeAdversePartyEmail: string;
+    timezone: string;
   }>,
 ) => {
   const [updated] = await db
@@ -2163,7 +2172,7 @@ const getConsultationBooking = async (token: string) => {
   const consultation = await getConsultationByBookingToken(token, true);
 
   const [lead] = await db
-    .select({ name: leads.name })
+    .select({ name: leads.name, timezone: leads.timezone })
     .from(leads)
     .where(eq(leads.id, consultation.leadId))
     .limit(1);
@@ -2173,6 +2182,8 @@ const getConsultationBooking = async (token: string) => {
     .from(organization)
     .where(eq(organization.id, consultation.organizationId))
     .limit(1);
+
+  const firmTimezone = await getFirmTimezone(consultation.organizationId);
 
   const requiresPayment = consultation.feeStatus === "unpaid";
 
@@ -2191,6 +2202,8 @@ const getConsultationBooking = async (token: string) => {
   return {
     firmName: firm?.name ?? null,
     leadName: lead?.name ?? null,
+    firmTimezone,
+    leadTimezone: lead?.timezone ?? null,
     mode: consultation.mode,
     durationMinutes: consultation.duration,
     requiresPayment,
@@ -2203,6 +2216,37 @@ const getConsultationBooking = async (token: string) => {
     bookingStatus: consultation.bookingStatus,
     slots,
   };
+};
+
+/**
+ * Update the lead's timezone via their public booking token — used by the
+ * booking page's reconciliation prompt when the browser-detected zone differs
+ * from (or fills in a null) stored value. Public/token-gated, so it only ever
+ * touches the lead tied to that booking.
+ */
+const updateLeadTimezoneByBookingToken = async (
+  token: string,
+  timezone: string,
+) => {
+  const consultation = await getConsultationByBookingToken(token);
+  await db
+    .update(leads)
+    .set({ timezone, updatedAt: new Date() })
+    .where(eq(leads.id, consultation.leadId));
+  return { timezone };
+};
+
+/** Resolve a lead's timezone, falling back to the firm zone when unset. */
+const getLeadTimezone = async (
+  leadId: string,
+  organizationId: string,
+): Promise<string> => {
+  const [lead] = await db
+    .select({ timezone: leads.timezone })
+    .from(leads)
+    .where(eq(leads.id, leadId))
+    .limit(1);
+  return lead?.timezone ?? (await getFirmTimezone(organizationId));
 };
 
 const payConsultationFee = async (token: string) => {
@@ -2301,8 +2345,18 @@ const sendConsultationConfirmation = async (
     await getConsultationRecipients(consultation);
   if (!lead) return;
 
-  const scheduledStr = consultation.scheduledAt
-    ? consultation.scheduledAt.toLocaleString("en-US", { timeZone: "UTC" })
+  // Localize the time per audience, always with an explicit zone label: the
+  // lead sees their own zone (plus firm time), staff see the firm zone.
+  const firmTz = await getFirmTimezone(consultation.organizationId);
+  const leadTz = await getLeadTimezone(
+    consultation.leadId,
+    consultation.organizationId,
+  );
+  const leadScheduledStr = consultation.scheduledAt
+    ? formatDualZone(consultation.scheduledAt, leadTz, firmTz)
+    : "TBD";
+  const staffScheduledStr = consultation.scheduledAt
+    ? formatWithZone(consultation.scheduledAt, firmTz)
     : "TBD";
 
   // Mode-specific meeting detail.
@@ -2340,7 +2394,7 @@ const sendConsultationConfirmation = async (
       to: lead.email,
       subject: "Your consultation is confirmed",
       html: `<p>Dear ${lead.name},</p>
-        <p>Your consultation is confirmed for <strong>${scheduledStr} UTC</strong>.</p>
+        <p>Your consultation is confirmed for <strong>${leadScheduledStr}</strong>.</p>
         ${meetingDetail}
         <p>We look forward to speaking with you.</p>`,
     })
@@ -2351,7 +2405,7 @@ const sendConsultationConfirmation = async (
       .sendEmail({
         to: email,
         subject: `Consultation confirmed: ${lead.name}`,
-        html: `<p>A consultation with <strong>${lead.name}</strong> is confirmed for <strong>${scheduledStr} UTC</strong>.</p>
+        html: `<p>A consultation with <strong>${lead.name}</strong> is confirmed for <strong>${staffScheduledStr}</strong>.</p>
           ${meetingDetail}`,
       })
       .catch(console.error);
@@ -2502,11 +2556,13 @@ const cancelConsultation = async (
 
   const { lead: leadRow, staffEmails } =
     await getConsultationRecipients(updated);
-  const scheduledStr = updated.scheduledAt
-    ? updated.scheduledAt.toLocaleString("en-US", { timeZone: "UTC" })
-    : null;
-  const when = scheduledStr
-    ? ` scheduled for <strong>${scheduledStr} UTC</strong>`
+  const firmTz = await getFirmTimezone(updated.organizationId);
+  const leadTz = await getLeadTimezone(updated.leadId, updated.organizationId);
+  const leadWhen = updated.scheduledAt
+    ? ` scheduled for <strong>${formatDualZone(updated.scheduledAt, leadTz, firmTz)}</strong>`
+    : "";
+  const staffWhen = updated.scheduledAt
+    ? ` scheduled for <strong>${formatWithZone(updated.scheduledAt, firmTz)}</strong>`
     : "";
   const reasonLine = data.reason
     ? `<p><strong>Reason:</strong> ${data.reason}</p>`
@@ -2518,7 +2574,7 @@ const cancelConsultation = async (
         to: leadRow.email,
         subject: "Your consultation has been cancelled",
         html: `<p>Dear ${leadRow.name},</p>
-          <p>Your consultation${when} has been cancelled.</p>
+          <p>Your consultation${leadWhen} has been cancelled.</p>
           ${reasonLine}
           <p>Please contact our office if you would like to re-schedule.</p>`,
       })
@@ -2531,7 +2587,7 @@ const cancelConsultation = async (
         subject: `Consultation cancelled: ${leadRow?.name ?? "client"}`,
         html: `<p>The consultation with <strong>${
           leadRow?.name ?? "the client"
-        }</strong>${when} has been cancelled.</p>
+        }</strong>${staffWhen} has been cancelled.</p>
           ${reasonLine}`,
       })
       .catch(console.error);
@@ -3411,6 +3467,8 @@ export class LeadsService {
   updateConsultation = updateConsultation;
   cancelConsultation = cancelConsultation;
   getConsultationBooking = getConsultationBooking;
+  updateLeadTimezoneByBookingToken = updateLeadTimezoneByBookingToken;
+  getLeadTimezone = getLeadTimezone;
   payConsultationFee = payConsultationFee;
   selectConsultationSlot = selectConsultationSlot;
   generateFeeAgreement = generateFeeAgreement;

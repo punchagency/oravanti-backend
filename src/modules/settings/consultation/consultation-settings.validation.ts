@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidTimezone } from "../../../utils/date";
 
 export const consultationFeeStructures = [
   "flat",
@@ -6,12 +7,18 @@ export const consultationFeeStructures = [
   "waived_if_retainer",
 ] as const;
 
+/** Reusable IANA timezone validator (e.g. "America/New_York"). */
+export const timezoneSchema = z
+  .string()
+  .refine(isValidTimezone, { message: "Invalid IANA timezone" });
+
 export const upsertConsultationSettingsSchema = z
   .object({
     chargesFee: z.boolean(),
     defaultAmount: z.number().positive().nullish(),
     feeStructure: z.enum(consultationFeeStructures).nullish(),
     waiverWindowDays: z.number().int().positive().nullish(),
+    timezone: timezoneSchema.optional(),
     smsEnabled: z.boolean().optional(),
   })
   .superRefine((val, ctx) => {

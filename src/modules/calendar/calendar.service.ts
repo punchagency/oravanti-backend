@@ -7,6 +7,8 @@ import {
 } from "../../db/schema/calendar-events";
 import { clients } from "../../db/schema/clients";
 import { staff } from "../../db/schema/staff";
+import { dayjs } from "../../utils/date";
+import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -340,9 +342,11 @@ export const getCalendarStrip = async (
   organizationId: string,
   teamId?: string,
 ) => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const end = addDays(today, 14);
+  // Bucket the 14-day strip against the firm's local calendar days.
+  const tz = await getFirmTimezone(organizationId);
+  const startDay = dayjs().tz(tz).startOf("day");
+  const today = startDay.utc().toDate();
+  const end = startDay.add(14, "day").utc().toDate();
 
   const conditions = [
     eq(calendarEvents.organizationId, organizationId),
@@ -372,8 +376,7 @@ export const getCalendarStrip = async (
   > = {};
 
   for (let i = 0; i < 14; i++) {
-    const d = addDays(today, i);
-    const key = d.toISOString().split("T")[0];
+    const key = startDay.add(i, "day").format("YYYY-MM-DD");
     days[key] = {
       date: key,
       hearings: 0,
@@ -385,7 +388,7 @@ export const getCalendarStrip = async (
   }
 
   for (const e of events) {
-    const key = new Date(e.startTime).toISOString().split("T")[0];
+    const key = dayjs.utc(e.startTime).tz(tz).format("YYYY-MM-DD");
     if (!days[key]) continue;
     days[key].total++;
     if (

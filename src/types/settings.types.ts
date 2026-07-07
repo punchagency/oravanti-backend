@@ -4,6 +4,7 @@ export interface UpdateProfileBody {
   phone?: string;
   jobTitle?: string;
   barNumber?: string;
+  timezone?: string;
 }
 
 export interface UpsertFirmInfoBody {

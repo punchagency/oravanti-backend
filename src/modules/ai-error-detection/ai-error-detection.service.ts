@@ -4,14 +4,16 @@ import { aiErrorFlags } from "../../db/schema/ai-error-flags";
 import { aiSystemConfig } from "../../db/schema/ai-system-config";
 import { cases } from "../../db/schema/cases";
 import { clients } from "../../db/schema/clients";
+import { dayjs } from "../../utils/date";
+import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 
 export class AIErrorDetectionService {
   // ─── Stats ────────────────────────────────────────────────────────────────────
 
   getStats = async (organizationId: string) => {
-    const startOfMonth = new Date();
-    startOfMonth.setDate(1);
-    startOfMonth.setHours(0, 0, 0, 0);
+    // "This month" is bounded by the firm's local calendar month.
+    const tz = await getFirmTimezone(organizationId);
+    const startOfMonth = dayjs().tz(tz).startOf("month").utc().toDate();
 
     const [detectedThisMonth] = await db
       .select({ total: count() })

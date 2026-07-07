@@ -197,6 +197,14 @@ export class LeadsController {
     res.json({ success: true, data: result });
   };
 
+  updateBookingTimezone = async (req: Request, res: Response) => {
+    const result = await this.svc.updateLeadTimezoneByBookingToken(
+      req.params.token as string,
+      req.body.timezone,
+    );
+    res.json({ success: true, data: result });
+  };
+
   // ─── Fee Agreement ───────────────────────────────────────────────────────────
 
   generateFeeAgreement = async (req: AuthRequest, res: Response) => {
