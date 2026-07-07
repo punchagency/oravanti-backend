@@ -32,15 +32,28 @@ const paymentTermsText = (
   return `The total amount is due in full upon signing this agreement. ${pay} Failure to remit payment within 7 days of signing may result in withdrawal of representation.`;
 };
 
-// Muted uppercase section label.
-const drawLabel = (doc: PDFKit.PDFDocument, text: string) => {
-  doc
-    .fontSize(8)
-    .fillColor("#8a8577")
-    .font("Helvetica-Bold")
-    .text(text.toUpperCase(), { characterSpacing: 0.5 })
-    .font("Helvetica")
-    .fillColor("#1a1a1a");
+// Muted uppercase section label. Pass `x`/`width` to pin it to a specific
+// column (pdfkit otherwise resets x to the left margin after each .text(), which
+// would overlap right-column labels onto the left ones).
+const drawLabel = (
+  doc: PDFKit.PDFDocument,
+  text: string,
+  opts: { x?: number; width?: number; align?: "left" | "right" } = {},
+) => {
+  doc.fontSize(8).fillColor("#8a8577").font("Helvetica-Bold");
+  if (opts.x !== undefined) {
+    doc.text(text.toUpperCase(), opts.x, doc.y, {
+      width: opts.width,
+      align: opts.align ?? "left",
+      characterSpacing: 0.5,
+    });
+  } else {
+    doc.text(text.toUpperCase(), {
+      align: opts.align ?? "left",
+      characterSpacing: 0.5,
+    });
+  }
+  doc.font("Helvetica").fillColor("#1a1a1a");
 };
 
 const hr = (doc: PDFKit.PDFDocument) => {
@@ -132,7 +145,7 @@ export const renderFeeAgreementPdf = async (
   doc.font("Helvetica-Bold").fontSize(11).fillColor("#1a1a1a").text(document.docRef);
   const metaBottom = doc.y;
   doc.y = metaTop;
-  drawLabel(doc, "Date prepared");
+  drawLabel(doc, "Date prepared", { align: "right" });
   doc
     .font("Helvetica-Bold")
     .fontSize(11)
@@ -148,7 +161,7 @@ export const renderFeeAgreementPdf = async (
   const rightX = leftX + colWidth + colGap;
   const partiesTop = doc.y;
 
-  drawLabel(doc, "Law firm (service provider)");
+  drawLabel(doc, "Law firm (service provider)", { x: leftX, width: colWidth });
   doc.moveDown(0.3);
   doc.font("Helvetica-Bold").fontSize(11).text(firmName, leftX, doc.y, { width: colWidth });
   doc.font("Helvetica").fontSize(9).fillColor("#555");
@@ -160,7 +173,7 @@ export const renderFeeAgreementPdf = async (
   const leftBottom = doc.y;
 
   doc.y = partiesTop;
-  drawLabel(doc, "Client (service recipient)");
+  drawLabel(doc, "Client (service recipient)", { x: rightX, width: colWidth });
   doc.moveDown(0.3);
   doc
     .font("Helvetica-Bold")
@@ -230,7 +243,9 @@ export const renderFeeAgreementPdf = async (
   doc.moveDown(0.8);
 
   // ── Account allocation ────────────────────────────────────────────────────
-  drawLabel(doc, "Account allocation");
+  // Pin to the left margin: the preceding fee-table amount column leaves doc.x
+  // shifted right, which would otherwise offset this section label.
+  drawLabel(doc, "Account allocation", { x: leftX, width: contentWidth });
   doc.moveDown(0.4);
   const allocTop = doc.y;
   const allocCol = contentWidth / 3;
@@ -307,7 +322,7 @@ export const renderFeeAgreementPdf = async (
 
   // ── Signature blocks ──────────────────────────────────────────────────────
   const sigTop = doc.y;
-  drawLabel(doc, "Client signature");
+  drawLabel(doc, "Client signature", { x: leftX, width: colWidth });
   doc.moveDown(2);
   // Dropbox Sign text-tag anchor (hidden via hideTextTags when the request is
   // created). Rendered light so it stays unobtrusive if tags are not stripped.
@@ -328,7 +343,7 @@ export const renderFeeAgreementPdf = async (
   const clientBottom = doc.y;
 
   doc.y = sigTop;
-  drawLabel(doc, "Attorney signature");
+  drawLabel(doc, "Attorney signature", { x: rightX, width: colWidth });
   // Attorney counter-signature is out of scope for now (client-only); rendered
   // as a manual line so the printed document still has an attorney block.
   doc.moveDown(3.5);
