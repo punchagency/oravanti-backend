@@ -1,5 +1,6 @@
 import { LeadsController } from "./leads.controller";
 import {
+  AgreementSigningRouter,
   AgreementsRouter,
   ConsultationBookingRouter,
   LeadsRouter,
@@ -33,13 +34,25 @@ export class AgreementsModule {
   }
 }
 
-// Public e-signature callback at /webhooks/esignature.
+// Public Dropbox Sign callback at /webhooks/dropbox-sign.
 export class WebhooksModule {
   public router: import("express").Router;
   public path: string;
 
   constructor() {
     const router = new WebhooksRouter(buildController());
+    this.router = router.router;
+    this.path = router.path;
+  }
+}
+
+// Public, token-gated client signing session at /agreement-signing/:token/session.
+export class AgreementSigningModule {
+  public router: import("express").Router;
+  public path: string;
+
+  constructor() {
+    const router = new AgreementSigningRouter(buildController());
     this.router = router.router;
     this.path = router.path;
   }
