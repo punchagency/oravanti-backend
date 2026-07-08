@@ -164,6 +164,15 @@ export class LeadsController {
     res.json({ success: true, data: result });
   };
 
+  cancelConsultation = async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.cancelConsultation(
+      req.params.id as string,
+      req.organizationId!,
+      { reason: req.body?.reason },
+    );
+    res.json({ success: true, data: result });
+  };
+
   // ─── Public booking flow (token-gated, no auth) ──────────────────────────────
 
   getConsultationBooking = async (req: Request, res: Response) => {
@@ -188,6 +197,14 @@ export class LeadsController {
     res.json({ success: true, data: result });
   };
 
+  updateBookingTimezone = async (req: Request, res: Response) => {
+    const result = await this.svc.updateLeadTimezoneByBookingToken(
+      req.params.token as string,
+      req.body.timezone,
+    );
+    res.json({ success: true, data: result });
+  };
+
   // ─── Fee Agreement ───────────────────────────────────────────────────────────
 
   generateFeeAgreement = async (req: AuthRequest, res: Response) => {
@@ -202,6 +219,14 @@ export class LeadsController {
   getFeeAgreement = async (req: AuthRequest, res: Response) => {
     const result = await this.svc.getFeeAgreement(
       req.params.id as string,
+      req.organizationId!,
+    );
+    res.json({ success: true, data: result });
+  };
+
+  getFeeAgreementPreview = async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.getFeeAgreementPreview(
+      req.params.agreementId as string,
       req.organizationId!,
     );
     res.json({ success: true, data: result });
@@ -231,11 +256,35 @@ export class LeadsController {
     res.json({ success: true, data: result });
   };
 
-  // ─── eSignature Webhook (public) ─────────────────────────────────────────────
+  // ─── Embedded signing session (public, token-gated) ─────────────────────────
 
-  handleESignatureWebhook = async (req: Request, res: Response) => {
-    const result = await this.svc.handleESignatureWebhook(req.body);
+  getEmbeddedSignSession = async (req: Request, res: Response) => {
+    const result = await this.svc.getEmbeddedSignSession(
+      req.params.token as string,
+    );
     res.json({ success: true, data: result });
+  };
+
+  // ─── Dropbox Sign Webhook (public) ──────────────────────────────────────────
+
+  handleDropboxSignWebhook = async (req: Request, res: Response) => {
+    // Dropbox Sign posts multipart/form-data with a single `json` field. The
+    // route-scoped upload middleware puts it on req.body.json (string).
+    const raw = (req.body as { json?: string })?.json;
+    if (!raw) {
+      res.status(400).send("Missing event payload");
+      return;
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      res.status(400).send("Invalid event payload");
+      return;
+    }
+    await this.svc.handleDropboxSignWebhook(payload as never);
+    // Dropbox Sign requires this exact response body to mark the callback healthy.
+    res.status(200).send("Hello API Event Received");
   };
 
   // ─── Case Opening ─────────────────────────────────────────────────────────────

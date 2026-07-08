@@ -10,6 +10,7 @@ import { requireAuth } from "../../../middleware/auth.middleware";
 import { CommonValidation } from "../../../validation/common.validation";
 import { validateRequest } from "../../../middleware/validate.middleware";
 import { ProfileController } from "./profile.controller";
+import { updateProfileSchema } from "./profile.validation";
 
 export class ProfileRouter {
   public router: Router;
@@ -73,7 +74,7 @@ export class ProfileRouter {
      */
     this.router.patch(
       "/",
-      validateRequest({ body: this.validation.optionalBody() }),
+      validateRequest({ body: updateProfileSchema }),
       this.profileController.updateProfile,
     );
 

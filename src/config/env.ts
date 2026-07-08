@@ -38,6 +38,14 @@ type AppEnv = Record<RequiredEnvKey, string> & {
   GOOGLE_MEET_CLIENT_EMAIL?: string;
   GOOGLE_MEET_PRIVATE_KEY?: string;
   GOOGLE_MEET_IMPERSONATED_USER?: string;
+  // Platform-owned Dropbox Sign (HelloSign) account, shared across all firms.
+  // Optional: when the API key/client id are unset the leads module falls back
+  // to the stub e-signature provider so dev environments still function.
+  DROPBOX_SIGN_API_KEY?: string;
+  DROPBOX_SIGN_CLIENT_ID?: string;
+  // When true (default outside production) signature requests are created in
+  // test mode and do not consume signature quota.
+  DROPBOX_SIGN_TEST_MODE: boolean;
   databaseUrl: string;
   isProduction: boolean;
 };
@@ -88,6 +96,13 @@ const validateEnv = (): AppEnv => {
   const googleMeetClientEmail = readEnv("GOOGLE_MEET_CLIENT_EMAIL");
   const googleMeetPrivateKey = readEnv("GOOGLE_MEET_PRIVATE_KEY");
   const googleMeetImpersonatedUser = readEnv("GOOGLE_MEET_IMPERSONATED_USER");
+  const dropboxSignApiKey = readEnv("DROPBOX_SIGN_API_KEY");
+  const dropboxSignClientId = readEnv("DROPBOX_SIGN_CLIENT_ID");
+  // Defaults to test mode everywhere except production so quota is never
+  // consumed accidentally; set DROPBOX_SIGN_TEST_MODE=false to override.
+  const dropboxSignTestMode = isProduction
+    ? readEnv("DROPBOX_SIGN_TEST_MODE") === "true"
+    : readEnv("DROPBOX_SIGN_TEST_MODE") !== "false";
 
   return {
     ...values,
@@ -98,6 +113,9 @@ const validateEnv = (): AppEnv => {
     ...(googleMeetClientEmail ? { GOOGLE_MEET_CLIENT_EMAIL: googleMeetClientEmail } : {}),
     ...(googleMeetPrivateKey ? { GOOGLE_MEET_PRIVATE_KEY: googleMeetPrivateKey } : {}),
     ...(googleMeetImpersonatedUser ? { GOOGLE_MEET_IMPERSONATED_USER: googleMeetImpersonatedUser } : {}),
+    ...(dropboxSignApiKey ? { DROPBOX_SIGN_API_KEY: dropboxSignApiKey } : {}),
+    ...(dropboxSignClientId ? { DROPBOX_SIGN_CLIENT_ID: dropboxSignClientId } : {}),
+    DROPBOX_SIGN_TEST_MODE: dropboxSignTestMode,
     databaseUrl: isProduction ? prodDatabaseUrl! : values.DATABASE_URL,
     isProduction,
   };

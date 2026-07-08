@@ -27,6 +27,7 @@ import { StaffAvailabilityModule } from "./staff-availability/staff-availability
 import { TasksModule } from "./tasks/tasks.module";
 import { WorkflowModule } from "./workflow/workflow.module";
 import {
+  AgreementSigningModule,
   AgreementsModule,
   ConsultationBookingModule,
   LeadsModule,
@@ -66,5 +67,6 @@ export const modules: Module[] = [
   new LeadsModule(),
   new AgreementsModule(),
   new WebhooksModule(),
+  new AgreementSigningModule(),
   new ConsultationBookingModule(),
 ];

@@ -1,4 +1,5 @@
 import { Router } from "express";
+import multer from "multer";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { requirePermission } from "../../middleware/permission.middleware";
@@ -195,6 +196,18 @@ export class LeadsRouter {
       ctrl.updateConsultation,
     );
 
+    this.router.post(
+      "/:id/consultation/cancel",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.idParamsSchema,
+        body: v.cancelConsultationBodySchema,
+      }),
+      ctrl.cancelConsultation,
+    );
+
     // ── Fee Agreement ─────────────────────────────────────────────────────────
 
     this.router.post(
@@ -248,6 +261,15 @@ export class AgreementsRouter {
   private initializeRoutes() {
     const { ctrl } = this;
 
+    this.router.get(
+      "/:agreementId/preview",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.agreementIdParamsSchema }),
+      ctrl.getFeeAgreementPreview,
+    );
+
     this.router.post(
       "/:agreementId/nudge-client",
       requireAuth,
@@ -283,6 +305,9 @@ export class WebhooksRouter {
   public router: Router;
   public path: string;
   private ctrl: LeadsController;
+  // Dropbox Sign posts multipart/form-data with a single `json` field and no
+  // files; memory storage + .none() parses that text field onto req.body.
+  private upload = multer({ storage: multer.memoryStorage() });
 
   constructor(ctrl: LeadsController) {
     this.router = Router();
@@ -295,9 +320,34 @@ export class WebhooksRouter {
     const { ctrl } = this;
 
     this.router.post(
-      "/esignature",
-      validateRequest({ body: v.esignatureWebhookBodySchema }),
-      ctrl.handleESignatureWebhook,
+      "/dropbox-sign",
+      this.upload.none(),
+      ctrl.handleDropboxSignWebhook,
+    );
+  }
+}
+
+// ── Agreement signing router (public, token-gated client signing page) ───────
+
+export class AgreementSigningRouter {
+  public router: Router;
+  public path: string;
+  private ctrl: LeadsController;
+
+  constructor(ctrl: LeadsController) {
+    this.router = Router();
+    this.path = "/agreement-signing";
+    this.ctrl = ctrl;
+    this.initializeRoutes();
+  }
+
+  private initializeRoutes() {
+    const { ctrl } = this;
+
+    this.router.post(
+      "/:token/session",
+      validateRequest({ params: v.agreementSigningTokenParamsSchema }),
+      ctrl.getEmbeddedSignSession,
     );
   }
 }
@@ -337,6 +387,15 @@ export class ConsultationBookingRouter {
         body: v.selectSlotBodySchema,
       }),
       ctrl.selectConsultationSlot,
+    );
+
+    this.router.patch(
+      "/:token/timezone",
+      validateRequest({
+        params: v.bookingTokenParamsSchema,
+        body: v.updateBookingTimezoneBodySchema,
+      }),
+      ctrl.updateBookingTimezone,
     );
   }
 }

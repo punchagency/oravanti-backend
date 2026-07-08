@@ -27,7 +27,10 @@ import {
 } from "../../db/schema/consultations";
 import { consultationLocations } from "../../db/schema/consultation-locations";
 import { consultationSettings } from "../../db/schema/consultation-settings";
-import { feeAgreements } from "../../db/schema/fee-agreements";
+import {
+  feeAgreements,
+  type FeeAgreementDetails,
+} from "../../db/schema/fee-agreements";
 import { leads } from "../../db/schema/leads";
 import { cases } from "../../db/schema/cases";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
@@ -61,12 +64,17 @@ import {
   getPaginationOffset,
   PaginationParams,
 } from "../../utils/pagination";
-import { stubESignatureProvider } from "./esignature.provider";
+import { getESignatureProvider } from "./dropbox-sign.provider";
 import { generateCaseNumber } from "../cases/cases.service";
 import { organization, user } from "../../db/schema/auth-schema";
 import { env } from "../../config/env";
 import { generateConsultationSlots } from "./consultation-slots.service";
+import { assembleFeeAgreementDocument } from "./fee-agreement-document";
+import { renderFeeAgreementPdf } from "./fee-agreement-pdf";
+import { storageService } from "../../utils/storage/storage.service";
 import { googleMeetService } from "../../utils/google-meet/google-meet.service";
+import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
+import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -391,8 +399,13 @@ const createLead = async (
     assignedStaffId?: string;
     intakeAdversePartyName?: string;
     intakeAdversePartyEmail?: string;
+    timezone?: string;
   },
 ) => {
+  // Timezone is optional on creation; default to the firm's zone so lead-facing
+  // emails have a sensible localization until the lead reconciles it at booking.
+  const timezone = data.timezone ?? (await getFirmTimezone(organizationId));
+
   const [lead] = await db
     .insert(leads)
     .values({
@@ -409,6 +422,7 @@ const createLead = async (
       assignedStaffId: data.assignedStaffId,
       intakeAdversePartyName: data.intakeAdversePartyName,
       intakeAdversePartyEmail: data.intakeAdversePartyEmail,
+      timezone,
     })
     .returning();
 
@@ -591,11 +605,24 @@ const getLeadById = async (id: string, organizationId: string) => {
         : Promise.resolve(null),
     ]);
 
+  // Prior consultations for this lead (follow-ups / re-schedules / cancelled),
+  // newest first. The current one (if any) lives on `consultation`; everything
+  // else is history for the card. Null-safe: when the lead has no current
+  // consultation (e.g. after a cancellation), every consultation is history.
+  const consultationHistory = (
+    await db
+      .select()
+      .from(consultations)
+      .where(eq(consultations.leadId, id))
+      .orderBy(desc(consultations.createdAt))
+  ).filter((c) => c.id !== lead.consultationId);
+
   return {
     ...lead,
     conflictCheck,
     questionnaireSend,
     consultation,
+    consultationHistory,
     feeAgreement,
   };
 };
@@ -615,6 +642,7 @@ const updateLead = async (
     assignedStaffId: string;
     intakeAdversePartyName: string;
     intakeAdversePartyEmail: string;
+    timezone: string;
   }>,
 ) => {
   const [updated] = await db
@@ -1689,6 +1717,8 @@ const initiateConsultation = async (
     feeAmount?: number;
     preConsultationNotes?: string;
     notifyChannels?: ("email" | "sms")[];
+    urgent?: boolean;
+    parentConsultationId?: string;
   },
 ) => {
   const [lead] = await db
@@ -1698,8 +1728,61 @@ const initiateConsultation = async (
     .limit(1);
 
   if (!lead) throw new NotFoundError("Lead not found");
-  if (lead.consultationId)
-    throw new ConflictError("Consultation already exists for this lead");
+
+  // Block only when the lead already has an ACTIVE consultation. Cancelled,
+  // completed, or no-show ones can be superseded by a new booking (re-schedule
+  // after cancel) or a follow-up.
+  if (lead.consultationId) {
+    const [existing] = await db
+      .select({ status: consultations.status })
+      .from(consultations)
+      .where(eq(consultations.id, lead.consultationId))
+      .limit(1);
+    const inactive = ["cancelled", "no_show", "completed"];
+    if (existing && !inactive.includes(existing.status))
+      throw new ConflictError(
+        "An active consultation already exists for this lead",
+      );
+  }
+
+  // Follow-up: the parent must be a completed consultation for this same lead.
+  if (data.parentConsultationId) {
+    const [parent] = await db
+      .select({ leadId: consultations.leadId, status: consultations.status })
+      .from(consultations)
+      .where(
+        and(
+          eq(consultations.id, data.parentConsultationId),
+          eq(consultations.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!parent || parent.leadId !== leadId)
+      throw new BadRequestError("Parent consultation not found for this lead");
+    if (parent.status !== "completed")
+      throw new BadRequestError(
+        "Follow-ups can only be scheduled after the prior consultation is completed",
+      );
+  }
+
+  // Urgent (admin fast-track) requires the lead to have passed conflict check.
+  if (data.urgent) {
+    if (lead.status === "declined")
+      throw new BadRequestError("This lead has been declined");
+    if (!lead.conflictCheckId)
+      throw new BadRequestError(
+        "The lead must pass conflict check before urgent scheduling",
+      );
+    const [cc] = await db
+      .select({ status: conflictChecks.status })
+      .from(conflictChecks)
+      .where(eq(conflictChecks.id, lead.conflictCheckId))
+      .limit(1);
+    if (cc?.status !== "pass")
+      throw new BadRequestError(
+        "The lead must pass conflict check before urgent scheduling",
+      );
+  }
 
   // Mode-specific validation: in-person consultations need a saved location.
   if (data.mode === "in_person") {
@@ -1732,8 +1815,10 @@ const initiateConsultation = async (
   if (settings?.chargesFee) {
     const defaultAmount =
       settings.defaultAmount != null ? Number(settings.defaultAmount) : null;
+    // Urgent bookings let the admin override the amount (urgency surcharge)
+    // regardless of the firm's fee structure.
     const resolved =
-      settings.feeStructure === "custom_per_case_type"
+      data.urgent || settings.feeStructure === "custom_per_case_type"
         ? data.feeAmount ?? defaultAmount
         : defaultAmount;
     if (resolved != null) {
@@ -1742,16 +1827,31 @@ const initiateConsultation = async (
     }
   }
 
+  // Urgent bookings are auto-scheduled ASAP: immediately when no fee applies,
+  // otherwise at payment time. Lead-driven bookings leave scheduledAt null
+  // until the lead picks a slot.
+  const scheduledAt =
+    data.urgent && feeStatus !== "unpaid" ? nextAsapSlot() : null;
+
   const accessToken = generateAccessToken();
   const bookingExpiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+  // Fee → payment gate; urgent no-fee is finalized right after insert; normal
+  // no-fee waits for the lead to pick a slot.
   const status =
-    feeStatus === "unpaid" ? "pending_payment" : "awaiting_slot_selection";
+    feeStatus === "unpaid"
+      ? "pending_payment"
+      : data.urgent
+        ? "scheduled"
+        : "awaiting_slot_selection";
 
   const [consultation] = await db
     .insert(consultations)
     .values({
       organizationId,
       leadId,
+      parentConsultationId: data.parentConsultationId ?? null,
+      scheduledAt,
+      isUrgent: data.urgent ?? false,
       duration: data.duration,
       mode: data.mode,
       leadAttorneyId: data.leadAttorneyId,
@@ -1792,14 +1892,25 @@ const initiateConsultation = async (
     }
   }
 
+  // Point the lead at the newest consultation. A follow-up may happen after the
+  // lead has advanced past the consultation stage, so don't move it backward.
   await db
     .update(leads)
     .set({
       consultationId: consultation.id,
-      pipelineStage: "consultation",
+      ...(data.parentConsultationId
+        ? {}
+        : { pipelineStage: "consultation" as const }),
       updatedAt: new Date(),
     })
     .where(eq(leads.id, leadId));
+
+  // Urgent + no fee: connect ASAP — finalize immediately (mints the Meet link
+  // and sends the confirmation). No lead action is required.
+  if (data.urgent && feeStatus !== "unpaid") {
+    const finalized = await finalizeConsultation(consultation);
+    return { consultation: finalized, bookingToken: accessToken };
+  }
 
   // Email the lead the booking link. Plan 05 refines the templates and adds the
   // public token-gated booking/payment routes; here we mint the link so the
@@ -1811,6 +1922,7 @@ const initiateConsultation = async (
 
   if (notifyChannels.includes("email")) {
     const needsPayment = feeStatus === "unpaid";
+    const urgent = Boolean(data.urgent);
     emailService
       .sendEmail({
         to: lead.email,
@@ -1819,8 +1931,16 @@ const initiateConsultation = async (
           : "Pick a time for your consultation",
         html: needsPayment
           ? `<p>Dear ${lead.name},</p>
-            <p>Please pay your consultation fee of <strong>$${feeAmount}</strong> and then choose a time that works for you:</p>
-            <p><a href="${bookingLink}">${bookingLink}</a></p>`
+            <p>Please pay your consultation fee of <strong>$${feeAmount}</strong>${
+              urgent
+                ? " to be connected with an attorney as soon as possible"
+                : " and then choose a time that works for you"
+            }:</p>
+            <p><a href="${bookingLink}">${bookingLink}</a></p>${
+              urgent
+                ? "<p>You'll receive your confirmation with the scheduled time immediately after payment.</p>"
+                : ""
+            }`
           : `<p>Dear ${lead.name},</p>
             <p>Please choose a time that works for your consultation:</p>
             <p><a href="${bookingLink}">${bookingLink}</a></p>`,
@@ -2038,7 +2158,7 @@ const getConsultationBooking = async (token: string) => {
   const consultation = await getConsultationByBookingToken(token, true);
 
   const [lead] = await db
-    .select({ name: leads.name })
+    .select({ name: leads.name, timezone: leads.timezone })
     .from(leads)
     .where(eq(leads.id, consultation.leadId))
     .limit(1);
@@ -2048,6 +2168,8 @@ const getConsultationBooking = async (token: string) => {
     .from(organization)
     .where(eq(organization.id, consultation.organizationId))
     .limit(1);
+
+  const firmTimezone = await getFirmTimezone(consultation.organizationId);
 
   const requiresPayment = consultation.feeStatus === "unpaid";
 
@@ -2066,9 +2188,12 @@ const getConsultationBooking = async (token: string) => {
   return {
     firmName: firm?.name ?? null,
     leadName: lead?.name ?? null,
+    firmTimezone,
+    leadTimezone: lead?.timezone ?? null,
     mode: consultation.mode,
     durationMinutes: consultation.duration,
     requiresPayment,
+    isUrgent: consultation.isUrgent,
     fee: {
       status: consultation.feeStatus,
       amount:
@@ -2080,21 +2205,64 @@ const getConsultationBooking = async (token: string) => {
   };
 };
 
+/**
+ * Update the lead's timezone via their public booking token — used by the
+ * booking page's reconciliation prompt when the browser-detected zone differs
+ * from (or fills in a null) stored value. Public/token-gated, so it only ever
+ * touches the lead tied to that booking.
+ */
+const updateLeadTimezoneByBookingToken = async (
+  token: string,
+  timezone: string,
+) => {
+  const consultation = await getConsultationByBookingToken(token);
+  await db
+    .update(leads)
+    .set({ timezone, updatedAt: new Date() })
+    .where(eq(leads.id, consultation.leadId));
+  return { timezone };
+};
+
+/** Resolve a lead's timezone, falling back to the firm zone when unset. */
+const getLeadTimezone = async (
+  leadId: string,
+  organizationId: string,
+): Promise<string> => {
+  const [lead] = await db
+    .select({ timezone: leads.timezone })
+    .from(leads)
+    .where(eq(leads.id, leadId))
+    .limit(1);
+  return lead?.timezone ?? (await getFirmTimezone(organizationId));
+};
+
 const payConsultationFee = async (token: string) => {
   const consultation = await getConsultationByBookingToken(token);
   if (consultation.feeStatus !== "unpaid")
     throw new ConflictError("No payment is required for this consultation");
 
-  // Dummy payment: just flip the flags and unlock slot selection.
-  await db
+  // Dummy payment: flip the fee flags. Urgent consultations are auto-scheduled
+  // ASAP at payment time and finalized immediately (connect ASAP) rather than
+  // sending the lead back to pick a slot. Legacy urgent rows created with an
+  // admin-chosen time keep it (the !scheduledAt guard).
+  const asapAt =
+    consultation.isUrgent && !consultation.scheduledAt ? nextAsapSlot() : null;
+  const [paid] = await db
     .update(consultations)
     .set({
       feeStatus: "paid",
       bookingStatus: "paid",
-      status: "awaiting_slot_selection",
+      status: consultation.isUrgent ? consultation.status : "awaiting_slot_selection",
+      ...(asapAt ? { scheduledAt: asapAt } : {}),
       updatedAt: new Date(),
     })
-    .where(eq(consultations.id, consultation.id));
+    .where(eq(consultations.id, consultation.id))
+    .returning();
+
+  if (consultation.isUrgent) {
+    await finalizeConsultation(paid);
+    return { success: true };
+  }
 
   const [lead] = await db
     .select({ name: leads.name, email: leads.email })
@@ -2118,7 +2286,10 @@ const payConsultationFee = async (token: string) => {
   return { success: true };
 };
 
-const sendConsultationConfirmation = async (
+// Gathers the people to notify about a consultation: the lead, the lead
+// attorney (email + phone), and any additional participants. Shared by the
+// confirmation and cancellation emails.
+const getConsultationRecipients = async (
   consultation: typeof consultations.$inferSelect,
 ) => {
   const [lead] = await db
@@ -2126,11 +2297,6 @@ const sendConsultationConfirmation = async (
     .from(leads)
     .where(eq(leads.id, consultation.leadId))
     .limit(1);
-  if (!lead) return;
-
-  const scheduledStr = consultation.scheduledAt
-    ? consultation.scheduledAt.toLocaleString("en-US", { timeZone: "UTC" })
-    : "TBD";
 
   let attorney:
     | { firstName: string; email: string | null; phone: string | null }
@@ -2154,6 +2320,35 @@ const sendConsultationConfirmation = async (
     .leftJoin(staff, eq(consultationParticipants.staffId, staff.id))
     .leftJoin(user, eq(staff.userId, user.id))
     .where(eq(consultationParticipants.consultationId, consultation.id));
+
+  const staffEmails = [
+    attorney?.email,
+    ...participants.map((p) => p.email),
+  ].filter((email): email is string => Boolean(email));
+
+  return { lead, attorney, staffEmails };
+};
+
+const sendConsultationConfirmation = async (
+  consultation: typeof consultations.$inferSelect,
+) => {
+  const { lead, attorney, staffEmails } =
+    await getConsultationRecipients(consultation);
+  if (!lead) return;
+
+  // Localize the time per audience, always with an explicit zone label: the
+  // lead sees their own zone (plus firm time), staff see the firm zone.
+  const firmTz = await getFirmTimezone(consultation.organizationId);
+  const leadTz = await getLeadTimezone(
+    consultation.leadId,
+    consultation.organizationId,
+  );
+  const leadScheduledStr = consultation.scheduledAt
+    ? formatDualZone(consultation.scheduledAt, leadTz, firmTz)
+    : "TBD";
+  const staffScheduledStr = consultation.scheduledAt
+    ? formatWithZone(consultation.scheduledAt, firmTz)
+    : "TBD";
 
   // Mode-specific meeting detail.
   let meetingDetail = "";
@@ -2190,25 +2385,67 @@ const sendConsultationConfirmation = async (
       to: lead.email,
       subject: "Your consultation is confirmed",
       html: `<p>Dear ${lead.name},</p>
-        <p>Your consultation is confirmed for <strong>${scheduledStr} UTC</strong>.</p>
+        <p>Your consultation is confirmed for <strong>${leadScheduledStr}</strong>.</p>
         ${meetingDetail}
         <p>We look forward to speaking with you.</p>`,
     })
     .catch(console.error);
 
-  const staffEmails = [attorney?.email, ...participants.map((p) => p.email)].filter(
-    (email): email is string => Boolean(email),
-  );
   for (const email of staffEmails) {
     emailService
       .sendEmail({
         to: email,
         subject: `Consultation confirmed: ${lead.name}`,
-        html: `<p>A consultation with <strong>${lead.name}</strong> is confirmed for <strong>${scheduledStr} UTC</strong>.</p>
+        html: `<p>A consultation with <strong>${lead.name}</strong> is confirmed for <strong>${staffScheduledStr}</strong>.</p>
           ${meetingDetail}`,
       })
       .catch(console.error);
   }
+};
+
+// Finalize a consultation whose scheduledAt is already set: mint the Meet link
+// (video, when not already present), flip to scheduled, and send confirmations.
+// Shared by the lead slot-selection flow and urgent scheduling (both the
+// no-fee-at-initiate and the pay-then-connect paths).
+const finalizeConsultation = async (
+  consultation: typeof consultations.$inferSelect,
+) => {
+  const start = consultation.scheduledAt;
+  if (!start)
+    throw new BadRequestError("Consultation has no scheduled time to finalize");
+
+  let videoLink = consultation.videoLink;
+  let meetExternalId = consultation.meetExternalId;
+  if (consultation.mode === "video" && !videoLink) {
+    const [lead] = await db
+      .select({ name: leads.name })
+      .from(leads)
+      .where(eq(leads.id, consultation.leadId))
+      .limit(1);
+    const meet = await googleMeetService.createMeetLink({
+      summary: `Consultation with ${lead?.name ?? "client"}`,
+      startTime: start,
+      durationMinutes: consultation.duration,
+    });
+    videoLink = meet.url;
+    meetExternalId = meet.externalId ?? null;
+  }
+
+  const [updated] = await db
+    .update(consultations)
+    .set({
+      scheduledAt: start,
+      status: "scheduled",
+      bookingStatus: "slot_selected",
+      videoLink,
+      meetExternalId,
+      updatedAt: new Date(),
+    })
+    .where(eq(consultations.id, consultation.id))
+    .returning();
+
+  await sendConsultationConfirmation(updated);
+  return updated;
 };
 
 const selectConsultationSlot = async (token: string, startIso: string) => {
@@ -2240,39 +2477,114 @@ const selectConsultationSlot = async (token: string, startIso: string) => {
       "That time is no longer available. Please choose another.",
     );
 
-  let videoLink: string | null = null;
-  let meetExternalId: string | null = null;
-  if (consultation.mode === "video") {
-    const [lead] = await db
-      .select({ name: leads.name })
-      .from(leads)
-      .where(eq(leads.id, consultation.leadId))
-      .limit(1);
-    const meet = await googleMeetService.createMeetLink({
-      summary: `Consultation with ${lead?.name ?? "client"}`,
-      startTime: start,
-      durationMinutes: consultation.duration,
-    });
-    videoLink = meet.url;
-    meetExternalId = meet.externalId ?? null;
-  }
+  // Persist the chosen slot, then finalize (Meet link + confirmation emails).
+  consultation.scheduledAt = start;
+  await finalizeConsultation(consultation);
+
+  return { success: true, scheduledAt: start.toISOString() };
+};
+
+// Cancels the lead's active consultation with side effects: revoke the booking
+// link, remove the Google Meet event, and notify the lead + attorney +
+// participants. The active-consultation guard in initiateConsultation then lets
+// the lead be re-scheduled. `leadId` is the lead id (route :id).
+const cancelConsultation = async (
+  leadId: string,
+  organizationId: string,
+  data: { reason?: string } = {},
+) => {
+  const [lead] = await db
+    .select({ consultationId: leads.consultationId })
+    .from(leads)
+    .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)))
+    .limit(1);
+  if (!lead?.consultationId)
+    throw new NotFoundError("No consultation found for this lead");
+
+  const [consultation] = await db
+    .select()
+    .from(consultations)
+    .where(
+      and(
+        eq(consultations.id, lead.consultationId),
+        eq(consultations.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+  if (!consultation) throw new NotFoundError("Consultation not found");
+
+  const terminal = ["cancelled", "completed", "no_show"];
+  if (terminal.includes(consultation.status))
+    throw new ConflictError(
+      `Consultation is already ${consultation.status.replace(/_/g, " ")}`,
+    );
 
   const [updated] = await db
     .update(consultations)
     .set({
-      scheduledAt: start,
-      status: "scheduled",
-      bookingStatus: "slot_selected",
-      videoLink,
-      meetExternalId,
+      status: "cancelled",
+      bookingStatus: "revoked",
+      cancelledAt: new Date(),
+      cancellationReason: data.reason ?? null,
       updatedAt: new Date(),
     })
     .where(eq(consultations.id, consultation.id))
     .returning();
 
-  await sendConsultationConfirmation(updated);
+  // Detach the cancelled consultation from the lead so it no longer counts as
+  // the lead's active consultation: the lead drops out of the "in progress"
+  // list and can be scheduled again. The row itself is kept (visible under the
+  // lead's consultation history). Pipeline stage is left untouched.
+  await db
+    .update(leads)
+    .set({ consultationId: null, updatedAt: new Date() })
+    .where(eq(leads.id, leadId));
 
-  return { success: true, scheduledAt: start.toISOString() };
+  // Remove the calendar/Meet event (no-op for placeholder/unconfigured).
+  await googleMeetService.deleteMeetEvent(consultation.meetExternalId);
+
+  // Dummy fee: no real refund is processed this phase; feeStatus is left as-is.
+
+  const { lead: leadRow, staffEmails } =
+    await getConsultationRecipients(updated);
+  const firmTz = await getFirmTimezone(updated.organizationId);
+  const leadTz = await getLeadTimezone(updated.leadId, updated.organizationId);
+  const leadWhen = updated.scheduledAt
+    ? ` scheduled for <strong>${formatDualZone(updated.scheduledAt, leadTz, firmTz)}</strong>`
+    : "";
+  const staffWhen = updated.scheduledAt
+    ? ` scheduled for <strong>${formatWithZone(updated.scheduledAt, firmTz)}</strong>`
+    : "";
+  const reasonLine = data.reason
+    ? `<p><strong>Reason:</strong> ${data.reason}</p>`
+    : "";
+
+  if (leadRow) {
+    emailService
+      .sendEmail({
+        to: leadRow.email,
+        subject: "Your consultation has been cancelled",
+        html: `<p>Dear ${leadRow.name},</p>
+          <p>Your consultation${leadWhen} has been cancelled.</p>
+          ${reasonLine}
+          <p>Please contact our office if you would like to re-schedule.</p>`,
+      })
+      .catch(console.error);
+  }
+  for (const email of staffEmails) {
+    emailService
+      .sendEmail({
+        to: email,
+        subject: `Consultation cancelled: ${leadRow?.name ?? "client"}`,
+        html: `<p>The consultation with <strong>${
+          leadRow?.name ?? "the client"
+        }</strong>${staffWhen} has been cancelled.</p>
+          ${reasonLine}`,
+      })
+      .catch(console.error);
+  }
+
+  return updated;
 };
 
 // ─── Fee Agreement ─────────────────────────────────────────────────────────────
@@ -2283,6 +2595,12 @@ const generateFeeAgreement = async (
   data: {
     agreementType?: string;
     generatedFrom?: "questionnaire_auto" | "manual";
+    attorneyFee: FeeAgreementDetails["attorneyFee"];
+    governmentFees?: FeeAgreementDetails["governmentFees"];
+    governmentFeesPaidBy?: FeeAgreementDetails["governmentFeesPaidBy"];
+    paymentPlan?: FeeAgreementDetails["paymentPlan"];
+    applyConsultationCredit?: boolean;
+    accountSplit?: FeeAgreementDetails["accountSplit"];
   },
 ) => {
   const [lead] = await db
@@ -2292,21 +2610,65 @@ const generateFeeAgreement = async (
     .limit(1);
 
   if (!lead) throw new NotFoundError("Lead not found");
-  if (!lead.consultationId)
-    throw new BadRequestError(
-      "A consultation must be scheduled before generating a fee agreement",
-    );
-  const [consultation] = await db
-    .select({ status: consultations.status })
+  // Unlocks once the lead has completed *any* consultation — a later follow-up
+  // being cancelled (which detaches lead.consultationId) must not re-block this.
+  const [completedConsultation] = await db
+    .select({ id: consultations.id })
     .from(consultations)
-    .where(eq(consultations.id, lead.consultationId))
+    .where(
+      and(
+        eq(consultations.leadId, leadId),
+        eq(consultations.status, "completed"),
+      ),
+    )
     .limit(1);
-  if (!consultation || consultation.status !== "completed")
+  if (!completedConsultation)
     throw new BadRequestError(
-      "The consultation must be completed before generating a fee agreement",
+      "A consultation must be completed before generating a fee agreement",
     );
   if (lead.feeAgreementId)
     throw new ConflictError("Fee agreement already exists for this lead");
+
+  // Resolve the consultation fee for the credit note: the lead's own
+  // consultation fee if set, else the firm's default.
+  let consultationFeeAmount: number | null = null;
+  if (lead.consultationId) {
+    const [c] = await db
+      .select({ feeAmount: consultations.feeAmount })
+      .from(consultations)
+      .where(eq(consultations.id, lead.consultationId))
+      .limit(1);
+    if (c?.feeAmount != null) consultationFeeAmount = Number(c.feeAmount);
+  }
+  if (consultationFeeAmount == null) {
+    const [settings] = await db
+      .select({ defaultAmount: consultationSettings.defaultAmount })
+      .from(consultationSettings)
+      .where(eq(consultationSettings.organizationId, organizationId))
+      .limit(1);
+    if (settings?.defaultAmount != null)
+      consultationFeeAmount = Number(settings.defaultAmount);
+  }
+
+  // Per-firm document reference, e.g. FA-2026-0011.
+  const [countRow] = await db
+    .select({ total: count() })
+    .from(feeAgreements)
+    .where(eq(feeAgreements.organizationId, organizationId));
+  const docRef = `FA-${new Date().getFullYear()}-${String(
+    Number(countRow?.total ?? 0) + 1,
+  ).padStart(4, "0")}`;
+
+  const details: FeeAgreementDetails = {
+    attorneyFee: data.attorneyFee,
+    governmentFees: data.governmentFees ?? [],
+    governmentFeesPaidBy: data.governmentFeesPaidBy ?? "client_upfront",
+    paymentPlan: data.paymentPlan ?? "pay_in_full",
+    applyConsultationCredit: data.applyConsultationCredit ?? false,
+    accountSplit: data.accountSplit ?? { operating: 0, trust: 0 },
+    consultationFeeAmount,
+    docRef,
+  };
 
   // Create the agreement as a draft only. The signing envelope is minted and the
   // client is emailed at the separate "send" step; the lead stays in the
@@ -2318,7 +2680,8 @@ const generateFeeAgreement = async (
       leadId,
       practiceAreaId: lead.practiceAreaId ?? undefined,
       caseTypeId: lead.caseTypeId ?? undefined,
-      agreementType: data.agreementType,
+      agreementType: data.agreementType ?? "retainer",
+      details,
       generatedFrom: (data.generatedFrom ?? "manual") as any,
       status: "draft",
     })
@@ -2329,7 +2692,8 @@ const generateFeeAgreement = async (
     .set({ feeAgreementId: agreement.id, updatedAt: new Date() })
     .where(eq(leads.id, leadId));
 
-  return agreement;
+  const document = await assembleFeeAgreementDocument(agreement, organizationId);
+  return { agreement, document };
 };
 
 // Dispatch a drafted agreement: mint the e-signature envelope, email the client
@@ -2361,17 +2725,51 @@ const sendFeeAgreement = async (
     .limit(1);
   if (!lead) throw new NotFoundError("Lead not found");
 
-  const documentContent = `Fee Agreement for ${lead.name} — ${agreement.agreementType ?? "Standard Retainer"}`;
-  const { envelopeId, signingLink } =
-    await stubESignatureProvider.createEnvelope(lead.email, documentContent);
+  // Render the fee-agreement PDF server-side and persist it to R2. This is the
+  // document that gets sent for signature; the stub provider is still used to
+  // mint the (fake) envelope until the Dropbox Sign provider is wired in.
+  const documentData = await assembleFeeAgreementDocument(agreement, organizationId);
+  const pdfBuffer = await renderFeeAgreementPdf(documentData);
+  const documentKey = `fee-agreements/${organizationId}/${agreement.id}/generated.pdf`;
+  await storageService.upload({
+    key: documentKey,
+    body: pdfBuffer,
+    contentType: "application/pdf",
+  });
+
+  // Create the embedded signature request (Dropbox Sign, or the stub fallback).
+  // No email is sent by the provider — the client signs on our own signing page.
+  const provider = getESignatureProvider();
+  const { signatureRequestId, signerSignatureId } =
+    await provider.createEmbeddedRequest({
+      signer: { email: lead.email, name: lead.name },
+      file: pdfBuffer,
+      fileName: `${documentData.docRef || agreement.id}.pdf`,
+      title: `Fee Agreement — ${lead.name}`,
+      subject: "Please sign your fee agreement",
+      metadata: {
+        agreementId: agreement.id,
+        leadId: agreement.leadId,
+        organizationId,
+      },
+      testMode: env.DROPBOX_SIGN_TEST_MODE,
+    });
+
+  // Opaque token backing the public, client-facing signing page URL (the raw
+  // embedded sign URL is minted on demand and never emailed — it expires fast).
+  const signingToken = randomUUID();
+  const signingLink = `${env.FRONTEND_APP_URL}/sign/${signingToken}`;
 
   const now = new Date();
   const [updated] = await db
     .update(feeAgreements)
     .set({
       status: "pending_signature",
-      envelopeId,
+      envelopeId: signatureRequestId,
+      signerSignatureId,
+      signingToken,
       signingLink,
+      documentUrl: documentKey,
       updatedAt: now,
     })
     .where(eq(feeAgreements.id, agreementId))
@@ -2450,6 +2848,29 @@ const getFeeAgreement = async (leadId: string, organizationId: string) => {
   return agreement ?? null;
 };
 
+// Returns a drafted agreement plus its assembled preview document (so the
+// preview modal can be reopened for a draft).
+const getFeeAgreementPreview = async (
+  agreementId: string,
+  organizationId: string,
+) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+
+  const document = await assembleFeeAgreementDocument(agreement, organizationId);
+  return { agreement, document };
+};
+
 const nudgeClient = async (agreementId: string, organizationId: string) => {
   const [agreement] = await db
     .select()
@@ -2492,51 +2913,152 @@ const nudgeClient = async (agreementId: string, organizationId: string) => {
   return { reminderSentAt: now };
 };
 
-// ─── eSignature Webhook ────────────────────────────────────────────────────────
+// ─── Embedded signing session (public, token-gated) ─────────────────────────
 
-const handleESignatureWebhook = async (data: {
-  envelopeId: string;
-  status: string;
-  signedAt?: string;
-  signedBy?: string;
-}) => {
+// Mint a fresh embedded sign URL for the client-facing signing page. Sign URLs
+// are short-lived, so they are generated on demand rather than persisted.
+const getEmbeddedSignSession = async (signingToken: string) => {
   const [agreement] = await db
     .select()
     .from(feeAgreements)
-    .where(eq(feeAgreements.envelopeId, data.envelopeId))
+    .where(eq(feeAgreements.signingToken, signingToken))
     .limit(1);
 
-  if (!agreement)
-    return { ignored: true, reason: "No agreement found for envelope" };
-
-  // Idempotent: already processed
+  if (!agreement) throw new NotFoundError("Signing session not found");
   if (agreement.status === "signed")
-    return { ignored: true, reason: "Already signed" };
+    throw new ConflictError("This agreement has already been signed");
+  if (agreement.status === "voided")
+    throw new BadRequestError(
+      "This agreement is no longer available for signing",
+    );
+  if (!agreement.signerSignatureId)
+    throw new BadRequestError(
+      "This agreement has not been sent for signature yet",
+    );
 
-  if (data.status !== "completed") {
-    return {
-      ignored: true,
-      reason: `Envelope status ${data.status} not actionable`,
-    };
+  const provider = getESignatureProvider();
+  const { signUrl, expiresAt } = await provider.getEmbeddedSignUrl(
+    agreement.signerSignatureId,
+  );
+  return { signUrl, clientId: env.DROPBOX_SIGN_CLIENT_ID ?? null, expiresAt };
+};
+
+// ─── Dropbox Sign Webhook ───────────────────────────────────────────────────
+
+type DropboxSignEvent = {
+  event?: {
+    event_time?: string;
+    event_type?: string;
+    event_hash?: string;
+  };
+  signature_request?: {
+    signature_request_id?: string;
+  };
+};
+
+// Authoritative completion signal. The controller parses the multipart `json`
+// field and passes the decoded event here. Must be idempotent — Dropbox Sign
+// retries and may deliver duplicates.
+const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
+  const event = payload?.event;
+  if (!event?.event_time || !event?.event_type || !event?.event_hash) {
+    throw new BadRequestError("Malformed Dropbox Sign event");
+  }
+
+  const provider = getESignatureProvider();
+  if (
+    !provider.verifyWebhook(
+      event.event_time,
+      event.event_type,
+      event.event_hash,
+    )
+  ) {
+    throw new AuthorizationError("Invalid Dropbox Sign event signature");
+  }
+
+  // Dashboard "test" callback: acknowledge without side effects.
+  if (event.event_type === "callback_test") {
+    return { processed: false, test: true };
+  }
+
+  const signatureRequestId = payload.signature_request?.signature_request_id;
+  if (!signatureRequestId) {
+    return { ignored: true, reason: "No signature_request in event" };
+  }
+
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(eq(feeAgreements.envelopeId, signatureRequestId))
+    .limit(1);
+  if (!agreement) {
+    return { ignored: true, reason: "No agreement for signature request" };
   }
 
   const now = new Date();
+  // Record the latest provider event for observability.
   await db
     .update(feeAgreements)
     .set({
-      status: "signed",
-      clientSignedAt: data.signedAt ? new Date(data.signedAt) : now,
+      providerStatus: event.event_type,
+      lastWebhookEventAt: now,
       updatedAt: now,
     })
     .where(eq(feeAgreements.id, agreement.id));
 
-  // Auto-advance lead to case_opening
-  await db
-    .update(leads)
-    .set({ pipelineStage: "case_opening", updatedAt: now })
-    .where(eq(leads.id, agreement.leadId));
+  if (event.event_type === "signature_request_all_signed") {
+    if (agreement.status === "signed") {
+      return { ignored: true, reason: "Already signed" };
+    }
 
-  return { processed: true, agreementId: agreement.id };
+    // Archive the completed, signed PDF. Non-fatal on failure — the signature
+    // is still valid and can be re-fetched later.
+    let signedKey: string | null = null;
+    try {
+      const signedPdf = await provider.downloadSignedPdf(signatureRequestId);
+      signedKey = `fee-agreements/${agreement.organizationId}/${agreement.id}/signed.pdf`;
+      await storageService.upload({
+        key: signedKey,
+        body: signedPdf,
+        contentType: "application/pdf",
+      });
+    } catch (err) {
+      console.error("Failed to archive signed fee-agreement PDF", err);
+    }
+
+    await db
+      .update(feeAgreements)
+      .set({
+        status: "signed",
+        clientSignedAt: now,
+        ...(signedKey ? { signedDocumentUrl: signedKey } : {}),
+        updatedAt: now,
+      })
+      .where(eq(feeAgreements.id, agreement.id));
+
+    // Auto-advance lead to case_opening.
+    await db
+      .update(leads)
+      .set({ pipelineStage: "case_opening", updatedAt: now })
+      .where(eq(leads.id, agreement.leadId));
+
+    return { processed: true, agreementId: agreement.id };
+  }
+
+  if (
+    event.event_type === "signature_request_declined" ||
+    event.event_type === "signature_request_canceled"
+  ) {
+    if (agreement.status !== "signed") {
+      await db
+        .update(feeAgreements)
+        .set({ status: "voided", updatedAt: now })
+        .where(eq(feeAgreements.id, agreement.id));
+    }
+    return { processed: true, agreementId: agreement.id, voided: true };
+  }
+
+  return { processed: false, eventType: event.event_type };
 };
 
 // ─── Case Opening ──────────────────────────────────────────────────────────────
@@ -2939,15 +3461,20 @@ export class LeadsService {
   getConsultation = getConsultation;
   getConsultations = getConsultations;
   updateConsultation = updateConsultation;
+  cancelConsultation = cancelConsultation;
   getConsultationBooking = getConsultationBooking;
+  updateLeadTimezoneByBookingToken = updateLeadTimezoneByBookingToken;
+  getLeadTimezone = getLeadTimezone;
   payConsultationFee = payConsultationFee;
   selectConsultationSlot = selectConsultationSlot;
   generateFeeAgreement = generateFeeAgreement;
+  getFeeAgreementPreview = getFeeAgreementPreview;
   sendFeeAgreement = sendFeeAgreement;
   markFeeAgreementReceived = markFeeAgreementReceived;
   getFeeAgreement = getFeeAgreement;
   nudgeClient = nudgeClient;
-  handleESignatureWebhook = handleESignatureWebhook;
+  getEmbeddedSignSession = getEmbeddedSignSession;
+  handleDropboxSignWebhook = handleDropboxSignWebhook;
   openCase = openCase;
   getCaseWorkflowSteps = getCaseWorkflowSteps;
   updateCaseWorkflowStep = updateCaseWorkflowStep;
