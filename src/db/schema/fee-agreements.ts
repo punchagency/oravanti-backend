@@ -14,11 +14,18 @@ import { practiceAreas } from "./practice-areas";
 // Structured fee-agreement form data captured before generation.
 export type FeeAgreementDetails = {
   attorneyFee: {
-    type: "flat" | "hourly" | "flat_hourly";
+    // "contingency" = pure contingency: no upfront attorney fee, only a
+    // percentage of the settlement.
+    type: "flat" | "hourly" | "flat_hourly" | "contingency";
     flatRate?: number;
     hourlyRate?: number;
+    // Settlement percentage, combinable with any type; required when
+    // type === "contingency". 0 < x <= 100.
+    contingencyPercent?: number;
   };
   governmentFees: { name: string; amount: number }[];
+  // Who fronts government fees. Absent on old rows → treated as "client_upfront".
+  governmentFeesPaidBy?: "client_upfront" | "firm_advanced";
   paymentPlan: "pay_in_full" | "two_payments" | "installments";
   applyConsultationCredit: boolean;
   accountSplit: { operating: number; trust: number };

@@ -145,8 +145,9 @@ export const sendQuestionnaireBodySchema = z.object({
     .optional(),
 });
 
-// Admin initiates scheduling. Normally the lead later picks the time; for
-// urgent bookings the admin supplies scheduledAt and the lead skips the queue.
+// Admin initiates scheduling. Normally the lead later picks the time; urgent
+// bookings skip the queue and are auto-scheduled ASAP server-side (at payment
+// time when a fee applies, immediately otherwise).
 export const initiateConsultationBodySchema = z
   .object({
     leadAttorneyId: uuid,
@@ -159,9 +160,8 @@ export const initiateConsultationBodySchema = z
     feeAmount: z.number().positive().optional(),
     preConsultationNotes: z.string().optional(),
     notifyChannels: z.array(z.enum(["email", "sms"])).optional(),
-    // Urgent (admin fast-track): schedule now, skip the lead's slot queue.
+    // Urgent (admin fast-track): auto-scheduled ASAP, skips the slot queue.
     urgent: z.boolean().optional(),
-    scheduledAt: z.string().datetime().optional(),
     // Set when this consultation is a follow-up of a prior completed one.
     parentConsultationId: optionalUuid,
   })
@@ -171,13 +171,6 @@ export const initiateConsultationBodySchema = z
         code: z.ZodIssueCode.custom,
         message: "A location is required for in-person consultations",
         path: ["locationId"],
-      });
-    }
-    if (val.urgent && !val.scheduledAt) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "A time is required for urgent scheduling",
-        path: ["scheduledAt"],
       });
     }
   });
@@ -214,9 +207,12 @@ export const generateFeeAgreementBodySchema = z.object({
   generatedFrom: z.enum(["questionnaire_auto", "manual"]).optional(),
   attorneyFee: z
     .object({
-      type: z.enum(["flat", "hourly", "flat_hourly"]),
+      type: z.enum(["flat", "hourly", "flat_hourly", "contingency"]),
       flatRate: z.number().nonnegative().optional(),
       hourlyRate: z.number().nonnegative().optional(),
+      // Settlement percentage, combinable with any type; required for
+      // pure-contingency agreements.
+      contingencyPercent: z.number().positive().max(100).optional(),
     })
     .superRefine((val, ctx) => {
       if (
@@ -237,6 +233,12 @@ export const generateFeeAgreementBodySchema = z.object({
           message: "An hourly rate is required",
           path: ["hourlyRate"],
         });
+      if (val.type === "contingency" && val.contingencyPercent == null)
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A settlement percentage is required",
+          path: ["contingencyPercent"],
+        });
     }),
   governmentFees: z
     .array(
@@ -246,12 +248,20 @@ export const generateFeeAgreementBodySchema = z.object({
       }),
     )
     .default([]),
-  paymentPlan: z.enum(["pay_in_full", "two_payments", "installments"]),
+  governmentFeesPaidBy: z
+    .enum(["client_upfront", "firm_advanced"])
+    .default("client_upfront"),
+  // Optional so the form can omit them when nothing is due upfront.
+  paymentPlan: z
+    .enum(["pay_in_full", "two_payments", "installments"])
+    .default("pay_in_full"),
   applyConsultationCredit: z.boolean().default(false),
-  accountSplit: z.object({
-    operating: z.number().nonnegative(),
-    trust: z.number().nonnegative(),
-  }),
+  accountSplit: z
+    .object({
+      operating: z.number().nonnegative(),
+      trust: z.number().nonnegative(),
+    })
+    .default({ operating: 0, trust: 0 }),
 });
 
 export const openCaseBodySchema = z.object({

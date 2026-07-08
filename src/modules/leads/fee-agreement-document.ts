@@ -23,12 +23,19 @@ export type FeeAgreementDocument = {
   };
   attorneyName: string;
   client: { name: string; matterType: string };
-  feeLines: { description: string; amount: number }[];
-  totalDue: number;
+  // amount null renders as "—" (contingency line); deferred lines (contingency,
+  // firm-advanced government fees) are excluded from totalDue.
+  feeLines: { description: string; amount: number | null; deferred?: boolean }[];
+  totalDue: number; // sum of non-deferred lines — i.e. due upfront
   allocation: { operating: number; trust: number; total: number };
   paymentPlan: "pay_in_full" | "two_payments" | "installments";
   applyConsultationCredit: boolean;
   consultationFeeAmount: number | null;
+  contingencyPercent: number | null;
+  governmentFeesPaidBy: "client_upfront" | "firm_advanced";
+  // True when nothing is due upfront (pure contingency + no client-paid
+  // government fees) — renderers hide the payment plan / account allocation.
+  noUpfrontDue: boolean;
 };
 
 // Assembles the dynamic data for the fee-agreement preview document. The static
@@ -84,8 +91,13 @@ export const assembleFeeAgreementDocument = async (
 
   const firm = await firmInfoService.getFirmInfo(organizationId);
 
-  const feeLines: { description: string; amount: number }[] = [];
+  const feeLines: {
+    description: string;
+    amount: number | null;
+    deferred?: boolean;
+  }[] = [];
   const af = details?.attorneyFee;
+  const contingencyPercent = af?.contingencyPercent ?? null;
   if (af) {
     const flat = af.flatRate ?? 0;
     const hourly = af.hourlyRate ?? 0;
@@ -96,23 +108,48 @@ export const assembleFeeAgreementDocument = async (
         description: `Legal services (billed at $${hourly}/hr) — ${matterType}`,
         amount: 0,
       });
-    } else {
+    } else if (af.type === "flat_hourly") {
       feeLines.push({
         description: `Legal services ($${flat} + $${hourly}/hr) — ${matterType}`,
         amount: flat,
       });
+    } else {
+      // Pure contingency: no upfront attorney fee.
+      feeLines.push({
+        description: `Legal services (contingency — ${contingencyPercent}% of settlement) — ${matterType}`,
+        amount: null,
+        deferred: true,
+      });
+    }
+    // Settlement percentage added on top of an upfront fee structure.
+    if (af.type !== "contingency" && contingencyPercent != null) {
+      feeLines.push({
+        description: `Contingency fee — ${contingencyPercent}% of settlement or award`,
+        amount: null,
+        deferred: true,
+      });
     }
   }
+  const governmentFeesPaidBy = details?.governmentFeesPaidBy ?? "client_upfront";
+  const govDeferred = governmentFeesPaidBy === "firm_advanced";
   for (const g of details?.governmentFees ?? []) {
+    const name = caseCode ? `${g.name} (${caseCode})` : g.name;
     feeLines.push({
-      description: caseCode ? `${g.name} (${caseCode})` : g.name,
+      description: govDeferred ? `${name} — advanced by firm` : name,
       amount: g.amount,
+      ...(govDeferred ? { deferred: true } : {}),
     });
   }
-  const totalDue = feeLines.reduce((sum, l) => sum + l.amount, 0);
+  const totalDue = feeLines
+    .filter((l) => !l.deferred)
+    .reduce((sum, l) => sum + (l.amount ?? 0), 0);
 
-  const operating = details?.accountSplit.operating ?? 0;
-  const trust = details?.accountSplit.trust ?? 0;
+  const noUpfrontDue =
+    af?.type === "contingency" &&
+    ((details?.governmentFees ?? []).length === 0 || govDeferred);
+
+  const operating = noUpfrontDue ? 0 : (details?.accountSplit.operating ?? 0);
+  const trust = noUpfrontDue ? 0 : (details?.accountSplit.trust ?? 0);
 
   return {
     docRef: details?.docRef ?? "",
@@ -134,5 +171,8 @@ export const assembleFeeAgreementDocument = async (
     paymentPlan: details?.paymentPlan ?? "pay_in_full",
     applyConsultationCredit: details?.applyConsultationCredit ?? false,
     consultationFeeAmount: details?.consultationFeeAmount ?? null,
+    contingencyPercent,
+    governmentFeesPaidBy,
+    noUpfrontDue,
   };
 };
