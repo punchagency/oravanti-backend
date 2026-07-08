@@ -135,6 +135,7 @@ export const auth = betterAuth({
   plugins: [
     organization({
       // cancelPendingInvitationsOnReInvite: true,
+      membershipLimit: 1000,
       teams: {
         enabled: true,
         defaultTeam: { enabled: false },
