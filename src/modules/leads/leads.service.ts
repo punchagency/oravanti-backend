@@ -399,6 +399,7 @@ const createLead = async (
     intakeAdversePartyName?: string;
     intakeAdversePartyEmail?: string;
     timezone?: string;
+    language?: string;
   },
 ) => {
   // Timezone is optional on creation; default to the firm's zone so lead-facing
@@ -422,6 +423,7 @@ const createLead = async (
       intakeAdversePartyName: data.intakeAdversePartyName,
       intakeAdversePartyEmail: data.intakeAdversePartyEmail,
       timezone,
+      language: data.language,
     })
     .returning();
 
@@ -642,6 +644,7 @@ const updateLead = async (
     intakeAdversePartyName: string;
     intakeAdversePartyEmail: string;
     timezone: string;
+    language: string;
   }>,
 ) => {
   const [updated] = await db
@@ -1628,11 +1631,16 @@ const sendQuestionnaire = async (
   }
 
   const now = new Date();
+  // Never move a lead backward: an instant-consultation lead is already at the
+  // consultation stage when its questionnaire is auto-sent on completion.
+  const currentStageIdx = STAGE_ORDER.indexOf(lead.pipelineStage as any);
   await db
     .update(leads)
     .set({
       questionnaireSendId: send.id,
-      pipelineStage: "questionnaire",
+      ...(currentStageIdx < STAGE_ORDER.indexOf("questionnaire")
+        ? { pipelineStage: "questionnaire" as const }
+        : {}),
       updatedAt: now,
     })
     .where(eq(leads.id, leadId));
@@ -1718,8 +1726,18 @@ const initiateConsultation = async (
     notifyChannels?: ("email" | "sms")[];
     urgent?: boolean;
     parentConsultationId?: string;
+    startNow?: boolean;
+    paymentTiming?: "pay_now" | "invoice_after" | "pay_in_person";
+    isEmergency?: boolean;
+    emergencyMultiplier?: number;
+    autoSendQuestionnaire?: boolean;
   },
 ) => {
+  // Instant consultations ("start now") are urgent by definition: they skip
+  // the slot queue and require a passed conflict check.
+  const startNow = Boolean(data.startNow);
+  const urgent = Boolean(data.urgent || startNow);
+
   const [lead] = await db
     .select()
     .from(leads)
@@ -1765,7 +1783,7 @@ const initiateConsultation = async (
   }
 
   // Urgent (admin fast-track) requires the lead to have passed conflict check.
-  if (data.urgent) {
+  if (urgent) {
     if (lead.status === "declined")
       throw new BadRequestError("This lead has been declined");
     if (!lead.conflictCheckId)
@@ -1817,7 +1835,7 @@ const initiateConsultation = async (
     // Urgent bookings let the admin override the amount (urgency surcharge)
     // regardless of the firm's fee structure.
     const resolved =
-      data.urgent || settings.feeStructure === "custom_per_case_type"
+      urgent || settings.feeStructure === "custom_per_case_type"
         ? data.feeAmount ?? defaultAmount
         : defaultAmount;
     if (resolved != null) {
@@ -1826,18 +1844,31 @@ const initiateConsultation = async (
     }
   }
 
+  // Instant consultations begin immediately, except pay_now with a fee, which
+  // begins at payment time. A pay_now choice with no fee configured degrades
+  // gracefully to begin-immediately.
+  const beginsNow =
+    startNow && !(feeStatus === "unpaid" && data.paymentTiming === "pay_now");
+
   // Urgent bookings are auto-scheduled ASAP: immediately when no fee applies,
   // otherwise at payment time. Lead-driven bookings leave scheduledAt null
   // until the lead picks a slot.
-  const scheduledAt =
-    data.urgent && feeStatus !== "unpaid" ? nextAsapSlot() : null;
+  const scheduledAt = beginsNow
+    ? new Date()
+    : urgent && feeStatus !== "unpaid" && !startNow
+      ? nextAsapSlot()
+      : null;
 
   const accessToken = generateAccessToken();
   const bookingExpiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
   // Fee → payment gate; urgent no-fee is finalized right after insert; normal
-  // no-fee waits for the lead to pick a slot.
-  const status =
-    feeStatus === "unpaid"
+  // no-fee waits for the lead to pick a slot. Instant consultations that begin
+  // now are inserted as "scheduled" and flipped to in_progress by finalize.
+  const status = startNow
+    ? beginsNow
+      ? "scheduled"
+      : "pending_payment"
+    : feeStatus === "unpaid"
       ? "pending_payment"
       : data.urgent
         ? "scheduled"
@@ -1850,7 +1881,15 @@ const initiateConsultation = async (
       leadId,
       parentConsultationId: data.parentConsultationId ?? null,
       scheduledAt,
-      isUrgent: data.urgent ?? false,
+      isUrgent: urgent,
+      isInstant: startNow,
+      paymentTiming: startNow ? data.paymentTiming ?? null : null,
+      isEmergency: Boolean(startNow && data.isEmergency),
+      emergencyMultiplier:
+        startNow && data.isEmergency && data.emergencyMultiplier != null
+          ? String(data.emergencyMultiplier)
+          : null,
+      autoSendQuestionnaire: Boolean(startNow && data.autoSendQuestionnaire),
       duration: data.duration,
       mode: data.mode,
       leadAttorneyId: data.leadAttorneyId,
@@ -1904,9 +1943,17 @@ const initiateConsultation = async (
     })
     .where(eq(leads.id, leadId));
 
+  // Instant consultation beginning now (invoice_after, pay_in_person, or no
+  // fee): finalize immediately into in_progress (mints the Meet link and sends
+  // the confirmation).
+  if (startNow && beginsNow) {
+    const finalized = await finalizeConsultation(consultation, { begin: true });
+    return { consultation: finalized, bookingToken: accessToken };
+  }
+
   // Urgent + no fee: connect ASAP — finalize immediately (mints the Meet link
   // and sends the confirmation). No lead action is required.
-  if (data.urgent && feeStatus !== "unpaid") {
+  if (!startNow && data.urgent && feeStatus !== "unpaid") {
     const finalized = await finalizeConsultation(consultation);
     return { consultation: finalized, bookingToken: accessToken };
   }
@@ -1919,9 +1966,10 @@ const initiateConsultation = async (
     ? data.notifyChannels
     : ["email"];
 
-  if (notifyChannels.includes("email")) {
+  // Instant pay_now consultations can only begin once the client pays, so the
+  // payment link is always emailed regardless of the chosen channels.
+  if (notifyChannels.includes("email") || startNow) {
     const needsPayment = feeStatus === "unpaid";
-    const urgent = Boolean(data.urgent);
     emailService
       .sendEmail({
         to: lead.email,
@@ -2001,6 +2049,7 @@ const updateConsultation = async (
     preConsultationNotes: string;
     attorneyNotes: string;
     outcome: "proceed" | "close_no_case" | "refer_elsewhere" | "follow_up";
+    feeStatus: "paid";
   }>,
 ) => {
   const [lead] = await db
@@ -2012,20 +2061,26 @@ const updateConsultation = async (
   if (!lead || !lead.consultationId)
     throw new NotFoundError("No consultation found for this lead");
 
+  const [existing] = await db
+    .select()
+    .from(consultations)
+    .where(eq(consultations.id, lead.consultationId))
+    .limit(1);
+  if (!existing) throw new NotFoundError("No consultation found for this lead");
+
   // A consultation can't be completed or marked no-show before its start time.
   if (data.status === "completed" || data.status === "no_show") {
-    const [existing] = await db
-      .select({ scheduledAt: consultations.scheduledAt })
-      .from(consultations)
-      .where(eq(consultations.id, lead.consultationId))
-      .limit(1);
-    if (existing?.scheduledAt && existing.scheduledAt.getTime() > Date.now())
+    if (existing.scheduledAt && existing.scheduledAt.getTime() > Date.now())
       throw new BadRequestError(
         `A consultation cannot be marked ${
           data.status === "completed" ? "completed" : "as a no-show"
         } before its scheduled start time`,
       );
   }
+
+  // Pay-in-person (or any manual settlement): staff marks the fee received.
+  if (data.feeStatus === "paid" && existing.feeStatus !== "unpaid")
+    throw new ConflictError("No unpaid fee to mark as paid");
 
   const [updated] = await db
     .update(consultations)
@@ -2038,6 +2093,52 @@ const updateConsultation = async (
     })
     .where(eq(consultations.id, lead.consultationId))
     .returning();
+
+  // Completion side effects (once — re-PATCHing a completed row is a no-op).
+  if (data.status === "completed" && existing.status !== "completed") {
+    // Invoice-after: email the payment link now that the call has ended. The
+    // booking token is re-minted since only its hash is stored (this also
+    // gives the client a fresh 14-day window).
+    if (
+      updated.paymentTiming === "invoice_after" &&
+      updated.feeStatus === "unpaid"
+    ) {
+      const payToken = generateAccessToken();
+      await db
+        .update(consultations)
+        .set({
+          bookingTokenHash: tokenHash(payToken),
+          bookingExpiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+          bookingStatus: "sent",
+          updatedAt: new Date(),
+        })
+        .where(eq(consultations.id, updated.id));
+      const payLink = `${env.FRONTEND_APP_URL}/consultation-booking/${payToken}`;
+      emailService
+        .sendEmail({
+          to: lead.email,
+          subject: "Your consultation is complete — payment link inside",
+          html: `<p>Dear ${lead.name},</p>
+            <p>Thank you for your consultation. Please pay your consultation fee of <strong>$${updated.feeAmount}</strong>:</p>
+            <p><a href="${payLink}">${payLink}</a></p>`,
+        })
+        .catch(console.error);
+    }
+
+    // Auto-send the intake questionnaire when requested and the lead has never
+    // been sent one. Skipped silently when the lead has no case type yet.
+    if (updated.autoSendQuestionnaire && !lead.questionnaireSendId) {
+      if (lead.caseTypeId) {
+        await sendQuestionnaire(leadId, organizationId, undefined, {
+          language: lead.language ?? undefined,
+        }).catch(console.error);
+      } else {
+        console.warn(
+          `[consultation] skipping auto-questionnaire for lead ${leadId}: no case type assigned`,
+        );
+      }
+    }
+  }
 
   return updated;
 };
@@ -2173,8 +2274,11 @@ const getConsultationBooking = async (token: string) => {
   const requiresPayment = consultation.feeStatus === "unpaid";
 
   // Slots are only offered once any fee is settled and a time isn't yet chosen.
+  // Gating on awaiting_slot_selection keeps instant consultations (paid after
+  // completion) from ever showing the slot picker.
   const slots =
     !requiresPayment &&
+    consultation.status === "awaiting_slot_selection" &&
     consultation.bookingStatus !== "slot_selected" &&
     consultation.leadAttorneyId
       ? await generateConsultationSlots(
@@ -2193,6 +2297,7 @@ const getConsultationBooking = async (token: string) => {
     durationMinutes: consultation.duration,
     requiresPayment,
     isUrgent: consultation.isUrgent,
+    status: consultation.status,
     fee: {
       status: consultation.feeStatus,
       amount:
@@ -2239,6 +2344,25 @@ const payConsultationFee = async (token: string) => {
   const consultation = await getConsultationByBookingToken(token);
   if (consultation.feeStatus !== "unpaid")
     throw new ConflictError("No payment is required for this consultation");
+
+  // Instant consultations: pay_now begins the consultation at payment time;
+  // invoice_after / pay_in_person fees paid after the call just get marked
+  // paid (nothing left to start).
+  if (consultation.isInstant) {
+    const begins = consultation.status === "pending_payment";
+    const [paid] = await db
+      .update(consultations)
+      .set({
+        feeStatus: "paid",
+        bookingStatus: "paid",
+        ...(begins ? { scheduledAt: new Date() } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(consultations.id, consultation.id))
+      .returning();
+    if (begins) await finalizeConsultation(paid, { begin: true });
+    return { success: true };
+  }
 
   // Dummy payment: flip the fee flags. Urgent consultations are auto-scheduled
   // ASAP at payment time and finalized immediately (connect ASAP) rather than
@@ -2408,6 +2532,7 @@ const sendConsultationConfirmation = async (
 // no-fee-at-initiate and the pay-then-connect paths).
 const finalizeConsultation = async (
   consultation: typeof consultations.$inferSelect,
+  opts: { begin?: boolean } = {},
 ) => {
   const start = consultation.scheduledAt;
   if (!start)
@@ -2434,7 +2559,8 @@ const finalizeConsultation = async (
     .update(consultations)
     .set({
       scheduledAt: start,
-      status: "scheduled",
+      // Instant consultations begin the moment they are finalized.
+      status: opts.begin ? "in_progress" : "scheduled",
       bookingStatus: "slot_selected",
       videoLink,
       meetExternalId,

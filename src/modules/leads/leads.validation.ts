@@ -44,6 +44,7 @@ export const createLeadBodySchema = z.object({
   intakeAdversePartyName: z.string().min(1).optional(),
   intakeAdversePartyEmail: z.string().email().optional(),
   timezone: timezone.optional(),
+  language: z.string().min(1).optional(),
 });
 
 export const updateLeadBodySchema = z.object({
@@ -68,6 +69,7 @@ export const updateLeadBodySchema = z.object({
   intakeAdversePartyName: z.string().min(1).optional(),
   intakeAdversePartyEmail: z.string().email().optional(),
   timezone: timezone.optional(),
+  language: z.string().min(1).optional(),
 });
 
 // Public (booking-page) reconciliation of the lead's timezone.
@@ -164,6 +166,14 @@ export const initiateConsultationBodySchema = z
     urgent: z.boolean().optional(),
     // Set when this consultation is a follow-up of a prior completed one.
     parentConsultationId: optionalUuid,
+    // Instant consultation: begins now (or at payment time for pay_now).
+    startNow: z.boolean().optional(),
+    paymentTiming: z
+      .enum(["pay_now", "invoice_after", "pay_in_person"])
+      .optional(),
+    isEmergency: z.boolean().optional(),
+    emergencyMultiplier: z.number().positive().max(10).optional(),
+    autoSendQuestionnaire: z.boolean().optional(),
   })
   .superRefine((val, ctx) => {
     if (val.mode === "in_person" && !val.locationId) {
@@ -171,6 +181,32 @@ export const initiateConsultationBodySchema = z
         code: z.ZodIssueCode.custom,
         message: "A location is required for in-person consultations",
         path: ["locationId"],
+      });
+    }
+    if (val.startNow && !val.paymentTiming) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Choose a payment timing for instant consultations",
+        path: ["paymentTiming"],
+      });
+    }
+    if (
+      !val.startNow &&
+      (val.paymentTiming || val.isEmergency || val.autoSendQuestionnaire)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "Payment timing, emergency, and auto-questionnaire options are only allowed for instant consultations",
+        path: ["startNow"],
+      });
+    }
+    if (val.emergencyMultiplier != null && !val.isEmergency) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "An emergency multiplier requires the consultation to be marked as an emergency",
+        path: ["emergencyMultiplier"],
       });
     }
   });
@@ -196,6 +232,8 @@ export const updateConsultationBodySchema = z.object({
   outcome: z
     .enum(["proceed", "close_no_case", "refer_elsewhere", "follow_up"])
     .optional(),
+  // Staff marks a pay-in-person fee as received (only valid from unpaid).
+  feeStatus: z.enum(["paid"]).optional(),
 });
 
 export const cancelConsultationBodySchema = z.object({

@@ -51,6 +51,19 @@ export const consultationBookingStatusEnum = pgEnum(
   ["sent", "opened", "paid", "slot_selected", "expired", "revoked"],
 );
 
+// Instant ("start now") consultations: how the fee is collected.
+export const consultationPaymentTimingEnum = pgEnum(
+  "consultation_payment_timing",
+  [
+    // Payment link sent immediately; the consultation begins on payment.
+    "pay_now",
+    // Consultation begins now; payment link emailed at completion.
+    "invoice_after",
+    // Consultation begins now; staff marks the payment received manually.
+    "pay_in_person",
+  ],
+);
+
 export const consultations = pgTable("consultations", {
   id: uuid("id").primaryKey().defaultRandom(),
   organizationId: text("organization_id")
@@ -71,6 +84,23 @@ export const consultations = pgTable("consultations", {
   // ASAP; scheduledAt is set at creation and finalization happens on pay
   // (fee case) or immediately at initiate (no-fee case).
   isUrgent: boolean("is_urgent").notNull().default(false),
+  // Instant consultation ("start now"): begins immediately rather than being
+  // scheduled (or at payment time for pay_now).
+  isInstant: boolean("is_instant").notNull().default(false),
+  // Only set for instant consultations.
+  paymentTiming: consultationPaymentTimingEnum("payment_timing"),
+  // Emergency rate multiplier applied to the standard fee (display/audit; the
+  // multiplied amount is persisted in feeAmount).
+  isEmergency: boolean("is_emergency").notNull().default(false),
+  emergencyMultiplier: numeric("emergency_multiplier", {
+    precision: 5,
+    scale: 2,
+  }),
+  // Auto-send the intake questionnaire when this consultation completes (only
+  // if the lead has never been sent one).
+  autoSendQuestionnaire: boolean("auto_send_questionnaire")
+    .notNull()
+    .default(false),
   leadAttorneyId: uuid("lead_attorney_id").references(() => staff.id),
   // Required when mode = in_person.
   locationId: uuid("location_id").references(() => consultationLocations.id),
