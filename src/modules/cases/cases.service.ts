@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike } from "drizzle-orm";
+import { and, desc, eq, ilike, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { clientContacts } from "../../db/schema/client-contacts";
@@ -17,7 +17,11 @@ export const generateCaseNumber = async (
   caseType: string,
 ): Promise<string> => {
   const { caseType: practiceAreaCaseType } =
-    await ensureCaseTypeBelongsToPracticeArea(organizationId, practiceAreaId, caseType);
+    await ensureCaseTypeBelongsToPracticeArea(
+      organizationId,
+      practiceAreaId,
+      caseType,
+    );
   const year = new Date().getFullYear();
   const prefix = `${year}-${practiceAreaCaseType.caseNumberPrefix}-`;
 
@@ -25,7 +29,10 @@ export const generateCaseNumber = async (
     .select({ caseNumber: cases.caseNumber })
     .from(cases)
     .where(
-      and(eq(cases.organizationId, organizationId), ilike(cases.caseNumber, `${prefix}%`)),
+      and(
+        eq(cases.organizationId, organizationId),
+        ilike(cases.caseNumber, `${prefix}%`),
+      ),
     );
 
   const maxSeq = existing.reduce((max, row) => {
@@ -43,42 +50,154 @@ export const getAllCases = async (
   organizationId: string,
   filters?: {
     search?: string;
-    status?: string;
+    status?:
+      "active" | "pending_review" | "on_hold" | "completed" | "cancelled";
     assigneeId?: string;
     clientId?: string;
     practiceAreaId?: string;
+    practiceAreaName?: string;
+    caseTypeName?: string;
+    subcategoryName?: string;
+    assigneeName?: string;
+    page?: number;
+    limit?: number;
   },
 ) => {
+  const page = filters?.page ?? 1;
+  const limit = filters?.limit ?? 20;
+  const offset = (page - 1) * limit;
+
+  const baseJoin = (qb: any) =>
+    qb
+      .from(cases)
+      .leftJoin(clients, eq(clients.id, cases.clientId))
+      .leftJoin(
+        clientContacts,
+        and(
+          eq(clientContacts.clientId, clients.id),
+          eq(clientContacts.isPrimary, true),
+        ),
+      )
+      .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
+      .leftJoin(
+        practiceAreaCaseTypes,
+        eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+      )
+      .leftJoin(
+        practiceAreaSubcategories,
+        eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
+      )
+      .leftJoin(staff, eq(staff.id, cases.assignedStaffId));
+
+  const conditions: ReturnType<typeof sql>[] = [
+    eq(cases.organizationId, organizationId),
+  ];
+
+  if (filters?.status) {
+    conditions.push(eq(cases.status, filters.status as any));
+  }
+
+  if (filters?.assigneeId) {
+    conditions.push(eq(cases.assignedStaffId, filters.assigneeId));
+  }
+
+  if (filters?.clientId) {
+    conditions.push(eq(cases.clientId, filters.clientId));
+  }
+
+  if (filters?.practiceAreaId) {
+    conditions.push(eq(cases.practiceAreaId, filters.practiceAreaId));
+  }
+
+  if (filters?.search) {
+    const q = `%${filters.search.toLowerCase()}%`;
+    conditions.push(
+      sql`(
+        LOWER(${cases.caseNumber}) LIKE ${q}
+        OR LOWER(${clients.displayName}) LIKE ${q}
+        OR LOWER(${practiceAreaCaseTypes.name}) LIKE ${q}
+      )`,
+    );
+  }
+
+  if (filters?.practiceAreaName) {
+    conditions.push(
+      sql`LOWER(${practiceAreas.name}) LIKE ${`%${filters.practiceAreaName.toLowerCase()}%`}`,
+    );
+  }
+
+  if (filters?.caseTypeName) {
+    conditions.push(
+      sql`LOWER(${practiceAreaCaseTypes.name}) LIKE ${`%${filters.caseTypeName.toLowerCase()}%`}`,
+    );
+  }
+
+  if (filters?.subcategoryName) {
+    conditions.push(
+      sql`LOWER(${practiceAreaSubcategories.name}) LIKE ${`%${filters.subcategoryName.toLowerCase()}%`}`,
+    );
+  }
+
+  if (filters?.assigneeName) {
+    const q = `%${filters.assigneeName.toLowerCase()}%`;
+    conditions.push(
+      sql`(${staff.id} IS NOT NULL AND LOWER(CONCAT(${staff.firstName}, ' ', ${staff.lastName})) LIKE ${q})`,
+    );
+  }
+
+  const [{ count }] = await db
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(cases)
+    .leftJoin(clients, eq(clients.id, cases.clientId))
+    .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
+    .leftJoin(
+      practiceAreaCaseTypes,
+      eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+    )
+    .leftJoin(
+      practiceAreaSubcategories,
+      eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
+    )
+    .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
+    .where(and(...conditions));
+
+  const total = Number(count);
+
+  const columnSelection = {
+    id: cases.id,
+    caseNumber: cases.caseNumber,
+    practiceAreaId: practiceAreas.id,
+    practiceAreaName: practiceAreas.name,
+    caseTypeId: practiceAreaCaseTypes.id,
+    caseType: cases.caseType,
+    caseTypeName: practiceAreaCaseTypes.name,
+    caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
+    caseTypeJurisdiction: practiceAreaCaseTypes.jurisdiction,
+    subcategoryId: practiceAreaSubcategories.id,
+    subcategoryCode: practiceAreaSubcategories.code,
+    subcategoryName: practiceAreaSubcategories.name,
+    status: cases.status,
+    priority: cases.priority,
+    filingDate: cases.filingDate,
+    caseProgress: cases.caseProgress,
+    clientId: clients.id,
+    clientDisplayName: clients.displayName,
+    assignedStaffId: staff.id,
+    assigneeFirstName: staff.firstName,
+    assigneeLastName: staff.lastName,
+    assigneeRole: staff.jobTitle,
+  } as const;
+
   const rows = await db
-    .select({
-      id: cases.id,
-      caseNumber: cases.caseNumber,
-      practiceAreaId: practiceAreas.id,
-      practiceAreaName: practiceAreas.name,
-      caseTypeId: practiceAreaCaseTypes.id,
-      caseType: cases.caseType,
-      caseTypeName: practiceAreaCaseTypes.name,
-      caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
-      caseTypeJurisdiction: practiceAreaCaseTypes.jurisdiction,
-      subcategoryId: practiceAreaSubcategories.id,
-      subcategoryCode: practiceAreaSubcategories.code,
-      subcategoryName: practiceAreaSubcategories.name,
-      status: cases.status,
-      priority: cases.priority,
-      filingDate: cases.filingDate,
-      caseProgress: cases.caseProgress,
-      clientId: clients.id,
-      clientDisplayName: clients.displayName,
-      assignedStaffId: staff.id,
-      assigneeFirstName: staff.firstName,
-      assigneeLastName: staff.lastName,
-      assigneeRole: staff.jobTitle,
-    })
+    .select(columnSelection)
     .from(cases)
     .leftJoin(clients, eq(clients.id, cases.clientId))
     .leftJoin(
       clientContacts,
-      and(eq(clientContacts.clientId, clients.id), eq(clientContacts.isPrimary, true)),
+      and(
+        eq(clientContacts.clientId, clients.id),
+        eq(clientContacts.isPrimary, true),
+      ),
     )
     .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
     .leftJoin(
@@ -90,68 +209,49 @@ export const getAllCases = async (
       eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
     )
     .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
-    .where(eq(cases.organizationId, organizationId))
-    .orderBy(desc(cases.createdAt));
+    .where(and(...conditions))
+    .orderBy(desc(cases.createdAt))
+    .limit(limit)
+    .offset(offset);
 
-  return rows
-    .filter((r) => {
-      if (filters?.status && r.status !== filters.status) return false;
-      if (filters?.assigneeId && r.assignedStaffId !== filters.assigneeId) {
-        return false;
-      }
-      if (filters?.clientId && r.clientId !== filters.clientId) return false;
-      if (
-        filters?.practiceAreaId &&
-        r.practiceAreaId !== filters.practiceAreaId
-      ) {
-        return false;
-      }
-      if (filters?.search) {
-        const q = filters.search.toLowerCase();
-        const matches =
-          r.caseNumber.toLowerCase().includes(q) ||
-          r.clientDisplayName?.toLowerCase().includes(q) ||
-          r.caseType.toLowerCase().includes(q);
-        if (!matches) return false;
-      }
-      return true;
-    })
-    .map((r) => ({
-      id: r.id,
-      caseNumber: r.caseNumber,
-      practiceArea: {
-        id: r.practiceAreaId,
-        name: r.practiceAreaName,
-      },
-      caseType: {
-        id: r.caseTypeId,
-        code: r.caseType,
-        name: r.caseTypeName,
-        caseNumberPrefix: r.caseNumberPrefix,
-        jurisdiction: r.caseTypeJurisdiction,
-        subcategory: r.subcategoryId
-          ? {
-              id: r.subcategoryId,
-              code: r.subcategoryCode,
-              name: r.subcategoryName,
-            }
-          : null,
-      },
-      status: r.status,
-      priority: r.priority,
-      filingDate: r.filingDate,
-      caseProgress: r.caseProgress,
-      client: {
-        id: r.clientId,
-        name: r.clientDisplayName ?? '',
-      },
-      assignee: r.assigneeFirstName
+  const data = rows.map((r) => ({
+    id: r.id,
+    caseNumber: r.caseNumber,
+    practiceArea: {
+      id: r.practiceAreaId,
+      name: r.practiceAreaName,
+    },
+    caseType: {
+      id: r.caseTypeId,
+      code: r.caseType,
+      name: r.caseTypeName,
+      caseNumberPrefix: r.caseNumberPrefix,
+      jurisdiction: r.caseTypeJurisdiction,
+      subcategory: r.subcategoryId
         ? {
-            name: `${r.assigneeFirstName} ${r.assigneeLastName}`,
-            role: r.assigneeRole,
+            id: r.subcategoryId,
+            code: r.subcategoryCode,
+            name: r.subcategoryName,
           }
         : null,
-    }));
+    },
+    status: r.status,
+    priority: r.priority,
+    filingDate: r.filingDate,
+    caseProgress: r.caseProgress,
+    client: {
+      id: r.clientId,
+      name: r.clientDisplayName ?? "",
+    },
+    assignee: r.assigneeFirstName
+      ? {
+          name: `${r.assigneeFirstName} ${r.assigneeLastName}`,
+          role: r.assigneeRole,
+        }
+      : null,
+  }));
+
+  return { data, pagination: { total, limit, offset } };
 };
 
 export const getCaseById = async (id: string, organizationId: string) => {
@@ -201,7 +301,11 @@ export const createCase = async (
 
   const caseNumber =
     data.caseNumber ||
-    (await generateCaseNumber(organizationId, data.practiceAreaId, data.caseType));
+    (await generateCaseNumber(
+      organizationId,
+      data.practiceAreaId,
+      data.caseType,
+    ));
 
   const [newCase] = await db
     .insert(cases)
@@ -264,7 +368,9 @@ export const updateCase = async (
 };
 
 export const deleteCase = async (id: string, organizationId: string) => {
-  await db.delete(cases).where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)));
+  await db
+    .delete(cases)
+    .where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)));
 };
 
 export class CasesService {

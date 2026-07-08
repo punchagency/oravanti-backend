@@ -23,13 +23,23 @@ export class CasesController {
   });
 
   getAllCases = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const { search, status, assigneeId, clientId, practiceAreaId } = req.query;
+    const {
+      search, status, assigneeId, clientId, practiceAreaId,
+      practiceAreaName, caseTypeName, subcategoryName, assigneeName,
+      page, limit,
+    } = req.query;
     const result = await this.casesService.getAllCases(req.organizationId!, {
       search: search as string,
-      status: status as string,
+      status: status as "active" | "pending_review" | "on_hold" | "completed" | "cancelled" | undefined,
       assigneeId: assigneeId as string,
       clientId: clientId as string,
       practiceAreaId: practiceAreaId as string,
+      practiceAreaName: practiceAreaName as string,
+      caseTypeName: caseTypeName as string,
+      subcategoryName: subcategoryName as string,
+      assigneeName: assigneeName as string,
+      page: page ? parseInt(page as string, 10) : undefined,
+      limit: limit ? parseInt(limit as string, 10) : undefined,
     });
     res.status(200).json(result);
   });
