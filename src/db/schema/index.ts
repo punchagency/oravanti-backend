@@ -40,6 +40,7 @@ export * from "./profiles";
 export * from "./questionnaires";
 export * from "./staff-availability";
 export * from "./staff-certifications";
+export * from "./step-action-logs";
 export * from "./subscriptions";
 export * from "./tasks";
 export * from "./team-members";
