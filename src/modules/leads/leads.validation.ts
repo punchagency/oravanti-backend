@@ -145,8 +145,9 @@ export const sendQuestionnaireBodySchema = z.object({
     .optional(),
 });
 
-// Admin initiates scheduling. Normally the lead later picks the time; for
-// urgent bookings the admin supplies scheduledAt and the lead skips the queue.
+// Admin initiates scheduling. Normally the lead later picks the time; urgent
+// bookings skip the queue and are auto-scheduled ASAP server-side (at payment
+// time when a fee applies, immediately otherwise).
 export const initiateConsultationBodySchema = z
   .object({
     leadAttorneyId: uuid,
@@ -159,9 +160,8 @@ export const initiateConsultationBodySchema = z
     feeAmount: z.number().positive().optional(),
     preConsultationNotes: z.string().optional(),
     notifyChannels: z.array(z.enum(["email", "sms"])).optional(),
-    // Urgent (admin fast-track): schedule now, skip the lead's slot queue.
+    // Urgent (admin fast-track): auto-scheduled ASAP, skips the slot queue.
     urgent: z.boolean().optional(),
-    scheduledAt: z.string().datetime().optional(),
     // Set when this consultation is a follow-up of a prior completed one.
     parentConsultationId: optionalUuid,
   })
@@ -171,13 +171,6 @@ export const initiateConsultationBodySchema = z
         code: z.ZodIssueCode.custom,
         message: "A location is required for in-person consultations",
         path: ["locationId"],
-      });
-    }
-    if (val.urgent && !val.scheduledAt) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "A time is required for urgent scheduling",
-        path: ["scheduledAt"],
       });
     }
   });

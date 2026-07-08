@@ -67,16 +67,13 @@ import { getESignatureProvider } from "./dropbox-sign.provider";
 import { generateCaseNumber } from "../cases/cases.service";
 import { organization, user } from "../../db/schema/auth-schema";
 import { env } from "../../config/env";
-import {
-  checkAttorneyTimeConflicts,
-  generateConsultationSlots,
-} from "./consultation-slots.service";
+import { generateConsultationSlots } from "./consultation-slots.service";
 import { assembleFeeAgreementDocument } from "./fee-agreement-document";
 import { renderFeeAgreementPdf } from "./fee-agreement-pdf";
 import { storageService } from "../../utils/storage/storage.service";
 import { googleMeetService } from "../../utils/google-meet/google-meet.service";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
-import { formatDualZone, formatWithZone } from "../../utils/date";
+import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1720,7 +1717,6 @@ const initiateConsultation = async (
     preConsultationNotes?: string;
     notifyChannels?: ("email" | "sms")[];
     urgent?: boolean;
-    scheduledAt?: string;
     parentConsultationId?: string;
   },
 ) => {
@@ -1770,10 +1766,6 @@ const initiateConsultation = async (
 
   // Urgent (admin fast-track) requires the lead to have passed conflict check.
   if (data.urgent) {
-    if (!data.scheduledAt)
-      throw new BadRequestError(
-        "A time is required for urgent scheduling",
-      );
     if (lead.status === "declined")
       throw new BadRequestError("This lead has been declined");
     if (!lead.conflictCheckId)
@@ -1834,22 +1826,11 @@ const initiateConsultation = async (
     }
   }
 
-  // Urgent bookings carry the admin-chosen time immediately; lead-driven
-  // bookings leave scheduledAt null until the lead picks a slot.
-  const scheduledAt = data.urgent ? new Date(data.scheduledAt!) : null;
-
-  // Non-blocking conflict warnings for urgent (warn-but-allow): the admin can
-  // book outside the attorney's availability or over an existing appointment.
-  let warnings: string[] = [];
-  if (data.urgent && scheduledAt) {
-    const conflict = await checkAttorneyTimeConflicts(
-      organizationId,
-      data.leadAttorneyId,
-      scheduledAt,
-      data.duration,
-    );
-    warnings = conflict.warnings;
-  }
+  // Urgent bookings are auto-scheduled ASAP: immediately when no fee applies,
+  // otherwise at payment time. Lead-driven bookings leave scheduledAt null
+  // until the lead picks a slot.
+  const scheduledAt =
+    data.urgent && feeStatus !== "unpaid" ? nextAsapSlot() : null;
 
   const accessToken = generateAccessToken();
   const bookingExpiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
@@ -1927,7 +1908,7 @@ const initiateConsultation = async (
   // and sends the confirmation). No lead action is required.
   if (data.urgent && feeStatus !== "unpaid") {
     const finalized = await finalizeConsultation(consultation);
-    return { consultation: finalized, bookingToken: accessToken, warnings };
+    return { consultation: finalized, bookingToken: accessToken };
   }
 
   // Email the lead the booking link. Plan 05 refines the templates and adds the
@@ -1954,7 +1935,11 @@ const initiateConsultation = async (
                 ? " to be connected with an attorney as soon as possible"
                 : " and then choose a time that works for you"
             }:</p>
-            <p><a href="${bookingLink}">${bookingLink}</a></p>`
+            <p><a href="${bookingLink}">${bookingLink}</a></p>${
+              urgent
+                ? "<p>You'll receive your confirmation with the scheduled time immediately after payment.</p>"
+                : ""
+            }`
           : `<p>Dear ${lead.name},</p>
             <p>Please choose a time that works for your consultation:</p>
             <p><a href="${bookingLink}">${bookingLink}</a></p>`,
@@ -1968,7 +1953,7 @@ const initiateConsultation = async (
     );
   }
 
-  return { consultation, bookingToken: accessToken, warnings };
+  return { consultation, bookingToken: accessToken };
 };
 
 const getConsultation = async (leadId: string, organizationId: string) => {
@@ -2207,6 +2192,7 @@ const getConsultationBooking = async (token: string) => {
     mode: consultation.mode,
     durationMinutes: consultation.duration,
     requiresPayment,
+    isUrgent: consultation.isUrgent,
     fee: {
       status: consultation.feeStatus,
       amount:
@@ -2254,15 +2240,19 @@ const payConsultationFee = async (token: string) => {
   if (consultation.feeStatus !== "unpaid")
     throw new ConflictError("No payment is required for this consultation");
 
-  // Dummy payment: flip the fee flags. Urgent consultations already carry the
-  // admin-chosen time, so finalize immediately (connect ASAP) rather than
-  // sending the lead back to pick a slot.
+  // Dummy payment: flip the fee flags. Urgent consultations are auto-scheduled
+  // ASAP at payment time and finalized immediately (connect ASAP) rather than
+  // sending the lead back to pick a slot. Legacy urgent rows created with an
+  // admin-chosen time keep it (the !scheduledAt guard).
+  const asapAt =
+    consultation.isUrgent && !consultation.scheduledAt ? nextAsapSlot() : null;
   const [paid] = await db
     .update(consultations)
     .set({
       feeStatus: "paid",
       bookingStatus: "paid",
       status: consultation.isUrgent ? consultation.status : "awaiting_slot_selection",
+      ...(asapAt ? { scheduledAt: asapAt } : {}),
       updatedAt: new Date(),
     })
     .where(eq(consultations.id, consultation.id))

@@ -125,6 +125,17 @@ export const addTime = (
   unit: dayjs.ManipulateType,
 ): Date => dayjs.utc(input).add(amount, unit).toDate();
 
+/**
+ * Next "ASAP" start for urgent scheduling: now + bufferMinutes, rounded up to
+ * the next intervalMinutes boundary (UTC instant; quarter-hour boundaries are
+ * timezone-independent).
+ */
+export const nextAsapSlot = (bufferMinutes = 10, intervalMinutes = 15): Date => {
+  const intervalMs = intervalMinutes * 60_000;
+  const t = dayjs.utc().add(bufferMinutes, "minute").valueOf();
+  return new Date(Math.ceil(t / intervalMs) * intervalMs);
+};
+
 // ─── Presentation (always labeled) ────────────────────────────────────────────
 
 const ZONED_TIME_FMT = "h:mm A";
