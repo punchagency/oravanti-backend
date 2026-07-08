@@ -2596,9 +2596,10 @@ const generateFeeAgreement = async (
     generatedFrom?: "questionnaire_auto" | "manual";
     attorneyFee: FeeAgreementDetails["attorneyFee"];
     governmentFees?: FeeAgreementDetails["governmentFees"];
-    paymentPlan: FeeAgreementDetails["paymentPlan"];
+    governmentFeesPaidBy?: FeeAgreementDetails["governmentFeesPaidBy"];
+    paymentPlan?: FeeAgreementDetails["paymentPlan"];
     applyConsultationCredit?: boolean;
-    accountSplit: FeeAgreementDetails["accountSplit"];
+    accountSplit?: FeeAgreementDetails["accountSplit"];
   },
 ) => {
   const [lead] = await db
@@ -2660,9 +2661,10 @@ const generateFeeAgreement = async (
   const details: FeeAgreementDetails = {
     attorneyFee: data.attorneyFee,
     governmentFees: data.governmentFees ?? [],
-    paymentPlan: data.paymentPlan,
+    governmentFeesPaidBy: data.governmentFeesPaidBy ?? "client_upfront",
+    paymentPlan: data.paymentPlan ?? "pay_in_full",
     applyConsultationCredit: data.applyConsultationCredit ?? false,
-    accountSplit: data.accountSplit,
+    accountSplit: data.accountSplit ?? { operating: 0, trust: 0 },
     consultationFeeAmount,
     docRef,
   };

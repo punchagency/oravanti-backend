@@ -207,9 +207,12 @@ export const generateFeeAgreementBodySchema = z.object({
   generatedFrom: z.enum(["questionnaire_auto", "manual"]).optional(),
   attorneyFee: z
     .object({
-      type: z.enum(["flat", "hourly", "flat_hourly"]),
+      type: z.enum(["flat", "hourly", "flat_hourly", "contingency"]),
       flatRate: z.number().nonnegative().optional(),
       hourlyRate: z.number().nonnegative().optional(),
+      // Settlement percentage, combinable with any type; required for
+      // pure-contingency agreements.
+      contingencyPercent: z.number().positive().max(100).optional(),
     })
     .superRefine((val, ctx) => {
       if (
@@ -230,6 +233,12 @@ export const generateFeeAgreementBodySchema = z.object({
           message: "An hourly rate is required",
           path: ["hourlyRate"],
         });
+      if (val.type === "contingency" && val.contingencyPercent == null)
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A settlement percentage is required",
+          path: ["contingencyPercent"],
+        });
     }),
   governmentFees: z
     .array(
@@ -239,12 +248,20 @@ export const generateFeeAgreementBodySchema = z.object({
       }),
     )
     .default([]),
-  paymentPlan: z.enum(["pay_in_full", "two_payments", "installments"]),
+  governmentFeesPaidBy: z
+    .enum(["client_upfront", "firm_advanced"])
+    .default("client_upfront"),
+  // Optional so the form can omit them when nothing is due upfront.
+  paymentPlan: z
+    .enum(["pay_in_full", "two_payments", "installments"])
+    .default("pay_in_full"),
   applyConsultationCredit: z.boolean().default(false),
-  accountSplit: z.object({
-    operating: z.number().nonnegative(),
-    trust: z.number().nonnegative(),
-  }),
+  accountSplit: z
+    .object({
+      operating: z.number().nonnegative(),
+      trust: z.number().nonnegative(),
+    })
+    .default({ operating: 0, trust: 0 }),
 });
 
 export const openCaseBodySchema = z.object({

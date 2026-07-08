@@ -23,7 +23,10 @@ const formatDate = (iso: string): string => {
 const paymentTermsText = (
   plan: FeeAgreementDocument["paymentPlan"],
   firmName: string,
+  noUpfrontDue: boolean,
 ): string => {
+  if (noUpfrontDue)
+    return "No payment is due upon signing this agreement. The firm's fees and any advanced costs are payable solely from the proceeds of a settlement, award, or judgment as described in this agreement.";
   const pay = `Payment may be made by ACH bank transfer, credit card (3% processing fee applies), or certified check payable to ${firmName}.`;
   if (plan === "two_payments")
     return `The total amount is payable in two equal installments: the first due upon signing this agreement and the second within 30 days. ${pay}`;
@@ -237,48 +240,103 @@ export const renderFeeAgreementPdf = async (
     .text("AMOUNT", { width: amountColWidth, align: "right" });
   doc.moveDown(0.3);
   doc.fillColor("#1a1a1a");
-  for (const line of document.feeLines) rowText(line.description, money(line.amount), false);
+  for (const line of document.feeLines)
+    rowText(
+      line.description,
+      line.amount == null ? "—" : money(line.amount),
+      false,
+    );
   hr(doc);
-  rowText("Total due", money(document.totalDue), true);
+  const hasDeferred = document.feeLines.some((l) => l.deferred);
+  rowText(
+    hasDeferred ? "Total due upfront" : "Total due",
+    money(document.totalDue),
+    true,
+  );
   doc.moveDown(0.8);
 
-  // ── Account allocation ────────────────────────────────────────────────────
-  // Pin to the left margin: the preceding fee-table amount column leaves doc.x
-  // shifted right, which would otherwise offset this section label.
-  drawLabel(doc, "Account allocation", { x: leftX, width: contentWidth });
-  doc.moveDown(0.4);
-  const allocTop = doc.y;
-  const allocCol = contentWidth / 3;
-  const allocCell = (idx: number, title: string, value: string) => {
-    const x = leftX + idx * allocCol;
+  // ── Contingency fee ───────────────────────────────────────────────────────
+  if (document.contingencyPercent != null) {
+    drawLabel(doc, "Contingency fee", { x: leftX, width: contentWidth });
+    doc.moveDown(0.3);
     doc
       .font("Helvetica")
-      .fontSize(8)
-      .fillColor("#8a8577")
-      .text(title.toUpperCase(), x, allocTop, { width: allocCol });
+      .fontSize(10)
+      .fillColor("#333")
+      .text(
+        `In addition to any amounts stated above, Client agrees to pay ${firmName} a contingency fee of ${document.contingencyPercent}% of the gross amount of any settlement, award, or judgment obtained in this matter. If no recovery is obtained, no contingency fee is owed.` +
+          (document.noUpfrontDue
+            ? " No upfront attorney fee is charged for this engagement."
+            : ""),
+        leftX,
+        doc.y,
+        { width: contentWidth },
+      );
+    doc.moveDown(0.8);
+  }
+
+  // ── Advanced costs ────────────────────────────────────────────────────────
+  if (
+    document.governmentFeesPaidBy === "firm_advanced" &&
+    document.feeLines.some((l) => l.description.includes("advanced by firm"))
+  ) {
+    drawLabel(doc, "Advanced costs", { x: leftX, width: contentWidth });
+    doc.moveDown(0.3);
     doc
-      .font("Helvetica-Bold")
-      .fontSize(12)
-      .fillColor("#1a1a1a")
-      .text(value, x, allocTop + 12, { width: allocCol });
-  };
-  allocCell(0, "Operating account", money(document.allocation.operating));
-  allocCell(1, "Trust (IOLTA)", money(document.allocation.trust));
-  allocCell(2, "Total", money(document.allocation.total));
-  doc.y = allocTop + 34;
-  doc.x = leftX;
-  doc.moveDown(0.8);
+      .font("Helvetica")
+      .fontSize(10)
+      .fillColor("#333")
+      .text(
+        `${firmName} will advance the government filing fees and costs listed above on Client's behalf. Advanced amounts will be recovered from the proceeds of any settlement, award, or judgment prior to the calculation of the contingency fee. If no recovery is obtained, Client remains responsible for reimbursing advanced costs.`,
+        leftX,
+        doc.y,
+        { width: contentWidth },
+      );
+    doc.moveDown(0.8);
+  }
+
+  // ── Account allocation (skipped when nothing is due upfront) ─────────────
+  // Pin to the left margin: the preceding fee-table amount column leaves doc.x
+  // shifted right, which would otherwise offset this section label.
+  if (!document.noUpfrontDue) {
+    drawLabel(doc, "Account allocation", { x: leftX, width: contentWidth });
+    doc.moveDown(0.4);
+    const allocTop = doc.y;
+    const allocCol = contentWidth / 3;
+    const allocCell = (idx: number, title: string, value: string) => {
+      const x = leftX + idx * allocCol;
+      doc
+        .font("Helvetica")
+        .fontSize(8)
+        .fillColor("#8a8577")
+        .text(title.toUpperCase(), x, allocTop, { width: allocCol });
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(12)
+        .fillColor("#1a1a1a")
+        .text(value, x, allocTop + 12, { width: allocCol });
+    };
+    allocCell(0, "Operating account", money(document.allocation.operating));
+    allocCell(1, "Trust (IOLTA)", money(document.allocation.trust));
+    allocCell(2, "Total", money(document.allocation.total));
+    doc.y = allocTop + 34;
+    doc.x = leftX;
+    doc.moveDown(0.8);
+  }
 
   // ── Payment terms ─────────────────────────────────────────────────────────
-  drawLabel(doc, "Payment terms");
+  drawLabel(doc, "Payment terms", { x: leftX, width: contentWidth });
   doc.moveDown(0.3);
   doc
     .font("Helvetica")
     .fontSize(10)
     .fillColor("#333")
-    .text(paymentTermsText(document.paymentPlan, firmName), leftX, doc.y, {
-      width: contentWidth,
-    });
+    .text(
+      paymentTermsText(document.paymentPlan, firmName, document.noUpfrontDue),
+      leftX,
+      doc.y,
+      { width: contentWidth },
+    );
   doc.moveDown(0.8);
 
   if (document.applyConsultationCredit) {
