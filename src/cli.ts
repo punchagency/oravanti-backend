@@ -78,6 +78,7 @@ import { teams } from "./db/schema/teams";
 import { timeEntries } from "./db/schema/time-entries";
 import {
   caseWorkflowSteps,
+  workflowModules,
   workflowTemplates,
   workflowTemplateSteps,
 } from "./db/schema/workflow";
@@ -85,6 +86,8 @@ import { seedMasterQuestionnaires } from "./db/seeds/master-questionnaires.seed"
 import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
 import { seedStaffAndTeams } from "./db/seeds/staff-and-teams.seed";
 import { seedSystemQuestionnaires } from "./db/seeds/system-questionnaires.seed";
+import { seedWorkflowTemplate } from "./db/seeds/workflow-template.seed";
+import { seedPICases } from "./db/seeds/seed-pi-cases";
 import { StaffAvailabilityService } from "./modules/staff-availability/staff-availability.service";
 
 const DEFAULT_IMMIGRATION_CASE_TYPES = [
@@ -2871,7 +2874,7 @@ const deletePracticeAreas = async (ids: readonly string[]) => {
       ? await tx
           .select({ id: workflowTemplates.id })
           .from(workflowTemplates)
-          .where(inArray(workflowTemplates.caseTypeId, caseTypeIds))
+          .where(inArray(workflowTemplates.practiceAreaId, caseTypeIds))
       : [];
     const templateIds = templateRows.map((r) => r.id);
 
@@ -2879,7 +2882,8 @@ const deletePracticeAreas = async (ids: readonly string[]) => {
       ? await tx
           .select({ id: workflowTemplateSteps.id })
           .from(workflowTemplateSteps)
-          .where(inArray(workflowTemplateSteps.templateId, templateIds))
+          .innerJoin(workflowModules, eq(workflowModules.id, workflowTemplateSteps.moduleId))
+          .where(inArray(workflowModules.templateId, templateIds))
       : [];
     const templateStepIds = templateStepRows.map((r) => r.id);
 
@@ -3555,6 +3559,14 @@ const runInteractive = async () => {
           label: "Seed staff & teams for an organization",
         },
         {
+          value: "seed-workflow-template",
+          label: "Seed Personal Injury workflow template (20 modules)",
+        },
+        {
+          value: "seed-pi-cases",
+          label: "Seed 5 PI demo cases with clients",
+        },
+        {
           value: "staff-availability",
           label: "Set staff availability (hours, breaks, overrides)",
         },
@@ -3640,6 +3652,14 @@ const runInteractive = async () => {
       if (action === "seed-staff-teams") {
         const firm = await resolveFirm();
         if (firm) await seedStaffAndTeams(firm.id);
+      }
+
+      if (action === "seed-workflow-template") {
+        await seedWorkflowTemplate();
+      }
+
+      if (action === "seed-pi-cases") {
+        await seedPICases();
       }
 
       if (action === "staff-availability") {
@@ -3812,6 +3832,17 @@ const staffTeamsCommand = program
   .description("Seed staff members and teams for an organization")
   .argument("[organizationId]", "Organization id")
   .action(seedStaffAndTeams);
+
+const workflowTemplateCommand = program
+  .command("seed-workflow-template")
+  .description("Seed the Personal Injury workflow template (20 modules, idempotent)")
+  .action(seedWorkflowTemplate);
+
+const piCasesCommand = program
+  .command("seed-pi-cases")
+  .description("Seed 5 Personal Injury demo cases with clients")
+  .argument("[organizationId]", "Organization id")
+  .action(seedPICases);
 
 program
   .command("staff-availability")

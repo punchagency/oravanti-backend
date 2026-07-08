@@ -46,6 +46,7 @@ import {
 import { staff } from "../../db/schema/staff";
 import {
   caseWorkflowSteps,
+  workflowModules,
   workflowTemplates,
   workflowTemplateSteps,
 } from "../../db/schema/workflow";
@@ -2671,7 +2672,7 @@ const openCase = async (
     const [template] = await tx
       .select()
       .from(workflowTemplates)
-      .where(eq(workflowTemplates.caseTypeId, lead.caseTypeId!))
+      .where(eq(workflowTemplates.practiceAreaId, lead.practiceAreaId!))
       .limit(1);
 
     let workflowSteps: any[] = [];
@@ -2679,11 +2680,14 @@ const openCase = async (
       const templateSteps = await tx
         .select()
         .from(workflowTemplateSteps)
-        .where(eq(workflowTemplateSteps.templateId, template.id));
+        .innerJoin(workflowModules, eq(workflowModules.id, workflowTemplateSteps.moduleId))
+        .where(eq(workflowModules.templateId, template.id));
 
-      if (templateSteps.length > 0) {
+      const steps = templateSteps.map((r) => r.workflow_template_steps);
+
+      if (steps.length > 0) {
         const caseOpenDate = new Date();
-        const stepValues = templateSteps
+        const stepValues = steps
           .sort((a, b) => a.orderIndex - b.orderIndex)
           .map((step) => ({
             organizationId,
