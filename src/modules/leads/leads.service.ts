@@ -2871,6 +2871,53 @@ const generateFeeAgreement = async (
   return { agreement, document };
 };
 
+// Discard a drafted agreement so it can be reconfigured and regenerated.
+// Drafts only: nothing has been dispatched yet (no envelope, no signing token,
+// no uploaded PDF), so the row is hard-deleted and the lead's pointer cleared —
+// generateFeeAgreement's one-agreement-per-lead guard then allows a fresh one.
+const discardDraftFeeAgreement = async (
+  agreementId: string,
+  organizationId: string,
+) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+  if (agreement.status !== "draft")
+    throw new BadRequestError(
+      "Only draft agreements can be discarded — this one has already been sent",
+    );
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(leads)
+      .set({ feeAgreementId: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(leads.id, agreement.leadId),
+          eq(leads.feeAgreementId, agreementId),
+        ),
+      );
+    await tx.delete(feeAgreements).where(eq(feeAgreements.id, agreementId));
+  });
+
+  // The stored config is returned so the client can seed the wizard with it.
+  return {
+    discarded: true,
+    agreementId,
+    leadId: agreement.leadId,
+    details: agreement.details,
+  };
+};
+
 // Dispatch a drafted agreement: mint the e-signature envelope, email the client
 // the signing link, and move the agreement to pending_signature. The lead stays
 // in the consultation stage.
@@ -3709,6 +3756,7 @@ export class LeadsService {
   payConsultationFee = payConsultationFee;
   selectConsultationSlot = selectConsultationSlot;
   generateFeeAgreement = generateFeeAgreement;
+  discardDraftFeeAgreement = discardDraftFeeAgreement;
   getFeeAgreementPreview = getFeeAgreementPreview;
   sendFeeAgreement = sendFeeAgreement;
   markFeeAgreementReceived = markFeeAgreementReceived;
