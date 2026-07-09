@@ -2721,9 +2721,18 @@ const generateFeeAgreement = async (
     agreementType?: string;
     generatedFrom?: "questionnaire_auto" | "manual";
     attorneyFee: FeeAgreementDetails["attorneyFee"];
+    // Wire shape: abaConfirmed flag instead of the server-stamped timestamp.
+    contingencyTerms?: Omit<
+      NonNullable<FeeAgreementDetails["contingencyTerms"]>,
+      "abaConfirmedAt"
+    > & { abaConfirmed: true };
     governmentFees?: FeeAgreementDetails["governmentFees"];
+    otherCosts?: FeeAgreementDetails["otherCosts"];
     governmentFeesPaidBy?: FeeAgreementDetails["governmentFeesPaidBy"];
     paymentPlan?: FeeAgreementDetails["paymentPlan"];
+    twoPaymentsSchedule?: FeeAgreementDetails["twoPaymentsSchedule"];
+    installmentSchedule?: FeeAgreementDetails["installmentSchedule"];
+    paymentAllocation?: FeeAgreementDetails["paymentAllocation"];
     applyConsultationCredit?: boolean;
     accountSplit?: FeeAgreementDetails["accountSplit"];
   },
@@ -2786,9 +2795,33 @@ const generateFeeAgreement = async (
 
   const details: FeeAgreementDetails = {
     attorneyFee: data.attorneyFee,
+    ...(data.contingencyTerms
+      ? {
+          contingencyTerms: {
+            coversCaseCosts: data.contingencyTerms.coversCaseCosts,
+            coversExpertWitnessFees:
+              data.contingencyTerms.coversExpertWitnessFees,
+            ifLost: data.contingencyTerms.ifLost,
+            // Stamped server-side; the client only sends the confirmation flag.
+            abaConfirmedAt: new Date().toISOString(),
+          },
+        }
+      : {}),
     governmentFees: data.governmentFees ?? [],
+    ...(data.otherCosts?.length ? { otherCosts: data.otherCosts } : {}),
     governmentFeesPaidBy: data.governmentFeesPaidBy ?? "client_upfront",
     paymentPlan: data.paymentPlan ?? "pay_in_full",
+    // Schedules persist only when they match the chosen plan; anything else
+    // sent by a stale client is dropped.
+    ...(data.paymentPlan === "two_payments" && data.twoPaymentsSchedule
+      ? { twoPaymentsSchedule: data.twoPaymentsSchedule }
+      : {}),
+    ...(data.paymentPlan === "installments" && data.installmentSchedule
+      ? { installmentSchedule: data.installmentSchedule }
+      : {}),
+    ...(data.paymentAllocation
+      ? { paymentAllocation: data.paymentAllocation }
+      : {}),
     applyConsultationCredit: data.applyConsultationCredit ?? false,
     accountSplit: data.accountSplit ?? { operating: 0, trust: 0 },
     consultationFeeAmount,
