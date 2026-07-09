@@ -54,6 +54,10 @@ export const leads = pgTable('leads', {
   // zone when the lead books a consultation. Used to localize lead-facing emails.
   timezone:       text('timezone'),
 
+  // Preferred language for lead-facing communications (e.g. "english");
+  // used when auto-sending the intake questionnaire.
+  language:       text('language'),
+
   // Stage-linked IDs — plain uuid, no FK (avoids circular deps with pipeline tables)
   conflictCheckId:     uuid('conflict_check_id'),
   questionnaireSendId: uuid('questionnaire_send_id'),
