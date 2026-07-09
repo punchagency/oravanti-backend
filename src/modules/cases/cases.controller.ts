@@ -2,6 +2,7 @@ import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
 import { NotFoundError } from "../../utils/error/app-error";
+import { sendSuccess } from "../../utils/send-success";
 import { CasesService } from "./cases.service";
 
 export class CasesController {
@@ -19,7 +20,7 @@ export class CasesController {
       practiceAreaId as string,
       caseType as string,
     );
-    res.status(200).json({ caseNumber });
+    sendSuccess(res, { caseNumber }, "Case number generated");
   });
 
   getAllCases = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -41,7 +42,8 @@ export class CasesController {
       page: page ? parseInt(page as string, 10) : undefined,
       limit: limit ? parseInt(limit as string, 10) : undefined,
     });
-    res.status(200).json(result);
+    const { data, pagination } = result;
+    sendSuccess(res, data, "Cases retrieved successfully", 200, { pagination });
   });
 
   getCaseById = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -52,7 +54,7 @@ export class CasesController {
     if (!result) {
       throw new NotFoundError("Case not found");
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Case retrieved successfully");
   });
 
   createCase = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -60,7 +62,7 @@ export class CasesController {
       adminId: req.adminId,
       staffId: req.staffId,
     });
-    res.status(201).json(result);
+    sendSuccess(res, result, "Case created successfully", 201);
   });
 
   updateCase = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -72,11 +74,11 @@ export class CasesController {
     if (!result) {
       throw new NotFoundError("Case not found");
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Case updated successfully");
   });
 
   deleteCase = asyncWrap(async (req: AuthRequest, res: Response) => {
     await this.casesService.deleteCase(req.params.id as string, req.organizationId!);
-    res.status(200).json({ message: "Case deleted" });
+    sendSuccess(res, null, "Case deleted successfully");
   });
 }

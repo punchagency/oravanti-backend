@@ -1,8 +1,8 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
-import { PermissionAuditLogService } from "./permission-audit-log.service";
-
 import asyncWrap from "../../../utils/asyncWrapper";
+import { sendSuccess } from "../../../utils/send-success";
+import { PermissionAuditLogService } from "./permission-audit-log.service";
 
 export class PermissionAuditLogController {
   private auditLogService: PermissionAuditLogService;
@@ -18,6 +18,6 @@ export class PermissionAuditLogController {
       req.organizationId!,
       limit,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Permission audit log retrieved successfully");
   });
 }

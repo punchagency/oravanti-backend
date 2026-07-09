@@ -1,6 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import asyncWrap from "../../../utils/asyncWrapper";
+import { sendSuccess } from "../../../utils/send-success";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
 import { FinancialAccessService } from "./financial-access.service";
 
@@ -20,7 +21,7 @@ export class FinancialAccessController {
     const result = await this.financialAccessService.getFinancialAccess(
       req.organizationId!,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Financial access retrieved successfully");
   });
 
   updateFinancialAccess = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -39,6 +40,6 @@ export class FinancialAccessController {
       .logPermissionChange(action, req.userId!, req.organizationId!)
       .catch(() => {});
 
-    res.status(200).json({ message: "Financial access controls updated" });
+    sendSuccess(res, null, "Financial access controls updated");
   });
 }

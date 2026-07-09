@@ -1,6 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import asyncWrap from "../../../utils/asyncWrapper";
+import { sendSuccess } from "../../../utils/send-success";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
 import { ApprovalWorkflowsService } from "./approval-workflows.service";
 
@@ -20,7 +21,7 @@ export class ApprovalWorkflowsController {
     const result = await this.approvalWorkflowsService.getApprovalWorkflows(
       req.organizationId!,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Approval workflows retrieved successfully");
   });
 
   updateApprovalWorkflows = asyncWrap(
@@ -40,7 +41,7 @@ export class ApprovalWorkflowsController {
         .logPermissionChange(action, req.userId!, req.organizationId!)
         .catch(() => {});
 
-      res.status(200).json({ message: "Approval workflows updated" });
+      sendSuccess(res, null, "Approval workflows updated");
     },
   );
 }

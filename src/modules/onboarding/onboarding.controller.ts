@@ -1,6 +1,7 @@
 import { fromNodeHeaders } from "better-auth/node";
 import { Request, Response } from "express";
 import asyncWrap from "../../utils/asyncWrapper";
+import { sendSuccess } from "../../utils/send-success";
 import { OnboardingService } from "./onboarding.service";
 
 export class OnboardingController {
@@ -16,6 +17,6 @@ export class OnboardingController {
       (req as any).userId,
       req.body,
     );
-    res.json(result);
+    sendSuccess(res, result, "Onboarding data submitted successfully");
   });
 }

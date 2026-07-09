@@ -6,6 +6,7 @@ import { connectedEmailAccount } from "../../db/schema/email";
 import asyncWrap from "../../utils/asyncWrapper";
 import { encryptData } from "../../utils/cryptoUtils";
 import { BadRequestError } from "../../utils/error/app-error";
+import { sendSuccess } from "../../utils/send-success";
 import { EmailAccountService } from "./email-account.service";
 
 export class EmailAccountController {
@@ -27,11 +28,7 @@ export class EmailAccountController {
 
     const provider = await this.emailAccountService.identifyProvider(email);
 
-    res.status(200).json({
-      success: true,
-      message: "Email provider classified successfully",
-      data: { email, provider },
-    });
+    sendSuccess(res, { email, provider }, "Email provider classified successfully");
   });
 
   connectCustomAuto = asyncWrap(async (req: Request, res: Response) => {
@@ -45,11 +42,7 @@ export class EmailAccountController {
     );
 
     if (!discoveryResult.success || !discoveryResult.settings) {
-      res.status(200).json({
-        success: false,
-        error: "Unable to auto-detect server settings.",
-        fallbackToManualForm: true,
-      });
+      res.status(200).json({ success: false, error: "Unable to auto-detect server settings.", fallbackToManualForm: true });
       return;
     }
 
@@ -81,10 +74,7 @@ export class EmailAccountController {
       customSettings,
     });
 
-    res.status(200).json({
-      success: true,
-      message: "Custom email account verified and saved via auto-discovery.",
-    });
+    sendSuccess(res, null, "Custom email account verified and saved via auto-discovery.");
   });
 
   connectCustomManual = asyncWrap(async (req: Request, res: Response) => {
@@ -144,10 +134,7 @@ export class EmailAccountController {
       },
     });
 
-    res.status(200).json({
-      success: true,
-      message: "Custom server verified and manually mapped successfully.",
-    });
+    sendSuccess(res, null, "Custom server verified and manually mapped successfully.");
   });
 
   list = asyncWrap(async (req: Request, res: Response) => {
@@ -158,17 +145,9 @@ export class EmailAccountController {
     const validStatus =
       status === "active" || status === "disabled" ? status : undefined;
 
-    const emailAccounts = await this.emailAccountService.listEmailAccounts(
-      userId,
-      organizationId,
-      validStatus,
-    );
+    const emailAccounts = await this.emailAccountService.listEmailAccounts(userId, organizationId, validStatus);
 
-    res.status(200).json({
-      success: true,
-      message: "Connected email accounts retrieved successfully.",
-      data: emailAccounts,
-    });
+    sendSuccess(res, emailAccounts, "Connected email accounts retrieved successfully.");
   });
 
   enable = asyncWrap(async (req: Request, res: Response) => {
@@ -177,10 +156,7 @@ export class EmailAccountController {
 
     await this.emailAccountService.enableEmailAccount(String(id), organizationId);
 
-    res.status(200).json({
-      success: true,
-      message: "Email account enabled successfully.",
-    });
+    sendSuccess(res, null, "Email account enabled successfully.");
   });
 
   disable = asyncWrap(async (req: Request, res: Response) => {
@@ -189,10 +165,7 @@ export class EmailAccountController {
 
     await this.emailAccountService.disableEmailAccount(String(id), organizationId);
 
-    res.status(200).json({
-      success: true,
-      message: "Email account disabled successfully.",
-    });
+    sendSuccess(res, null, "Email account disabled successfully.");
   });
 
   remove = asyncWrap(async (req: Request, res: Response) => {
@@ -219,10 +192,7 @@ export class EmailAccountController {
 
     await this.emailAccountService.deleteEmailAccount(String(id), organizationId);
 
-    res.status(200).json({
-      success: true,
-      message: "Email account deleted permanently.",
-    });
+    sendSuccess(res, null, "Email account deleted permanently.");
   });
 
   private buildOAuthRedirect = async (req: Request, provider: "google" | "microsoft") => {

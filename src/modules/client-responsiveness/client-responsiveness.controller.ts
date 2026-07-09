@@ -2,6 +2,7 @@ import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
 import { NotFoundError } from "../../utils/error/app-error";
+import { sendSuccess } from "../../utils/send-success";
 import { ClientResponsivenessService } from "./client-responsiveness.service";
 
 export class ClientResponsivenessController {
@@ -13,7 +14,7 @@ export class ClientResponsivenessController {
 
   getStats = asyncWrap(async (req: AuthRequest, res: Response) => {
     const stats = await this.clientResponsivenessService.getStats(req.organizationId!);
-    res.status(200).json(stats);
+    sendSuccess(res, stats, "Client responsiveness stats retrieved successfully");
   });
 
   getAllClientResponsiveness = asyncWrap(
@@ -27,7 +28,7 @@ export class ClientResponsivenessController {
             search: search as string,
           },
         );
-      res.status(200).json(result);
+      sendSuccess(res, result, "Client responsiveness data retrieved successfully");
     },
   );
 
@@ -39,7 +40,7 @@ export class ClientResponsivenessController {
       req.organizationId!,
       { caseId, items, requestedAt },
     );
-    res.status(201).json(result);
+    sendSuccess(res, result, "Requests added successfully", 201);
   });
 
   fulfillRequest = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -50,7 +51,7 @@ export class ClientResponsivenessController {
     if (!result) {
       throw new NotFoundError("Request not found");
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Request fulfilled successfully");
   });
 
   generateTerminationLetter = asyncWrap(
@@ -63,7 +64,7 @@ export class ClientResponsivenessController {
       if (!result) {
         throw new NotFoundError("Client not found");
       }
-      res.status(200).json(result);
+      sendSuccess(res, result, "Termination letter data retrieved successfully");
     },
   );
 
@@ -75,6 +76,6 @@ export class ClientResponsivenessController {
     if (!result) {
       throw new NotFoundError("Client not found");
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Report exported successfully");
   });
 }

@@ -1,6 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import asyncWrap from "../../../utils/asyncWrapper";
+import { sendSuccess } from "../../../utils/send-success";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
 import { AccessControlService } from "./access-control.service";
 
@@ -18,12 +19,12 @@ export class AccessControlController {
 
   getRoleOverview = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.accessControlService.getRoleOverview(req.organizationId!);
-    res.status(200).json(result);
+    sendSuccess(res, result, "Role overview retrieved successfully");
   });
 
   getPermissions = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.accessControlService.getPermissions(req.organizationId!);
-    res.status(200).json(result);
+    sendSuccess(res, result, "Permissions retrieved successfully");
   });
 
   savePermissions = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -39,6 +40,6 @@ export class AccessControlController {
       .logPermissionChange(action, req.userId!, req.organizationId!)
       .catch(() => {});
 
-    res.status(200).json({ message: "Permissions saved" });
+    sendSuccess(res, null, "Permissions saved successfully");
   });
 }

@@ -2,6 +2,7 @@ import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
 import { BadRequestError } from "../../utils/error/app-error";
+import { sendSuccess } from "../../utils/send-success";
 import { WorkflowService } from "./workflow.service";
 
 export class WorkflowController {
@@ -17,7 +18,7 @@ export class WorkflowController {
       caseId,
       req.organizationId!,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Workflow retrieved successfully");
   });
 
   getWorkflowSummary = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -26,7 +27,7 @@ export class WorkflowController {
       caseId,
       req.organizationId!,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Workflow summary retrieved successfully");
   });
 
   completeStep = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -40,7 +41,7 @@ export class WorkflowController {
       req.staffId ?? req.adminId,
       notes,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Step completed successfully");
   });
 
   submitForReview = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -54,7 +55,7 @@ export class WorkflowController {
       req.staffId ?? req.adminId,
       notes,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Step submitted for review successfully");
   });
 
   approveStep = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -68,7 +69,7 @@ export class WorkflowController {
       req.staffId ?? req.adminId,
       notes,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Step approved successfully");
   });
 
   rejectStep = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -82,7 +83,7 @@ export class WorkflowController {
       req.staffId ?? req.adminId,
       feedback,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Step rejected");
   });
 
   assignStep = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -99,7 +100,7 @@ export class WorkflowController {
       overrideRationale,
       req.staffId ?? req.adminId,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Step assigned successfully");
   });
 
   activateModule = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -110,7 +111,7 @@ export class WorkflowController {
       moduleId,
       req.organizationId!,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Module activated successfully");
   });
 
   getTimeline = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -119,7 +120,7 @@ export class WorkflowController {
       caseId,
       req.organizationId!,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Timeline retrieved successfully");
   });
 
   getLogs = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -128,7 +129,7 @@ export class WorkflowController {
       caseId,
       req.organizationId!,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Logs retrieved successfully");
   });
 
   // ─── My Tasks ───────────────────────────────────────────────────────────────────
@@ -137,9 +138,7 @@ export class WorkflowController {
     console.log(req.staffId);
 
     if (!req.staffId) {
-      res
-        .status(200)
-        .json({ data: [], pagination: { total: 0, limit: 10, offset: 0 } });
+      sendSuccess(res, [], "My tasks retrieved successfully", 200, { pagination: { total: 0, limit: 10, offset: 0 } });
       return;
     }
     const status = req.query.status as string | undefined;
@@ -154,7 +153,8 @@ export class WorkflowController {
       page,
       limit,
     );
-    res.status(200).json(result);
+    const { data, pagination, counts } = result;
+    sendSuccess(res, data, "My tasks retrieved successfully", 200, { pagination, counts });
   });
 
   // ─── Review Queue ───────────────────────────────────────────────────────────────
@@ -171,7 +171,8 @@ export class WorkflowController {
       page,
       limit,
     );
-    res.status(200).json(result);
+    const { data, pagination, counts } = result;
+    sendSuccess(res, data, "Review queue retrieved successfully", 200, { pagination, counts });
   });
 
   // ─── Case Notes ─────────────────────────────────────────────────────────────────
@@ -192,13 +193,13 @@ export class WorkflowController {
       content,
       createdByUserId: req.staffId ?? req.adminId ?? req.user?.id ?? "",
     });
-    res.status(201).json(result);
+    sendSuccess(res, result, "Note created successfully", 201);
   });
 
   getNotes = asyncWrap(async (req: AuthRequest, res: Response) => {
     const caseId = req.params.caseId as string;
     const result = await this.workflowService.getNotes(caseId);
-    res.status(200).json(result);
+    sendSuccess(res, result, "Notes retrieved successfully");
   });
 
   updateNote = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -210,13 +211,13 @@ export class WorkflowController {
       category,
       visibility,
     });
-    res.status(200).json(result);
+    sendSuccess(res, result, "Note updated successfully");
   });
 
   deleteNote = asyncWrap(async (req: AuthRequest, res: Response) => {
     const caseId = req.params.caseId as string;
     const noteId = req.params.noteId as string;
     await this.workflowService.deleteNote(noteId, caseId);
-    res.status(204).end();
+    sendSuccess(res, null, "Note deleted successfully");
   });
 }

@@ -1,6 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
+import { sendSuccess } from "../../utils/send-success";
 import { Period, RevenueAnalyticsService } from "./revenue-analytics.service";
 
 export class RevenueAnalyticsController {
@@ -19,7 +20,7 @@ export class RevenueAnalyticsController {
       period,
       teamId,
     );
-    res.json(data);
+    sendSuccess(res, data, "Revenue analytics retrieved successfully");
   });
 
   exportReport = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -32,9 +33,6 @@ export class RevenueAnalyticsController {
       teamId,
     );
 
-    res.json({
-      exportedAt: new Date().toISOString(),
-      ...data,
-    });
+    sendSuccess(res, { exportedAt: new Date().toISOString(), ...data }, "Report exported successfully");
   });
 }

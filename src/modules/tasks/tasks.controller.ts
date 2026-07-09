@@ -2,6 +2,7 @@ import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
 import { NotFoundError } from "../../utils/error/app-error";
+import { sendSuccess } from "../../utils/send-success";
 import * as tasksService from "./tasks.service";
 
 export class TasksController {
@@ -13,7 +14,7 @@ export class TasksController {
 
   getTaskStats = asyncWrap(async (req: AuthRequest, res: Response) => {
     const stats = await this.tasksService.getTaskStats(req.organizationId!);
-    res.status(200).json(stats);
+    sendSuccess(res, stats, "Task stats retrieved successfully");
   });
 
   getAllTasks = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -25,7 +26,7 @@ export class TasksController {
       priority: priority as string,
       assignedToId: assignedToId as string,
     });
-    res.status(200).json(result);
+    sendSuccess(res, result, "Tasks retrieved successfully");
   });
 
   getTaskById = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -36,7 +37,7 @@ export class TasksController {
     if (!result) {
       throw new NotFoundError("Task not found");
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Task retrieved successfully");
   });
 
   createTask = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -45,7 +46,7 @@ export class TasksController {
       organizationId: req.organizationId!,
       assignedById: req.adminId!,
     });
-    res.status(201).json(result);
+    sendSuccess(res, result, "Task created successfully", 201);
   });
 
   updateTask = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -57,11 +58,11 @@ export class TasksController {
     if (!result) {
       throw new NotFoundError("Task not found");
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Task updated successfully");
   });
 
   deleteTask = asyncWrap(async (req: AuthRequest, res: Response) => {
     await this.tasksService.deleteTask(req.params.id as string, req.organizationId!);
-    res.status(200).json({ message: "Task deleted" });
+    sendSuccess(res, null, "Task deleted successfully");
   });
 }

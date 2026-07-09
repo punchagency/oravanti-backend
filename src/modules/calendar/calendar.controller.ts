@@ -2,6 +2,7 @@ import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
 import { NotFoundError } from "../../utils/error/app-error";
+import { sendSuccess } from "../../utils/send-success";
 import { CalendarService } from "./calendar.service";
 
 export class CalendarController {
@@ -25,7 +26,7 @@ export class CalendarController {
       req.organizationId!,
       filters,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Calendar events retrieved successfully");
   });
 
   getCalendarEventById = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -36,7 +37,7 @@ export class CalendarController {
     if (!result) {
       throw new NotFoundError("Event not found");
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Calendar event retrieved successfully");
   });
 
   createCalendarEvent = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -44,7 +45,7 @@ export class CalendarController {
       req.organizationId!,
       req.body,
     );
-    res.status(201).json(result);
+    sendSuccess(res, result, "Calendar event created successfully", 201);
   });
 
   updateCalendarEvent = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -56,7 +57,7 @@ export class CalendarController {
     if (!result) {
       throw new NotFoundError("Event not found");
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Calendar event updated successfully");
   });
 
   deleteCalendarEvent = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -64,7 +65,7 @@ export class CalendarController {
       req.params.id as string,
       req.organizationId!,
     );
-    res.status(200).json({ message: "Event deleted" });
+    sendSuccess(res, null, "Calendar event deleted successfully");
   });
 
   getCalendarStrip = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -73,7 +74,7 @@ export class CalendarController {
       req.organizationId!,
       teamId,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Calendar strip retrieved successfully");
   });
 
   createServiceRequestEvent = asyncWrap(
@@ -96,7 +97,7 @@ export class CalendarController {
         assignedStaffId,
         teamId,
       );
-      res.status(201).json(result);
+      sendSuccess(res, result, "Service request event created successfully", 201);
     },
   );
 
@@ -106,7 +107,7 @@ export class CalendarController {
         req.params.caseId as string,
         req.organizationId!,
       );
-      res.status(200).json({ message: "Service request events resolved" });
+      sendSuccess(res, null, "Service request events resolved successfully");
     },
   );
 
@@ -130,7 +131,7 @@ export class CalendarController {
         assignedStaffId,
         teamId,
       );
-      res.status(201).json(result);
+      sendSuccess(res, result, "Service request scheduled successfully", 201);
     },
   );
 }

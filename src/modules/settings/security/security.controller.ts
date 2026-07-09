@@ -1,6 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import asyncWrap from "../../../utils/asyncWrapper";
+import { sendSuccess } from "../../../utils/send-success";
 import { SecurityService } from "./security.service";
 
 export class SecurityController {
@@ -20,48 +21,48 @@ export class SecurityController {
       currentPassword,
       newPassword,
     );
-    res.status(200).json({ message: "Password updated successfully" });
+    sendSuccess(res, null, "Password updated successfully");
   });
 
   // ─── Two-Factor Authentication ────────────────────────────────────────────────
 
   get2FAStatus = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.securityService.get2FAStatus(req.userId!);
-    res.status(200).json(result);
+    sendSuccess(res, result, "2FA status retrieved successfully");
   });
 
   enroll2FA = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { password } = req.body;
 
     const data = await this.securityService.enroll2FA(req, password);
-    res.status(200).json(data);
+    sendSuccess(res, data, "2FA enrollment initiated");
   });
 
   verify2FA = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { code } = req.body;
 
     await this.securityService.verify2FA(req, code);
-    res.status(200).json({ message: "2FA enabled successfully" });
+    sendSuccess(res, null, "2FA enabled successfully");
   });
 
   unenroll2FA = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { password } = req.body;
 
     await this.securityService.unenroll2FA(req, password);
-    res.status(200).json({ message: "2FA disabled successfully" });
+    sendSuccess(res, null, "2FA disabled successfully");
   });
 
   // ─── Active Sessions ──────────────────────────────────────────────────────────
 
   getSessions = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.securityService.getSessions(req);
-    res.status(200).json(result);
+    sendSuccess(res, result, "Sessions retrieved successfully");
   });
 
   deleteSession = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { id } = req.params;
 
     await this.securityService.deleteSession(req, id as string);
-    res.status(200).json({ message: "Session removed" });
+    sendSuccess(res, null, "Session removed successfully");
   });
 }

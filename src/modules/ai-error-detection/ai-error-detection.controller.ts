@@ -2,6 +2,7 @@ import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
 import { NotFoundError } from "../../utils/error/app-error";
+import { sendSuccess } from "../../utils/send-success";
 import { AIErrorDetectionService } from "./ai-error-detection.service";
 
 export class AIErrorDetectionController {
@@ -13,7 +14,7 @@ export class AIErrorDetectionController {
 
   getStats = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.aiService.getStats(req.organizationId!);
-    res.status(200).json(result);
+    sendSuccess(res, result, "Error detection stats retrieved successfully");
   });
 
   getAllFlags = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -22,7 +23,7 @@ export class AIErrorDetectionController {
       severity: severity as string,
       status: status as string,
     });
-    res.status(200).json(result);
+    sendSuccess(res, result, "Flags retrieved successfully");
   });
 
   getFlagById = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -33,7 +34,7 @@ export class AIErrorDetectionController {
     if (!result) {
       throw new NotFoundError("Flag not found");
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Flag retrieved successfully");
   });
 
   updateFlagStatus = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -48,17 +49,17 @@ export class AIErrorDetectionController {
     if (!result) {
       throw new NotFoundError("Flag not found");
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Flag status updated successfully");
   });
 
   createFlag = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.aiService.createFlag(req.organizationId!, req.body);
-    res.status(201).json(result);
+    sendSuccess(res, result, "Flag created successfully", 201);
   });
 
   getSystemConfig = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.aiService.getSystemConfig(req.organizationId!);
-    res.status(200).json(result);
+    sendSuccess(res, result, "System config retrieved successfully");
   });
 
   updateSystemConfig = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -66,6 +67,6 @@ export class AIErrorDetectionController {
       req.organizationId!,
       req.body,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "System config updated successfully");
   });
 }
