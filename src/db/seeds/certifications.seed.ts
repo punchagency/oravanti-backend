@@ -1,73 +1,103 @@
 import { db } from "../client";
-import { certifications } from "../schema/certifications";
+import { eq } from "drizzle-orm";
+import { certifications } from "../schema/cases";
+import { organization } from "../schema/auth-schema";
 
 const defaults = [
   // Basic
   {
-    code: "ILF",
     name: "Immigration Law Fundamentals",
     level: "basic" as const,
+    description: "Core principles of U.S. immigration law and procedure",
   },
-  { code: "LEC", name: "Legal Ethics & Compliance", level: "basic" as const },
+  {
+    name: "Legal Ethics & Compliance",
+    level: "basic" as const,
+    description: "Professional responsibility and regulatory compliance",
+  },
   // Intermediate
   {
-    code: "I485FP",
     name: "I-485 Form Processing",
     level: "intermediate" as const,
+    description: "Application to Register Permanent Residence or Adjust Status",
   },
   {
-    code: "I130PF",
     name: "I-130 Petition Filing",
     level: "intermediate" as const,
+    description: "Petition for Alien Relative",
   },
   {
-    code: "I129NP",
     name: "I-129 Nonimmigrant Worker Petition",
     level: "intermediate" as const,
+    description: "Petition for Nonimmigrant Worker",
   },
   {
-    code: "CCCM",
     name: "Client Communication & Case Management",
     level: "intermediate" as const,
+    description: "Effective client relations and case workflow management",
   },
   // Advanced
   {
-    code: "I140IP",
     name: "I-140 Immigrant Petition",
     level: "advanced" as const,
+    description: "Immigrant Petition for Alien Workers",
   },
   {
-    code: "AAP",
     name: "Asylum Application Procedures",
     level: "advanced" as const,
+    description: "Affirmative and defensive asylum application processing",
   },
-  { code: "H1BVP", name: "H-1B Visa Processing", level: "advanced" as const },
   {
-    code: "NAC",
+    name: "H-1B Visa Processing",
+    level: "advanced" as const,
+    description: "Specialty occupation visa petition preparation",
+  },
+  {
     name: "Naturalization & Citizenship",
     level: "advanced" as const,
+    description: "Application for Naturalization (N-400) processing",
   },
   // Expert
   {
-    code: "EBVP",
     name: "Employment-Based Visa Processing",
     level: "expert" as const,
+    description: "EB-1 through EB-5 immigrant visa categories",
   },
   {
-    code: "UEFC",
     name: "USCIS Electronic Filing Certified",
     level: "expert" as const,
+    description: "Certified in USCIS electronic filing systems and procedures",
   },
 ];
 
-async function seed() {
-  console.log("Seeding certifications...");
-  await db.insert(certifications).values(defaults).onConflictDoNothing();
-  console.log("Done.");
-  process.exit(0);
-}
+export const seedCertifications = async (organizationId?: string) => {
+  let orgId = organizationId;
+  if (!orgId) {
+    const [org] = await db.select({ id: organization.id }).from(organization).limit(1);
+    if (!org) {
+      console.error("No organization found. Run seed-staff-teams or demo-data seed first.");
+      return;
+    }
+    orgId = org.id;
+  }
 
-seed().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+  const values = defaults.map((cert) => ({ ...cert, organizationId: orgId }));
+  await db.insert(certifications).values(values).onConflictDoNothing();
+  console.log(`Seeded ${values.length} certifications`);
+};
+
+const runningDirectly =
+  process.argv.length > 1 &&
+  process.argv[1]!.replace(/\\/g, "/").includes("certifications.seed");
+
+if (runningDirectly) {
+  seedCertifications()
+    .then(() => {
+      console.log("Done.");
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
+}
