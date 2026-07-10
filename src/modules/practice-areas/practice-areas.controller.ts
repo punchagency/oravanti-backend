@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
+import { sendSuccess } from "../../utils/send-success";
 import { PracticeAreasService } from "./practice-areas.service";
 
 export class PracticeAreasController {
@@ -15,7 +16,7 @@ export class PracticeAreasController {
     const result = await this.practiceAreasService.getAllPracticeAreas({
       search: search as string | undefined,
     });
-    res.status(200).json(result);
+    sendSuccess(res, result, "Practice areas retrieved successfully");
   });
 
   getFirmPracticeAreas = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -24,7 +25,7 @@ export class PracticeAreasController {
       req.organizationId!,
       { search: search as string | undefined },
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Firm practice areas retrieved successfully");
   });
 
   createSubscriptions = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -32,7 +33,7 @@ export class PracticeAreasController {
       req.organizationId!,
       req.body,
     );
-    res.status(201).json(result);
+    sendSuccess(res, result, "Subscriptions created successfully", 201);
   });
 
   cancelSubscriptions = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -40,11 +41,11 @@ export class PracticeAreasController {
       req.organizationId!,
       req.body,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Subscriptions cancelled successfully");
   });
 
   getTreeData = asyncWrap(async (_req: Request, res: Response) => {
     const result = await this.practiceAreasService.getTreeData();
-    res.status(200).json(result);
+    sendSuccess(res, result, "Tree data retrieved successfully");
   });
 }

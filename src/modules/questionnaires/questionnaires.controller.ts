@@ -3,6 +3,7 @@ import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { parsePaginationQuery } from "../../utils/pagination";
+import { sendSuccess } from "../../utils/send-success";
 import { QuestionnairesService } from "./questionnaires.service";
 
 export class QuestionnairesController {
@@ -15,19 +16,20 @@ export class QuestionnairesController {
   // ── System Questionnaire Read ──────────────────────────────────────────────
 
   getSystemQuestionnaires = asyncWrap(async (_req: AuthRequest, res: Response) => {
-    res.status(200).json(await this.svc.getSystemQuestionnaires());
+    const result = await this.svc.getSystemQuestionnaires();
+    sendSuccess(res, result, "System questionnaires retrieved successfully");
   });
 
   getSystemQuestionnaireByCaseType = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.svc.getSystemQuestionnaireByCaseType(req.params.caseTypeId as string);
     if (!result) throw new NotFoundError("Questionnaire not found for this case type");
-    res.status(200).json(result);
+    sendSuccess(res, result, "Questionnaire retrieved successfully");
   });
 
   getSystemQuestionnaireById = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.svc.getSystemQuestionnaireById(req.params.id as string);
     if (!result) throw new NotFoundError("Questionnaire not found");
-    res.status(200).json(result);
+    sendSuccess(res, result, "Questionnaire retrieved successfully");
   });
 
   // ── System Questionnaire Management (admin only) ─────────────────────────
@@ -35,13 +37,13 @@ export class QuestionnairesController {
   createSystemQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { caseTypeId, title, description, sections } = req.body;
     const result = await this.svc.createSystemQuestionnaire({ caseTypeId, title, description, sections });
-    res.status(201).json(result);
+    sendSuccess(res, result, "System questionnaire created successfully", 201);
   });
 
   addSystemSection = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { title, description, orderIndex } = req.body;
     const result = await this.svc.addSystemSection(req.params.id as string, { title, description, orderIndex });
-    res.status(201).json(result);
+    sendSuccess(res, result, "Section added successfully", 201);
   });
 
   addSystemQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -50,7 +52,7 @@ export class QuestionnairesController {
       req.params.sectionId as string,
       req.body,
     );
-    res.status(201).json(result);
+    sendSuccess(res, result, "Question added successfully", 201);
   });
 
   // ── Firm Questionnaire Additions ────────────────────────────────────────────
@@ -60,7 +62,7 @@ export class QuestionnairesController {
       req.organizationId!,
       req.params.caseTypeId as string,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Questionnaire retrieved successfully");
   });
 
   addFirmSection = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -70,7 +72,7 @@ export class QuestionnairesController {
       req.params.caseTypeId as string,
       { title, description, orderIndex },
     );
-    res.status(201).json(result);
+    sendSuccess(res, result, "Firm section added successfully", 201);
   });
 
   updateFirmSection = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -79,12 +81,12 @@ export class QuestionnairesController {
       req.params.sectionId as string,
       req.body,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Firm section updated successfully");
   });
 
   deleteFirmSection = asyncWrap(async (req: AuthRequest, res: Response) => {
     await this.svc.deleteFirmSection(req.organizationId!, req.params.sectionId as string);
-    res.status(200).json({ message: "Section deleted" });
+    sendSuccess(res, null, "Section deleted successfully");
   });
 
   addFirmQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -93,7 +95,7 @@ export class QuestionnairesController {
       req.params.caseTypeId as string,
       req.body,
     );
-    res.status(201).json(result);
+    sendSuccess(res, result, "Question added successfully", 201);
   });
 
   updateFirmQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -102,25 +104,26 @@ export class QuestionnairesController {
       req.params.questionId as string,
       req.body,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Question updated successfully");
   });
 
   deleteFirmQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
     await this.svc.deleteFirmQuestion(req.organizationId!, req.params.questionId as string);
-    res.status(200).json({ message: "Question deleted" });
+    sendSuccess(res, null, "Question deleted successfully");
   });
 
   // ── Responses ─────────────────────────────────────────────────────────────
 
   getResponses = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { caseTypeId, page, limit } = req.query;
-    const pagination = parsePaginationQuery({ page, limit });
+    const queryPagination = parsePaginationQuery({ page, limit });
     const result = await this.svc.getResponses(
       req.organizationId!,
       req.params.id as string,
-      { caseTypeId: caseTypeId as string, ...pagination },
+      { caseTypeId: caseTypeId as string, ...queryPagination },
     );
-    res.status(200).json(result);
+    const { data, pagination } = result;
+    sendSuccess(res, data, "Responses retrieved successfully", 200, { pagination });
   });
 
   getEligibleQuestionnairesForCase = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -128,7 +131,7 @@ export class QuestionnairesController {
       req.organizationId!,
       req.params.caseId as string,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Eligible questionnaires retrieved successfully");
   });
 
   // ── Intake: eligible leads, question bank, response review ──────────────────
@@ -137,11 +140,12 @@ export class QuestionnairesController {
     const result = await this.svc.getEligibleLeadsForQuestionnaire(
       req.organizationId!,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Eligible leads retrieved successfully");
   });
 
   getQuestionBank = asyncWrap(async (_req: AuthRequest, res: Response) => {
-    res.status(200).json(await this.svc.getQuestionBank());
+    const result = await this.svc.getQuestionBank();
+    sendSuccess(res, result, "Question bank retrieved successfully");
   });
 
   getCaseTypePreview = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -149,7 +153,7 @@ export class QuestionnairesController {
       req.organizationId!,
       req.params.caseTypeId as string,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Case type preview retrieved successfully");
   });
 
   getResponseDetail = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -157,7 +161,7 @@ export class QuestionnairesController {
       req.organizationId!,
       req.params.responseId as string,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Response detail retrieved successfully");
   });
 
   acceptResponse = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -165,7 +169,7 @@ export class QuestionnairesController {
       req.organizationId!,
       req.params.responseId as string,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Response accepted successfully");
   });
 
   sendReminder = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -173,7 +177,7 @@ export class QuestionnairesController {
       req.organizationId!,
       req.params.sendId as string,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Reminder sent successfully");
   });
 
   requestMissingDocuments = asyncWrap(
@@ -182,7 +186,7 @@ export class QuestionnairesController {
         req.organizationId!,
         req.params.sendId as string,
       );
-      res.status(200).json(result);
+      sendSuccess(res, result, "Missing documents requested successfully");
     },
   );
 
@@ -217,17 +221,17 @@ export class QuestionnairesController {
 
   getClientQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.svc.getClientQuestionnaireByToken(req.params.token as string);
-    res.status(200).json(result);
+    sendSuccess(res, result, "Questionnaire retrieved successfully");
   });
 
   saveDraftResponse = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.svc.saveDraftResponseByToken(req.params.token as string, req.body);
-    res.status(200).json(result);
+    sendSuccess(res, result, "Draft saved successfully");
   });
 
   submitResponse = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.svc.submitResponseByToken(req.params.token as string, req.body);
-    res.status(200).json(result);
+    sendSuccess(res, result, "Response submitted successfully");
   });
 
   uploadResponseFile = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -246,7 +250,7 @@ export class QuestionnairesController {
       originalFilename: file.originalname,
     });
 
-    res.status(201).json(result);
+    sendSuccess(res, result, "File uploaded successfully", 201);
   });
 
   uploadResponseFileForStaff = asyncWrap(
@@ -269,7 +273,7 @@ export class QuestionnairesController {
         },
       );
 
-      res.status(201).json(result);
+      sendSuccess(res, result, "File uploaded successfully", 201);
     },
   );
 }

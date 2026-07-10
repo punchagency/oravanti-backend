@@ -25,6 +25,7 @@ import { ProfileModule } from "./settings/profile/profile.module";
 import { SecurityModule } from "./settings/security/security.module";
 import { StaffAvailabilityModule } from "./staff-availability/staff-availability.module";
 import { TasksModule } from "./tasks/tasks.module";
+import { WorkflowModule } from "./workflow/workflow.module";
 import {
   AgreementSigningModule,
   AgreementsModule,
@@ -44,6 +45,7 @@ export const modules: Module[] = [
   new EmailAccountModule(),
   new QuestionnairesModule(),
   new TasksModule(),
+  new WorkflowModule(),
   new AIErrorDetectionModule(),
   new CalendarModule(),
   new CasesModule(),

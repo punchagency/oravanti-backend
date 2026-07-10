@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { ContractorSignUpBody, SignInBody } from "../../types/auth.types";
 import { applyAuthHeaders } from "../../utils/applyAuthHeaders";
 import asyncWrap from "../../utils/asyncWrapper";
+import { sendSuccess } from "../../utils/send-success";
 import { AuthService } from "./auth.service";
 
 type ContractorSignUpFiles = {
@@ -33,12 +34,7 @@ export class AuthController {
       applyAuthHeaders(authResponse.headers, res);
 
       const data = await authResponse.json();
-
-      res.status(200).json({
-        message: data.message ?? "Signup successful",
-        success: true,
-        data,
-      });
+      sendSuccess(res, data, data.message ?? "Signup successful");
     },
   );
 
@@ -57,14 +53,7 @@ export class AuthController {
 
       applyAuthHeaders(result.headers, res);
 
-      res.status(200).json({
-        message: "Contractor signup successful",
-        success: true,
-        data: {
-          auth: result.authData,
-          contractor: result.contractor,
-        },
-      });
+      sendSuccess(res, { auth: result.authData, contractor: result.contractor }, "Contractor signup successful");
     },
   );
 
@@ -81,12 +70,7 @@ export class AuthController {
       applyAuthHeaders(authResponse.headers, res);
 
       const data = await authResponse.json();
-
-      res.status(200).json({
-        message: "Sign in successful",
-        success: true,
-        data,
-      });
+      sendSuccess(res, data, "Sign in successful");
     },
   );
 
@@ -98,13 +82,7 @@ export class AuthController {
     applyAuthHeaders(authResponse.headers, res);
 
     const data = await authResponse.json();
-
-    res.status(200).json({
-      message: "Sign in successful",
-      success: true,
-
-      data,
-    });
+    sendSuccess(res, data, "Sign in successful");
   });
 
   signOut = asyncWrap(async (req: Request, res: Response) => {
@@ -113,11 +91,7 @@ export class AuthController {
     applyAuthHeaders(authResponse.headers, res);
 
     const data = await authResponse.json();
-
-    res.status(200).json({
-      message: data.message ?? "Sign out successful",
-      success: true,
-    });
+    sendSuccess(res, null, data.message ?? "Sign out successful");
   });
 
   sendVerificationOTP = asyncWrap(
@@ -138,54 +112,29 @@ export class AuthController {
     ) => {
       const { email, type } = req.body;
 
-      const authResponse = await this.authService.sendVerificationOTP({
-        email,
-        type,
-      });
+      const authResponse = await this.authService.sendVerificationOTP({ email, type });
 
       const data = await authResponse.json();
-
-      res.status(200).json({
-        message: data.message ?? "OTP sent successfully",
-        success: true,
-      });
+      sendSuccess(res, null, data.message ?? "OTP sent successfully");
     },
   );
 
   resetPasswordWithOTP = asyncWrap(async (req: Request, res: Response) => {
     const { email, otp, password } = req.body;
 
-    const authResponse = await this.authService.resetPasswordWithOTP({
-      email,
-      otp,
-      password,
-    });
+    const authResponse = await this.authService.resetPasswordWithOTP({ email, otp, password });
 
     const data = await authResponse.json();
-
-    res.status(200).json({
-      message: data.message ?? "Password reset successful",
-      success: true,
-    });
+    sendSuccess(res, null, data.message ?? "Password reset successful");
   });
 
   changePassword = asyncWrap(async (req: Request, res: Response) => {
     const { currentPassword, newPassword } = req.body;
 
-    const authResponse = await this.authService.changePassword(
-      {
-        currentPassword,
-        newPassword,
-      },
-      req,
-    );
+    const authResponse = await this.authService.changePassword({ currentPassword, newPassword }, req);
 
     const data = await authResponse.json();
-
-    res.status(200).json({
-      message: data.message ?? "Password updated successfully",
-      success: true,
-    });
+    sendSuccess(res, null, data.message ?? "Password updated successfully");
   });
 
   revokeSession = asyncWrap(async (req: Request, res: Response) => {
@@ -194,11 +143,7 @@ export class AuthController {
     const authResponse = await this.authService.revokeSession(token, req);
 
     const data = await authResponse.json();
-
-    res.status(200).json({
-      message: data.message ?? "Session revoked successfully",
-      success: true,
-    });
+    sendSuccess(res, null, data.message ?? "Session revoked successfully");
   });
 
   getSession = asyncWrap(async (req, res) => {
@@ -208,11 +153,7 @@ export class AuthController {
 
     applyAuthHeaders(authResponse.headers, res);
 
-    res.status(200).json({
-      message: data?.message ?? "Session retrieved successfully",
-      success: true,
-      data,
-    });
+    sendSuccess(res, data, data?.message ?? "Session retrieved successfully");
   });
 
   refreshSession = asyncWrap(async (req, res) => {
@@ -221,62 +162,37 @@ export class AuthController {
     applyAuthHeaders(authResponse.headers, res);
 
     const data = await authResponse.json();
-
-    res.status(200).json({
-      message: data.message ?? "Session refreshed successfully",
-      success: true,
-      data,
-    });
+    sendSuccess(res, data, data.message ?? "Session refreshed successfully");
   });
 
   getActiveSessions = asyncWrap(async (req, res) => {
     const authResponse = await this.authService.getActiveSessions(req);
 
     const data = await authResponse.json();
-
-    res.status(200).json({
-      message: data.message ?? "Active sessions retrieved successfully",
-      success: true,
-      data,
-    });
+    sendSuccess(res, data, data.message ?? "Active sessions retrieved successfully");
   });
 
   enableTwoFactorAuth = asyncWrap(async (req, res) => {
     const { password } = req.body;
 
-    const authResponse = await this.authService.enableTwoFactorAuth(
-      password,
-      req,
-    );
+    const authResponse = await this.authService.enableTwoFactorAuth(password, req);
 
     const data = await authResponse.json();
 
     applyAuthHeaders(authResponse.headers, res);
 
-    res.status(200).json({
-      message: data.message ?? "Two-factor authentication enabled successfully",
-      success: true,
-      data,
-    });
+    sendSuccess(res, data, data.message ?? "Two-factor authentication enabled successfully");
   });
 
   disableTwoFactorAuth = asyncWrap(async (req, res) => {
     const { password } = req.body;
 
-    const authResponse = await this.authService.disableTwoFactorAuth(
-      password,
-      req,
-    );
+    const authResponse = await this.authService.disableTwoFactorAuth(password, req);
 
     const data = await authResponse.json();
 
     applyAuthHeaders(authResponse.headers, res);
 
-    res.status(200).json({
-      message:
-        data.message ?? "Two-factor authentication disabled successfully",
-      success: true,
-      data,
-    });
+    sendSuccess(res, data, data.message ?? "Two-factor authentication disabled successfully");
   });
 }

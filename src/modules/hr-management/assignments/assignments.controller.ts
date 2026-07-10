@@ -3,6 +3,7 @@ import { AuthRequest } from "../../../middleware/auth.middleware";
 import { FilingType } from "../../../types/hr.types";
 import asyncWrap from "../../../utils/asyncWrapper";
 import { NotFoundError } from "../../../utils/error/app-error";
+import { sendSuccess } from "../../../utils/send-success";
 import { AssignmentsService } from "./assignments.service";
 
 export class AssignmentsController {
@@ -20,7 +21,7 @@ export class AssignmentsController {
         filingType as FilingType,
         req.organizationId!,
       );
-      res.status(200).json(result);
+      sendSuccess(res, result, "Available contractors retrieved successfully");
     },
   );
 
@@ -29,14 +30,12 @@ export class AssignmentsController {
       ...req.body,
       organizationId: req.organizationId!,
     });
-    res
-      .status(201)
-      .json({ message: "Case assigned successfully", assignment: result });
+    sendSuccess(res, result, "Case assigned successfully", 201);
   });
 
   getAllAssignments = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.assignmentsService.getAllAssignments(req.organizationId!);
-    res.status(200).json(result);
+    sendSuccess(res, result, "Assignments retrieved successfully");
   });
 
   getAssignmentById = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -47,7 +46,7 @@ export class AssignmentsController {
     if (!result) {
       throw new NotFoundError("Assignment not found");
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Assignment retrieved successfully");
   });
 
   updateAssignmentStatus = asyncWrap(
@@ -62,9 +61,7 @@ export class AssignmentsController {
       if (!result) {
         throw new NotFoundError("Assignment not found");
       }
-      res
-        .status(200)
-        .json({ message: "Assignment status updated", assignment: result });
+      sendSuccess(res, result, "Assignment status updated successfully");
     },
   );
 }

@@ -12,6 +12,7 @@ import {
 import { practiceAreas } from "../schema/practice-areas";
 import { staff } from "../schema/staff";
 
+
 const DEMO_EMAIL_DOMAIN = "oravanti.com";
 
 const FIRST_NAMES = [

@@ -63,7 +63,7 @@ export class AIErrorDetectionService {
         createdAt: aiErrorFlags.createdAt,
         clientId: clients.id,
         clientDisplayName: clients.displayName,
-        caseType: cases.caseType,
+        caseTypeId: cases.caseTypeId,
       })
       .from(aiErrorFlags)
       .leftJoin(clients, eq(clients.id, aiErrorFlags.clientId))
@@ -89,7 +89,7 @@ export class AIErrorDetectionService {
         documentId: r.documentId,
         createdAt: r.createdAt,
         client: { id: r.clientId, name: r.clientDisplayName ?? '' },
-        caseType: r.caseType,
+        caseTypeId: r.caseTypeId,
       }));
   };
 

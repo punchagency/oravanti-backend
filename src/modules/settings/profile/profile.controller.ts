@@ -3,6 +3,7 @@ import { AuthRequest } from "../../../middleware/auth.middleware";
 import { UpdateProfileBody } from "../../../types/settings.types";
 import asyncWrap from "../../../utils/asyncWrapper";
 import { BadRequestError, NotFoundError } from "../../../utils/error/app-error";
+import { sendSuccess } from "../../../utils/send-success";
 import { ProfileService } from "./profile.service";
 
 export class ProfileController {
@@ -17,7 +18,7 @@ export class ProfileController {
     if (!result) {
       throw new NotFoundError("Profile not found");
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Profile retrieved successfully");
   });
 
   updateProfile = asyncWrap(
@@ -26,7 +27,7 @@ export class ProfileController {
         req.userId!,
         req.body,
       );
-      res.status(200).json({ message: "Profile updated", profile: result });
+      sendSuccess(res, result, "Profile updated successfully");
     },
   );
 
@@ -48,8 +49,6 @@ export class ProfileController {
       req.userId!,
       req.file,
     );
-    res
-      .status(200)
-      .json({ message: "Avatar uploaded", avatarUrl: result?.avatarUrl });
+    sendSuccess(res, result, "Avatar uploaded successfully");
   });
 }

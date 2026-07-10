@@ -2,6 +2,7 @@ import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
 import { NotFoundError } from "../../utils/error/app-error";
+import { sendSuccess } from "../../utils/send-success";
 import {
   parseBooleanQuery,
   parsePaginationQuery,
@@ -16,12 +17,13 @@ export class ClientsController {
   }
 
   getCertifications = asyncWrap(async (_req: AuthRequest, res: Response) => {
-    res.status(200).json(await this.svc.getCertifications());
+    sendSuccess(res, await this.svc.getCertifications(), "Certifications retrieved successfully");
   });
 
   getTeamStaff = asyncWrap(async (req: AuthRequest, res: Response) => {
-    res.status(200).json(
+    sendSuccess(res,
       await this.svc.getTeamStaff(req.params.teamId as string, req.organizationId!),
+      "Team staff retrieved successfully",
     );
   });
 
@@ -30,43 +32,50 @@ export class ClientsController {
   getAllClients = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { search, page, limit, all } = req.query;
     const bypassPagination = parseBooleanQuery(all, "all");
-    res.status(200).json(
-      await this.svc.getAllClients(req.organizationId!, {
-        search: search as string | undefined,
-        all: bypassPagination,
-        ...(!bypassPagination ? parsePaginationQuery({ page, limit }) : {}),
-      }),
-    );
+    const result = await this.svc.getAllClients(req.organizationId!, {
+      search: search as string | undefined,
+      all: bypassPagination,
+      ...(!bypassPagination ? parsePaginationQuery({ page, limit }) : {}),
+    });
+    if (bypassPagination) {
+      sendSuccess(res, result, "Clients retrieved successfully");
+    } else {
+      const r = result as { data: unknown; pagination: unknown };
+      sendSuccess(res, r.data, "Clients retrieved successfully", 200, { pagination: r.pagination });
+    }
   });
 
   getClientById = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.svc.getClientById(req.params.id as string, req.organizationId!);
     if (!result) throw new NotFoundError("Client not found");
-    res.status(200).json(result);
+    sendSuccess(res, result, "Client retrieved successfully");
   });
 
   updateClient = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.svc.updateClient(req.params.id as string, req.organizationId!, req.body);
     if (!result) throw new NotFoundError("Client not found");
-    res.status(200).json(result);
+    sendSuccess(res, result, "Client updated successfully");
   });
 
   deleteClient = asyncWrap(async (req: AuthRequest, res: Response) => {
     await this.svc.deleteClient(req.params.id as string, req.organizationId!);
-    res.status(200).json({ message: "Client deleted" });
+    sendSuccess(res, null, "Client deleted successfully");
   });
 
   // ─── Contacts ───────────────────────────────────────────────────────────────
 
   getClientContacts = asyncWrap(async (req: AuthRequest, res: Response) => {
-    res.status(200).json(
+    sendSuccess(res,
       await this.svc.getClientContacts(req.params.id as string, req.organizationId!),
+      "Client contacts retrieved successfully",
     );
   });
 
   addClientContact = asyncWrap(async (req: AuthRequest, res: Response) => {
-    res.status(201).json(
+    sendSuccess(res,
       await this.svc.addClientContact(req.params.id as string, req.organizationId!, req.body),
+      "Client contact added successfully",
+      201,
     );
   });
 
@@ -78,12 +87,12 @@ export class ClientsController {
       req.body,
     );
     if (!result) throw new NotFoundError("Contact not found");
-    res.status(200).json(result);
+    sendSuccess(res, result, "Client contact updated successfully");
   });
 
   deleteClientContact = asyncWrap(async (req: AuthRequest, res: Response) => {
     await this.svc.deleteClientContact(req.params.contactId as string, req.params.id as string, req.organizationId!);
-    res.status(200).json({ message: "Contact removed" });
+    sendSuccess(res, null, "Client contact removed successfully");
   });
 
   // ─── Company ────────────────────────────────────────────────────────────────
@@ -91,12 +100,13 @@ export class ClientsController {
   getClientCompany = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.svc.getClientCompany(req.params.id as string, req.organizationId!);
     if (!result) throw new NotFoundError("No company linked to this client");
-    res.status(200).json(result);
+    sendSuccess(res, result, "Client company retrieved successfully");
   });
 
   upsertClientCompany = asyncWrap(async (req: AuthRequest, res: Response) => {
-    res.status(200).json(
+    sendSuccess(res,
       await this.svc.upsertClientCompany(req.params.id as string, req.organizationId!, req.body),
+      "Client company saved successfully",
     );
   });
 
@@ -105,11 +115,15 @@ export class ClientsController {
   getClientCases = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { page, limit, all } = req.query;
     const bypassPagination = parseBooleanQuery(all, "all");
-    res.status(200).json(
-      await this.svc.getClientCases(req.params.id as string, req.organizationId!, {
-        all: bypassPagination,
-        ...(!bypassPagination ? parsePaginationQuery({ page, limit }) : {}),
-      }),
-    );
+    const result = await this.svc.getClientCases(req.params.id as string, req.organizationId!, {
+      all: bypassPagination,
+      ...(!bypassPagination ? parsePaginationQuery({ page, limit }) : {}),
+    });
+    if (bypassPagination) {
+      sendSuccess(res, result, "Client cases retrieved successfully");
+    } else {
+      const r = result as { data: unknown; pagination: unknown };
+      sendSuccess(res, r.data, "Client cases retrieved successfully", 200, { pagination: r.pagination });
+    }
   });
 }

@@ -3,6 +3,7 @@ import { AuthRequest } from "../../../middleware/auth.middleware";
 import { UpsertFirmInfoBody } from "../../../types/settings.types";
 import asyncWrap from "../../../utils/asyncWrapper";
 import { NotFoundError } from "../../../utils/error/app-error";
+import { sendSuccess } from "../../../utils/send-success";
 import { FirmInfoService } from "./firm-info.service";
 
 export class FirmInfoController {
@@ -17,7 +18,7 @@ export class FirmInfoController {
     if (!result) {
       throw new NotFoundError("Firm info not set up yet");
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Firm info retrieved successfully");
   });
 
   upsertFirmInfo = asyncWrap(
@@ -26,7 +27,7 @@ export class FirmInfoController {
         req.organizationId!,
         req.body,
       );
-      res.status(200).json({ message: "Firm info saved", firmInfo: result });
+      sendSuccess(res, result, "Firm info saved successfully");
     },
   );
 }

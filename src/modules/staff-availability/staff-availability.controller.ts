@@ -1,6 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
+import { sendSuccess } from "../../utils/send-success";
 import { StaffAvailabilityService } from "./staff-availability.service";
 
 export class StaffAvailabilityController {
@@ -15,7 +16,7 @@ export class StaffAvailabilityController {
       req.organizationId!,
       req.params.staffId as string,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Availability retrieved successfully");
   });
 
   setWeeklyAvailability = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -24,7 +25,7 @@ export class StaffAvailabilityController {
       req.params.staffId as string,
       req.body,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Weekly availability saved successfully");
   });
 
   setBreaks = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -33,7 +34,7 @@ export class StaffAvailabilityController {
       req.params.staffId as string,
       req.body,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Breaks saved successfully");
   });
 
   createOverride = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -42,7 +43,7 @@ export class StaffAvailabilityController {
       req.params.staffId as string,
       req.body,
     );
-    res.status(201).json(result);
+    sendSuccess(res, result, "Override created successfully", 201);
   });
 
   deleteOverride = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -51,6 +52,6 @@ export class StaffAvailabilityController {
       req.params.staffId as string,
       req.params.overrideId as string,
     );
-    res.status(200).json({ message: "Availability override deleted" });
+    sendSuccess(res, null, "Availability override deleted successfully");
   });
 }

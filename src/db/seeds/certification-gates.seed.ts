@@ -1,81 +1,95 @@
 import { db } from "../client";
-import { certifications } from "../schema/certifications";
+import { eq } from "drizzle-orm";
+import { certifications } from "../schema/cases";
+import { organization } from "../schema/auth-schema";
 import { paralegalCertificationGates } from "../schema/paralegal-certification-gates";
 
 const defaultCertifications = [
   {
-    code: "I-130",
     name: "Family Petition",
-    description: "Petition for Alien Relative",
+    level: "intermediate" as const,
+    description: "Petition for Alien Relative (I-130)",
   },
   {
-    code: "I-485",
     name: "Green Card",
-    description: "Application to Register Permanent Residence",
+    level: "intermediate" as const,
+    description: "Application to Register Permanent Residence (I-485)",
   },
   {
-    code: "I-765",
     name: "Work Permit",
-    description: "Application for Employment Authorization",
+    level: "basic" as const,
+    description: "Application for Employment Authorization (I-765)",
   },
   {
-    code: "I-140",
     name: "Employment",
-    description: "Immigrant Petition for Alien Workers",
+    level: "advanced" as const,
+    description: "Immigrant Petition for Alien Workers (I-140)",
   },
   {
-    code: "N-400",
     name: "Citizenship",
-    description: "Application for Naturalization",
+    level: "advanced" as const,
+    description: "Application for Naturalization (N-400)",
   },
   {
-    code: "I-131",
     name: "Travel Document",
-    description: "Application for Travel Document",
+    level: "basic" as const,
+    description: "Application for Travel Document (I-131)",
   },
   {
-    code: "I-601",
     name: "Waiver",
-    description: "Application for Waiver of Grounds of Inadmissibility",
+    level: "advanced" as const,
+    description: "Application for Waiver of Grounds of Inadmissibility (I-601)",
   },
 ];
 
 const defaultGates = [
   {
-    action: "create_basic_forms",
+    action: "create_basic_forms" as const,
     actionLabel: "Create Basic Forms (I-130, I-765)",
-    requiredCertifications: ["I-130", "I-765"],
+    requiredCertifications: ["Work Permit", "Family Petition"],
   },
   {
-    action: "submit_for_review",
+    action: "submit_for_review" as const,
     actionLabel: "Submit Cases for Attorney Review",
-    requiredCertifications: ["I-130", "I-485"],
+    requiredCertifications: ["Family Petition", "Green Card"],
   },
   {
-    action: "handle_complex_cases",
+    action: "handle_complex_cases" as const,
     actionLabel: "Handle Complex Cases (I-140, I-601)",
-    requiredCertifications: ["I-140", "I-601"],
+    requiredCertifications: ["Employment", "Waiver"],
   },
   {
-    action: "uscis_filing_prep",
+    action: "uscis_filing_prep" as const,
     actionLabel: "USCIS Filing Preparation",
-    requiredCertifications: ["I-131", "I-485"],
+    requiredCertifications: ["Travel Document", "Green Card"],
   },
   {
-    action: "waiver_applications",
+    action: "waiver_applications" as const,
     actionLabel: "Waiver Applications & Appeals",
-    requiredCertifications: ["I-601"],
+    requiredCertifications: ["Waiver"],
   },
-] as const;
+];
 
-export const seedCertificationGates = async () => {
+export const seedCertificationGates = async (organizationId?: string) => {
+  let orgId = organizationId;
+  if (!orgId) {
+    const [org] = await db.select({ id: organization.id }).from(organization).limit(1);
+    if (!org) {
+      console.error("No organization found. Skipping certification gates.");
+      return;
+    }
+    orgId = org.id;
+  }
+
   await db
     .insert(certifications)
-    .values(defaultCertifications)
+    .values(defaultCertifications.map((c) => ({ ...c, organizationId: orgId })))
     .onConflictDoNothing();
+
   await db
     .insert(paralegalCertificationGates)
-    .values(defaultGates)
+    .values(defaultGates.map((g) => ({ ...g, organizationId: orgId })))
     .onConflictDoNothing();
+
   console.log("Certification gates seeded");
 };

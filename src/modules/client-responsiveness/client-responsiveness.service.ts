@@ -145,8 +145,8 @@ const fetchClientsWithContact = async (
       clientContacts,
       and(
         eq(clientContacts.clientId, clients.id),
-        eq(clientContacts.isPrimary, true),
-      ),
+        eq(clientContacts.type, 'primary_client'),
+      )
     )
     .where(eq(clients.organizationId, organizationId));
 };
@@ -292,7 +292,7 @@ export const getTerminationLetterData = async (
       clientContacts,
       and(
         eq(clientContacts.clientId, clients.id),
-        eq(clientContacts.isPrimary, true),
+        eq(clientContacts.type, 'primary_client'),
       ),
     )
     .where(and(eq(clients.id, clientId), eq(clients.organizationId, organizationId)));
@@ -305,7 +305,7 @@ export const getTerminationLetterData = async (
       description: clientRequests.description,
       requestedAt: clientRequests.requestedAt,
       caseNumber: cases.caseNumber,
-      caseType: cases.caseType,
+      caseTypeId: cases.caseTypeId,
     })
     .from(clientRequests)
     .leftJoin(cases, eq(cases.id, clientRequests.caseId))
@@ -353,7 +353,7 @@ export const exportClientReport = async (clientId: string, organizationId: strin
       clientContacts,
       and(
         eq(clientContacts.clientId, clients.id),
-        eq(clientContacts.isPrimary, true),
+        eq(clientContacts.type, 'primary_client'),
       ),
     )
     .where(and(eq(clients.id, clientId), eq(clients.organizationId, organizationId)));
@@ -367,7 +367,7 @@ export const exportClientReport = async (clientId: string, organizationId: strin
       requestedAt: clientRequests.requestedAt,
       status: clientRequests.status,
       caseNumber: cases.caseNumber,
-      caseType: cases.caseType,
+      caseTypeId: cases.caseTypeId,
     })
     .from(clientRequests)
     .leftJoin(cases, eq(cases.id, clientRequests.caseId))

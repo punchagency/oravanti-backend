@@ -351,7 +351,7 @@ export class DocumentsService {
         versionNumber: documentVersions.versionNumber,
         scanStatus: documentVersions.scanStatus,
         caseId: cases.id,
-        caseType: cases.caseType,
+        caseTypeId: cases.caseTypeId,
         clientId: clients.id,
         clientDisplayName: clients.displayName,
       })
@@ -398,7 +398,7 @@ export class DocumentsService {
         case: row.caseId
           ? {
               id: row.caseId,
-              caseType: row.caseType,
+              caseType: row.caseTypeId,
             }
           : null,
         client: row.clientId
@@ -472,7 +472,7 @@ export class DocumentsService {
     const linkedCases = await db
       .select({
         id: cases.id,
-        caseType: cases.caseType,
+        caseTypeId: cases.caseTypeId,
         clientId: clients.id,
         clientDisplayName: clients.displayName,
       })
@@ -491,7 +491,7 @@ export class DocumentsService {
       versions,
       cases: linkedCases.map((linkedCase) => ({
         id: linkedCase.id,
-        caseType: linkedCase.caseType,
+        caseType: linkedCase.caseTypeId,
         client: linkedCase.clientId
           ? {
               id: linkedCase.clientId,

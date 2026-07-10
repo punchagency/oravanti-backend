@@ -1,6 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import asyncWrap from "../../../utils/asyncWrapper";
+import { sendSuccess } from "../../../utils/send-success";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
 import { DataAccessService } from "./data-access.service";
 
@@ -20,7 +21,7 @@ export class DataAccessController {
     const result = await this.dataAccessService.getDataAccessControls(
       req.organizationId!,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Data access controls retrieved successfully");
   });
 
   updateDataAccessControls = asyncWrap(
@@ -40,7 +41,7 @@ export class DataAccessController {
         .logPermissionChange(action, req.userId!, req.organizationId!)
         .catch(() => {});
 
-      res.status(200).json({ message: "Data access controls updated" });
+      sendSuccess(res, null, "Data access controls updated");
     },
   );
 }

@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
 import {
+  aliasedTable,
   and,
   asc,
   count,
@@ -10,70 +11,83 @@ import {
   inArray,
   ne,
   or,
+  sql
 } from "drizzle-orm";
-import {
-  cancelQuestionnaireReminder,
-  scheduleQuestionnaireReminder,
-} from "../../queue/queues";
-import { emailService } from "../../utils/email/email.service";
+import { env } from "../../config/env";
 import { db } from "../../db/client";
 import { adverseParties } from "../../db/schema/adverse-parties";
+import {
+  organization,
+  team,
+  teamMember,
+  user,
+} from "../../db/schema/auth-schema";
+import { cases } from "../../db/schema/cases";
 import { clientContacts } from "../../db/schema/client-contacts";
 import { clients } from "../../db/schema/clients";
 import { conflictChecks } from "../../db/schema/conflict-checks";
-import {
-  consultations,
-  consultationParticipants,
-} from "../../db/schema/consultations";
 import { consultationLocations } from "../../db/schema/consultation-locations";
 import { consultationSettings } from "../../db/schema/consultation-settings";
+import {
+  consultationParticipants,
+  consultations,
+} from "../../db/schema/consultations";
 import {
   feeAgreements,
   type FeeAgreementDetails,
 } from "../../db/schema/fee-agreements";
-import { leads } from "../../db/schema/leads";
-import { cases } from "../../db/schema/cases";
+import {
+  leads,
+  leadsToCaseTypes,
+  leadsToPracticeAreas,
+} from "../../db/schema/leads";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import {
+  caseTypeQuestionnaireLogicRules,
+  caseTypeQuestionnaireQuestions,
   caseTypeQuestionnaires,
   caseTypeQuestionnaireSections,
-  caseTypeQuestionnaireQuestions,
-  caseTypeQuestionnaireLogicRules,
-  firmQuestionnaireSections,
-  firmQuestionnaireQuestions,
   firmQuestionnaireLogicRules,
-  questionnaireSends,
+  firmQuestionnaireQuestions,
+  firmQuestionnaireSections,
   questionnaireResponses,
+  questionnaireSends,
 } from "../../db/schema/questionnaires";
 import { staff } from "../../db/schema/staff";
+import { teamPracticeAreaCaseTypes } from "../../db/schema/team-practice-area-case-types";
 import {
   caseWorkflowSteps,
+  workflowModules,
   workflowTemplates,
-  workflowTemplateSteps,
+  workflowTemplateSteps
 } from "../../db/schema/workflow";
+import {
+  cancelQuestionnaireReminder,
+  scheduleQuestionnaireReminder,
+} from "../../queue/queues";
+import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
+import { emailService } from "../../utils/email/email.service";
 import {
   AuthorizationError,
   BadRequestError,
   ConflictError,
   NotFoundError,
 } from "../../utils/error/app-error";
+import { googleMeetService } from "../../utils/google-meet/google-meet.service";
 import {
   buildPaginatedResponse,
   getPaginationOffset,
   PaginationParams,
 } from "../../utils/pagination";
-import { getESignatureProvider } from "./dropbox-sign.provider";
+import { storageService } from "../../utils/storage/storage.service";
 import { generateCaseNumber } from "../cases/cases.service";
-import { organization, user } from "../../db/schema/auth-schema";
-import { env } from "../../config/env";
+import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
+import { logEvent, logStepAction, pickBestStaff } from "../workflow/workflow.service";
 import { generateConsultationSlots } from "./consultation-slots.service";
+import { getESignatureProvider } from "./dropbox-sign.provider";
 import { assembleFeeAgreementDocument } from "./fee-agreement-document";
 import { renderFeeAgreementPdf } from "./fee-agreement-pdf";
-import { storageService } from "../../utils/storage/storage.service";
-import { googleMeetService } from "../../utils/google-meet/google-meet.service";
-import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
-import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -88,9 +102,29 @@ const normalizeName = (name: string) => name.trim().toLowerCase();
 // opponent like "Bianchi" matches the client "Bianchi Family Trust" without
 // every "Group" or "Trust" colliding with one another.
 const ENTITY_STOPWORDS = new Set([
-  "family", "trust", "estate", "llc", "l.l.c", "inc", "incorporated", "corp",
-  "corporation", "co", "company", "group", "holdings", "ltd", "limited", "lp",
-  "llp", "plc", "pllc", "the", "and", "of", "&",
+  "family",
+  "trust",
+  "estate",
+  "llc",
+  "l.l.c",
+  "inc",
+  "incorporated",
+  "corp",
+  "corporation",
+  "co",
+  "company",
+  "group",
+  "holdings",
+  "ltd",
+  "limited",
+  "lp",
+  "llp",
+  "plc",
+  "pllc",
+  "the",
+  "and",
+  "of",
+  "&",
 ]);
 
 const significantTokens = (name: string): string[] =>
@@ -154,7 +188,7 @@ const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[]) => {
       .select({
         id: cases.id,
         caseNumber: cases.caseNumber,
-        caseType: cases.caseType,
+        caseType: cases.caseTypeId,
         status: cases.status,
         practiceArea: practiceAreas.name,
         clientId: cases.clientId,
@@ -386,46 +420,59 @@ const buildSchemaSnapshot = async (
 const createLead = async (
   organizationId: string,
   data: {
-    name: string;
+    firstName: string;
+    lastName: string;
     email: string;
     phone?: string;
     entityType?: "individual" | "company";
+    source: string;
     practiceAreaId?: string;
     caseTypeId?: string;
-    source: string;
     situationSummary?: string;
-    notes?: string;
-    assignedStaffId?: string;
     intakeAdversePartyName?: string;
     intakeAdversePartyEmail?: string;
     timezone?: string;
     language?: string;
   },
+  creatorStaffId: string,
 ) => {
-  // Timezone is optional on creation; default to the firm's zone so lead-facing
-  // emails have a sensible localization until the lead reconciles it at booking.
-  const timezone = data.timezone ?? (await getFirmTimezone(organizationId));
-
   const [lead] = await db
     .insert(leads)
     .values({
       organizationId,
-      name: data.name,
+      firstName: data.firstName,
+      lastName: data.lastName,
       email: data.email,
       phone: data.phone,
       entityType: (data.entityType ?? "individual") as any,
-      practiceAreaId: data.practiceAreaId,
-      caseTypeId: data.caseTypeId,
       source: data.source as any,
       situationSummary: data.situationSummary,
-      notes: data.notes,
-      assignedStaffId: data.assignedStaffId,
+      respondentId: creatorStaffId,
       intakeAdversePartyName: data.intakeAdversePartyName,
       intakeAdversePartyEmail: data.intakeAdversePartyEmail,
-      timezone,
       language: data.language,
     })
     .returning();
+
+  if (data.practiceAreaId) {
+    await db
+      .insert(leadsToPracticeAreas)
+      .values({
+        leadId: lead.id,
+        practiceAreaId: data.practiceAreaId,
+      })
+      .onConflictDoNothing();
+  }
+
+  if (data.caseTypeId) {
+    await db
+      .insert(leadsToCaseTypes)
+      .values({
+        leadId: lead.id,
+        caseTypeId: data.caseTypeId,
+      })
+      .onConflictDoNothing();
+  }
 
   return lead;
 };
@@ -451,12 +498,16 @@ const getAllLeads = async (
     // Hide declined leads from default lists; still queryable via ?status=declined
     conditions.push(ne(leads.status, "declined"));
   }
-  if (filters.practiceAreaId)
-    conditions.push(eq(leads.practiceAreaId, filters.practiceAreaId));
   if (filters.source) conditions.push(eq(leads.source, filters.source as any));
   if (filters.search) {
     const q = `%${filters.search}%`;
-    conditions.push(or(ilike(leads.name, q), ilike(leads.email, q))!);
+    conditions.push(
+      or(
+        ilike(leads.firstName, q),
+        ilike(leads.lastName, q),
+        ilike(leads.email, q),
+      )!,
+    );
   }
 
   const where = and(...conditions);
@@ -488,8 +539,7 @@ const getAllLeads = async (
         if (r.pipelineStage !== "conflict_check" || !r.conflictCheckId)
           return r;
         const conflict = matchesById.get(r.conflictCheckId) as
-          | { matches: StoredMatch[]; status: string }
-          | undefined;
+          { matches: StoredMatch[]; status: string } | undefined;
         if (!conflict) return r;
         const { matches } = conflict;
         if (!matches || matches.length === 0) return r;
@@ -501,19 +551,44 @@ const getAllLeads = async (
     return enriched;
   };
 
+  const practiceAreaSubquery = sql<{ id: string; name: string }[]>`
+    COALESCE(
+      (
+        SELECT json_agg(json_build_object('id', ${practiceAreas.id}, 'name', ${practiceAreas.name}))
+        FROM ${leadsToPracticeAreas}
+        INNER JOIN ${practiceAreas} ON ${practiceAreas.id} = ${leadsToPracticeAreas.practiceAreaId}
+        WHERE ${leadsToPracticeAreas.leadId} = ${leads.id}
+      ),
+      '[]'::json
+    )
+  `;
+
+  const caseTypeSubquery = sql<{ id: string; name: string }[]>`
+    COALESCE(
+      (
+        SELECT json_agg(json_build_object('id', ${practiceAreaCaseTypes.id}, 'name', ${practiceAreaCaseTypes.name}))
+        FROM ${leadsToCaseTypes}
+        INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${leadsToCaseTypes.caseTypeId}
+        WHERE ${leadsToCaseTypes.leadId} = ${leads.id}
+      ),
+      '[]'::json
+    )
+  `;
+
+  const nameExpr = sql<string>`${leads.firstName} || ' ' || ${leads.lastName}`;
+
   if (filters.all) {
     const rows = await db
       .select({
         ...getTableColumns(leads),
-        caseTypeName: practiceAreaCaseTypes.name,
+        name: nameExpr,
+        practiceAreas: practiceAreaSubquery,
+        caseTypes: caseTypeSubquery,
+        caseTypeName: sql<string>`NULL::text`,
       })
       .from(leads)
-      .leftJoin(
-        practiceAreaCaseTypes,
-        eq(leads.caseTypeId, practiceAreaCaseTypes.id),
-      )
       .where(where)
-      .orderBy(desc(leads.receivedAt));
+      .orderBy(desc(leads.createdAt));
     return attachConflictMatches(rows);
   }
 
@@ -529,15 +604,14 @@ const getAllLeads = async (
   const rows = await db
     .select({
       ...getTableColumns(leads),
-      caseTypeName: practiceAreaCaseTypes.name,
+      name: nameExpr,
+      practiceAreas: practiceAreaSubquery,
+      caseTypes: caseTypeSubquery,
+      caseTypeName: sql<string>`NULL::text`,
     })
     .from(leads)
-    .leftJoin(
-      practiceAreaCaseTypes,
-      eq(leads.caseTypeId, practiceAreaCaseTypes.id),
-    )
     .where(where)
-    .orderBy(desc(leads.receivedAt))
+    .orderBy(desc(leads.createdAt))
     .limit(limit)
     .offset(offset);
 
@@ -558,53 +632,74 @@ const getLeadById = async (id: string, organizationId: string) => {
   const [lead] = await db
     .select({
       ...getTableColumns(leads),
-      caseTypeName: practiceAreaCaseTypes.name,
+      name: sql<string>`${leads.firstName} || ' ' || ${leads.lastName}`,
     })
     .from(leads)
-    .leftJoin(
-      practiceAreaCaseTypes,
-      eq(leads.caseTypeId, practiceAreaCaseTypes.id),
-    )
     .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
     .limit(1);
 
   if (!lead) return null;
 
-  const [conflictCheck, questionnaireSend, consultation, feeAgreement] =
-    await Promise.all([
-      lead.conflictCheckId
-        ? db
-            .select()
-            .from(conflictChecks)
-            .where(eq(conflictChecks.id, lead.conflictCheckId))
-            .limit(1)
-            .then(([r]) => r ?? null)
-        : Promise.resolve(null),
-      lead.questionnaireSendId
-        ? db
-            .select()
-            .from(questionnaireSends)
-            .where(eq(questionnaireSends.id, lead.questionnaireSendId))
-            .limit(1)
-            .then(([r]) => r ?? null)
-        : Promise.resolve(null),
-      lead.consultationId
-        ? db
-            .select()
-            .from(consultations)
-            .where(eq(consultations.id, lead.consultationId))
-            .limit(1)
-            .then(([r]) => r ?? null)
-        : Promise.resolve(null),
-      lead.feeAgreementId
-        ? db
-            .select()
-            .from(feeAgreements)
-            .where(eq(feeAgreements.id, lead.feeAgreementId))
-            .limit(1)
-            .then(([r]) => r ?? null)
-        : Promise.resolve(null),
-    ]);
+  const [
+    practiceAreaRows,
+    caseTypeRows,
+    conflictCheck,
+    questionnaireSend,
+    consultation,
+    feeAgreement,
+  ] = await Promise.all([
+    db
+      .select({ id: practiceAreas.id, name: practiceAreas.name })
+      .from(leadsToPracticeAreas)
+      .innerJoin(
+        practiceAreas,
+        eq(practiceAreas.id, leadsToPracticeAreas.practiceAreaId),
+      )
+      .where(eq(leadsToPracticeAreas.leadId, id)),
+    db
+      .select({
+        id: practiceAreaCaseTypes.id,
+        name: practiceAreaCaseTypes.name,
+      })
+      .from(leadsToCaseTypes)
+      .innerJoin(
+        practiceAreaCaseTypes,
+        eq(practiceAreaCaseTypes.id, leadsToCaseTypes.caseTypeId),
+      )
+      .where(eq(leadsToCaseTypes.leadId, id)),
+    lead.conflictCheckId
+      ? db
+          .select()
+          .from(conflictChecks)
+          .where(eq(conflictChecks.id, lead.conflictCheckId))
+          .limit(1)
+          .then(([r]) => r ?? null)
+      : Promise.resolve(null),
+    lead.questionnaireSendId
+      ? db
+          .select()
+          .from(questionnaireSends)
+          .where(eq(questionnaireSends.id, lead.questionnaireSendId))
+          .limit(1)
+          .then(([r]) => r ?? null)
+      : Promise.resolve(null),
+    lead.consultationId
+      ? db
+          .select()
+          .from(consultations)
+          .where(eq(consultations.id, lead.consultationId))
+          .limit(1)
+          .then(([r]) => r ?? null)
+      : Promise.resolve(null),
+    lead.feeAgreementId
+      ? db
+          .select()
+          .from(feeAgreements)
+          .where(eq(feeAgreements.id, lead.feeAgreementId))
+          .limit(1)
+          .then(([r]) => r ?? null)
+      : Promise.resolve(null),
+  ]);
 
   // Prior consultations for this lead (follow-ups / re-schedules / cancelled),
   // newest first. The current one (if any) lives on `consultation`; everything
@@ -620,6 +715,8 @@ const getLeadById = async (id: string, organizationId: string) => {
 
   return {
     ...lead,
+    practiceAreas: practiceAreaRows,
+    caseTypes: caseTypeRows,
     conflictCheck,
     questionnaireSend,
     consultation,
@@ -632,15 +729,14 @@ const updateLead = async (
   id: string,
   organizationId: string,
   data: Partial<{
-    name: string;
+    firstName: string;
+    lastName: string;
     email: string;
     phone: string;
-    practiceAreaId: string;
-    caseTypeId: string;
     source: string;
     situationSummary: string;
     notes: string;
-    assignedStaffId: string;
+    respondentId: string;
     intakeAdversePartyName: string;
     intakeAdversePartyEmail: string;
     timezone: string;
@@ -677,7 +773,12 @@ const getLeadStageCounts = async (organizationId: string) => {
     .select({ stage: leads.pipelineStage, total: count() })
     .from(leads)
     // Exclude declined leads so stage badges match the default lists
-    .where(and(eq(leads.organizationId, organizationId), ne(leads.status, "declined")))
+    .where(
+      and(
+        eq(leads.organizationId, organizationId),
+        ne(leads.status, "declined"),
+      ),
+    )
     .groupBy(leads.pipelineStage);
 
   const result: Record<string, number> = {
@@ -794,7 +895,7 @@ const runConflictCheck = async (
   if (!lead) throw new NotFoundError("Lead not found");
 
   const normalizedEmail = lead.email.trim().toLowerCase();
-  const normalizedName = normalizeName(lead.name);
+  const normalizedName = normalizeName(`${lead.firstName} ${lead.lastName}`);
   const matches: Array<{
     type: string;
     matchedId: string;
@@ -1283,11 +1384,11 @@ const getConflictCheck = async (leadId: string, organizationId: string) => {
 
 // Neutral, non-accusatory notice. NEVER discloses the conflict, matched party,
 // or any specifics — see plan A7.
-const buildDeclineEmail = (lead: { name: string; email: string }) => ({
+const buildDeclineEmail = (lead: { firstName: string; email: string }) => ({
   to: lead.email,
   subject: "Update on your inquiry",
   html: `
-    <p>Dear ${lead.name},</p>
+    <p>Dear ${lead.firstName},</p>
     <p>Thank you for reaching out to our firm. After careful review, we are
        unable to move forward with your matter at this time.</p>
     <p>We are not able to share the specific reason, and this decision does
@@ -1481,7 +1582,16 @@ const sendQuestionnaire = async (
     .limit(1);
 
   if (!lead) throw new NotFoundError("Lead not found");
-  if (!lead.caseTypeId)
+
+  // Resolve the case type from the junction table
+  const [leadCaseType] = await db
+    .select({ caseTypeId: leadsToCaseTypes.caseTypeId })
+    .from(leadsToCaseTypes)
+    .where(eq(leadsToCaseTypes.leadId, leadId))
+    .limit(1);
+
+  const caseTypeId = leadCaseType?.caseTypeId;
+  if (!caseTypeId)
     throw new BadRequestError(
       "Lead must have a case type assigned before sending a questionnaire",
     );
@@ -1489,7 +1599,7 @@ const sendQuestionnaire = async (
   const [systemQ] = await db
     .select()
     .from(caseTypeQuestionnaires)
-    .where(eq(caseTypeQuestionnaires.caseTypeId, lead.caseTypeId))
+    .where(eq(caseTypeQuestionnaires.caseTypeId, caseTypeId))
     .limit(1);
 
   if (!systemQ) {
@@ -1510,13 +1620,13 @@ const sendQuestionnaire = async (
   if (persistQuestions.length || persistDocs.length) {
     const section = await getOrCreateFirmAdditionsSection(
       organizationId,
-      lead.caseTypeId,
+      caseTypeId,
     );
     let order = Date.now() % 100000;
     for (const q of persistQuestions) {
       await db.insert(firmQuestionnaireQuestions).values({
         organizationId,
-        caseTypeId: lead.caseTypeId,
+        caseTypeId,
         firmSectionId: section.id,
         label: q.label,
         type: (q.type ?? "short_text") as any,
@@ -1527,7 +1637,7 @@ const sendQuestionnaire = async (
     for (const d of persistDocs) {
       await db.insert(firmQuestionnaireQuestions).values({
         organizationId,
-        caseTypeId: lead.caseTypeId,
+        caseTypeId,
         firmSectionId: section.id,
         label: d.label,
         type: "file_upload" as any,
@@ -1610,7 +1720,7 @@ const sendQuestionnaire = async (
       organizationId,
       caseTypeQuestionnaireId: systemQ.id,
       leadId,
-      caseTypeId: lead.caseTypeId,
+      caseTypeId,
       sentById,
       accessTokenHash: tokenHash(accessToken),
       schemaSnapshot: finalSnapshot as any,
@@ -1650,8 +1760,7 @@ const sendQuestionnaire = async (
     })
     .where(eq(leads.id, leadId));
 
-  const baseUrl =
-    env.FRONTEND_APP_URL ?? "http://localhost:5173";
+  const baseUrl = env.FRONTEND_APP_URL ?? "http://localhost:5173";
   const orgSlug = encodeURIComponent(organizationId);
   const clientLink = `${baseUrl}/questionnaire/${orgSlug}/${accessToken}`;
 
@@ -1661,7 +1770,7 @@ const sendQuestionnaire = async (
       .sendEmail({
         to: lead.email,
         subject: "Please complete your intake questionnaire",
-        html: `<p>Dear ${lead.name},</p>
+        html: `<p>Dear ${lead.firstName},</p>
           <p>Please complete your intake questionnaire using the link below:</p>
           <p><a href="${clientLink}">Complete Questionnaire</a></p>
           <p>This link is unique to you. Please do not share it.</p>`,
@@ -1670,7 +1779,9 @@ const sendQuestionnaire = async (
   }
   if (deliveryChannels.includes("sms") && lead.phone) {
     // SMS provider not yet wired — log the intent for now.
-    console.log(`[sms-stub] questionnaire link to ${lead.phone}: ${clientLink}`);
+    console.log(
+      `[sms-stub] questionnaire link to ${lead.phone}: ${clientLink}`,
+    );
   }
 
   return { send: { ...send, accessToken }, clientLink, sentAt: send.sentAt };
@@ -1975,6 +2086,9 @@ const initiateConsultation = async (
   // payment link is always emailed regardless of the chosen channels.
   if (notifyChannels.includes("email") || startNow) {
     const needsPayment = feeStatus === "unpaid";
+    const urgent = Boolean(data.urgent);
+    emailService;
+    const leadName = `${lead.firstName} ${lead.lastName}`;
     emailService
       .sendEmail({
         to: lead.email,
@@ -1982,7 +2096,7 @@ const initiateConsultation = async (
           ? "Action needed: pay your consultation fee"
           : "Pick a time for your consultation",
         html: needsPayment
-          ? `<p>Dear ${lead.name},</p>
+          ? `<p>Dear ${leadName},</p>
             <p>Please pay your consultation fee of <strong>$${feeAmount}</strong>${
               urgent
                 ? " to be connected with an attorney as soon as possible"
@@ -1993,7 +2107,7 @@ const initiateConsultation = async (
                 ? "<p>You'll receive your confirmation with the scheduled time immediately after payment.</p>"
                 : ""
             }`
-          : `<p>Dear ${lead.name},</p>
+          : `<p>Dear ${leadName},</p>
             <p>Please choose a time that works for your consultation:</p>
             <p><a href="${bookingLink}">${bookingLink}</a></p>`,
       })
@@ -2123,7 +2237,7 @@ const updateConsultation = async (
         .sendEmail({
           to: lead.email,
           subject: "Your consultation is complete — payment link inside",
-          html: `<p>Dear ${lead.name},</p>
+          html: `<p>Dear ${lead.firstName} ${lead.lastName},</p>
             <p>Thank you for your consultation. Please pay your consultation fee of <strong>$${updated.feeAmount}</strong>:</p>
             <p><a href="${payLink}">${payLink}</a></p>`,
         })
@@ -2133,7 +2247,12 @@ const updateConsultation = async (
     // Auto-send the intake questionnaire when requested and the lead has never
     // been sent one. Skipped silently when the lead has no case type yet.
     if (updated.autoSendQuestionnaire && !lead.questionnaireSendId) {
-      if (lead.caseTypeId) {
+      const [leadCaseType] = await db
+        .select({ id: leadsToCaseTypes.caseTypeId })
+        .from(leadsToCaseTypes)
+        .where(eq(leadsToCaseTypes.leadId, leadId))
+        .limit(1);
+      if (leadCaseType) {
         await sendQuestionnaire(leadId, organizationId, undefined, {
           language: lead.language ?? undefined,
         }).catch(console.error);
@@ -2160,7 +2279,12 @@ const getConsultations = async (
   if (filters.attorneyId)
     conditions.push(eq(consultations.leadAttorneyId, filters.attorneyId));
   if (filters.search)
-    conditions.push(ilike(leads.name, `%${filters.search}%`));
+    conditions.push(
+      or(
+        ilike(leads.firstName, `%${filters.search}%`),
+        ilike(leads.lastName, `%${filters.search}%`),
+      )!,
+    );
 
   const where = and(...conditions);
 
@@ -2169,9 +2293,9 @@ const getConsultations = async (
       case "date_desc":
         return [desc(consultations.scheduledAt)];
       case "client_asc":
-        return [asc(leads.name)];
+        return [asc(leads.firstName), asc(leads.lastName)];
       case "client_desc":
-        return [desc(leads.name)];
+        return [desc(leads.firstName), desc(leads.lastName)];
       case "date_asc":
       default:
         return [asc(consultations.scheduledAt)];
@@ -2192,7 +2316,7 @@ const getConsultations = async (
     .select({
       id: consultations.id,
       leadId: consultations.leadId,
-      leadName: leads.name,
+      leadName: sql`concat(${leads.firstName}, ' ', ${leads.lastName})`,
       leadEmail: leads.email,
       mode: consultations.mode,
       status: consultations.status,
@@ -2263,7 +2387,7 @@ const getConsultationBooking = async (token: string) => {
   const consultation = await getConsultationByBookingToken(token, true);
 
   const [lead] = await db
-    .select({ name: leads.name, timezone: leads.timezone })
+    .select({ firstName: leads.firstName, lastName: leads.lastName })
     .from(leads)
     .where(eq(leads.id, consultation.leadId))
     .limit(1);
@@ -2293,11 +2417,13 @@ const getConsultationBooking = async (token: string) => {
         )
       : [];
 
+  const leadName = lead ? `${lead.firstName} ${lead.lastName}` : null;
+
   return {
     firmName: firm?.name ?? null,
-    leadName: lead?.name ?? null,
+    leadName,
     firmTimezone,
-    leadTimezone: lead?.timezone ?? null,
+    leadTimezone: null,
     mode: consultation.mode,
     durationMinutes: consultation.duration,
     requiresPayment,
@@ -2314,35 +2440,12 @@ const getConsultationBooking = async (token: string) => {
   };
 };
 
-/**
- * Update the lead's timezone via their public booking token — used by the
- * booking page's reconciliation prompt when the browser-detected zone differs
- * from (or fills in a null) stored value. Public/token-gated, so it only ever
- * touches the lead tied to that booking.
- */
-const updateLeadTimezoneByBookingToken = async (
-  token: string,
-  timezone: string,
-) => {
-  const consultation = await getConsultationByBookingToken(token);
-  await db
-    .update(leads)
-    .set({ timezone, updatedAt: new Date() })
-    .where(eq(leads.id, consultation.leadId));
-  return { timezone };
-};
-
 /** Resolve a lead's timezone, falling back to the firm zone when unset. */
 const getLeadTimezone = async (
-  leadId: string,
+  _leadId: string,
   organizationId: string,
 ): Promise<string> => {
-  const [lead] = await db
-    .select({ timezone: leads.timezone })
-    .from(leads)
-    .where(eq(leads.id, leadId))
-    .limit(1);
-  return lead?.timezone ?? (await getFirmTimezone(organizationId));
+  return getFirmTimezone(organizationId);
 };
 
 const payConsultationFee = async (token: string) => {
@@ -2380,7 +2483,9 @@ const payConsultationFee = async (token: string) => {
     .set({
       feeStatus: "paid",
       bookingStatus: "paid",
-      status: consultation.isUrgent ? consultation.status : "awaiting_slot_selection",
+      status: consultation.isUrgent
+        ? consultation.status
+        : "awaiting_slot_selection",
       ...(asapAt ? { scheduledAt: asapAt } : {}),
       updatedAt: new Date(),
     })
@@ -2393,18 +2498,23 @@ const payConsultationFee = async (token: string) => {
   }
 
   const [lead] = await db
-    .select({ name: leads.name, email: leads.email })
+    .select({
+      firstName: leads.firstName,
+      lastName: leads.lastName,
+      email: leads.email,
+    })
     .from(leads)
     .where(eq(leads.id, consultation.leadId))
     .limit(1);
 
   if (lead) {
+    const leadName = `${lead.firstName} ${lead.lastName}`;
     const bookingLink = `${env.FRONTEND_APP_URL}/consultation-booking/${token}`;
     emailService
       .sendEmail({
         to: lead.email,
         subject: "Payment received — pick a time for your consultation",
-        html: `<p>Dear ${lead.name},</p>
+        html: `<p>Dear ${leadName},</p>
           <p>Thanks, your payment was received. Please choose a time that works for you:</p>
           <p><a href="${bookingLink}">${bookingLink}</a></p>`,
       })
@@ -2421,7 +2531,11 @@ const getConsultationRecipients = async (
   consultation: typeof consultations.$inferSelect,
 ) => {
   const [lead] = await db
-    .select({ name: leads.name, email: leads.email })
+    .select({
+      firstName: leads.firstName,
+      lastName: leads.lastName,
+      email: leads.email,
+    })
     .from(leads)
     .where(eq(leads.id, consultation.leadId))
     .limit(1);
@@ -2508,11 +2622,12 @@ const sendConsultationConfirmation = async (
     }
   }
 
+  const leadName = `${lead.firstName} ${lead.lastName}`;
   emailService
     .sendEmail({
       to: lead.email,
       subject: "Your consultation is confirmed",
-      html: `<p>Dear ${lead.name},</p>
+      html: `<p>Dear ${leadName},</p>
         <p>Your consultation is confirmed for <strong>${leadScheduledStr}</strong>.</p>
         ${meetingDetail}
         <p>We look forward to speaking with you.</p>`,
@@ -2523,8 +2638,8 @@ const sendConsultationConfirmation = async (
     emailService
       .sendEmail({
         to: email,
-        subject: `Consultation confirmed: ${lead.name}`,
-        html: `<p>A consultation with <strong>${lead.name}</strong> is confirmed for <strong>${staffScheduledStr}</strong>.</p>
+        subject: `Consultation confirmed: ${leadName}`,
+        html: `<p>A consultation with <strong>${leadName}</strong> is confirmed for <strong>${staffScheduledStr}</strong>.</p>
           ${meetingDetail}`,
       })
       .catch(console.error);
@@ -2547,12 +2662,13 @@ const finalizeConsultation = async (
   let meetExternalId = consultation.meetExternalId;
   if (consultation.mode === "video" && !videoLink) {
     const [lead] = await db
-      .select({ name: leads.name })
+      .select({ firstName: leads.firstName, lastName: leads.lastName })
       .from(leads)
       .where(eq(leads.id, consultation.leadId))
       .limit(1);
+    const leadName = lead ? `${lead.firstName} ${lead.lastName}` : "client";
     const meet = await googleMeetService.createMeetLink({
-      summary: `Consultation with ${lead?.name ?? "client"}`,
+      summary: `Consultation with ${leadName}`,
       startTime: start,
       durationMinutes: consultation.duration,
     });
@@ -2689,12 +2805,15 @@ const cancelConsultation = async (
     ? `<p><strong>Reason:</strong> ${data.reason}</p>`
     : "";
 
+  const leadRowName = leadRow
+    ? `${leadRow.firstName} ${leadRow.lastName}`
+    : null;
   if (leadRow) {
     emailService
       .sendEmail({
         to: leadRow.email,
         subject: "Your consultation has been cancelled",
-        html: `<p>Dear ${leadRow.name},</p>
+        html: `<p>Dear ${leadRowName},</p>
           <p>Your consultation${leadWhen} has been cancelled.</p>
           ${reasonLine}
           <p>Please contact our office if you would like to re-schedule.</p>`,
@@ -2705,9 +2824,9 @@ const cancelConsultation = async (
     emailService
       .sendEmail({
         to: email,
-        subject: `Consultation cancelled: ${leadRow?.name ?? "client"}`,
+        subject: `Consultation cancelled: ${leadRowName ?? "client"}`,
         html: `<p>The consultation with <strong>${
-          leadRow?.name ?? "the client"
+          leadRowName ?? "the client"
         }</strong>${staffWhen} has been cancelled.</p>
           ${reasonLine}`,
       })
@@ -2853,8 +2972,8 @@ const generateFeeAgreement = async (
     .values({
       organizationId,
       leadId,
-      practiceAreaId: lead.practiceAreaId ?? undefined,
-      caseTypeId: lead.caseTypeId ?? undefined,
+      practiceAreaId: undefined,
+      caseTypeId: undefined,
       agreementType: data.agreementType ?? "retainer",
       details,
       generatedFrom: (data.generatedFrom ?? "manual") as any,
@@ -2867,7 +2986,10 @@ const generateFeeAgreement = async (
     .set({ feeAgreementId: agreement.id, updatedAt: new Date() })
     .where(eq(leads.id, leadId));
 
-  const document = await assembleFeeAgreementDocument(agreement, organizationId);
+  const document = await assembleFeeAgreementDocument(
+    agreement,
+    organizationId,
+  );
   return { agreement, document };
 };
 
@@ -2950,7 +3072,10 @@ const sendFeeAgreement = async (
   // Render the fee-agreement PDF server-side and persist it to R2. This is the
   // document that gets sent for signature; the stub provider is still used to
   // mint the (fake) envelope until the Dropbox Sign provider is wired in.
-  const documentData = await assembleFeeAgreementDocument(agreement, organizationId);
+  const documentData = await assembleFeeAgreementDocument(
+    agreement,
+    organizationId,
+  );
   const pdfBuffer = await renderFeeAgreementPdf(documentData);
   const documentKey = `fee-agreements/${organizationId}/${agreement.id}/generated.pdf`;
   await storageService.upload({
@@ -2962,12 +3087,13 @@ const sendFeeAgreement = async (
   // Create the embedded signature request (Dropbox Sign, or the stub fallback).
   // No email is sent by the provider — the client signs on our own signing page.
   const provider = getESignatureProvider();
+  const leadName = `${lead.firstName} ${lead.lastName}`;
   const { signatureRequestId, signerSignatureId } =
     await provider.createEmbeddedRequest({
-      signer: { email: lead.email, name: lead.name },
+      signer: { email: lead.email, name: leadName },
       file: pdfBuffer,
       fileName: `${documentData.docRef || agreement.id}.pdf`,
-      title: `Fee Agreement — ${lead.name}`,
+      title: `Fee Agreement — ${leadName}`,
       subject: "Please sign your fee agreement",
       metadata: {
         agreementId: agreement.id,
@@ -3001,7 +3127,7 @@ const sendFeeAgreement = async (
     .sendEmail({
       to: lead.email,
       subject: "Please sign your fee agreement",
-      html: `<p>Dear ${lead.name},</p>
+      html: `<p>Dear ${lead.firstName},</p>
         <p>Your fee agreement is ready for signature. Please click the link below to review and sign:</p>
         <p><a href="${signingLink}">Sign Agreement</a></p>
         <p>Please complete this at your earliest convenience.</p>`,
@@ -3149,7 +3275,10 @@ const getFeeAgreementPreview = async (
 
   if (!agreement) throw new NotFoundError("Agreement not found");
 
-  const document = await assembleFeeAgreementDocument(agreement, organizationId);
+  const document = await assembleFeeAgreementDocument(
+    agreement,
+    organizationId,
+  );
   return { agreement, document };
 };
 
@@ -3186,7 +3315,7 @@ const nudgeClient = async (agreementId: string, organizationId: string) => {
   await emailService.sendEmail({
     to: lead.email,
     subject: "Reminder: Please sign your fee agreement",
-    html: `<p>Dear ${lead.name},</p>
+    html: `<p>Dear ${lead.firstName},</p>
       <p>This is a friendly reminder to sign your fee agreement:</p>
       ${agreement.signingLink ? `<p><a href="${agreement.signingLink}">Sign Agreement</a></p>` : ""}
       <p>Please complete this as soon as possible to proceed with your case.</p>`,
@@ -3349,15 +3478,56 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
 
 // ─── Case Opening ──────────────────────────────────────────────────────────────
 
+const getEligibleTeamsForLead = async (
+  leadId: string,
+  organizationId: string,
+) => {
+  const [leadCaseType] = await db
+    .select({ caseTypeId: leadsToCaseTypes.caseTypeId })
+    .from(leadsToCaseTypes)
+    .where(eq(leadsToCaseTypes.leadId, leadId))
+    .limit(1);
+
+  if (!leadCaseType?.caseTypeId) return [];
+
+  const leadStaff = aliasedTable(staff, "leadStaff");
+
+  const rows = await db
+    .select({
+      id: team.id,
+      name: team.name,
+      leadName: sql<string | null>`
+        CASE WHEN ${leadStaff.id} IS NOT NULL
+          THEN ${leadStaff.firstName} || ' ' || ${leadStaff.lastName}
+        END
+      `,
+      memberCount: sql<number>`
+        COALESCE(
+          (SELECT COUNT(*) FROM ${teamMember} WHERE ${teamMember.teamId} = ${team.id}),
+          0
+        )::int
+      `,
+    })
+    .from(teamPracticeAreaCaseTypes)
+    .innerJoin(team, eq(team.id, teamPracticeAreaCaseTypes.teamId))
+    .leftJoin(leadStaff, sql`${leadStaff.id}::text = ${team.leadId}`)
+    .where(
+      and(
+        eq(teamPracticeAreaCaseTypes.caseTypeId, leadCaseType.caseTypeId),
+        eq(team.organizationId, organizationId),
+      ),
+    );
+
+  return rows;
+};
+
 const openCase = async (
   leadId: string,
   organizationId: string,
   data: {
-    assignedStaffId?: string;
-    teamId?: string;
-    notes?: string;
+    assignedTeamId?: string;
   },
-  creatorAdminId?: string,
+  creatorStaffId: string,
 ) => {
   const [lead] = await db
     .select()
@@ -3403,58 +3573,73 @@ const openCase = async (
     }
   }
 
-  if (!lead.practiceAreaId || !lead.caseTypeId) {
-    throw new BadRequestError(
-      "Lead must have a practice area and case type before opening a case",
-    );
-  }
-
   return db.transaction(async (tx) => {
     // 1. Create client entity
+    const leadName = `${lead.firstName} ${lead.lastName}`;
     const [client] = await tx
       .insert(clients)
       .values({
         organizationId,
         entityType: lead.entityType as any,
-        displayName: lead.name,
+        firstName: lead.firstName,
+        lastName: lead.lastName,
+        displayName: leadName,
+        email: lead.email,
+        phone: lead.phone ?? undefined,
         status: "active",
       })
       .returning();
 
     // 2. Create primary contact from lead data
-    const nameParts = lead.name.trim().split(" ");
-    const firstName = nameParts[0] ?? lead.name;
-    const lastName = nameParts.slice(1).join(" ") || firstName;
-
     await tx.insert(clientContacts).values({
       organizationId,
       clientId: client.id,
-      role: "primary",
-      isPrimary: true,
-      firstName,
-      lastName,
+      type: "primary_client",
+      firstName: lead.firstName,
+      lastName: lead.lastName,
       email: lead.email,
       phone: lead.phone ?? undefined,
     });
 
-    // 3. Generate case number and create case
+    // 3. Resolve practice area and case type from junction tables
+    const [leadPracticeArea] = await tx
+      .select({ practiceAreaId: leadsToPracticeAreas.practiceAreaId })
+      .from(leadsToPracticeAreas)
+      .where(eq(leadsToPracticeAreas.leadId, leadId))
+      .limit(1);
+
+    const [leadCaseType] = await tx
+      .select({ caseTypeId: leadsToCaseTypes.caseTypeId })
+      .from(leadsToCaseTypes)
+      .where(eq(leadsToCaseTypes.leadId, leadId))
+      .limit(1);
+
+    const resolvedPracticeAreaId = leadPracticeArea?.practiceAreaId;
+    const resolvedCaseTypeId = leadCaseType?.caseTypeId;
+
+    if (!resolvedPracticeAreaId || !resolvedCaseTypeId) {
+      throw new BadRequestError(
+        "Lead must have a practice area and case type before opening a case",
+      );
+    }
+
     const [practiceArea] = await tx
       .select({ id: practiceAreas.id })
       .from(practiceAreas)
-      .where(eq(practiceAreas.id, lead.practiceAreaId!))
+      .where(eq(practiceAreas.id, resolvedPracticeAreaId))
       .limit(1);
 
     const [caseType] = await tx
       .select()
       .from(practiceAreaCaseTypes)
-      .where(eq(practiceAreaCaseTypes.id, lead.caseTypeId!))
+      .where(eq(practiceAreaCaseTypes.id, resolvedCaseTypeId))
       .limit(1);
 
     if (!caseType) throw new NotFoundError("Case type not found");
 
     const caseNumber = await generateCaseNumber(
       organizationId,
-      lead.practiceAreaId!,
+      resolvedPracticeAreaId,
       caseType.code,
     );
 
@@ -3465,58 +3650,148 @@ const openCase = async (
         caseNumber,
         clientId: client.id,
         leadId,
-        practiceAreaId: lead.practiceAreaId!,
-        caseTypeId: lead.caseTypeId!,
-        caseType: caseType.code as any,
+        practiceAreaId: resolvedPracticeAreaId,
+        caseTypeId: resolvedCaseTypeId,
         priority: "medium",
-        assignmentType: "internal_team",
-        teamId: data.teamId,
-        assignedStaffId:
-          data.assignedStaffId ?? lead.assignedStaffId ?? undefined,
-        requiredCertifications: [],
+        assignedTeamId: data.assignedTeamId ?? lead.respondentId ?? "",
         filingDate: new Date().toISOString().split("T")[0],
-        description: lead.situationSummary ?? `Case for ${lead.name}`,
-        notes: data.notes,
-        createdByAdminId: creatorAdminId,
+        description: lead.situationSummary ?? `Case for ${leadName}`,
+        openedById: creatorStaffId,
       })
       .returning();
 
-    // 4. Instantiate workflow steps from template
+    // 4. Instantiate workflow steps from template (proper hydration)
     const [template] = await tx
       .select()
       .from(workflowTemplates)
-      .where(eq(workflowTemplates.caseTypeId, lead.caseTypeId!))
+      .where(eq(workflowTemplates.practiceAreaId, resolvedPracticeAreaId))
       .limit(1);
 
     let workflowSteps: any[] = [];
     if (template) {
-      const templateSteps = await tx
+      const modules = await tx
+        .select()
+        .from(workflowModules)
+        .where(eq(workflowModules.templateId, template.id))
+        .orderBy(asc(workflowModules.orderIndex));
+
+      const allTemplateSteps = await tx
         .select()
         .from(workflowTemplateSteps)
-        .where(eq(workflowTemplateSteps.templateId, template.id));
+        .where(
+          inArray(
+            workflowTemplateSteps.moduleId,
+            modules.map((m) => m.id),
+          ),
+        )
+        .orderBy(asc(workflowTemplateSteps.orderIndex));
 
-      if (templateSteps.length > 0) {
-        const caseOpenDate = new Date();
-        const stepValues = templateSteps
-          .sort((a, b) => a.orderIndex - b.orderIndex)
-          .map((step) => ({
+      const moduleStepMap = new Map<string, typeof allTemplateSteps>();
+      for (const step of allTemplateSteps) {
+        const list = moduleStepMap.get(step.moduleId) ?? [];
+        list.push(step);
+        moduleStepMap.set(step.moduleId, list);
+      }
+
+      const stepInserts: (typeof caseWorkflowSteps.$inferInsert)[] = [];
+      let isFirstStep = true;
+
+      for (const mod of modules) {
+        const templateSteps = moduleStepMap.get(mod.id) ?? [];
+        for (const ts of templateSteps) {
+          stepInserts.push({
             organizationId,
             caseId: newCase.id,
-            templateStepId: step.id,
-            title: step.title,
-            description: step.description,
-            orderIndex: step.orderIndex,
-            dueDate: step.dueInDays
-              ? new Date(caseOpenDate.getTime() + step.dueInDays * 86400000)
+            templateStepId: ts.id,
+            title: ts.title,
+            description: ts.description,
+            orderIndex: mod.orderIndex * 100 + ts.orderIndex,
+            dueDate: ts.dueInDays
+              ? new Date(Date.now() + ts.dueInDays * 86400000)
                   .toISOString()
                   .split("T")[0]
-              : undefined,
-          }));
+              : null,
+            status: isFirstStep ? "in_progress" : "pending",
+            assignedToId: null,
+          });
+          isFirstStep = false;
+        }
+      }
 
+      if (stepInserts.length > 0) {
         workflowSteps = await tx
           .insert(caseWorkflowSteps)
-          .values(stepValues)
+          .values(stepInserts)
           .returning();
+
+        // Auto-assign first step to best available staff
+        const [firstStep] = workflowSteps;
+        if (firstStep) {
+          const picked = await pickBestStaff(
+            organizationId,
+            firstStep.templateStepId,
+            undefined,
+            tx,
+          );
+
+          if (picked) {
+            const now = new Date();
+            await tx
+              .update(caseWorkflowSteps)
+              .set({
+                assignedToId: picked.id,
+                assignedAt: now,
+                updatedAt: now,
+              })
+              .where(eq(caseWorkflowSteps.id, firstStep.id));
+
+            // Update the returned step object
+            firstStep.assignedToId = picked.id;
+            firstStep.assignedAt = now;
+
+            await logStepAction({
+              organizationId,
+              caseId: newCase.id,
+              stepId: firstStep.id,
+              action: "ASSIGNED",
+              title: `Step auto-assigned: ${firstStep.title}`,
+              assigneeId: picked.id,
+              tx,
+            });
+
+            await logEvent({
+              organizationId,
+              caseId: newCase.id,
+              stepId: firstStep.id,
+              eventType: "STEP_ASSIGNED",
+              title: `Step auto-assigned: ${firstStep.title}`,
+              description: `Assigned to ${picked.firstName} ${picked.lastName}`,
+              metadata: {
+                assignmentStrategy: "workload_balanced",
+                staffId: picked.id,
+                staffName: `${picked.firstName} ${picked.lastName}`,
+              },
+              performedById: null,
+              tx,
+            });
+          }
+        }
+
+        await logEvent({
+          organizationId,
+          caseId: newCase.id,
+          eventType: "WORKFLOW_INITIALIZED",
+          title: "Workflow initialized",
+          description: "Hydrated from template",
+          metadata: {
+            stepCount: stepInserts.length,
+            moduleCount: modules.length,
+            templateId: template.id,
+            timestamp: new Date().toISOString(),
+          },
+          performedById: null,
+          tx,
+        });
       }
     }
 
@@ -3525,7 +3800,7 @@ const openCase = async (
     await tx
       .update(leads)
       .set({
-        convertedClientId: client.id,
+        clientId: client.id,
         convertedCaseId: newCase.id,
         convertedAt: now,
         pipelineStage: "case_opening",
@@ -3552,35 +3827,38 @@ const openCase = async (
         );
     }
 
+    /**
+     * TODO: Notify assigned team lead of new case. This is commented out for now because the assigned team may not be set at the time of case opening, and we don't want to send notifications to the wrong person. We will revisit this logic once we have a clearer understanding of how team assignments will work in the future.
+     */
     // 7. Notify
-    const assignedStaffId = data.assignedStaffId ?? lead.assignedStaffId;
-    if (assignedStaffId) {
-      const [assignedStaff] = await tx
-        .select({ email: user.email, firstName: staff.firstName })
-        .from(staff)
-        .leftJoin(user, eq(staff.userId, user.id))
-        .where(eq(staff.id, assignedStaffId))
-        .limit(1);
-
-      if (assignedStaff) {
-        emailService
-          .sendEmail({
-            to: assignedStaff.email!,
-            subject: `New case opened: ${newCase.caseNumber}`,
-            html: `<p>Hi ${assignedStaff.firstName},</p>
-              <p>A new case has been opened for ${lead.name}.</p>
-              <p><strong>Case Number:</strong> ${newCase.caseNumber}</p>
-              <p><strong>Case Type:</strong> ${caseType.name}</p>`,
-          })
-          .catch(console.error);
-      }
-    }
+    // const assignedStaffId = data.assignedTeamId ?? lead.respondentId;
+    //     if (assignedStaffId) {
+    //       const [assignedStaff] = await tx
+    //         .select({ email: user.email, firstName: staff.firstName })
+    //         .from(staff)
+    //         .leftJoin(user, eq(staff.userId, user.id))
+    //         .where(eq(staff.id, assignedStaffId))
+    //         .limit(1);
+    //
+    //       if (assignedStaff) {
+    //         emailService
+    //           .sendEmail({
+    //             to: assignedStaff.email!,
+    //             subject: `New case opened: ${newCase.caseNumber}`,
+    //             html: `<p>Hi ${assignedStaff.firstName},</p>
+    //               <p>A new case has been opened for ${leadName}.</p>
+    //               <p><strong>Case Number:</strong> ${newCase.caseNumber}</p>
+    //               <p><strong>Case Type:</strong> ${caseType.name}</p>`,
+    //           })
+    //           .catch(console.error);
+    //       }
+    //     }
 
     emailService
       .sendEmail({
         to: lead.email,
         subject: "Your case has been opened",
-        html: `<p>Dear ${lead.name},</p>
+        html: `<p>Dear ${leadName},</p>
           <p>We are pleased to inform you that your case has been formally opened.</p>
           <p><strong>Case Number:</strong> ${newCase.caseNumber}</p>
           <p>Your attorney will be in touch with you shortly.</p>`,
@@ -3751,7 +4029,6 @@ export class LeadsService {
   updateConsultation = updateConsultation;
   cancelConsultation = cancelConsultation;
   getConsultationBooking = getConsultationBooking;
-  updateLeadTimezoneByBookingToken = updateLeadTimezoneByBookingToken;
   getLeadTimezone = getLeadTimezone;
   payConsultationFee = payConsultationFee;
   selectConsultationSlot = selectConsultationSlot;
@@ -3766,6 +4043,7 @@ export class LeadsService {
   getEmbeddedSignSession = getEmbeddedSignSession;
   handleDropboxSignWebhook = handleDropboxSignWebhook;
   openCase = openCase;
+  getEligibleTeamsForLead = getEligibleTeamsForLead;
   getCaseWorkflowSteps = getCaseWorkflowSteps;
   updateCaseWorkflowStep = updateCaseWorkflowStep;
   getAdverseParties = getAdverseParties;

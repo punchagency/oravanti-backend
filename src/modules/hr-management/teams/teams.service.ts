@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { and, eq } from "drizzle-orm";
 import { db } from "../../../db/client";
 import { staff } from "../../../db/schema/staff";
-import { teams } from "../../../db/schema/teams";
+import { team } from "../../../db/schema/auth-schema";
 import { CreateTeamBody, UpdateTeamBody } from "../../../types/hr.types";
 import {
   BadRequestError,
@@ -15,14 +15,14 @@ const ELIGIBLE_LEAD_ROLES = ["senior_paralegal", "attorney"] as const;
 
 export class TeamsService {
   getAllTeams = async (organizationId: string) => {
-    return db.select().from(teams).where(eq(teams.organizationId, organizationId));
+    return db.select().from(team).where(eq(team.organizationId, organizationId));
   };
 
   getTeamById = async (id: string, organizationId: string) => {
     const result = await db
       .select()
-      .from(teams)
-      .where(and(eq(teams.id, id), eq(teams.organizationId, organizationId)));
+      .from(team)
+      .where(and(eq(team.id, id), eq(team.organizationId, organizationId)));
     return result[0] ?? null;
   };
 
@@ -45,7 +45,7 @@ export class TeamsService {
     }
 
     try {
-      const [newTeam] = await db.insert(teams).values({ ...body, id: crypto.randomUUID() }).returning();
+      const [newTeam] = await db.insert(team).values({ ...body, id: randomUUID(), createdAt: new Date() }).returning();
       return newTeam;
     } catch (error: any) {
       if (error.code === "23505") {
@@ -74,9 +74,9 @@ export class TeamsService {
     }
 
     const [updated] = await db
-      .update(teams)
+      .update(team)
       .set({ ...body, updatedAt: new Date() })
-      .where(and(eq(teams.id, id), eq(teams.organizationId, organizationId)))
+      .where(and(eq(team.id, id), eq(team.organizationId, organizationId)))
       .returning();
 
     return updated ?? null;
@@ -84,8 +84,8 @@ export class TeamsService {
 
   deleteTeam = async (id: string, organizationId: string) => {
     const [deleted] = await db
-      .delete(teams)
-      .where(and(eq(teams.id, id), eq(teams.organizationId, organizationId)))
+      .delete(team)
+      .where(and(eq(team.id, id), eq(team.organizationId, organizationId)))
       .returning();
     return deleted ?? null;
   };

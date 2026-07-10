@@ -1,6 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import asyncWrap from "../../../utils/asyncWrapper";
+import { sendSuccess } from "../../../utils/send-success";
 import { ConsultationSettingsService } from "./consultation-settings.service";
 
 export class ConsultationSettingsController {
@@ -12,7 +13,7 @@ export class ConsultationSettingsController {
 
   getSettings = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.service.getSettings(req.organizationId!);
-    res.status(200).json(result);
+    sendSuccess(res, result, "Consultation settings retrieved successfully");
   });
 
   upsertSettings = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -20,9 +21,7 @@ export class ConsultationSettingsController {
       req.organizationId!,
       req.body,
     );
-    res
-      .status(200)
-      .json({ message: "Consultation settings saved", settings: result });
+    sendSuccess(res, result, "Consultation settings saved successfully");
   });
 
   listLocations = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -31,7 +30,7 @@ export class ConsultationSettingsController {
       req.organizationId!,
       includeInactive,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Locations retrieved successfully");
   });
 
   createLocation = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -39,7 +38,7 @@ export class ConsultationSettingsController {
       req.organizationId!,
       req.body,
     );
-    res.status(201).json(result);
+    sendSuccess(res, result, "Location created successfully", 201);
   });
 
   updateLocation = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -48,7 +47,7 @@ export class ConsultationSettingsController {
       req.params.locationId as string,
       req.body,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Location updated successfully");
   });
 
   deleteLocation = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -56,6 +55,6 @@ export class ConsultationSettingsController {
       req.organizationId!,
       req.params.locationId as string,
     );
-    res.status(200).json({ message: "Consultation location deleted" });
+    sendSuccess(res, null, "Consultation location deleted successfully");
   });
 }

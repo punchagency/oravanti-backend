@@ -3,6 +3,7 @@ import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import { sendSuccess } from "../../utils/send-success";
 import * as documentsService from "./documents.service";
 
 export class DocumentsController {
@@ -14,22 +15,23 @@ export class DocumentsController {
 
   getAllDocuments = asyncWrap(async (req: AuthRequest, res: Response) => {
     const { search, category, caseId, status, page, limit } = req.query;
-    const pagination = parsePaginationQuery({ page, limit });
+    const queryPagination = parsePaginationQuery({ page, limit });
 
     const result = await this.documentsService.getAllDocuments(req.userId!, {
       search: search as string,
       category: category as string,
       caseId: caseId as string,
       status: status as string,
-      ...pagination,
+      ...queryPagination,
     });
 
-    res.status(200).json(result);
+    const { data, pagination } = result;
+    sendSuccess(res, data, "Documents retrieved successfully", 200, { pagination });
   });
 
   getDocumentStats = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.documentsService.getDocumentStats(req.userId!);
-    res.status(200).json(result);
+    sendSuccess(res, result, "Document stats retrieved successfully");
   });
 
   getDocumentById = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -42,7 +44,7 @@ export class DocumentsController {
       throw new NotFoundError("Document not found");
     }
 
-    res.status(200).json(result);
+    sendSuccess(res, result, "Document retrieved successfully");
   });
 
   uploadDocument = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -64,7 +66,7 @@ export class DocumentsController {
       originalFilename: file.originalname,
     });
 
-    res.status(201).json(result);
+    sendSuccess(res, result, "Document uploaded successfully", 201);
   });
 
   updateDocument = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -84,7 +86,7 @@ export class DocumentsController {
       },
     );
 
-    res.status(201).json(result);
+    sendSuccess(res, result, "Document updated successfully", 201);
   });
 
   linkDocumentToCase = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -95,7 +97,7 @@ export class DocumentsController {
       req.body.caseId,
     );
 
-    res.status(201).json(result);
+    sendSuccess(res, result, "Document linked to case successfully", 201);
   });
 
   grantUserAccess = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -108,7 +110,7 @@ export class DocumentsController {
       },
     );
 
-    res.status(201).json(result);
+    sendSuccess(res, result, "User access granted successfully", 201);
   });
 
   revokeUserAccess = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -118,7 +120,7 @@ export class DocumentsController {
       req.params.userId as string,
     );
 
-    res.status(200).json(result);
+    sendSuccess(res, result, "User access revoked successfully");
   });
 
   createExternalRequest = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -134,14 +136,14 @@ export class DocumentsController {
       },
     );
 
-    res.status(201).json(result);
+    sendSuccess(res, result, "External request created successfully", 201);
   });
 
   getExternalRequests = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.documentsService.getExternalRequests(
       req.userId!,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "External requests retrieved successfully");
   });
 
   cancelExternalRequest = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -150,7 +152,7 @@ export class DocumentsController {
       req.userId!,
     );
 
-    res.status(200).json(result);
+    sendSuccess(res, result, "External request cancelled successfully");
   });
 
   submitExternalDocument = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -172,7 +174,7 @@ export class DocumentsController {
       },
     );
 
-    res.status(201).json(result);
+    sendSuccess(res, result, "External document submitted successfully", 201);
   });
 
   updateDocumentStatus = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -186,7 +188,7 @@ export class DocumentsController {
       throw new NotFoundError("Document not found");
     }
 
-    res.status(200).json(result);
+    sendSuccess(res, result, "Document status updated successfully");
   });
 
   archiveDocument = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -195,7 +197,7 @@ export class DocumentsController {
       req.userId!,
     );
 
-    res.status(200).json(result);
+    sendSuccess(res, result, "Document archived successfully");
   });
 
   restoreDocument = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -204,7 +206,7 @@ export class DocumentsController {
       req.userId!,
     );
 
-    res.status(200).json(result);
+    sendSuccess(res, result, "Document restored successfully");
   });
 
   getDownloadUrl = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -213,7 +215,7 @@ export class DocumentsController {
       req.userId!,
     );
 
-    res.status(200).json({ url });
+    sendSuccess(res, { url }, "Download URL generated successfully");
   });
 
   getActivityLogs = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -222,7 +224,7 @@ export class DocumentsController {
       req.userId!,
     );
 
-    res.status(200).json(result);
+    sendSuccess(res, result, "Activity logs retrieved successfully");
   });
 
   deleteDocument = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -231,6 +233,6 @@ export class DocumentsController {
       req.userId!,
     );
 
-    res.status(200).json({ message: "Document deleted" });
+    sendSuccess(res, null, "Document deleted successfully");
   });
 }

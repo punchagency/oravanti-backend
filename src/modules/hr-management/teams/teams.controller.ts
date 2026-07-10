@@ -3,6 +3,7 @@ import { AuthRequest } from "../../../middleware/auth.middleware";
 import { UpdateTeamBody } from "../../../types/hr.types";
 import asyncWrap from "../../../utils/asyncWrapper";
 import { NotFoundError } from "../../../utils/error/app-error";
+import { sendSuccess } from "../../../utils/send-success";
 import { TeamsService } from "./teams.service";
 
 export class TeamsController {
@@ -14,7 +15,7 @@ export class TeamsController {
 
   getAll = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.teamsService.getAllTeams(req.organizationId!);
-    res.status(200).json(result);
+    sendSuccess(res, result, "Teams retrieved successfully");
   });
 
   getById = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -25,7 +26,7 @@ export class TeamsController {
     if (!result) {
       throw new NotFoundError("Team not found");
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Team retrieved successfully");
   });
 
   createTeam = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -33,7 +34,7 @@ export class TeamsController {
       ...req.body,
       organizationId: req.organizationId!,
     });
-    res.status(201).json({ message: "Team created", team: result });
+    sendSuccess(res, result, "Team created successfully", 201);
   });
 
   updateTeam = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -45,7 +46,7 @@ export class TeamsController {
     if (!result) {
       throw new NotFoundError("Team not found");
     }
-    res.status(200).json({ message: "Team updated", team: result });
+    sendSuccess(res, result, "Team updated successfully");
   });
 
   deleteTeam = asyncWrap(async (req: AuthRequest, res: Response) => {
@@ -56,11 +57,11 @@ export class TeamsController {
     if (!result) {
       throw new NotFoundError("Team not found");
     }
-    res.status(200).json({ message: "Team deleted" });
+    sendSuccess(res, null, "Team deleted successfully");
   });
 
   getEligibleLeads = asyncWrap(async (req: AuthRequest, res: Response) => {
     const result = await this.teamsService.getEligibleLeads(req.organizationId!);
-    res.status(200).json(result);
+    sendSuccess(res, result, "Eligible leads retrieved successfully");
   });
 }

@@ -1,6 +1,7 @@
 import { Response } from "express";
 import { AuthRequest } from "../../../middleware/auth.middleware";
 import asyncWrap from "../../../utils/asyncWrapper";
+import { sendSuccess } from "../../../utils/send-success";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
 import { CertificationGatesService } from "./certification-gates.service";
 
@@ -20,7 +21,7 @@ export class CertificationGatesController {
     const result = await this.certifcationGatesService.getCertificationGates(
       req.organizationId!,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Certification gates retrieved successfully");
   });
 
   updateCertificationGates = asyncWrap(
@@ -36,7 +37,7 @@ export class CertificationGatesController {
         req.userId!,
         req.organizationId!,
       );
-      res.status(200).json({ message: "Certification gates updated" });
+      sendSuccess(res, null, "Certification gates updated");
     },
   );
 
@@ -46,7 +47,7 @@ export class CertificationGatesController {
         await this.certifcationGatesService.getActivationRequirements(
           req.organizationId!,
         );
-      res.status(200).json(result);
+      sendSuccess(res, result, "Activation requirements retrieved successfully");
     },
   );
 
@@ -64,9 +65,7 @@ export class CertificationGatesController {
         req.userId!,
         req.organizationId!,
       );
-      res.status(200).json({
-        message: `Activation requirements updated. ${result.updated} paralegal(s) re-evaluated.`,
-      });
+      sendSuccess(res, result, `Activation requirements updated. ${result.updated} paralegal(s) re-evaluated.`);
     },
   );
 }

@@ -233,6 +233,15 @@ export class LeadsRouter {
 
     // ── Case Opening ──────────────────────────────────────────────────────────
 
+    this.router.get(
+      "/:id/eligible-teams",
+      requireAuth,
+      requireAdmin,
+      setFirmContext,
+      validateRequest({ params: v.idParamsSchema }),
+      ctrl.getEligibleTeamsForLead,
+    );
+
     this.router.post(
       "/:id/open-case",
       requireAuth,

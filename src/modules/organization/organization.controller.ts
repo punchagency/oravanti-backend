@@ -1,5 +1,6 @@
 import type { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
+import { sendSuccess } from "../../utils/send-success";
 import { OrganizationService } from "./organization.service";
 
 export class OrganizationController {
@@ -26,7 +27,7 @@ export class OrganizationController {
       req.headers,
     );
 
-    res.status(201).json(result);
+    sendSuccess(res, result, "Team created successfully", 201);
   });
 
   getStaff = asyncWrap(async (req: AuthRequest, res) => {
@@ -41,7 +42,7 @@ export class OrganizationController {
     if (!result) {
       return res.status(404).json({ error: "Staff member not found" });
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Staff retrieved successfully");
   });
 
   getTeam = asyncWrap(async (req: AuthRequest, res) => {
@@ -56,7 +57,7 @@ export class OrganizationController {
     if (!result) {
       return res.status(404).json({ error: "Team not found" });
     }
-    res.status(200).json(result);
+    sendSuccess(res, result, "Team retrieved successfully");
   });
 
   getTeams = asyncWrap(async (req: AuthRequest, res) => {
@@ -78,7 +79,8 @@ export class OrganizationController {
         limit: limit ? parseInt(limit, 10) : undefined,
       },
     );
-    res.status(200).json(result);
+    const { data, pagination, counts } = result;
+    sendSuccess(res, data, "Teams retrieved successfully", 200, { pagination, counts });
   });
 
   getAll = asyncWrap(async (req: AuthRequest, res) => {
@@ -99,7 +101,8 @@ export class OrganizationController {
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
     });
-    res.status(200).json(result);
+    const { data, pagination, counts } = result;
+    sendSuccess(res, data, "Staff retrieved successfully", 200, { pagination, counts });
   });
 
   invite = asyncWrap(async (req: AuthRequest, res) => {
@@ -149,11 +152,7 @@ export class OrganizationController {
       req.headers,
     );
 
-    return res.status(201).json({
-      message: "Invitation sent successfully.",
-      staffId: result.staffId,
-      invitationId: result.invitationId,
-    });
+    sendSuccess(res, { staffId: result.staffId, invitationId: result.invitationId }, "Invitation sent successfully", 201);
   });
 
   acceptInvite = asyncWrap(async (req: AuthRequest, res) => {
@@ -162,7 +161,7 @@ export class OrganizationController {
       invitationId,
       req.headers,
     );
-    res.status(200).json({ message: "Invitation accepted", data });
+    sendSuccess(res, data, "Invitation accepted");
   });
 
   getInvitations = asyncWrap(async (req: AuthRequest, res) => {
@@ -186,7 +185,8 @@ export class OrganizationController {
         limit: limit ? parseInt(limit, 10) : undefined,
       },
     );
-    res.status(200).json(result);
+    const { data, pagination, counts } = result;
+    sendSuccess(res, data, "Invitations retrieved successfully", 200, { pagination, counts });
   });
 
   cancelInvitation = asyncWrap(async (req: AuthRequest, res) => {
@@ -195,7 +195,7 @@ export class OrganizationController {
       return res.status(400).json({ error: "invitationId is required" });
     }
     await this.organizationService.cancelInvite(invitationId, req.headers);
-    res.status(200).json({ message: "Invitation cancelled" });
+    sendSuccess(res, null, "Invitation cancelled");
   });
 
   updateStaff = asyncWrap(async (req: AuthRequest, res) => {
@@ -210,7 +210,7 @@ export class OrganizationController {
       req.organizationId,
       { phone, jobTitle, maxCaseload, startDate, email, orgEmail, firstName, lastName, caseTypeIds, teamIds },
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Staff updated successfully");
   });
 
   updateStaffRole = asyncWrap(async (req: AuthRequest, res) => {
@@ -228,7 +228,7 @@ export class OrganizationController {
       role,
       req.headers,
     );
-    res.status(200).json({ message: "Role updated successfully" });
+    sendSuccess(res, null, "Role updated successfully");
   });
 
   getMyPendingInvitation = asyncWrap(async (req: AuthRequest, res) => {
@@ -237,7 +237,7 @@ export class OrganizationController {
     }
     const invitation =
       await this.organizationService.getMyPendingInvitation(req.userId);
-    res.status(200).json({ invitation });
+    sendSuccess(res, { invitation });
   });
 
   needsSetup = asyncWrap(async (req: AuthRequest, res) => {
@@ -245,7 +245,7 @@ export class OrganizationController {
       return res.status(401).json({ error: "Not authenticated" });
     }
     const result = await this.organizationService.needsSetup(req.userId);
-    res.status(200).json(result);
+    sendSuccess(res, result);
   });
 
   deleteStaff = asyncWrap(async (req: AuthRequest, res) => {
@@ -254,7 +254,7 @@ export class OrganizationController {
     }
     const staffId = req.params.staffId as string;
     await this.organizationService.deleteStaff(staffId, req.organizationId);
-    res.status(200).json({ message: "Staff deleted" });
+    sendSuccess(res, null, "Staff deleted successfully");
   });
 
   deleteTeam = asyncWrap(async (req: AuthRequest, res) => {
@@ -263,7 +263,7 @@ export class OrganizationController {
     }
     const teamId = req.params.teamId as string;
     await this.organizationService.deleteTeam(teamId, req.organizationId);
-    res.status(200).json({ message: "Team deleted" });
+    sendSuccess(res, null, "Team deleted successfully");
   });
 
   removeTeamMember = asyncWrap(async (req: AuthRequest, res) => {
@@ -277,7 +277,7 @@ export class OrganizationController {
       memberId,
       req.organizationId,
     );
-    res.status(200).json({ message: "Member removed from team" });
+    sendSuccess(res, null, "Member removed from team");
   });
 
   resendInvitation = asyncWrap(async (req: AuthRequest, res) => {
@@ -294,10 +294,7 @@ export class OrganizationController {
       req.organizationId,
       req.headers,
     );
-    res.status(200).json({
-      message: "Invitation resent successfully",
-      data: result,
-    });
+    sendSuccess(res, result, "Invitation resent successfully");
   });
 
   updateTeam = asyncWrap(async (req: AuthRequest, res) => {
@@ -313,7 +310,7 @@ export class OrganizationController {
       leadId,
       caseTypeIds,
     });
-    res.status(200).json({ message: "Team updated" });
+    sendSuccess(res, null, "Team updated successfully");
   });
 
   addTeamMembers = asyncWrap(async (req: AuthRequest, res) => {
@@ -326,7 +323,7 @@ export class OrganizationController {
       return res.status(400).json({ error: "staffIds array is required" });
     }
     await this.organizationService.addTeamMembers(teamId, req.organizationId, staffIds);
-    res.status(200).json({ message: "Members added" });
+    sendSuccess(res, null, "Members added successfully");
   });
 
   setPassword = asyncWrap(async (req: AuthRequest, res) => {
@@ -342,6 +339,6 @@ export class OrganizationController {
       { currentPassword, newPassword },
       req.headers,
     );
-    res.status(200).json(result);
+    sendSuccess(res, result, "Password set successfully");
   });
 }
