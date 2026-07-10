@@ -330,7 +330,7 @@ export const generateFeeAgreementBodySchema = z
     installmentSchedule: z
       .object({
         monthlyAmount: z.number().positive(),
-        numberOfPayments: z.number().int().min(2).max(120),
+        numberOfPayments: z.number().int().min(1).max(120),
         firstPaymentDate: dateOnlyString,
       })
       .optional(),
