@@ -62,7 +62,7 @@ const paymentTermsText = (
   if (document.paymentPlan === "installments") {
     const s = document.installmentSchedule;
     if (s)
-      return `The total amount is payable in ${s.numberOfPayments} monthly installments of ${money(s.monthlyAmount)}, beginning ${formatDateOnly(s.firstPaymentDate)}. ${pay}`;
+      return `The total amount is payable in ${s.numberOfPayments} monthly installment${s.numberOfPayments === 1 ? "" : "s"} of ${money(s.monthlyAmount)}, beginning ${formatDateOnly(s.firstPaymentDate)}. ${pay}`;
     return `The total amount is payable in monthly installments per a schedule agreed with the firm, beginning upon signing this agreement. ${pay}`;
   }
   return `The total amount is due in full upon signing this agreement. ${pay} Failure to remit payment within 7 days of signing may result in withdrawal of representation.`;
