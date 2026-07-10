@@ -45,6 +45,7 @@ export const createLeadBodySchema = z.object({
   intakeAdversePartyName: z.string().min(1).optional(),
   intakeAdversePartyEmail: z.string().email().optional(),
   timezone: timezone.optional(),
+  language: z.string().min(1).optional(),
 });
 
 export const updateLeadBodySchema = z.object({
@@ -70,6 +71,7 @@ export const updateLeadBodySchema = z.object({
   intakeAdversePartyName: z.string().min(1).optional(),
   intakeAdversePartyEmail: z.string().email().optional(),
   timezone: timezone.optional(),
+  language: z.string().min(1).optional(),
 });
 
 // Public (booking-page) reconciliation of the lead's timezone.
@@ -166,6 +168,14 @@ export const initiateConsultationBodySchema = z
     urgent: z.boolean().optional(),
     // Set when this consultation is a follow-up of a prior completed one.
     parentConsultationId: optionalUuid,
+    // Instant consultation: begins now (or at payment time for pay_now).
+    startNow: z.boolean().optional(),
+    paymentTiming: z
+      .enum(["pay_now", "invoice_after", "pay_in_person"])
+      .optional(),
+    isEmergency: z.boolean().optional(),
+    emergencyMultiplier: z.number().positive().max(10).optional(),
+    autoSendQuestionnaire: z.boolean().optional(),
   })
   .superRefine((val, ctx) => {
     if (val.mode === "in_person" && !val.locationId) {
@@ -173,6 +183,32 @@ export const initiateConsultationBodySchema = z
         code: z.ZodIssueCode.custom,
         message: "A location is required for in-person consultations",
         path: ["locationId"],
+      });
+    }
+    if (val.startNow && !val.paymentTiming) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Choose a payment timing for instant consultations",
+        path: ["paymentTiming"],
+      });
+    }
+    if (
+      !val.startNow &&
+      (val.paymentTiming || val.isEmergency || val.autoSendQuestionnaire)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "Payment timing, emergency, and auto-questionnaire options are only allowed for instant consultations",
+        path: ["startNow"],
+      });
+    }
+    if (val.emergencyMultiplier != null && !val.isEmergency) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "An emergency multiplier requires the consultation to be marked as an emergency",
+        path: ["emergencyMultiplier"],
       });
     }
   });
@@ -198,73 +234,153 @@ export const updateConsultationBodySchema = z.object({
   outcome: z
     .enum(["proceed", "close_no_case", "refer_elsewhere", "follow_up"])
     .optional(),
+  // Staff marks a pay-in-person fee as received (only valid from unpaid).
+  feeStatus: z.enum(["paid"]).optional(),
 });
 
 export const cancelConsultationBodySchema = z.object({
   reason: z.string().max(1000).optional(),
 });
 
-export const generateFeeAgreementBodySchema = z.object({
-  agreementType: z.string().optional(),
-  generatedFrom: z.enum(["questionnaire_auto", "manual"]).optional(),
-  attorneyFee: z
-    .object({
-      type: z.enum(["flat", "hourly", "flat_hourly", "contingency"]),
-      flatRate: z.number().nonnegative().optional(),
-      hourlyRate: z.number().nonnegative().optional(),
-      // Settlement percentage, combinable with any type; required for
-      // pure-contingency agreements.
-      contingencyPercent: z.number().positive().max(100).optional(),
-    })
-    .superRefine((val, ctx) => {
-      if (
-        (val.type === "flat" || val.type === "flat_hourly") &&
-        val.flatRate == null
-      )
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "A flat rate is required",
-          path: ["flatRate"],
-        });
-      if (
-        (val.type === "hourly" || val.type === "flat_hourly") &&
-        val.hourlyRate == null
-      )
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "An hourly rate is required",
-          path: ["hourlyRate"],
-        });
-      if (val.type === "contingency" && val.contingencyPercent == null)
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "A settlement percentage is required",
-          path: ["contingencyPercent"],
-        });
-    }),
-  governmentFees: z
-    .array(
-      z.object({
-        name: z.string().min(1),
-        amount: z.number().nonnegative(),
-      }),
-    )
-    .default([]),
-  governmentFeesPaidBy: z
-    .enum(["client_upfront", "firm_advanced"])
-    .default("client_upfront"),
-  // Optional so the form can omit them when nothing is due upfront.
-  paymentPlan: z
-    .enum(["pay_in_full", "two_payments", "installments"])
-    .default("pay_in_full"),
-  applyConsultationCredit: z.boolean().default(false),
-  accountSplit: z
-    .object({
-      operating: z.number().nonnegative(),
-      trust: z.number().nonnegative(),
-    })
-    .default({ operating: 0, trust: 0 }),
+// Date-only strings ("YYYY-MM-DD") — kept as plain strings end to end so the
+// document renderers never do timezone math on them.
+const dateOnlyString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, {
+  message: "Expected a YYYY-MM-DD date",
 });
+
+export const generateFeeAgreementBodySchema = z
+  .object({
+    agreementType: z.string().optional(),
+    generatedFrom: z.enum(["questionnaire_auto", "manual"]).optional(),
+    attorneyFee: z
+      .object({
+        type: z.enum(["flat", "hourly", "flat_hourly", "contingency"]),
+        flatRate: z.number().nonnegative().optional(),
+        hourlyRate: z.number().nonnegative().optional(),
+        estimatedHours: z.number().positive().optional(),
+        // Settlement percentage, combinable with any type; required for
+        // pure-contingency agreements.
+        contingencyPercent: z.number().positive().max(100).optional(),
+      })
+      .superRefine((val, ctx) => {
+        if (
+          (val.type === "flat" || val.type === "flat_hourly") &&
+          val.flatRate == null
+        )
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "A flat rate is required",
+            path: ["flatRate"],
+          });
+        if (
+          (val.type === "hourly" || val.type === "flat_hourly") &&
+          val.hourlyRate == null
+        )
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "An hourly rate is required",
+            path: ["hourlyRate"],
+          });
+        if (val.type === "contingency" && val.contingencyPercent == null)
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "A settlement percentage is required",
+            path: ["contingencyPercent"],
+          });
+      }),
+    // Required for contingency agreements; abaConfirmed is the wire flag that
+    // the attorney checked all three ABA 1.5(c) boxes — the service stamps
+    // the timestamp server-side.
+    contingencyTerms: z
+      .object({
+        coversCaseCosts: z.boolean(),
+        coversExpertWitnessFees: z.boolean(),
+        ifLost: z.enum(["client_owes_nothing", "client_reimburses_hard_costs"]),
+        abaConfirmed: z.literal(true),
+      })
+      .optional(),
+    governmentFees: z
+      .array(
+        z.object({
+          name: z.string().min(1),
+          amount: z.number().nonnegative(),
+        }),
+      )
+      .default([]),
+    otherCosts: z
+      .array(
+        z.object({
+          name: z.string().min(1),
+          amount: z.number().nonnegative(),
+        }),
+      )
+      .default([]),
+    governmentFeesPaidBy: z
+      .enum(["client_upfront", "firm_advanced"])
+      .default("client_upfront"),
+    // Optional so the form can omit them when nothing is due upfront.
+    paymentPlan: z
+      .enum(["pay_in_full", "two_payments", "installments"])
+      .default("pay_in_full"),
+    twoPaymentsSchedule: z
+      .object({
+        firstAmount: z.number().positive(),
+        secondAmount: z.number().positive(),
+        secondDueDate: dateOnlyString,
+      })
+      .optional(),
+    installmentSchedule: z
+      .object({
+        monthlyAmount: z.number().positive(),
+        numberOfPayments: z.number().int().min(2).max(120),
+        firstPaymentDate: dateOnlyString,
+      })
+      .optional(),
+    paymentAllocation: z
+      .object({
+        order: z.enum(["fees_first", "costs_first", "custom"]),
+        customFeePercent: z.number().positive().lt(100).optional(),
+      })
+      .optional(),
+    applyConsultationCredit: z.boolean().default(false),
+    accountSplit: z
+      .object({
+        operating: z.number().nonnegative(),
+        trust: z.number().nonnegative(),
+      })
+      .default({ operating: 0, trust: 0 }),
+  })
+  .superRefine((val, ctx) => {
+    if (val.attorneyFee.type === "contingency" && !val.contingencyTerms)
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Contingency terms are required for contingency agreements",
+        path: ["contingencyTerms"],
+      });
+    // One-directional: a chosen plan requires its schedule; a stray schedule
+    // sent with another plan is simply ignored at persist time.
+    if (val.paymentPlan === "two_payments" && !val.twoPaymentsSchedule)
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "A two-payment schedule is required",
+        path: ["twoPaymentsSchedule"],
+      });
+    if (val.paymentPlan === "installments" && !val.installmentSchedule)
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "An installment schedule is required",
+        path: ["installmentSchedule"],
+      });
+    if (
+      val.paymentAllocation?.order === "custom" &&
+      val.paymentAllocation.customFeePercent == null
+    )
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "A custom split percentage is required",
+        path: ["paymentAllocation", "customFeePercent"],
+      });
+  });
 
 export const openCaseBodySchema = z.object({
   assignedTeamId: z.string().optional(),

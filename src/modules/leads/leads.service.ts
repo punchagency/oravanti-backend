@@ -7,13 +7,11 @@ import {
   desc,
   eq,
   getTableColumns,
-  gte,
   ilike,
   inArray,
-  lte,
   ne,
   or,
-  sql,
+  sql
 } from "drizzle-orm";
 import { env } from "../../config/env";
 import { db } from "../../db/client";
@@ -24,7 +22,7 @@ import {
   teamMember,
   user,
 } from "../../db/schema/auth-schema";
-import { cases, certifications } from "../../db/schema/cases";
+import { cases } from "../../db/schema/cases";
 import { clientContacts } from "../../db/schema/client-contacts";
 import { clients } from "../../db/schema/clients";
 import { conflictChecks } from "../../db/schema/conflict-checks";
@@ -57,18 +55,13 @@ import {
   questionnaireSends,
 } from "../../db/schema/questionnaires";
 import { staff } from "../../db/schema/staff";
-import { staffCertifications } from "../../db/schema/staff-certifications";
-import { stepActionLogs } from "../../db/schema/step-action-logs";
-import { leaveRequests } from "../../db/schema/leave-requests";
 import { teamPracticeAreaCaseTypes } from "../../db/schema/team-practice-area-case-types";
 import {
   caseWorkflowSteps,
-  workflowLog,
   workflowModules,
   workflowTemplates,
-  workflowTemplateSteps,
+  workflowTemplateSteps
 } from "../../db/schema/workflow";
-import { pickBestStaff, logEvent, logStepAction } from "../workflow/workflow.service";
 import {
   cancelQuestionnaireReminder,
   scheduleQuestionnaireReminder,
@@ -90,6 +83,7 @@ import {
 import { storageService } from "../../utils/storage/storage.service";
 import { generateCaseNumber } from "../cases/cases.service";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
+import { logEvent, logStepAction, pickBestStaff } from "../workflow/workflow.service";
 import { generateConsultationSlots } from "./consultation-slots.service";
 import { getESignatureProvider } from "./dropbox-sign.provider";
 import { assembleFeeAgreementDocument } from "./fee-agreement-document";
@@ -437,6 +431,8 @@ const createLead = async (
     situationSummary?: string;
     intakeAdversePartyName?: string;
     intakeAdversePartyEmail?: string;
+    timezone?: string;
+    language?: string;
   },
   creatorStaffId: string,
 ) => {
@@ -454,6 +450,7 @@ const createLead = async (
       respondentId: creatorStaffId,
       intakeAdversePartyName: data.intakeAdversePartyName,
       intakeAdversePartyEmail: data.intakeAdversePartyEmail,
+      language: data.language,
     })
     .returning();
 
@@ -742,6 +739,8 @@ const updateLead = async (
     respondentId: string;
     intakeAdversePartyName: string;
     intakeAdversePartyEmail: string;
+    timezone: string;
+    language: string;
   }>,
 ) => {
   const [updated] = await db
@@ -860,6 +859,11 @@ const advanceLeadStage = async (
         if (!fa || fa.status !== "signed") {
           throw new ConflictError(
             "Fee agreement must be signed before opening a case",
+          );
+        }
+        if (!feeAgreementPaymentSatisfied(fa.details)) {
+          throw new ConflictError(
+            "Payment must be received before opening a case",
           );
         }
       }
@@ -1742,11 +1746,16 @@ const sendQuestionnaire = async (
   }
 
   const now = new Date();
+  // Never move a lead backward: an instant-consultation lead is already at the
+  // consultation stage when its questionnaire is auto-sent on completion.
+  const currentStageIdx = STAGE_ORDER.indexOf(lead.pipelineStage as any);
   await db
     .update(leads)
     .set({
       questionnaireSendId: send.id,
-      pipelineStage: "questionnaire",
+      ...(currentStageIdx < STAGE_ORDER.indexOf("questionnaire")
+        ? { pipelineStage: "questionnaire" as const }
+        : {}),
       updatedAt: now,
     })
     .where(eq(leads.id, leadId));
@@ -1833,8 +1842,18 @@ const initiateConsultation = async (
     notifyChannels?: ("email" | "sms")[];
     urgent?: boolean;
     parentConsultationId?: string;
+    startNow?: boolean;
+    paymentTiming?: "pay_now" | "invoice_after" | "pay_in_person";
+    isEmergency?: boolean;
+    emergencyMultiplier?: number;
+    autoSendQuestionnaire?: boolean;
   },
 ) => {
+  // Instant consultations ("start now") are urgent by definition: they skip
+  // the slot queue and require a passed conflict check.
+  const startNow = Boolean(data.startNow);
+  const urgent = Boolean(data.urgent || startNow);
+
   const [lead] = await db
     .select()
     .from(leads)
@@ -1880,7 +1899,7 @@ const initiateConsultation = async (
   }
 
   // Urgent (admin fast-track) requires the lead to have passed conflict check.
-  if (data.urgent) {
+  if (urgent) {
     if (lead.status === "declined")
       throw new BadRequestError("This lead has been declined");
     if (!lead.conflictCheckId)
@@ -1932,8 +1951,8 @@ const initiateConsultation = async (
     // Urgent bookings let the admin override the amount (urgency surcharge)
     // regardless of the firm's fee structure.
     const resolved =
-      data.urgent || settings.feeStructure === "custom_per_case_type"
-        ? (data.feeAmount ?? defaultAmount)
+      urgent || settings.feeStructure === "custom_per_case_type"
+        ? data.feeAmount ?? defaultAmount
         : defaultAmount;
     if (resolved != null) {
       feeStatus = "unpaid";
@@ -1941,18 +1960,31 @@ const initiateConsultation = async (
     }
   }
 
+  // Instant consultations begin immediately, except pay_now with a fee, which
+  // begins at payment time. A pay_now choice with no fee configured degrades
+  // gracefully to begin-immediately.
+  const beginsNow =
+    startNow && !(feeStatus === "unpaid" && data.paymentTiming === "pay_now");
+
   // Urgent bookings are auto-scheduled ASAP: immediately when no fee applies,
   // otherwise at payment time. Lead-driven bookings leave scheduledAt null
   // until the lead picks a slot.
-  const scheduledAt =
-    data.urgent && feeStatus !== "unpaid" ? nextAsapSlot() : null;
+  const scheduledAt = beginsNow
+    ? new Date()
+    : urgent && feeStatus !== "unpaid" && !startNow
+      ? nextAsapSlot()
+      : null;
 
   const accessToken = generateAccessToken();
   const bookingExpiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
   // Fee → payment gate; urgent no-fee is finalized right after insert; normal
-  // no-fee waits for the lead to pick a slot.
-  const status =
-    feeStatus === "unpaid"
+  // no-fee waits for the lead to pick a slot. Instant consultations that begin
+  // now are inserted as "scheduled" and flipped to in_progress by finalize.
+  const status = startNow
+    ? beginsNow
+      ? "scheduled"
+      : "pending_payment"
+    : feeStatus === "unpaid"
       ? "pending_payment"
       : data.urgent
         ? "scheduled"
@@ -1965,7 +1997,15 @@ const initiateConsultation = async (
       leadId,
       parentConsultationId: data.parentConsultationId ?? null,
       scheduledAt,
-      isUrgent: data.urgent ?? false,
+      isUrgent: urgent,
+      isInstant: startNow,
+      paymentTiming: startNow ? data.paymentTiming ?? null : null,
+      isEmergency: Boolean(startNow && data.isEmergency),
+      emergencyMultiplier:
+        startNow && data.isEmergency && data.emergencyMultiplier != null
+          ? String(data.emergencyMultiplier)
+          : null,
+      autoSendQuestionnaire: Boolean(startNow && data.autoSendQuestionnaire),
       duration: data.duration,
       mode: data.mode,
       leadAttorneyId: data.leadAttorneyId,
@@ -2019,9 +2059,17 @@ const initiateConsultation = async (
     })
     .where(eq(leads.id, leadId));
 
+  // Instant consultation beginning now (invoice_after, pay_in_person, or no
+  // fee): finalize immediately into in_progress (mints the Meet link and sends
+  // the confirmation).
+  if (startNow && beginsNow) {
+    const finalized = await finalizeConsultation(consultation, { begin: true });
+    return { consultation: finalized, bookingToken: accessToken };
+  }
+
   // Urgent + no fee: connect ASAP — finalize immediately (mints the Meet link
   // and sends the confirmation). No lead action is required.
-  if (data.urgent && feeStatus !== "unpaid") {
+  if (!startNow && data.urgent && feeStatus !== "unpaid") {
     const finalized = await finalizeConsultation(consultation);
     return { consultation: finalized, bookingToken: accessToken };
   }
@@ -2034,7 +2082,9 @@ const initiateConsultation = async (
     ? data.notifyChannels
     : ["email"];
 
-  if (notifyChannels.includes("email")) {
+  // Instant pay_now consultations can only begin once the client pays, so the
+  // payment link is always emailed regardless of the chosen channels.
+  if (notifyChannels.includes("email") || startNow) {
     const needsPayment = feeStatus === "unpaid";
     const urgent = Boolean(data.urgent);
     emailService;
@@ -2118,6 +2168,7 @@ const updateConsultation = async (
     preConsultationNotes: string;
     attorneyNotes: string;
     outcome: "proceed" | "close_no_case" | "refer_elsewhere" | "follow_up";
+    feeStatus: "paid";
   }>,
 ) => {
   const [lead] = await db
@@ -2129,20 +2180,26 @@ const updateConsultation = async (
   if (!lead || !lead.consultationId)
     throw new NotFoundError("No consultation found for this lead");
 
+  const [existing] = await db
+    .select()
+    .from(consultations)
+    .where(eq(consultations.id, lead.consultationId))
+    .limit(1);
+  if (!existing) throw new NotFoundError("No consultation found for this lead");
+
   // A consultation can't be completed or marked no-show before its start time.
   if (data.status === "completed" || data.status === "no_show") {
-    const [existing] = await db
-      .select({ scheduledAt: consultations.scheduledAt })
-      .from(consultations)
-      .where(eq(consultations.id, lead.consultationId))
-      .limit(1);
-    if (existing?.scheduledAt && existing.scheduledAt.getTime() > Date.now())
+    if (existing.scheduledAt && existing.scheduledAt.getTime() > Date.now())
       throw new BadRequestError(
         `A consultation cannot be marked ${
           data.status === "completed" ? "completed" : "as a no-show"
         } before its scheduled start time`,
       );
   }
+
+  // Pay-in-person (or any manual settlement): staff marks the fee received.
+  if (data.feeStatus === "paid" && existing.feeStatus !== "unpaid")
+    throw new ConflictError("No unpaid fee to mark as paid");
 
   const [updated] = await db
     .update(consultations)
@@ -2155,6 +2212,57 @@ const updateConsultation = async (
     })
     .where(eq(consultations.id, lead.consultationId))
     .returning();
+
+  // Completion side effects (once — re-PATCHing a completed row is a no-op).
+  if (data.status === "completed" && existing.status !== "completed") {
+    // Invoice-after: email the payment link now that the call has ended. The
+    // booking token is re-minted since only its hash is stored (this also
+    // gives the client a fresh 14-day window).
+    if (
+      updated.paymentTiming === "invoice_after" &&
+      updated.feeStatus === "unpaid"
+    ) {
+      const payToken = generateAccessToken();
+      await db
+        .update(consultations)
+        .set({
+          bookingTokenHash: tokenHash(payToken),
+          bookingExpiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+          bookingStatus: "sent",
+          updatedAt: new Date(),
+        })
+        .where(eq(consultations.id, updated.id));
+      const payLink = `${env.FRONTEND_APP_URL}/consultation-booking/${payToken}`;
+      emailService
+        .sendEmail({
+          to: lead.email,
+          subject: "Your consultation is complete — payment link inside",
+          html: `<p>Dear ${lead.firstName} ${lead.lastName},</p>
+            <p>Thank you for your consultation. Please pay your consultation fee of <strong>$${updated.feeAmount}</strong>:</p>
+            <p><a href="${payLink}">${payLink}</a></p>`,
+        })
+        .catch(console.error);
+    }
+
+    // Auto-send the intake questionnaire when requested and the lead has never
+    // been sent one. Skipped silently when the lead has no case type yet.
+    if (updated.autoSendQuestionnaire && !lead.questionnaireSendId) {
+      const [leadCaseType] = await db
+        .select({ id: leadsToCaseTypes.caseTypeId })
+        .from(leadsToCaseTypes)
+        .where(eq(leadsToCaseTypes.leadId, leadId))
+        .limit(1);
+      if (leadCaseType) {
+        await sendQuestionnaire(leadId, organizationId, undefined, {
+          language: lead.language ?? undefined,
+        }).catch(console.error);
+      } else {
+        console.warn(
+          `[consultation] skipping auto-questionnaire for lead ${leadId}: no case type assigned`,
+        );
+      }
+    }
+  }
 
   return updated;
 };
@@ -2295,8 +2403,11 @@ const getConsultationBooking = async (token: string) => {
   const requiresPayment = consultation.feeStatus === "unpaid";
 
   // Slots are only offered once any fee is settled and a time isn't yet chosen.
+  // Gating on awaiting_slot_selection keeps instant consultations (paid after
+  // completion) from ever showing the slot picker.
   const slots =
     !requiresPayment &&
+    consultation.status === "awaiting_slot_selection" &&
     consultation.bookingStatus !== "slot_selected" &&
     consultation.leadAttorneyId
       ? await generateConsultationSlots(
@@ -2317,6 +2428,7 @@ const getConsultationBooking = async (token: string) => {
     durationMinutes: consultation.duration,
     requiresPayment,
     isUrgent: consultation.isUrgent,
+    status: consultation.status,
     fee: {
       status: consultation.feeStatus,
       amount:
@@ -2340,6 +2452,25 @@ const payConsultationFee = async (token: string) => {
   const consultation = await getConsultationByBookingToken(token);
   if (consultation.feeStatus !== "unpaid")
     throw new ConflictError("No payment is required for this consultation");
+
+  // Instant consultations: pay_now begins the consultation at payment time;
+  // invoice_after / pay_in_person fees paid after the call just get marked
+  // paid (nothing left to start).
+  if (consultation.isInstant) {
+    const begins = consultation.status === "pending_payment";
+    const [paid] = await db
+      .update(consultations)
+      .set({
+        feeStatus: "paid",
+        bookingStatus: "paid",
+        ...(begins ? { scheduledAt: new Date() } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(consultations.id, consultation.id))
+      .returning();
+    if (begins) await finalizeConsultation(paid, { begin: true });
+    return { success: true };
+  }
 
   // Dummy payment: flip the fee flags. Urgent consultations are auto-scheduled
   // ASAP at payment time and finalized immediately (connect ASAP) rather than
@@ -2521,6 +2652,7 @@ const sendConsultationConfirmation = async (
 // no-fee-at-initiate and the pay-then-connect paths).
 const finalizeConsultation = async (
   consultation: typeof consultations.$inferSelect,
+  opts: { begin?: boolean } = {},
 ) => {
   const start = consultation.scheduledAt;
   if (!start)
@@ -2548,7 +2680,8 @@ const finalizeConsultation = async (
     .update(consultations)
     .set({
       scheduledAt: start,
-      status: "scheduled",
+      // Instant consultations begin the moment they are finalized.
+      status: opts.begin ? "in_progress" : "scheduled",
       bookingStatus: "slot_selected",
       videoLink,
       meetExternalId,
@@ -2705,6 +2838,18 @@ const cancelConsultation = async (
 
 // ─── Fee Agreement ─────────────────────────────────────────────────────────────
 
+// True when the case-opening payment requirement is met. Contingency
+// agreements never require an upfront payment; legacy rows without details
+// predate payment tracking and are never blocked. FEE_PAYMENT_GATE_BYPASS is
+// the dev-only escape hatch (forced off in production).
+const feeAgreementPaymentSatisfied = (
+  details: FeeAgreementDetails | null | undefined,
+): boolean =>
+  env.FEE_PAYMENT_GATE_BYPASS ||
+  !details ||
+  details.attorneyFee.type === "contingency" ||
+  Boolean(details.paymentReceivedAt);
+
 const generateFeeAgreement = async (
   leadId: string,
   organizationId: string,
@@ -2712,9 +2857,18 @@ const generateFeeAgreement = async (
     agreementType?: string;
     generatedFrom?: "questionnaire_auto" | "manual";
     attorneyFee: FeeAgreementDetails["attorneyFee"];
+    // Wire shape: abaConfirmed flag instead of the server-stamped timestamp.
+    contingencyTerms?: Omit<
+      NonNullable<FeeAgreementDetails["contingencyTerms"]>,
+      "abaConfirmedAt"
+    > & { abaConfirmed: true };
     governmentFees?: FeeAgreementDetails["governmentFees"];
+    otherCosts?: FeeAgreementDetails["otherCosts"];
     governmentFeesPaidBy?: FeeAgreementDetails["governmentFeesPaidBy"];
     paymentPlan?: FeeAgreementDetails["paymentPlan"];
+    twoPaymentsSchedule?: FeeAgreementDetails["twoPaymentsSchedule"];
+    installmentSchedule?: FeeAgreementDetails["installmentSchedule"];
+    paymentAllocation?: FeeAgreementDetails["paymentAllocation"];
     applyConsultationCredit?: boolean;
     accountSplit?: FeeAgreementDetails["accountSplit"];
   },
@@ -2777,9 +2931,33 @@ const generateFeeAgreement = async (
 
   const details: FeeAgreementDetails = {
     attorneyFee: data.attorneyFee,
+    ...(data.contingencyTerms
+      ? {
+          contingencyTerms: {
+            coversCaseCosts: data.contingencyTerms.coversCaseCosts,
+            coversExpertWitnessFees:
+              data.contingencyTerms.coversExpertWitnessFees,
+            ifLost: data.contingencyTerms.ifLost,
+            // Stamped server-side; the client only sends the confirmation flag.
+            abaConfirmedAt: new Date().toISOString(),
+          },
+        }
+      : {}),
     governmentFees: data.governmentFees ?? [],
+    ...(data.otherCosts?.length ? { otherCosts: data.otherCosts } : {}),
     governmentFeesPaidBy: data.governmentFeesPaidBy ?? "client_upfront",
     paymentPlan: data.paymentPlan ?? "pay_in_full",
+    // Schedules persist only when they match the chosen plan; anything else
+    // sent by a stale client is dropped.
+    ...(data.paymentPlan === "two_payments" && data.twoPaymentsSchedule
+      ? { twoPaymentsSchedule: data.twoPaymentsSchedule }
+      : {}),
+    ...(data.paymentPlan === "installments" && data.installmentSchedule
+      ? { installmentSchedule: data.installmentSchedule }
+      : {}),
+    ...(data.paymentAllocation
+      ? { paymentAllocation: data.paymentAllocation }
+      : {}),
     applyConsultationCredit: data.applyConsultationCredit ?? false,
     accountSplit: data.accountSplit ?? { operating: 0, trust: 0 },
     consultationFeeAmount,
@@ -2813,6 +2991,53 @@ const generateFeeAgreement = async (
     organizationId,
   );
   return { agreement, document };
+};
+
+// Discard a drafted agreement so it can be reconfigured and regenerated.
+// Drafts only: nothing has been dispatched yet (no envelope, no signing token,
+// no uploaded PDF), so the row is hard-deleted and the lead's pointer cleared —
+// generateFeeAgreement's one-agreement-per-lead guard then allows a fresh one.
+const discardDraftFeeAgreement = async (
+  agreementId: string,
+  organizationId: string,
+) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+  if (agreement.status !== "draft")
+    throw new BadRequestError(
+      "Only draft agreements can be discarded — this one has already been sent",
+    );
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(leads)
+      .set({ feeAgreementId: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(leads.id, agreement.leadId),
+          eq(leads.feeAgreementId, agreementId),
+        ),
+      );
+    await tx.delete(feeAgreements).where(eq(feeAgreements.id, agreementId));
+  });
+
+  // The stored config is returned so the client can seed the wizard with it.
+  return {
+    discarded: true,
+    agreementId,
+    leadId: agreement.leadId,
+    details: agreement.details,
+  };
 };
 
 // Dispatch a drafted agreement: mint the e-signature envelope, email the client
@@ -2944,12 +3169,72 @@ const markFeeAgreementReceived = async (
       .where(eq(feeAgreements.id, agreementId));
   }
 
-  await db
-    .update(leads)
-    .set({ pipelineStage: "case_opening", updatedAt: now })
-    .where(eq(leads.id, agreement.leadId));
+  // Advance only once the payment gate is also satisfied; otherwise the lead
+  // stays in the consultation stage, whose agreement card offers the
+  // "Mark payment received" action.
+  if (feeAgreementPaymentSatisfied(agreement.details)) {
+    await db
+      .update(leads)
+      .set({ pipelineStage: "case_opening", updatedAt: now })
+      .where(eq(leads.id, agreement.leadId));
+  }
 
   return { received: true, agreementId, leadId: agreement.leadId };
+};
+
+// Staff records that the client's upfront payment was received. This is the
+// payment half of the case-opening gate for non-contingency agreements; when
+// the agreement is already signed, recording payment auto-advances the lead.
+// Allowed from any non-voided status — firms often collect payment at signing.
+const markFeeAgreementPaymentReceived = async (
+  agreementId: string,
+  organizationId: string,
+) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+  if (agreement.status === "voided")
+    throw new BadRequestError("A voided agreement cannot be marked as paid");
+  if (!agreement.details)
+    throw new BadRequestError("This agreement predates payment tracking");
+
+  // Idempotent: repeat calls keep the original timestamp.
+  let paymentReceivedAt = agreement.details.paymentReceivedAt ?? null;
+  const now = new Date();
+  if (!paymentReceivedAt) {
+    paymentReceivedAt = now.toISOString();
+    await db
+      .update(feeAgreements)
+      .set({
+        details: { ...agreement.details, paymentReceivedAt },
+        updatedAt: now,
+      })
+      .where(eq(feeAgreements.id, agreementId));
+  }
+
+  // Payment was the last missing gate condition once signed.
+  if (agreement.status === "signed") {
+    await db
+      .update(leads)
+      .set({ pipelineStage: "case_opening", updatedAt: now })
+      .where(eq(leads.id, agreement.leadId));
+  }
+
+  return {
+    paymentReceived: true,
+    agreementId,
+    leadId: agreement.leadId,
+    paymentReceivedAt,
+  };
 };
 
 const getFeeAgreement = async (leadId: string, organizationId: string) => {
@@ -3162,11 +3447,15 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
       })
       .where(eq(feeAgreements.id, agreement.id));
 
-    // Auto-advance lead to case_opening.
-    await db
-      .update(leads)
-      .set({ pipelineStage: "case_opening", updatedAt: now })
-      .where(eq(leads.id, agreement.leadId));
+    // Auto-advance the lead to case_opening only when the payment gate is also
+    // satisfied; otherwise it stays in the consultation stage until staff mark
+    // the payment received.
+    if (feeAgreementPaymentSatisfied(agreement.details)) {
+      await db
+        .update(leads)
+        .set({ pipelineStage: "case_opening", updatedAt: now })
+        .where(eq(leads.id, agreement.leadId));
+    }
 
     return { processed: true, agreementId: agreement.id };
   }
@@ -3275,6 +3564,11 @@ const openCase = async (
     if (!fa || fa.status !== "signed") {
       throw new ConflictError(
         "Fee agreement must be signed before opening a case",
+      );
+    }
+    if (!feeAgreementPaymentSatisfied(fa.details)) {
+      throw new ConflictError(
+        "Payment must be received before opening a case",
       );
     }
   }
@@ -3739,9 +4033,11 @@ export class LeadsService {
   payConsultationFee = payConsultationFee;
   selectConsultationSlot = selectConsultationSlot;
   generateFeeAgreement = generateFeeAgreement;
+  discardDraftFeeAgreement = discardDraftFeeAgreement;
   getFeeAgreementPreview = getFeeAgreementPreview;
   sendFeeAgreement = sendFeeAgreement;
   markFeeAgreementReceived = markFeeAgreementReceived;
+  markFeeAgreementPaymentReceived = markFeeAgreementPaymentReceived;
   getFeeAgreement = getFeeAgreement;
   nudgeClient = nudgeClient;
   getEmbeddedSignSession = getEmbeddedSignSession;

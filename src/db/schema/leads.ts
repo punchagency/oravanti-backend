@@ -72,6 +72,10 @@ export const leads = pgTable("leads", {
   status:         leadStatusEnum("status").notNull().default("new"),
   pipelineStage:  leadPipelineStageEnum("pipeline_stage").notNull().default("lead_inbox"),
 
+  // Preferred language for lead-facing communications (e.g. "english");
+  // used when auto-sending the intake questionnaire.
+  language:       text("language"),
+
   // Pipeline tracking references (unlinked raw UUIDs avoiding complex circular references)
   conflictCheckId:     uuid("conflict_check_id"),
   questionnaireSendId: uuid("questionnaire_send_id"),

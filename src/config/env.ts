@@ -46,6 +46,10 @@ type AppEnv = Record<RequiredEnvKey, string> & {
   // When true (default outside production) signature requests are created in
   // test mode and do not consume signature quota.
   DROPBOX_SIGN_TEST_MODE: boolean;
+  // Dev-only escape hatch: skips the "payment received" requirement on the
+  // case-opening gate for non-contingency fee agreements. Never active in
+  // production.
+  FEE_PAYMENT_GATE_BYPASS: boolean;
   databaseUrl: string;
   isProduction: boolean;
 };
@@ -103,6 +107,9 @@ const validateEnv = (): AppEnv => {
   const dropboxSignTestMode = isProduction
     ? readEnv("DROPBOX_SIGN_TEST_MODE") === "true"
     : readEnv("DROPBOX_SIGN_TEST_MODE") !== "false";
+  // Opt-in and forced off in production.
+  const feePaymentGateBypass =
+    !isProduction && readEnv("FEE_PAYMENT_GATE_BYPASS") === "true";
 
   return {
     ...values,
@@ -116,6 +123,7 @@ const validateEnv = (): AppEnv => {
     ...(dropboxSignApiKey ? { DROPBOX_SIGN_API_KEY: dropboxSignApiKey } : {}),
     ...(dropboxSignClientId ? { DROPBOX_SIGN_CLIENT_ID: dropboxSignClientId } : {}),
     DROPBOX_SIGN_TEST_MODE: dropboxSignTestMode,
+    FEE_PAYMENT_GATE_BYPASS: feePaymentGateBypass,
     databaseUrl: isProduction ? prodDatabaseUrl! : values.DATABASE_URL,
     isProduction,
   };
