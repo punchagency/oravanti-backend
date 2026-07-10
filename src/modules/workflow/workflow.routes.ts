@@ -8,6 +8,7 @@ import { Router } from "express";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { setFirmContext } from "../../middleware/rls.middleware";
+import { requireStaffOrAdmin } from "../../middleware/staff-or-admin.middleware";
 import { validateRequest } from "../../middleware/validate.middleware";
 import { CommonValidation } from "../../validation/common.validation";
 import { WorkflowController } from "./workflow.controller";
@@ -45,7 +46,7 @@ export class WorkflowRouter {
     this.router.get(
       "/workflow/my-tasks",
       requireAuth,
-      requireAdmin,
+      requireStaffOrAdmin,
       setFirmContext,
       this.workflowController.getMyTasks,
     );
@@ -91,7 +92,7 @@ export class WorkflowRouter {
       requireAdmin,
       setFirmContext,
       validateRequest({ params: this.validation.params("caseId") }),
-      this.workflowController.getOrCreateWorkflow,
+      this.workflowController.getWorkflow,
     );
 
     /**
@@ -171,7 +172,7 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/steps/:stepId/submit-review",
       requireAuth,
-      requireAdmin,
+      // requireAdmin,
       setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "stepId") }),
       this.workflowController.submitForReview,

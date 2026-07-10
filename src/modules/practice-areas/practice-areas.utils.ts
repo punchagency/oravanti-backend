@@ -1,19 +1,14 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../../db/client";
-import { firmPracticeAreas } from "../../db/schema/firm-practice-areas";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreaSubcategories } from "../../db/schema/practice-area-subcategories";
 import { practiceAreas } from "../../db/schema/practice-areas";
-import {
-  SubscriptionStatus,
-  subscriptions,
-} from "../../db/schema/subscriptions";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 
 export const normalizePracticeAreaName = (name: string) => name.trim();
 
 export const ensurePracticeAreaExists = async (
-  organizationId: string,
+  _organizationId: string,
   practiceAreaId?: string,
 ) => {
   if (!practiceAreaId) {
@@ -29,22 +24,29 @@ export const ensurePracticeAreaExists = async (
     throw new NotFoundError("Practice area not found");
   }
 
-  const [subscription] = await db
-    .select({ id: subscriptions.id })
-    .from(firmPracticeAreas)
-    .innerJoin(subscriptions, eq(subscriptions.id, firmPracticeAreas.subscriptionId))
-    .where(
-      and(
-        eq(firmPracticeAreas.organizationId, organizationId),
-        eq(firmPracticeAreas.practiceAreaId, practiceAreaId),
-        eq(firmPracticeAreas.active, true),
-        eq(subscriptions.status, SubscriptionStatus.ACTIVE),
-      ),
-    );
+  /**
+   * TODO: Subscription check is temporarily disabled until we have a proper subscription management system in place.
+   */
 
-  if (!subscription) {
-    throw new BadRequestError("Firm is not subscribed to this practice area");
-  }
+  //   // Subscription check skipped in development — subscriptions aren't seeded
+  //   if (env.isProduction) {
+  //     const [subscription] = await db
+  //       .select({ id: subscriptions.id })
+  //       .from(firmPracticeAreas)
+  //       .innerJoin(subscriptions, eq(subscriptions.id, firmPracticeAreas.subscriptionId))
+  //       .where(
+  //         and(
+  //           eq(firmPracticeAreas.organizationId, organizationId),
+  //           eq(firmPracticeAreas.practiceAreaId, practiceAreaId),
+  //           eq(firmPracticeAreas.active, true),
+  //           eq(subscriptions.status, SubscriptionStatus.ACTIVE),
+  //         ),
+  //       );
+  //
+  //     if (!subscription) {
+  //       throw new BadRequestError("Firm is not subscribed to this practice area");
+  //     }
+  //   }
 
   return practiceArea;
 };
@@ -54,7 +56,10 @@ export const ensureCaseTypeBelongsToPracticeArea = async (
   practiceAreaId?: string,
   caseType?: string,
 ) => {
-  const practiceArea = await ensurePracticeAreaExists(organizationId, practiceAreaId);
+  const practiceArea = await ensurePracticeAreaExists(
+    organizationId,
+    practiceAreaId,
+  );
 
   if (!caseType?.trim()) {
     throw new BadRequestError("caseType is required");

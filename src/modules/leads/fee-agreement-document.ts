@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../db/client";
 import { consultations } from "../../db/schema/consultations";
 import { feeAgreements } from "../../db/schema/fee-agreements";
-import { leads } from "../../db/schema/leads";
+import { leads, leadsToCaseTypes } from "../../db/schema/leads";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { staff } from "../../db/schema/staff";
 import { FirmInfoService } from "../settings/firm-info/firm-info.service";
@@ -50,15 +50,17 @@ export const assembleFeeAgreementDocument = async (
 
   const [lead] = await db
     .select({
-      name: leads.name,
+      firstName: leads.firstName,
+      lastName: leads.lastName,
       caseTypeName: practiceAreaCaseTypes.name,
       consultationId: leads.consultationId,
-      assignedStaffId: leads.assignedStaffId,
+      assignedStaffId: leads.respondentId,
     })
     .from(leads)
+    .leftJoin(leadsToCaseTypes, eq(leadsToCaseTypes.leadId, leads.id))
     .leftJoin(
       practiceAreaCaseTypes,
-      eq(leads.caseTypeId, practiceAreaCaseTypes.id),
+      eq(practiceAreaCaseTypes.id, leadsToCaseTypes.caseTypeId),
     )
     .where(eq(leads.id, agreement.leadId))
     .limit(1);
@@ -164,7 +166,7 @@ export const assembleFeeAgreementDocument = async (
       email: firm?.firmEmail ?? null,
     },
     attorneyName,
-    client: { name: lead?.name ?? "Client", matterType },
+    client: { name: lead ? `${lead.firstName} ${lead.lastName}` : "Client", matterType },
     feeLines,
     totalDue,
     allocation: { operating, trust, total: operating + trust },

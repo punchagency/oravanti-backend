@@ -24,7 +24,8 @@ export const adversePartyParamsSchema = z.object({
 export const agreementIdParamsSchema = z.object({ agreementId: uuid });
 
 export const createLeadBodySchema = z.object({
-  name: z.string().min(1),
+  firstName: z.string().min(1),
+  lastName: z.string().min(1),
   email: z.string().email(),
   phone: z.string().optional(),
   entityType: z.enum(["individual", "company"]).optional(),
@@ -47,7 +48,8 @@ export const createLeadBodySchema = z.object({
 });
 
 export const updateLeadBodySchema = z.object({
-  name: z.string().min(1).optional(),
+  firstName: z.string().min(1).optional(),
+  lastName: z.string().min(1).optional(),
   email: z.string().email().optional(),
   phone: z.string().optional(),
   practiceAreaId: optionalUuid,
@@ -265,9 +267,7 @@ export const generateFeeAgreementBodySchema = z.object({
 });
 
 export const openCaseBodySchema = z.object({
-  assignedStaffId: optionalUuid,
-  teamId: optionalUuid,
-  notes: z.string().optional(),
+  assignedTeamId: z.string().optional(),
 });
 
 export const updateWorkflowStepBodySchema = z.object({

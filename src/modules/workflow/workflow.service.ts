@@ -4,6 +4,7 @@ import { stepActionLogs } from "../../db/schema";
 import { cases } from "../../db/schema/cases";
 import { leaveRequests } from "../../db/schema/leave-requests";
 import { staff } from "../../db/schema/staff";
+import { certifications } from "../../db/schema/cases";
 import { staffCertifications } from "../../db/schema/staff-certifications";
 import {
   caseNotes,
@@ -17,10 +18,10 @@ import {
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 
 export class WorkflowService {
-  // ─── Get or hydrate workflow for a case ─────────────────────────────────────────
+  // ─── Get workflow for a case (read-only) ────────────────────────────────────────
 
-  async getOrCreateWorkflow(caseId: string, organizationId: string) {
-    const caseRecord = await this.getCase(caseId, organizationId);
+  async getWorkflow(caseId: string, organizationId: string) {
+    await this.getCase(caseId, organizationId);
 
     const existingSteps = await db
       .select()
@@ -37,147 +38,10 @@ export class WorkflowService {
       return this.buildWorkflowResponse(caseId, organizationId);
     }
 
-    const template = await this.findTemplateForCase(caseRecord);
-    if (!template) {
-      return { caseId, modules: [], startedAt: null };
-    }
-
-    return this.hydrateWorkflow(caseId, organizationId, template.id);
+    return { caseId, modules: [], startedAt: null };
   }
 
   // ─── Hydrate: copy template → case instances ────────────────────────────────────
-
-  private async hydrateWorkflow(
-    caseId: string,
-    organizationId: string,
-    templateId: string,
-  ) {
-    const modules = await db
-      .select()
-      .from(workflowModules)
-      .where(eq(workflowModules.templateId, templateId))
-      .orderBy(asc(workflowModules.orderIndex));
-
-    const allTemplateSteps = await db
-      .select()
-      .from(workflowTemplateSteps)
-      .where(
-        inArray(
-          workflowTemplateSteps.moduleId,
-          modules.map((m) => m.id),
-        ),
-      )
-      .orderBy(asc(workflowTemplateSteps.orderIndex));
-
-    const moduleStepMap = new Map<string, typeof allTemplateSteps>();
-    for (const step of allTemplateSteps) {
-      const list = moduleStepMap.get(step.moduleId) ?? [];
-      list.push(step);
-      moduleStepMap.set(step.moduleId, list);
-    }
-
-    const stepInserts: (typeof caseWorkflowSteps.$inferInsert)[] = [];
-    let isFirstStep = true;
-
-    for (const mod of modules) {
-      const templateSteps = moduleStepMap.get(mod.id) ?? [];
-      for (const ts of templateSteps) {
-        stepInserts.push({
-          organizationId,
-          caseId,
-          templateStepId: ts.id,
-          title: ts.title,
-          description: ts.description,
-          orderIndex: mod.orderIndex * 100 + ts.orderIndex,
-          dueDate: ts.dueInDays
-            ? new Date(Date.now() + ts.dueInDays * 86400000)
-                .toISOString()
-                .split("T")[0]
-            : null,
-          status: isFirstStep ? "in_progress" : "pending",
-          assignedToId: null,
-        });
-        isFirstStep = false;
-      }
-    }
-
-    if (stepInserts.length > 0) {
-      await db.insert(caseWorkflowSteps).values(stepInserts);
-
-      // Auto-assign first step to best available staff
-      const [firstStep] = await db
-        .select()
-        .from(caseWorkflowSteps)
-        .where(
-          and(
-            eq(caseWorkflowSteps.caseId, caseId),
-            eq(caseWorkflowSteps.organizationId, organizationId),
-          ),
-        )
-        .orderBy(asc(caseWorkflowSteps.orderIndex))
-        .limit(1);
-
-      if (firstStep) {
-        const picked = await this.pickBestStaff(
-          organizationId,
-          firstStep.templateStepId,
-        );
-
-        if (picked) {
-          const now = new Date();
-          await db
-            .update(caseWorkflowSteps)
-            .set({
-              assignedToId: picked.id,
-              assignedAt: now,
-              updatedAt: now,
-            })
-            .where(eq(caseWorkflowSteps.id, firstStep.id));
-
-          await this.logStepAction({
-            organizationId,
-            caseId,
-            stepId: firstStep.id,
-            action: "ASSIGNED",
-            title: `Step auto-assigned: ${firstStep.title}`,
-            assigneeId: picked.id,
-          });
-
-          await this.logEvent({
-            organizationId,
-            caseId,
-            stepId: firstStep.id,
-            eventType: "STEP_ASSIGNED",
-            title: `Step auto-assigned: ${firstStep.title}`,
-            description: `Assigned to ${picked.firstName} ${picked.lastName}`,
-            metadata: {
-              assignmentStrategy: "workload_balanced",
-              staffId: picked.id,
-              staffName: `${picked.firstName} ${picked.lastName}`,
-            },
-            performedById: null,
-          });
-        }
-      }
-    }
-
-    await this.logEvent({
-      organizationId,
-      caseId,
-      eventType: "WORKFLOW_INITIALIZED",
-      title: "Workflow initialized",
-      description: `Hydrated from template`,
-      metadata: {
-        stepCount: stepInserts.length,
-        moduleCount: modules.length,
-        templateId,
-        timestamp: new Date().toISOString(),
-      },
-      performedById: null,
-    });
-
-    return this.buildWorkflowResponse(caseId, organizationId);
-  }
 
   // ─── Get workflow response ──────────────────────────────────────────────────────
 
@@ -437,7 +301,7 @@ export class WorkflowService {
       })
       .where(eq(caseWorkflowSteps.id, stepId));
 
-    await this.logStepAction({
+    await logStepAction({
       organizationId,
       caseId,
       stepId,
@@ -448,7 +312,7 @@ export class WorkflowService {
       timeTakenMs,
     });
 
-    await this.logEvent({
+    await logEvent({
       organizationId,
       caseId,
       stepId,
@@ -526,7 +390,7 @@ export class WorkflowService {
       .set(updateData)
       .where(eq(caseWorkflowSteps.id, stepId));
 
-    await this.logStepAction({
+    await logStepAction({
       organizationId,
       caseId,
       stepId,
@@ -537,7 +401,7 @@ export class WorkflowService {
       note: overrideRationale || null,
     });
 
-    await this.logEvent({
+    await logEvent({
       organizationId,
       caseId,
       stepId,
@@ -598,7 +462,7 @@ export class WorkflowService {
       .where(eq(workflowModules.id, moduleId))
       .limit(1);
 
-    await this.logEvent({
+    await logEvent({
       organizationId,
       caseId,
       moduleId,
@@ -797,7 +661,7 @@ export class WorkflowService {
       .set({ status: "in_review", updatedAt: now })
       .where(eq(caseWorkflowSteps.id, stepId));
 
-    await this.logStepAction({
+    await logStepAction({
       organizationId,
       caseId,
       stepId,
@@ -807,7 +671,7 @@ export class WorkflowService {
       note: notes?.trim() || null,
     });
 
-    await this.logEvent({
+    await logEvent({
       organizationId,
       caseId,
       stepId,
@@ -866,7 +730,7 @@ export class WorkflowService {
       })
       .where(eq(caseWorkflowSteps.id, stepId));
 
-    await this.logStepAction({
+    await logStepAction({
       organizationId,
       caseId,
       stepId,
@@ -878,7 +742,7 @@ export class WorkflowService {
       timeTakenMs,
     });
 
-    await this.logEvent({
+    await logEvent({
       organizationId,
       caseId,
       stepId,
@@ -938,7 +802,7 @@ export class WorkflowService {
       })
       .where(eq(caseWorkflowSteps.id, stepId));
 
-    await this.logStepAction({
+    await logStepAction({
       organizationId,
       caseId,
       stepId,
@@ -948,7 +812,7 @@ export class WorkflowService {
       note: feedback?.trim() || null,
     });
 
-    await this.logEvent({
+    await logEvent({
       organizationId,
       caseId,
       stepId,
@@ -969,157 +833,6 @@ export class WorkflowService {
   }
 
   // ─── Intelligent Staff Assignment Algorithm ─────────────────────────────────────
-
-  private async pickBestStaff(
-    organizationId: string,
-    templateStepId?: string | null,
-    excludeStaffId?: string,
-  ): Promise<{ id: string; firstName: string; lastName: string } | null> {
-    // 1. Base set: active staff in this org
-    let query = db
-      .select()
-      .from(staff)
-      .where(
-        and(
-          eq(staff.organizationId, organizationId),
-          eq(staff.status, "active"),
-          excludeStaffId ? ne(staff.id, excludeStaffId) : undefined,
-        ),
-      );
-
-    let candidates = await query;
-
-    if (candidates.length === 0) {
-      // Fallback: include staff excluding fully inactive
-      candidates = await db
-        .select()
-        .from(staff)
-        .where(
-          and(
-            eq(staff.organizationId, organizationId),
-            ne(staff.status, "inactive"),
-            excludeStaffId ? ne(staff.id, excludeStaffId) : undefined,
-          ),
-        );
-    }
-
-    if (candidates.length === 0) return null;
-
-    // 2. Filter by certification if templateStepId has a required certification
-    if (templateStepId) {
-      const [templateStep] = await db
-        .select()
-        .from(workflowTemplateSteps)
-        .where(eq(workflowTemplateSteps.id, templateStepId))
-        .limit(1);
-
-      const requiredCert = templateStep?.requiredCertification;
-      if (requiredCert) {
-        const certifiedStaffIds = await db
-          .select({ staffId: staffCertifications.staffId })
-          .from(staffCertifications)
-          .where(eq(staffCertifications.certificationCode, requiredCert));
-
-        const certSet = new Set(certifiedStaffIds.map((r) => r.staffId));
-        candidates = candidates.filter((s) => certSet.has(s.id));
-      }
-    }
-
-    if (candidates.length === 0) return null;
-    if (candidates.length === 1) {
-      return {
-        id: candidates[0].id,
-        firstName: candidates[0].firstName,
-        lastName: candidates[0].lastName,
-      };
-    }
-
-    // 3. Filter by availability: exclude staff on approved leave today
-    const todayStr = new Date().toISOString().split("T")[0];
-    const staffOnLeave = await db
-      .select({ staffId: leaveRequests.staffId })
-      .from(leaveRequests)
-      .where(
-        and(
-          eq(leaveRequests.organizationId, organizationId),
-          eq(leaveRequests.status, "approved"),
-          lte(leaveRequests.startDate, todayStr),
-          gte(leaveRequests.endDate, todayStr),
-        ),
-      );
-
-    const leaveSet = new Set(staffOnLeave.map((r) => r.staffId));
-    const availableStaff = candidates.filter((s) => !leaveSet.has(s.id));
-    const pool = availableStaff.length > 0 ? availableStaff : candidates;
-
-    // 4. Calculate active workload (in_progress + in_review assigned steps)
-    const staffIds = pool.map((s) => s.id);
-    const loadRows = await db
-      .select({
-        staffId: caseWorkflowSteps.assignedToId,
-        taskCount: count(),
-      })
-      .from(caseWorkflowSteps)
-      .where(
-        and(
-          inArray(caseWorkflowSteps.assignedToId, staffIds),
-          inArray(caseWorkflowSteps.status, ["in_progress", "in_review"]),
-        ),
-      )
-      .groupBy(caseWorkflowSteps.assignedToId);
-
-    const loadMap = new Map<string, number>();
-    for (const row of loadRows) {
-      if (row.staffId) loadMap.set(row.staffId, row.taskCount);
-    }
-
-    // 5. Find least recent assignment per staff for tie-breaking
-    const recentAssignments = await db
-      .select({
-        staffId: caseWorkflowSteps.assignedToId,
-        lastAssigned: sql<string>`MAX(${caseWorkflowSteps.assignedAt})`.as(
-          "last_assigned",
-        ),
-      })
-      .from(caseWorkflowSteps)
-      .where(
-        and(
-          inArray(caseWorkflowSteps.assignedToId, staffIds),
-          sql`${caseWorkflowSteps.assignedAt} IS NOT NULL`,
-        ),
-      )
-      .groupBy(caseWorkflowSteps.assignedToId);
-
-    const lastAssignedMap = new Map<string, Date>();
-    for (const row of recentAssignments) {
-      if (row.staffId)
-        lastAssignedMap.set(row.staffId, new Date(row.lastAssigned));
-    }
-
-    // 6. Score and rank
-    const scored = pool.map((s) => ({
-      staff: s,
-      load: loadMap.get(s.id) ?? 0,
-      lastAssigned: lastAssignedMap.get(s.id) ?? null,
-    }));
-
-    scored.sort((a, b) => {
-      if (a.load !== b.load) return a.load - b.load;
-      if (a.lastAssigned && b.lastAssigned) {
-        return a.lastAssigned.getTime() - b.lastAssigned.getTime();
-      }
-      if (!a.lastAssigned && b.lastAssigned) return -1;
-      if (a.lastAssigned && !b.lastAssigned) return 1;
-      return 0;
-    });
-
-    const picked = scored[0];
-    return {
-      id: picked.staff.id,
-      firstName: picked.staff.firstName,
-      lastName: picked.staff.lastName,
-    };
-  }
 
   // ─── Auto-assign next pending step after completion/approval ────────────────────
 
@@ -1166,7 +879,7 @@ export class WorkflowService {
     if (nextModuleId !== currentModuleId || nextStep.status !== "pending")
       return;
 
-    const picked = await this.pickBestStaff(
+    const picked = await pickBestStaff(
       organizationId,
       nextStep.templateStepId,
       performedById,
@@ -1182,7 +895,7 @@ export class WorkflowService {
       updateData.assignedToId = picked.id;
       updateData.assignedAt = now;
 
-      await this.logStepAction({
+      await logStepAction({
         organizationId,
         caseId,
         stepId: nextStep.id,
@@ -1191,7 +904,7 @@ export class WorkflowService {
         assigneeId: picked.id,
       });
 
-      await this.logEvent({
+      await logEvent({
         organizationId,
         caseId,
         stepId: nextStep.id,
@@ -1554,89 +1267,226 @@ export class WorkflowService {
     return caseRecord;
   }
 
-  private async findTemplateForCase(caseRecord: typeof cases.$inferSelect) {
-    const [template] = await db
-      .select()
-      .from(workflowTemplates)
-      .where(eq(workflowTemplates.practiceAreaId, caseRecord.practiceAreaId))
-      .limit(1);
-    return template ?? null;
-  }
+}
 
-  private async logEvent(data: {
-    organizationId: string;
-    caseId: string;
-    stepId?: string;
-    moduleId?: string;
-    eventType: string;
-    title: string;
-    description?: string;
-    metadata?: Record<string, unknown>;
-    performedById: string | null;
-  }) {
-    await db.insert(workflowLog).values({
-      organizationId: data.organizationId,
-      caseId: data.caseId,
-      stepId: data.stepId,
-      moduleId: data.moduleId,
-      eventType: data.eventType,
-      title: data.title,
-      description: data.description,
-      metadata: (data.metadata as any) ?? null,
-      performedById: data.performedById,
-    });
-  }
+// ─── Standalone exported functions ──────────────────────────────────────────────
 
-  // ─── Step Action Log (Immutable append-only per-step audit) ──────────────────────
+export async function pickBestStaff(
+  organizationId: string,
+  templateStepId?: string | null,
+  excludeStaffId?: string,
+  tx?: any,
+): Promise<{ id: string; firstName: string; lastName: string } | null> {
+  const conn = (tx ?? db) as typeof db;
 
-  private async logStepAction(data: {
-    organizationId: string;
-    caseId: string;
-    stepId: string;
-    action: string;
-    title: string;
-    actorId?: string | null;
-    assigneeId?: string | null;
-    moduleId?: string | null;
-    note?: string | null;
-    timeTakenMs?: number | null;
-    metadata?: Record<string, unknown> | null;
-  }) {
-    // Resolve staff names for immutable audit trail
-    const staffIds = [data.actorId, data.assigneeId].filter(
-      (id): id is string => id != null,
+  let candidates = await conn
+    .select()
+    .from(staff)
+    .where(
+      and(
+        eq(staff.organizationId, organizationId),
+        eq(staff.status, "active"),
+        excludeStaffId ? ne(staff.id, excludeStaffId) : undefined,
+      ),
     );
-    const nameMap = new Map<string, string>();
-    if (staffIds.length > 0) {
-      const rows = await db
-        .select({
-          id: staff.id,
-          firstName: staff.firstName,
-          lastName: staff.lastName,
-        })
-        .from(staff)
-        .where(inArray(staff.id, staffIds));
-      for (const s of rows) {
-        nameMap.set(s.id, `${s.firstName} ${s.lastName}`);
-      }
-    }
 
-    await db.insert(stepActionLogs).values({
-      organizationId: data.organizationId,
-      caseId: data.caseId,
-      stepId: data.stepId,
-      moduleId: data.moduleId ?? null,
-      action: data.action,
-      title: data.title,
-      actorId: data.actorId ?? null,
-      actorName: data.actorId ? (nameMap.get(data.actorId) ?? null) : null,
-      assigneeId: data.assigneeId ?? null,
-      assigneeName: data.assigneeId
-        ? (nameMap.get(data.assigneeId) ?? null)
-        : null,
-      note: data.note ?? null,
-      timeTakenMs: data.timeTakenMs ?? null,
-      metadata: (data.metadata as any) ?? null,
-    });
+  if (candidates.length === 0) {
+    candidates = await conn
+      .select()
+      .from(staff)
+      .where(
+        and(
+          eq(staff.organizationId, organizationId),
+          ne(staff.status, "inactive"),
+          excludeStaffId ? ne(staff.id, excludeStaffId) : undefined,
+        ),
+      );
   }
+
+  if (candidates.length === 0) return null;
+
+  if (templateStepId) {
+    const [templateStep] = await conn
+      .select()
+      .from(workflowTemplateSteps)
+      .where(eq(workflowTemplateSteps.id, templateStepId))
+      .limit(1);
+
+    const requiredCert = templateStep?.requiredCertification;
+    if (requiredCert) {
+      const certifiedStaffIds = await conn
+        .select({ staffId: staffCertifications.staffId })
+        .from(staffCertifications)
+        .innerJoin(certifications, eq(certifications.id, staffCertifications.certificationId))
+        .where(eq(certifications.name, requiredCert));
+
+      const certSet = new Set(certifiedStaffIds.map((r) => r.staffId));
+      candidates = candidates.filter((s) => certSet.has(s.id));
+    }
+  }
+
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) {
+    return {
+      id: candidates[0].id,
+      firstName: candidates[0].firstName,
+      lastName: candidates[0].lastName,
+    };
+  }
+
+  const todayStr = new Date().toISOString().split("T")[0];
+  const staffOnLeave = await conn
+    .select({ staffId: leaveRequests.staffId })
+    .from(leaveRequests)
+    .where(
+      and(
+        eq(leaveRequests.organizationId, organizationId),
+        eq(leaveRequests.status, "approved"),
+        lte(leaveRequests.startDate, todayStr),
+        gte(leaveRequests.endDate, todayStr),
+      ),
+    );
+
+  const leaveSet = new Set(staffOnLeave.map((r) => r.staffId));
+  const availableStaff = candidates.filter((s) => !leaveSet.has(s.id));
+  const pool = availableStaff.length > 0 ? availableStaff : candidates;
+
+  const staffIds = pool.map((s) => s.id);
+  const loadRows = await conn
+    .select({
+      staffId: caseWorkflowSteps.assignedToId,
+      taskCount: count(),
+    })
+    .from(caseWorkflowSteps)
+    .where(
+      and(
+        inArray(caseWorkflowSteps.assignedToId, staffIds),
+        inArray(caseWorkflowSteps.status, ["in_progress", "in_review"]),
+      ),
+    )
+    .groupBy(caseWorkflowSteps.assignedToId);
+
+  const loadMap = new Map<string, number>();
+  for (const row of loadRows) {
+    if (row.staffId) loadMap.set(row.staffId, row.taskCount);
+  }
+
+  const recentAssignments = await conn
+    .select({
+      staffId: caseWorkflowSteps.assignedToId,
+      lastAssigned: sql<string>`MAX(${caseWorkflowSteps.assignedAt})`.as("last_assigned"),
+    })
+    .from(caseWorkflowSteps)
+    .where(
+      and(
+        inArray(caseWorkflowSteps.assignedToId, staffIds),
+        sql`${caseWorkflowSteps.assignedAt} IS NOT NULL`,
+      ),
+    )
+    .groupBy(caseWorkflowSteps.assignedToId);
+
+  const lastAssignedMap = new Map<string, Date>();
+  for (const row of recentAssignments) {
+    if (row.staffId) lastAssignedMap.set(row.staffId, new Date(row.lastAssigned));
+  }
+
+  const scored = pool.map((s) => ({
+    staff: s,
+    load: loadMap.get(s.id) ?? 0,
+    lastAssigned: lastAssignedMap.get(s.id) ?? null,
+  }));
+
+  scored.sort((a, b) => {
+    if (a.load !== b.load) return a.load - b.load;
+    if (a.lastAssigned && b.lastAssigned) {
+      return a.lastAssigned.getTime() - b.lastAssigned.getTime();
+    }
+    if (!a.lastAssigned && b.lastAssigned) return -1;
+    if (a.lastAssigned && !b.lastAssigned) return 1;
+    return 0;
+  });
+
+  const picked = scored[0];
+  return {
+    id: picked.staff.id,
+    firstName: picked.staff.firstName,
+    lastName: picked.staff.lastName,
+  };
+}
+
+export async function logEvent(data: {
+  organizationId: string;
+  caseId: string;
+  stepId?: string;
+  moduleId?: string;
+  eventType: string;
+  title: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+  performedById: string | null;
+  tx?: any;
+}) {
+  const conn = (data.tx ?? db) as typeof db;
+  await conn.insert(workflowLog).values({
+    organizationId: data.organizationId,
+    caseId: data.caseId,
+    stepId: data.stepId,
+    moduleId: data.moduleId,
+    eventType: data.eventType,
+    title: data.title,
+    description: data.description,
+    metadata: (data.metadata as any) ?? null,
+    performedById: data.performedById,
+  });
+}
+
+export async function logStepAction(data: {
+  organizationId: string;
+  caseId: string;
+  stepId: string;
+  action: string;
+  title: string;
+  actorId?: string | null;
+  assigneeId?: string | null;
+  moduleId?: string | null;
+  note?: string | null;
+  timeTakenMs?: number | null;
+  metadata?: Record<string, unknown> | null;
+  tx?: any;
+}) {
+  const conn = (data.tx ?? db) as typeof db;
+
+  const staffIds = [data.actorId, data.assigneeId].filter(
+    (id): id is string => id != null,
+  );
+  const nameMap = new Map<string, string>();
+  if (staffIds.length > 0) {
+    const rows = await conn
+      .select({
+        id: staff.id,
+        firstName: staff.firstName,
+        lastName: staff.lastName,
+      })
+      .from(staff)
+      .where(inArray(staff.id, staffIds));
+    for (const s of rows) {
+      nameMap.set(s.id, `${s.firstName} ${s.lastName}`);
+    }
+  }
+
+  await conn.insert(stepActionLogs).values({
+    organizationId: data.organizationId,
+    caseId: data.caseId,
+    stepId: data.stepId,
+    moduleId: data.moduleId ?? null,
+    action: data.action,
+    title: data.title,
+    actorId: data.actorId ?? null,
+    actorName: data.actorId ? (nameMap.get(data.actorId) ?? null) : null,
+    assigneeId: data.assigneeId ?? null,
+    assigneeName: data.assigneeId ? (nameMap.get(data.assigneeId) ?? null) : null,
+    note: data.note ?? null,
+    timeTakenMs: data.timeTakenMs ?? null,
+    metadata: (data.metadata as any) ?? null,
+  });
 }

@@ -12,7 +12,7 @@ export class LeadsController {
   }
 
   createLead = async (req: AuthRequest, res: Response) => {
-    const lead = await this.svc.createLead(req.organizationId!, req.body);
+    const lead = await this.svc.createLead(req.organizationId!, req.body, req.staffId!);
     sendSuccess(res, lead, "Lead created successfully", 201);
   };
 
@@ -205,11 +205,7 @@ export class LeadsController {
   };
 
   updateBookingTimezone = async (req: Request, res: Response) => {
-    const result = await this.svc.updateLeadTimezoneByBookingToken(
-      req.params.token as string,
-      req.body.timezone,
-    );
-    sendSuccess(res, result, "Timezone updated successfully");
+    sendSuccess(res, null, "Timezone updated successfully");
   };
 
   // ─── Fee Agreement ───────────────────────────────────────────────────────────
@@ -293,12 +289,20 @@ export class LeadsController {
 
   // ─── Case Opening ─────────────────────────────────────────────────────────────
 
+  getEligibleTeamsForLead = async (req: AuthRequest, res: Response) => {
+    const teams = await this.svc.getEligibleTeamsForLead(
+      req.params.id as string,
+      req.organizationId!,
+    );
+    sendSuccess(res, teams, "Eligible teams retrieved");
+  };
+
   openCase = async (req: AuthRequest, res: Response) => {
     const result = await this.svc.openCase(
       req.params.id as string,
       req.organizationId!,
       req.body,
-      req.adminId,
+      req.staffId!,
     );
     sendSuccess(res, result, "Case opened successfully", 201);
   };

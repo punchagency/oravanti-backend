@@ -12,9 +12,9 @@ export class WorkflowController {
     this.workflowService = workflowService;
   }
 
-  getOrCreateWorkflow = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getWorkflow = asyncWrap(async (req: AuthRequest, res: Response) => {
     const caseId = req.params.caseId as string;
-    const result = await this.workflowService.getOrCreateWorkflow(
+    const result = await this.workflowService.getWorkflow(
       caseId,
       req.organizationId!,
     );
@@ -135,8 +135,6 @@ export class WorkflowController {
   // ─── My Tasks ───────────────────────────────────────────────────────────────────
 
   getMyTasks = asyncWrap(async (req: AuthRequest, res: Response) => {
-    console.log(req.staffId);
-
     if (!req.staffId) {
       sendSuccess(res, [], "My tasks retrieved successfully", 200, { pagination: { total: 0, limit: 10, offset: 0 } });
       return;
