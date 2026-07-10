@@ -10,10 +10,7 @@ export type SendAuthLinkEmailOptions = {
 };
 
 export type VerificationOTPType =
-  | "sign-in"
-  | "email-verification"
-  | "forget-password"
-  | "change-email";
+  "sign-in" | "email-verification" | "forget-password" | "change-email";
 
 export type SendVerificationOTPOptions = {
   email: string;
@@ -94,7 +91,7 @@ export abstract class BaseEmailService {
 }
 
 export const EMAIL_CONFIG = {
-  fromAddress: "noreply@fluxstride.com",
+  fromAddress: "noreply@staging.oravanti.com",
   verificationSubject: "Verify Your Email Address",
   passwordResetSubject: "Reset Your Password",
   verificationExpireTime: "30 minutes",
@@ -152,7 +149,9 @@ export const generatePasswordResetOTPTemplate = (otp: string): string => `
   <p>This OTP will expire in ${EMAIL_CONFIG.otpExpireTime}.</p>
 `;
 
-export const generateChangeEmailVerificationTemplate = (otp: string): string => `
+export const generateChangeEmailVerificationTemplate = (
+  otp: string,
+): string => `
   <p>We received a request to change your email address. Please use the OTP below to verify your new email address:</p>
   <p>Your OTP for changing email is: <strong>${otp}</strong></p>
   <p>This OTP will expire in ${EMAIL_CONFIG.otpExpireTime}.</p>
