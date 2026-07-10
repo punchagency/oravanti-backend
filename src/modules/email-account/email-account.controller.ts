@@ -1,5 +1,5 @@
-import { Request, Response } from "express";
 import { fromNodeHeaders } from "better-auth/node";
+import { Request, Response } from "express";
 import { auth } from "../../auth";
 import { db } from "../../db/client";
 import { connectedEmailAccount } from "../../db/schema/email";
@@ -24,11 +24,18 @@ export class EmailAccountController {
       throw new BadRequestError("A valid email address is required.");
     }
 
-    await this.emailAccountService.ensureEmailNotDuplicated(email, organizationId);
+    await this.emailAccountService.ensureEmailNotDuplicated(
+      email,
+      organizationId,
+    );
 
     const provider = await this.emailAccountService.identifyProvider(email);
 
-    sendSuccess(res, { email, provider }, "Email provider classified successfully");
+    sendSuccess(
+      res,
+      { email, provider },
+      "Email provider classified successfully",
+    );
   });
 
   connectCustomAuto = asyncWrap(async (req: Request, res: Response) => {
@@ -36,13 +43,18 @@ export class EmailAccountController {
     const userId = (req as any).userId;
     const organizationId = (req as any).organizationId;
 
-    const discoveryResult = await this.emailAccountService.attemptCustomAutoDiscovery(
-      email,
-      password,
-    );
+    const discoveryResult =
+      await this.emailAccountService.attemptCustomAutoDiscovery(
+        email,
+        password,
+      );
 
     if (!discoveryResult.success || !discoveryResult.settings) {
-      res.status(200).json({ success: false, error: "Unable to auto-detect server settings.", fallbackToManualForm: true });
+      res.status(200).json({
+        success: false,
+        error: "Unable to auto-detect server settings.",
+        fallbackToManualForm: true,
+      });
       return;
     }
 
@@ -74,7 +86,11 @@ export class EmailAccountController {
       customSettings,
     });
 
-    sendSuccess(res, null, "Custom email account verified and saved via auto-discovery.");
+    sendSuccess(
+      res,
+      null,
+      "Custom email account verified and saved via auto-discovery.",
+    );
   });
 
   connectCustomManual = asyncWrap(async (req: Request, res: Response) => {
@@ -134,7 +150,11 @@ export class EmailAccountController {
       },
     });
 
-    sendSuccess(res, null, "Custom server verified and manually mapped successfully.");
+    sendSuccess(
+      res,
+      null,
+      "Custom server verified and manually mapped successfully.",
+    );
   });
 
   list = asyncWrap(async (req: Request, res: Response) => {
@@ -145,16 +165,27 @@ export class EmailAccountController {
     const validStatus =
       status === "active" || status === "disabled" ? status : undefined;
 
-    const emailAccounts = await this.emailAccountService.listEmailAccounts(userId, organizationId, validStatus);
+    const emailAccounts = await this.emailAccountService.listEmailAccounts(
+      userId,
+      organizationId,
+      validStatus,
+    );
 
-    sendSuccess(res, emailAccounts, "Connected email accounts retrieved successfully.");
+    sendSuccess(
+      res,
+      emailAccounts,
+      "Connected email accounts retrieved successfully.",
+    );
   });
 
   enable = asyncWrap(async (req: Request, res: Response) => {
     const { id } = req.params;
     const organizationId = (req as any).organizationId;
 
-    await this.emailAccountService.enableEmailAccount(String(id), organizationId);
+    await this.emailAccountService.enableEmailAccount(
+      String(id),
+      organizationId,
+    );
 
     sendSuccess(res, null, "Email account enabled successfully.");
   });
@@ -163,7 +194,10 @@ export class EmailAccountController {
     const { id } = req.params;
     const organizationId = (req as any).organizationId;
 
-    await this.emailAccountService.disableEmailAccount(String(id), organizationId);
+    await this.emailAccountService.disableEmailAccount(
+      String(id),
+      organizationId,
+    );
 
     sendSuccess(res, null, "Email account disabled successfully.");
   });
@@ -173,7 +207,10 @@ export class EmailAccountController {
     const organizationId = (req as any).organizationId;
 
     // Find the account before deleting so we can unlink the social connection
-    const account = await this.emailAccountService.findEmailAccount(String(id), organizationId);
+    const account = await this.emailAccountService.findEmailAccount(
+      String(id),
+      organizationId,
+    );
 
     if (account && account.provider !== "custom" && account.providerAccountId) {
       try {
@@ -190,17 +227,23 @@ export class EmailAccountController {
       }
     }
 
-    await this.emailAccountService.deleteEmailAccount(String(id), organizationId);
+    await this.emailAccountService.deleteEmailAccount(
+      String(id),
+      organizationId,
+    );
 
     sendSuccess(res, null, "Email account deleted permanently.");
   });
 
-  private buildOAuthRedirect = async (req: Request, provider: "google" | "microsoft") => {
+  private buildOAuthRedirect = async (
+    req: Request,
+    provider: "google" | "microsoft",
+  ) => {
     const frontendUrl = this.emailAccountService.getFrontendUrl();
-    const callbackURL = new URL("/admin/settings/email-accounts", frontendUrl);
+    const callbackURL = new URL("/settings/email-accounts", frontendUrl);
     callbackURL.searchParams.set("oauth", "success");
 
-    const errorURL = new URL("/admin/settings/email-accounts", frontendUrl);
+    const errorURL = new URL("/settings/email-accounts", frontendUrl);
     errorURL.searchParams.set("oauth", "error");
 
     const { url } = await auth.api.linkSocialAccount({
