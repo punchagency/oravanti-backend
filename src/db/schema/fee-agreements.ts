@@ -12,25 +12,64 @@ import { practiceAreaCaseTypes } from "./practice-area-case-types";
 import { practiceAreas } from "./practice-areas";
 
 // Structured fee-agreement form data captured before generation.
+// Every field added after the initial release is optional so that rows
+// generated before it deserialize unchanged and render byte-identically.
 export type FeeAgreementDetails = {
   attorneyFee: {
     // "contingency" = pure contingency: no upfront attorney fee, only a
     // percentage of the settlement.
     type: "flat" | "hourly" | "flat_hourly" | "contingency";
+    // Flat total, or the initial retainer for flat_hourly.
     flatRate?: number;
     hourlyRate?: number;
+    // Estimated hours for hourly agreements (summary/prose only; billing
+    // remains actual-hours).
+    estimatedHours?: number;
     // Settlement percentage, combinable with any type; required when
     // type === "contingency". 0 < x <= 100.
     contingencyPercent?: number;
   };
+  // Present only on contingency agreements created by the wizard.
+  contingencyTerms?: {
+    coversCaseCosts: boolean;
+    coversExpertWitnessFees: boolean;
+    ifLost: "client_owes_nothing" | "client_reimburses_hard_costs";
+    // Server-stamped ISO timestamp of when the attorney checked all three
+    // ABA Rule 1.5(c) confirmation boxes in the wizard.
+    abaConfirmedAt: string;
+  };
   governmentFees: { name: string; amount: number }[];
+  // "Other costs & disbursements" (operating account). Only rows the attorney
+  // included are persisted.
+  otherCosts?: { name: string; amount: number }[];
   // Who fronts government fees. Absent on old rows → treated as "client_upfront".
   governmentFeesPaidBy?: "client_upfront" | "firm_advanced";
   paymentPlan: "pay_in_full" | "two_payments" | "installments";
+  // Concrete schedules — present iff the matching paymentPlan was chosen.
+  twoPaymentsSchedule?: {
+    // First payment is due at signing.
+    firstAmount: number;
+    secondAmount: number;
+    secondDueDate: string; // date-only "YYYY-MM-DD"
+  };
+  installmentSchedule?: {
+    monthlyAmount: number;
+    numberOfPayments: number; // months
+    firstPaymentDate: string; // date-only "YYYY-MM-DD"
+  };
+  // How payments are applied between attorney fees and costs. The costs share
+  // is always derived as 100 − customFeePercent, never stored.
+  paymentAllocation?: {
+    order: "fees_first" | "costs_first" | "custom";
+    customFeePercent?: number;
+  };
   applyConsultationCredit: boolean;
   accountSplit: { operating: number; trust: number };
   consultationFeeAmount: number | null;
   docRef: string;
+  // The one field mutated after generation: staff marked the upfront payment
+  // received (case-opening gate for non-contingency agreements).
+  paymentReceivedAt?: string;
 };
 
 export const feeAgreementGeneratedFromEnum = pgEnum(

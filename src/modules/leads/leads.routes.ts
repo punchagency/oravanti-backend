@@ -296,6 +296,24 @@ export class AgreementsRouter {
       validateRequest({ params: v.agreementIdParamsSchema }),
       ctrl.markFeeAgreementReceived,
     );
+
+    this.router.post(
+      "/:agreementId/mark-payment-received",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.agreementIdParamsSchema }),
+      ctrl.markFeeAgreementPaymentReceived,
+    );
+
+    this.router.post(
+      "/:agreementId/discard",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.agreementIdParamsSchema }),
+      ctrl.discardDraftFeeAgreement,
+    );
   }
 }
 

@@ -256,6 +256,22 @@ export class LeadsController {
     res.json({ success: true, data: result });
   };
 
+  markFeeAgreementPaymentReceived = async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.markFeeAgreementPaymentReceived(
+      req.params.agreementId as string,
+      req.organizationId!,
+    );
+    res.json({ success: true, data: result });
+  };
+
+  discardDraftFeeAgreement = async (req: AuthRequest, res: Response) => {
+    const result = await this.svc.discardDraftFeeAgreement(
+      req.params.agreementId as string,
+      req.organizationId!,
+    );
+    res.json({ success: true, data: result });
+  };
+
   // ─── Embedded signing session (public, token-gated) ─────────────────────────
 
   getEmbeddedSignSession = async (req: Request, res: Response) => {

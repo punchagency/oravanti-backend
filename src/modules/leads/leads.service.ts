@@ -760,6 +760,11 @@ const advanceLeadStage = async (
             "Fee agreement must be signed before opening a case",
           );
         }
+        if (!feeAgreementPaymentSatisfied(fa.details)) {
+          throw new ConflictError(
+            "Payment must be received before opening a case",
+          );
+        }
       }
     }
   }
@@ -2714,6 +2719,18 @@ const cancelConsultation = async (
 
 // ─── Fee Agreement ─────────────────────────────────────────────────────────────
 
+// True when the case-opening payment requirement is met. Contingency
+// agreements never require an upfront payment; legacy rows without details
+// predate payment tracking and are never blocked. FEE_PAYMENT_GATE_BYPASS is
+// the dev-only escape hatch (forced off in production).
+const feeAgreementPaymentSatisfied = (
+  details: FeeAgreementDetails | null | undefined,
+): boolean =>
+  env.FEE_PAYMENT_GATE_BYPASS ||
+  !details ||
+  details.attorneyFee.type === "contingency" ||
+  Boolean(details.paymentReceivedAt);
+
 const generateFeeAgreement = async (
   leadId: string,
   organizationId: string,
@@ -2721,9 +2738,18 @@ const generateFeeAgreement = async (
     agreementType?: string;
     generatedFrom?: "questionnaire_auto" | "manual";
     attorneyFee: FeeAgreementDetails["attorneyFee"];
+    // Wire shape: abaConfirmed flag instead of the server-stamped timestamp.
+    contingencyTerms?: Omit<
+      NonNullable<FeeAgreementDetails["contingencyTerms"]>,
+      "abaConfirmedAt"
+    > & { abaConfirmed: true };
     governmentFees?: FeeAgreementDetails["governmentFees"];
+    otherCosts?: FeeAgreementDetails["otherCosts"];
     governmentFeesPaidBy?: FeeAgreementDetails["governmentFeesPaidBy"];
     paymentPlan?: FeeAgreementDetails["paymentPlan"];
+    twoPaymentsSchedule?: FeeAgreementDetails["twoPaymentsSchedule"];
+    installmentSchedule?: FeeAgreementDetails["installmentSchedule"];
+    paymentAllocation?: FeeAgreementDetails["paymentAllocation"];
     applyConsultationCredit?: boolean;
     accountSplit?: FeeAgreementDetails["accountSplit"];
   },
@@ -2786,9 +2812,33 @@ const generateFeeAgreement = async (
 
   const details: FeeAgreementDetails = {
     attorneyFee: data.attorneyFee,
+    ...(data.contingencyTerms
+      ? {
+          contingencyTerms: {
+            coversCaseCosts: data.contingencyTerms.coversCaseCosts,
+            coversExpertWitnessFees:
+              data.contingencyTerms.coversExpertWitnessFees,
+            ifLost: data.contingencyTerms.ifLost,
+            // Stamped server-side; the client only sends the confirmation flag.
+            abaConfirmedAt: new Date().toISOString(),
+          },
+        }
+      : {}),
     governmentFees: data.governmentFees ?? [],
+    ...(data.otherCosts?.length ? { otherCosts: data.otherCosts } : {}),
     governmentFeesPaidBy: data.governmentFeesPaidBy ?? "client_upfront",
     paymentPlan: data.paymentPlan ?? "pay_in_full",
+    // Schedules persist only when they match the chosen plan; anything else
+    // sent by a stale client is dropped.
+    ...(data.paymentPlan === "two_payments" && data.twoPaymentsSchedule
+      ? { twoPaymentsSchedule: data.twoPaymentsSchedule }
+      : {}),
+    ...(data.paymentPlan === "installments" && data.installmentSchedule
+      ? { installmentSchedule: data.installmentSchedule }
+      : {}),
+    ...(data.paymentAllocation
+      ? { paymentAllocation: data.paymentAllocation }
+      : {}),
     applyConsultationCredit: data.applyConsultationCredit ?? false,
     accountSplit: data.accountSplit ?? { operating: 0, trust: 0 },
     consultationFeeAmount,
@@ -2819,6 +2869,53 @@ const generateFeeAgreement = async (
 
   const document = await assembleFeeAgreementDocument(agreement, organizationId);
   return { agreement, document };
+};
+
+// Discard a drafted agreement so it can be reconfigured and regenerated.
+// Drafts only: nothing has been dispatched yet (no envelope, no signing token,
+// no uploaded PDF), so the row is hard-deleted and the lead's pointer cleared —
+// generateFeeAgreement's one-agreement-per-lead guard then allows a fresh one.
+const discardDraftFeeAgreement = async (
+  agreementId: string,
+  organizationId: string,
+) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+  if (agreement.status !== "draft")
+    throw new BadRequestError(
+      "Only draft agreements can be discarded — this one has already been sent",
+    );
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(leads)
+      .set({ feeAgreementId: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(leads.id, agreement.leadId),
+          eq(leads.feeAgreementId, agreementId),
+        ),
+      );
+    await tx.delete(feeAgreements).where(eq(feeAgreements.id, agreementId));
+  });
+
+  // The stored config is returned so the client can seed the wizard with it.
+  return {
+    discarded: true,
+    agreementId,
+    leadId: agreement.leadId,
+    details: agreement.details,
+  };
 };
 
 // Dispatch a drafted agreement: mint the e-signature envelope, email the client
@@ -2946,12 +3043,72 @@ const markFeeAgreementReceived = async (
       .where(eq(feeAgreements.id, agreementId));
   }
 
-  await db
-    .update(leads)
-    .set({ pipelineStage: "case_opening", updatedAt: now })
-    .where(eq(leads.id, agreement.leadId));
+  // Advance only once the payment gate is also satisfied; otherwise the lead
+  // stays in the consultation stage, whose agreement card offers the
+  // "Mark payment received" action.
+  if (feeAgreementPaymentSatisfied(agreement.details)) {
+    await db
+      .update(leads)
+      .set({ pipelineStage: "case_opening", updatedAt: now })
+      .where(eq(leads.id, agreement.leadId));
+  }
 
   return { received: true, agreementId, leadId: agreement.leadId };
+};
+
+// Staff records that the client's upfront payment was received. This is the
+// payment half of the case-opening gate for non-contingency agreements; when
+// the agreement is already signed, recording payment auto-advances the lead.
+// Allowed from any non-voided status — firms often collect payment at signing.
+const markFeeAgreementPaymentReceived = async (
+  agreementId: string,
+  organizationId: string,
+) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+  if (agreement.status === "voided")
+    throw new BadRequestError("A voided agreement cannot be marked as paid");
+  if (!agreement.details)
+    throw new BadRequestError("This agreement predates payment tracking");
+
+  // Idempotent: repeat calls keep the original timestamp.
+  let paymentReceivedAt = agreement.details.paymentReceivedAt ?? null;
+  const now = new Date();
+  if (!paymentReceivedAt) {
+    paymentReceivedAt = now.toISOString();
+    await db
+      .update(feeAgreements)
+      .set({
+        details: { ...agreement.details, paymentReceivedAt },
+        updatedAt: now,
+      })
+      .where(eq(feeAgreements.id, agreementId));
+  }
+
+  // Payment was the last missing gate condition once signed.
+  if (agreement.status === "signed") {
+    await db
+      .update(leads)
+      .set({ pipelineStage: "case_opening", updatedAt: now })
+      .where(eq(leads.id, agreement.leadId));
+  }
+
+  return {
+    paymentReceived: true,
+    agreementId,
+    leadId: agreement.leadId,
+    paymentReceivedAt,
+  };
 };
 
 const getFeeAgreement = async (leadId: string, organizationId: string) => {
@@ -3161,11 +3318,15 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
       })
       .where(eq(feeAgreements.id, agreement.id));
 
-    // Auto-advance lead to case_opening.
-    await db
-      .update(leads)
-      .set({ pipelineStage: "case_opening", updatedAt: now })
-      .where(eq(leads.id, agreement.leadId));
+    // Auto-advance the lead to case_opening only when the payment gate is also
+    // satisfied; otherwise it stays in the consultation stage until staff mark
+    // the payment received.
+    if (feeAgreementPaymentSatisfied(agreement.details)) {
+      await db
+        .update(leads)
+        .set({ pipelineStage: "case_opening", updatedAt: now })
+        .where(eq(leads.id, agreement.leadId));
+    }
 
     return { processed: true, agreementId: agreement.id };
   }
@@ -3233,6 +3394,11 @@ const openCase = async (
     if (!fa || fa.status !== "signed") {
       throw new ConflictError(
         "Fee agreement must be signed before opening a case",
+      );
+    }
+    if (!feeAgreementPaymentSatisfied(fa.details)) {
+      throw new ConflictError(
+        "Payment must be received before opening a case",
       );
     }
   }
@@ -3590,9 +3756,11 @@ export class LeadsService {
   payConsultationFee = payConsultationFee;
   selectConsultationSlot = selectConsultationSlot;
   generateFeeAgreement = generateFeeAgreement;
+  discardDraftFeeAgreement = discardDraftFeeAgreement;
   getFeeAgreementPreview = getFeeAgreementPreview;
   sendFeeAgreement = sendFeeAgreement;
   markFeeAgreementReceived = markFeeAgreementReceived;
+  markFeeAgreementPaymentReceived = markFeeAgreementPaymentReceived;
   getFeeAgreement = getFeeAgreement;
   nudgeClient = nudgeClient;
   getEmbeddedSignSession = getEmbeddedSignSession;

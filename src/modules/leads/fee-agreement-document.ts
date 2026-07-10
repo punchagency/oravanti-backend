@@ -36,6 +36,29 @@ export type FeeAgreementDocument = {
   // True when nothing is due upfront (pure contingency + no client-paid
   // government fees) — renderers hide the payment plan / account allocation.
   noUpfrontDue: boolean;
+  // Wizard-era fields — all null on agreements generated before the 3-step
+  // wizard, so every renderer branch keyed on them is a no-op for old rows.
+  estimatedHours: number | null;
+  twoPaymentsSchedule: {
+    firstAmount: number;
+    secondAmount: number;
+    secondDueDate: string; // "YYYY-MM-DD"
+  } | null;
+  installmentSchedule: {
+    monthlyAmount: number;
+    numberOfPayments: number;
+    firstPaymentDate: string; // "YYYY-MM-DD"
+  } | null;
+  paymentAllocation: {
+    order: "fees_first" | "costs_first" | "custom";
+    customFeePercent: number | null;
+  } | null;
+  contingencyTerms: {
+    coversCaseCosts: boolean;
+    coversExpertWitnessFees: boolean;
+    ifLost: "client_owes_nothing" | "client_reimburses_hard_costs";
+    abaConfirmedAt: string;
+  } | null;
 };
 
 // Assembles the dynamic data for the fee-agreement preview document. The static
@@ -104,8 +127,13 @@ export const assembleFeeAgreementDocument = async (
     if (af.type === "flat") {
       feeLines.push({ description: `Legal services — ${matterType}`, amount: flat });
     } else if (af.type === "hourly") {
+      // Estimated hours only appear on wizard-era agreements; older rows keep
+      // the original description verbatim.
       feeLines.push({
-        description: `Legal services (billed at $${hourly}/hr) — ${matterType}`,
+        description:
+          af.estimatedHours != null
+            ? `Legal services (billed at $${hourly}/hr, estimated ${af.estimatedHours} hours) — ${matterType}`
+            : `Legal services (billed at $${hourly}/hr) — ${matterType}`,
         amount: 0,
       });
     } else if (af.type === "flat_hourly") {
@@ -138,6 +166,19 @@ export const assembleFeeAgreementDocument = async (
       description: govDeferred ? `${name} — advanced by firm` : name,
       amount: g.amount,
       ...(govDeferred ? { deferred: true } : {}),
+    });
+  }
+  // Other costs & disbursements (wizard-era; absent on old rows). Under a
+  // contingency arrangement the firm advances them, so they defer like
+  // firm-advanced government fees and feed the same Advanced-costs section.
+  const otherDeferred = af?.type === "contingency";
+  for (const c of details?.otherCosts ?? []) {
+    feeLines.push({
+      description: otherDeferred
+        ? `${c.name} — other costs, advanced by firm`
+        : `${c.name} — other costs`,
+      amount: c.amount,
+      ...(otherDeferred ? { deferred: true } : {}),
     });
   }
   const totalDue = feeLines
@@ -174,5 +215,15 @@ export const assembleFeeAgreementDocument = async (
     contingencyPercent,
     governmentFeesPaidBy,
     noUpfrontDue,
+    estimatedHours: af?.estimatedHours ?? null,
+    twoPaymentsSchedule: details?.twoPaymentsSchedule ?? null,
+    installmentSchedule: details?.installmentSchedule ?? null,
+    paymentAllocation: details?.paymentAllocation
+      ? {
+          order: details.paymentAllocation.order,
+          customFeePercent: details.paymentAllocation.customFeePercent ?? null,
+        }
+      : null,
+    contingencyTerms: details?.contingencyTerms ?? null,
   };
 };
