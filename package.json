@@ -20,7 +20,8 @@
     "db:studio": "drizzle-kit studio",
     "db:push": "drizzle-kit push",
     "auth:generate": "auth generate --output ./src/db/schema/auth-schema.ts --yes",
-    "db:clear": "tsx src/db/clear-all.ts"
+    "db:clear": "tsx src/db/clear-all.ts",
+    "db:reset": "tsx src/db/reset.ts"
   },
   "repository": {
     "type": "git",
