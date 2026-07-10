@@ -30,7 +30,7 @@ import {
 } from "./db/schema/auth-schema";
 import { calendarEvents } from "./db/schema/calendar-events";
 import { cases } from "./db/schema/cases";
-import { certifications } from "./db/schema/certifications";
+import { certifications } from "./db/schema/cases";
 import { clientCompanies } from "./db/schema/client-companies";
 import { clientContacts } from "./db/schema/client-contacts";
 import { clientRequests } from "./db/schema/client-requests";
@@ -49,7 +49,7 @@ import {
 } from "./db/schema/documents";
 import { feeAgreements } from "./db/schema/fee-agreements";
 import { firmPracticeAreas } from "./db/schema/firm-practice-areas";
-import { leads } from "./db/schema/leads";
+import { leads, leadsToPracticeAreas } from "./db/schema/leads";
 import { leaveRequests } from "./db/schema/leave-requests";
 import { paralegalProfiles } from "./db/schema/paralegal-profiles";
 import { practiceAreaCaseTypes } from "./db/schema/practice-area-case-types";
@@ -74,7 +74,7 @@ import { staffCertifications } from "./db/schema/staff-certifications";
 import { subscriptions, SubscriptionStatus } from "./db/schema/subscriptions";
 import { tasks } from "./db/schema/tasks";
 import { teamMembers } from "./db/schema/team-members";
-import { teams } from "./db/schema/teams";
+
 import { timeEntries } from "./db/schema/time-entries";
 import {
   caseWorkflowSteps,
@@ -162,7 +162,7 @@ type NewLeaveRequestRow = typeof leaveRequests.$inferInsert;
 type NewParalegalProfileRow = typeof paralegalProfiles.$inferInsert;
 type NewTaskRow = typeof tasks.$inferInsert;
 type NewTimeEntryRow = typeof timeEntries.$inferInsert;
-type NewTeamRow = typeof teams.$inferInsert;
+type NewTeamRow = typeof team.$inferInsert;
 type FirmRow = {
   id: string;
   firmName: string;
@@ -1096,11 +1096,13 @@ const filingTypes = [
   "I-131",
 ] as const;
 const caseStatuses = [
+  "pre_litigation",
   "active",
-  "pending_review",
   "on_hold",
-  "completed",
-  "cancelled",
+  "appeals",
+  "closed",
+  "pre_filing",
+  "dismissed",
 ] as const;
 const casePriorities = ["low", "medium", "high", "critical"] as const;
 const documentCategories = [
@@ -1425,18 +1427,18 @@ const seedDemoData = async (organizationId?: string) => {
     }
 
     const certificationRows: CertificationRow[] = [];
-    for (const [code, name, level] of DEMO_CERTIFICATIONS) {
+    for (const [, name, level] of DEMO_CERTIFICATIONS) {
       let [certification] = await tx
         .select()
         .from(certifications)
-        .where(eq(certifications.code, code))
+        .where(eq(certifications.name, name))
         .limit(1);
 
       if (!certification) {
         [certification] = await tx
           .insert(certifications)
           .values({
-            code,
+            organizationId: firm.id,
             name,
             level,
             description: `Demo certification for ${name.toLowerCase()}.`,
@@ -1565,8 +1567,8 @@ const seedDemoData = async (organizationId?: string) => {
         createdStaff.flatMap((staffMember, staffIndex) =>
           range(3).map((offset) => ({
             staffId: staffMember.id,
-            certificationCode: pick(certificationRows, staffIndex + offset)
-              .code,
+            certificationId: pick(certificationRows, staffIndex + offset)
+              .id,
             certifiedAt: isoDateFromNow(-365 + staffIndex * 7 + offset),
           })),
         ),
@@ -1593,6 +1595,7 @@ const seedDemoData = async (organizationId?: string) => {
       id: randomUUID(),
       organizationId: firm.id,
       name: `Demo ${pick(practiceAreaRows, index).name} Team ${suffix}-${pad(index + 1)}`,
+      createdAt: new Date(),
       leadId: pick(createdStaff, index + 1).id,
       description: `Demo team handling ${pick(practiceAreaRows, index).name.toLowerCase()} workflows.`,
       maxCaseload: 35 + (index % 5) * 5,
@@ -1601,7 +1604,7 @@ const seedDemoData = async (organizationId?: string) => {
         index % 8 === 0 ? "full" : index % 9 === 0 ? "overloaded" : "available",
       activeCases: 2 + (index % 12),
     }));
-    const createdTeams = await tx.insert(teams).values(teamValues).returning();
+    const createdTeams = await tx.insert(team).values(teamValues).returning();
 
     const createdTeamMembers = await tx
       .insert(teamMembers)
@@ -1643,6 +1646,9 @@ const seedDemoData = async (organizationId?: string) => {
           organizationId: firm.id,
           entityType: "company" as const,
           displayName: `Demo ${pick(industries, index)} Company ${suffix}-${pad(index + 1)}`,
+          firstName: `Demo ${pick(industries, index)} Company`,
+          lastName: `${suffix}-${pad(index + 1)}`,
+          email: `company.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
           status: (index % 13 === 0 ? "inactive" : "active") as
             | "active"
             | "inactive",
@@ -1719,8 +1725,7 @@ const seedDemoData = async (organizationId?: string) => {
           ({
             organizationId: firm.id,
             clientId: clientEntity.id,
-            role: "primary" as const,
-            isPrimary: true,
+            type: "corporate_representative" as const,
             firstName: pick(firstNames, index + 2),
             lastName: pick(lastNames, index + 2),
             email: `company.contact.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
@@ -1756,7 +1761,10 @@ const seedDemoData = async (organizationId?: string) => {
         clientValues: {
           organizationId: firm.id,
           entityType,
+          firstName,
+          lastName,
           displayName,
+          email: `client.${firstName.toLowerCase()}.${lastName.toLowerCase()}.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
           status: (index % 17 === 0
             ? "pending"
             : index % 19 === 0
@@ -1780,8 +1788,7 @@ const seedDemoData = async (organizationId?: string) => {
           ({
             organizationId: firm.id,
             clientId: client.id,
-            role: "primary" as const,
-            isPrimary: true,
+            type: "primary_client" as const,
             firstName: clientData[index].firstName,
             lastName: clientData[index].lastName,
             email: `client.${clientData[index].firstName.toLowerCase()}.${clientData[index].lastName.toLowerCase()}.${suffix}.${pad(index + 1)}@${DEMO_EMAIL_DOMAIN}`,
@@ -1809,22 +1816,14 @@ const seedDemoData = async (organizationId?: string) => {
             clientId: client.id,
             practiceAreaId: practiceArea.id,
             caseTypeId: caseType.id,
-            caseType: caseType.code,
             status: pick(caseStatuses, index),
             priority: pick(casePriorities, index + 1),
-            assignmentType:
-              index % 5 === 0 ? "external_contractor" : "internal_team",
-            teamId: team.id,
-            assignedStaffId: assignedStaff.id,
-            requiredCertifications: [pick(certificationRows, index).code],
+            assignedTeamId: team.id,
             caseProgress: (index * 7) % 100,
             filingDate: isoDateFromNow(-90 + index),
             estimatedCompletionDate: isoDateFromNow(45 + index),
-            nextAppointment: isoDateFromNow(7 + (index % 30)),
             description: `Demo ${practiceArea.name.toLowerCase()} case for ${client.displayName}.`,
-            notes: `Generated demo matter ${pad(index + 1)} for workflow coverage.`,
-            createdByAdminId: firmAdmin.id,
-            createdByStaffId: assignedStaff.id,
+            openedById: assignedStaff.id,
           };
         }),
       )
@@ -1995,7 +1994,7 @@ const seedDemoData = async (organizationId?: string) => {
       priority: pick(casePriorities, index),
       status: pick(taskStatuses, index),
       progress: (index * 9) % 100,
-      requiredCertifications: [pick(certificationRows, index).code],
+      requiredCertifications: [pick(certificationRows, index).name],
     }));
     const createdTasks = await tx.insert(tasks).values(taskValues).returning();
 
@@ -2113,17 +2112,16 @@ const seedDemoData = async (organizationId?: string) => {
         .insert(leads)
         .values({
           organizationId: firm.id,
-          name: `${firstName} ${lastName}`,
+          firstName,
+          lastName,
           email,
           phone: `+1-555-${pad(4100 + index, 4)}`,
           entityType: "individual",
-          practiceAreaId: practiceArea.id,
-          caseTypeId: caseType.id,
           source: pick(leadSources, index),
           situationSummary: `Demo intake for ${practiceArea.name.toLowerCase()} matters.`,
           status: pick(["new", "new", "reviewed", "archived"] as const, index),
           pipelineStage,
-          assignedStaffId: assignedStaff.id,
+          respondentId: assignedStaff.id,
         } satisfies NewLeadRow)
         .returning();
 
@@ -2836,7 +2834,8 @@ const deletePracticeAreas = async (ids: readonly string[]) => {
     const leadRows = await tx
       .select({ id: leads.id })
       .from(leads)
-      .where(inArray(leads.practiceAreaId, areaIds));
+      .innerJoin(leadsToPracticeAreas, eq(leadsToPracticeAreas.leadId, leads.id))
+      .where(inArray(leadsToPracticeAreas.practiceAreaId, areaIds));
     const leadIds = leadRows.map((r) => r.id);
 
     const ctqRows = caseTypeIds.length
@@ -3132,21 +3131,17 @@ const browseCases = async () => {
       status: cases.status,
       priority: cases.priority,
       caseProgress: cases.caseProgress,
-      assignmentType: cases.assignmentType,
+      assignmentDate: cases.assignmentDate,
       filingDate: cases.filingDate,
       estimatedCompletionDate: cases.estimatedCompletionDate,
-      nextAppointment: cases.nextAppointment,
       description: cases.description,
-      notes: cases.notes,
       createdAt: cases.createdAt,
       updatedAt: cases.updatedAt,
       firmName: organizations.name,
       practiceAreaName: practiceAreas.name,
       caseTypeName: practiceAreaCaseTypes.name,
       clientName: clients.displayName,
-      assignedStaffFirstName: staff.firstName,
-      assignedStaffLastName: staff.lastName,
-      teamName: teams.name,
+      teamName: team.name,
     })
     .from(cases)
     .innerJoin(organizations, eq(organizations.id, cases.organizationId))
@@ -3156,8 +3151,7 @@ const browseCases = async () => {
       eq(practiceAreaCaseTypes.id, cases.caseTypeId),
     )
     .innerJoin(clients, eq(clients.id, cases.clientId))
-    .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
-    .leftJoin(teams, eq(teams.id, cases.teamId))
+    .leftJoin(team, eq(team.id, cases.assignedTeamId))
     .where(eq(cases.id, selectedCaseId))
     .limit(1);
 
@@ -3165,11 +3159,6 @@ const browseCases = async () => {
     note("Case not found.");
     return;
   }
-
-  const assignedStaff =
-    detail.assignedStaffFirstName && detail.assignedStaffLastName
-      ? `${detail.assignedStaffFirstName} ${detail.assignedStaffLastName}`
-      : "—";
 
   note(
     [
@@ -3181,14 +3170,11 @@ const browseCases = async () => {
       `Status:               ${detail.status}`,
       `Priority:             ${detail.priority}`,
       `Progress:             ${detail.caseProgress}%`,
-      `Assignment Type:      ${detail.assignmentType}`,
-      `Assigned Staff:       ${assignedStaff}`,
+      `Assignment Date:      ${detail.assignmentDate ? detail.assignmentDate.toISOString() : "—"}`,
       `Team:                 ${detail.teamName ?? "—"}`,
       `Filing Date:          ${detail.filingDate}`,
       `Est. Completion:      ${detail.estimatedCompletionDate ?? "—"}`,
-      `Next Appointment:     ${detail.nextAppointment ?? "—"}`,
       `Description:          ${detail.description}`,
-      `Notes:                ${detail.notes ?? "—"}`,
       `Created:              ${detail.createdAt.toISOString()}`,
       `Updated:              ${detail.updatedAt.toISOString()}`,
     ].join("\n"),

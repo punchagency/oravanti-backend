@@ -1,5 +1,7 @@
 import { and, desc, eq, ilike, sql } from "drizzle-orm";
 import { db } from "../../db/client";
+import { team } from "../../db/schema/auth-schema";
+import { caseWorkflowSteps } from "../../db/schema/workflow";
 import { cases } from "../../db/schema/cases";
 import { clientContacts } from "../../db/schema/client-contacts";
 import { clients } from "../../db/schema/clients";
@@ -75,7 +77,7 @@ export const getAllCases = async (
         clientContacts,
         and(
           eq(clientContacts.clientId, clients.id),
-          eq(clientContacts.isPrimary, true),
+          eq(clientContacts.type, "primary_client"),
         ),
       )
       .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
@@ -87,7 +89,7 @@ export const getAllCases = async (
         practiceAreaSubcategories,
         eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
       )
-      .leftJoin(staff, eq(staff.id, cases.assignedStaffId));
+      .leftJoin(team, eq(team.id, cases.assignedTeamId));
 
   const conditions: ReturnType<typeof sql>[] = [
     eq(cases.organizationId, organizationId),
@@ -98,7 +100,7 @@ export const getAllCases = async (
   }
 
   if (filters?.assigneeId) {
-    conditions.push(eq(cases.assignedStaffId, filters.assigneeId));
+    conditions.push(eq(cases.assignedTeamId, filters.assigneeId));
   }
 
   if (filters?.clientId) {
@@ -158,10 +160,21 @@ export const getAllCases = async (
       practiceAreaSubcategories,
       eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
     )
-    .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
+    .leftJoin(team, eq(team.id, cases.assignedTeamId))
     .where(and(...conditions));
 
   const total = Number(count);
+
+  const currentStepSubquery = sql<string>`
+    (
+      SELECT ${caseWorkflowSteps.title}
+      FROM ${caseWorkflowSteps}
+      WHERE ${caseWorkflowSteps.caseId} = ${cases.id}
+        AND ${caseWorkflowSteps.status} NOT IN ('completed', 'skipped')
+      ORDER BY ${caseWorkflowSteps.orderIndex}
+      LIMIT 1
+    )
+  `;
 
   const columnSelection = {
     id: cases.id,
@@ -169,7 +182,7 @@ export const getAllCases = async (
     practiceAreaId: practiceAreas.id,
     practiceAreaName: practiceAreas.name,
     caseTypeId: practiceAreaCaseTypes.id,
-    caseType: cases.caseType,
+    caseTypeCode: practiceAreaCaseTypes.code,
     caseTypeName: practiceAreaCaseTypes.name,
     caseNumberPrefix: practiceAreaCaseTypes.caseNumberPrefix,
     caseTypeJurisdiction: practiceAreaCaseTypes.jurisdiction,
@@ -179,13 +192,14 @@ export const getAllCases = async (
     status: cases.status,
     priority: cases.priority,
     filingDate: cases.filingDate,
+    createdAt: cases.createdAt,
+    estimatedCompletionDate: cases.estimatedCompletionDate,
     caseProgress: cases.caseProgress,
     clientId: clients.id,
     clientDisplayName: clients.displayName,
-    assignedStaffId: staff.id,
-    assigneeFirstName: staff.firstName,
-    assigneeLastName: staff.lastName,
-    assigneeRole: staff.jobTitle,
+    assignedTeamId: team.id,
+    assigneeName: team.name,
+    currentStep: currentStepSubquery,
   } as const;
 
   const rows = await db
@@ -196,7 +210,7 @@ export const getAllCases = async (
       clientContacts,
       and(
         eq(clientContacts.clientId, clients.id),
-        eq(clientContacts.isPrimary, true),
+        eq(clientContacts.type, "primary_client"),
       ),
     )
     .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
@@ -208,7 +222,7 @@ export const getAllCases = async (
       practiceAreaSubcategories,
       eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
     )
-    .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
+    .leftJoin(team, eq(team.id, cases.assignedTeamId))
     .where(and(...conditions))
     .orderBy(desc(cases.createdAt))
     .limit(limit)
@@ -223,40 +237,57 @@ export const getAllCases = async (
     },
     caseType: {
       id: r.caseTypeId,
-      code: r.caseType,
+      code: r.caseTypeCode,
       name: r.caseTypeName,
-      caseNumberPrefix: r.caseNumberPrefix,
-      jurisdiction: r.caseTypeJurisdiction,
-      subcategory: r.subcategoryId
-        ? {
-            id: r.subcategoryId,
-            code: r.subcategoryCode,
-            name: r.subcategoryName,
-          }
-        : null,
     },
     status: r.status,
-    priority: r.priority,
-    filingDate: r.filingDate,
-    caseProgress: r.caseProgress,
+    createdAt: r.createdAt,
+    estimatedCompletionDate: r.estimatedCompletionDate,
     client: {
       id: r.clientId,
       name: r.clientDisplayName ?? "",
     },
-    assignee: r.assigneeFirstName
+    assignedTeam: r.assigneeName
       ? {
-          name: `${r.assigneeFirstName} ${r.assigneeLastName}`,
-          role: r.assigneeRole,
+          id: r.assignedTeamId,
+          name: r.assigneeName,
         }
       : null,
+    currentStep: r.currentStep ?? null,
   }));
 
   return { data, pagination: { total, limit, offset } };
 };
 
 export const getCaseById = async (id: string, organizationId: string) => {
+  const currentStepSubquery = sql<string>`
+    (
+      SELECT ${caseWorkflowSteps.title}
+      FROM ${caseWorkflowSteps}
+      WHERE ${caseWorkflowSteps.caseId} = ${cases.id}
+        AND ${caseWorkflowSteps.status} NOT IN ('completed', 'skipped')
+      ORDER BY ${caseWorkflowSteps.orderIndex}
+      LIMIT 1
+    )
+  `;
+
   const [row] = await db
-    .select()
+    .select({
+      id: cases.id,
+      caseNumber: cases.caseNumber,
+      status: cases.status,
+      createdAt: cases.createdAt,
+      estimatedCompletionDate: cases.estimatedCompletionDate,
+      clientId: clients.id,
+      clientName: clients.displayName,
+      practiceAreaId: practiceAreas.id,
+      practiceAreaName: practiceAreas.name,
+      caseTypeId: practiceAreaCaseTypes.id,
+      caseTypeName: practiceAreaCaseTypes.name,
+      assignedTeamId: team.id,
+      assignedTeamName: team.name,
+      currentStep: currentStepSubquery,
+    })
     .from(cases)
     .leftJoin(clients, eq(clients.id, cases.clientId))
     .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
@@ -264,13 +295,24 @@ export const getCaseById = async (id: string, organizationId: string) => {
       practiceAreaCaseTypes,
       eq(practiceAreaCaseTypes.id, cases.caseTypeId),
     )
-    .leftJoin(
-      practiceAreaSubcategories,
-      eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
-    )
-    .leftJoin(staff, eq(staff.id, cases.assignedStaffId))
-    .where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)));
-  return row ?? null;
+    .leftJoin(team, eq(team.id, cases.assignedTeamId))
+    .where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)))
+    .limit(1);
+
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    caseNumber: row.caseNumber,
+    status: row.status,
+    createdAt: row.createdAt,
+    estimatedCompletionDate: row.estimatedCompletionDate,
+    client: row.clientName ? { id: row.clientId, name: row.clientName } : null,
+    practiceArea: row.practiceAreaName ? { id: row.practiceAreaId, name: row.practiceAreaName } : null,
+    caseType: row.caseTypeName ? { id: row.caseTypeId, name: row.caseTypeName } : null,
+    assignedTeam: row.assignedTeamName ? { id: row.assignedTeamId, name: row.assignedTeamName } : null,
+    currentStep: row.currentStep ?? null,
+  };
 };
 
 export const createCase = async (
@@ -281,14 +323,10 @@ export const createCase = async (
     caseType: string;
     caseNumber?: string;
     priority?: string;
-    assignmentType?: string;
-    teamId?: string;
-    assignedStaffId?: string;
-    requiredCertifications?: string[];
+    assignedTeamId?: string;
     filingDate: string;
     estimatedCompletionDate?: string;
     description: string;
-    notes?: string;
     leadId?: string;
   },
   creator?: { adminId?: string; staffId?: string },
@@ -315,19 +353,13 @@ export const createCase = async (
       clientId: data.clientId,
       practiceAreaId: data.practiceAreaId,
       caseTypeId: resolvedCaseType.caseType.id,
-      caseType: data.caseType as any,
       priority: (data.priority ?? "medium") as any,
-      assignmentType: data.assignmentType ?? "internal_team",
-      teamId: data.teamId,
-      assignedStaffId: data.assignedStaffId,
-      requiredCertifications: data.requiredCertifications ?? [],
-      filingDate: data.filingDate,
+      assignedTeamId: data.assignedTeamId ?? "",
+      filingDate: data.filingDate ?? null,
       estimatedCompletionDate: data.estimatedCompletionDate,
       description: data.description,
-      notes: data.notes,
       leadId: data.leadId,
-      createdByAdminId: creator?.adminId,
-      createdByStaffId: creator?.staffId,
+      openedById: creator?.adminId ?? creator?.staffId ?? "",
     })
     .returning();
 
@@ -339,11 +371,11 @@ export const updateCase = async (
   organizationId: string,
   data: Partial<typeof cases.$inferInsert>,
 ) => {
-  if (data.practiceAreaId || data.caseType) {
+  if (data.practiceAreaId || data.caseTypeId) {
     const [existing] = await db
       .select({
         practiceAreaId: cases.practiceAreaId,
-        caseType: cases.caseType,
+        caseTypeId: cases.caseTypeId,
       })
       .from(cases)
       .where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)))
@@ -351,12 +383,7 @@ export const updateCase = async (
 
     if (!existing) return null;
 
-    const resolvedCaseType = await ensureCaseTypeBelongsToPracticeArea(
-      organizationId,
-      data.practiceAreaId ?? existing.practiceAreaId,
-      data.caseType ?? existing.caseType,
-    );
-    data.caseTypeId = resolvedCaseType.caseType.id;
+    data.caseTypeId = data.caseTypeId ?? existing.caseTypeId;
   }
 
   const [updated] = await db

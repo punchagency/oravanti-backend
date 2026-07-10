@@ -58,7 +58,7 @@ export class CertificationGatesService {
         .values(
           certificationCodes.map((code) => ({
             organizationId,
-            certificationCode: code,
+            certificationId: code,
           })),
         );
     }
@@ -75,7 +75,7 @@ export class CertificationGatesService {
           .from(staffCertifications)
           .where(eq(staffCertifications.staffId, paralegal.staffId));
 
-        const heldCodes = held.map((c) => c.certificationCode);
+        const heldCodes = held.map((c) => c.certificationId);
         const meetsAll = certificationCodes.every((req) =>
           heldCodes.includes(req),
         );

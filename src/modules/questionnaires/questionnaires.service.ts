@@ -6,7 +6,7 @@ import { formatWithZone } from "../../utils/date";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 import { cases } from "../../db/schema/cases";
 import { conflictChecks } from "../../db/schema/conflict-checks";
-import { leads } from "../../db/schema/leads";
+import { leads, leadsToCaseTypes } from "../../db/schema/leads";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import {
   caseTypeQuestionnaires,
@@ -701,17 +701,19 @@ export class QuestionnairesService {
     const rows = await db
       .select({
         id: leads.id,
-        name: leads.name,
+        firstName: leads.firstName,
+        lastName: leads.lastName,
         email: leads.email,
-        caseTypeId: leads.caseTypeId,
+        caseTypeId: leadsToCaseTypes.caseTypeId,
         caseTypeName: practiceAreaCaseTypes.name,
         conflictStatus: conflictChecks.status,
         supervisorOverrideById: conflictChecks.supervisorOverrideById,
       })
       .from(leads)
+      .leftJoin(leadsToCaseTypes, eq(leadsToCaseTypes.leadId, leads.id))
       .leftJoin(
         practiceAreaCaseTypes,
-        eq(practiceAreaCaseTypes.id, leads.caseTypeId),
+        eq(practiceAreaCaseTypes.id, leadsToCaseTypes.caseTypeId),
       )
       .leftJoin(conflictChecks, eq(conflictChecks.id, leads.conflictCheckId))
       .where(
@@ -732,7 +734,7 @@ export class QuestionnairesService {
       )
       .map((r) => ({
         id: r.id,
-        name: r.name,
+        name: `${r.firstName} ${r.lastName}`,
         email: r.email,
         caseTypeId: r.caseTypeId,
         caseTypeName: r.caseTypeName,
@@ -1067,7 +1069,7 @@ export class QuestionnairesService {
           .sendEmail({
             to: lead.email,
             subject: "Outstanding documents for your intake",
-            html: `<p>Dear ${lead.name},</p>
+            html: `<p>Dear ${lead.firstName},</p>
               <p>To continue with your intake, we still need the following document(s):</p>
               <ul>${missing.map((label) => `<li>${label}</li>`).join("")}</ul>
               <p>Please upload them using your intake questionnaire link. If you have

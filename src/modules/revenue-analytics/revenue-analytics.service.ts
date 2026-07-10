@@ -1,7 +1,7 @@
 import { and, eq, gte, inArray, lte, sum } from "drizzle-orm";
 import { db } from "../../db/client";
 import { teamMembers } from "../../db/schema";
-import { certifications } from "../../db/schema/certifications";
+import { certifications } from "../../db/schema/cases";
 import { staff } from "../../db/schema/staff";
 import { staffCertifications } from "../../db/schema/staff-certifications";
 import { timeEntries } from "../../db/schema/time-entries";
@@ -170,7 +170,7 @@ async function fetchSkillLevelByStaff(
     .from(staffCertifications)
     .innerJoin(
       certifications,
-      eq(certifications.code, staffCertifications.certificationCode),
+      eq(certifications.id, staffCertifications.certificationId),
     )
     .where(inArray(staffCertifications.staffId, staffIds));
 

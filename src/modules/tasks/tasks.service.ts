@@ -85,7 +85,7 @@ export class TasksService {
     updatedAt: tasks.updatedAt,
     caseId: cases.id,
     caseNumber: cases.caseNumber,
-    caseType: cases.caseType,
+    caseTypeId: cases.caseTypeId,
     clientId: clients.id,
     clientDisplayName: clients.displayName,
     assignedToId: staff.id,
@@ -118,7 +118,7 @@ export class TasksService {
     case: {
       id: r.caseId,
       caseNumber: r.caseNumber,
-      caseType: r.caseType,
+      caseType: r.caseTypeId,
     },
     client: {
       id: r.clientId,

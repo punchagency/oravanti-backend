@@ -57,7 +57,7 @@ export const sendQuestionnaireReminder = async (
     .sendEmail({
       to: lead.email,
       subject: "Reminder: please complete your intake questionnaire",
-      html: `<p>Dear ${lead.name},</p>
+      html: `<p>Dear ${lead.firstName},</p>
         <p>This is a friendly reminder to complete your intake questionnaire.</p>
         <p>If you have misplaced your link, please contact your attorney's office.</p>`,
     })

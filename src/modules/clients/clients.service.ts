@@ -1,5 +1,6 @@
 import {
   and,
+  asc,
   count,
   countDistinct,
   desc,
@@ -10,7 +11,7 @@ import {
 } from "drizzle-orm";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
-import { certifications } from "../../db/schema/certifications";
+import { certifications } from "../../db/schema/cases";
 import { clientCompanies } from "../../db/schema/client-companies";
 import { clientContacts } from "../../db/schema/client-contacts";
 import { clients } from "../../db/schema/clients";
@@ -53,7 +54,7 @@ export const getAllClients = async (
       clientContacts,
       and(
         eq(clientContacts.clientId, clients.id),
-        eq(clientContacts.isPrimary, true),
+        eq(clientContacts.type, 'primary_client'),
       ),
     )
     .where(
@@ -101,7 +102,7 @@ export const getClientById = async (id: string, organizationId: string) => {
         eq(clientContacts.organizationId, organizationId),
       ),
     )
-    .orderBy(desc(clientContacts.isPrimary));
+    .orderBy(asc(clientContacts.type));
 
   const [company] = await db
     .select()
@@ -147,7 +148,7 @@ export const getClientContacts = async (clientId: string, organizationId: string
         eq(clientContacts.organizationId, organizationId),
       ),
     )
-    .orderBy(desc(clientContacts.isPrimary));
+    .orderBy(asc(clientContacts.type));
 };
 
 export const addClientContact = async (
@@ -194,7 +195,7 @@ export const deleteClientContact = async (
   const contacts = await getClientContacts(clientId, organizationId);
   const target = contacts.find((c) => c.id === contactId);
   if (!target) throw new NotFoundError("Contact not found");
-  if (target.isPrimary && contacts.length === 1) {
+  if (target.type === 'primary_client' && contacts.length === 1) {
     throw new ConflictError("Cannot remove the only primary contact");
   }
   await db
@@ -280,7 +281,7 @@ export const getCertifications = async () => {
   return rows.reduce(
     (acc, row) => {
       if (!acc[row.level]) acc[row.level] = [];
-      acc[row.level].push({ code: row.code, name: row.name });
+      acc[row.level].push({ code: row.id, name: row.name });
       return acc;
     },
     {} as Record<string, { code: string; name: string }[]>,
