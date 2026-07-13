@@ -1546,6 +1546,7 @@ const seedDemoData = async (organizationId?: string) => {
         .values({
           organizationId: firm.id,
           userId: authUser.id,
+          email,
           firstName,
           lastName,
           phone,
@@ -3645,7 +3646,8 @@ const runInteractive = async () => {
       }
 
       if (action === "seed-pi-cases") {
-        await seedPICases();
+        const firm = await resolveFirm();
+        if (firm) await seedPICases(firm.id);
       }
 
       if (action === "staff-availability") {
@@ -3817,7 +3819,7 @@ const staffTeamsCommand = program
   .command("seed-staff-teams")
   .description("Seed staff members and teams for an organization")
   .argument("[organizationId]", "Organization id")
-  .action(seedStaffAndTeams);
+  .action(async (organizationId?: string) => { await seedStaffAndTeams(organizationId); });
 
 const workflowTemplateCommand = program
   .command("seed-workflow-template")

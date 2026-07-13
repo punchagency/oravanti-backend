@@ -21,7 +21,7 @@ export class WorkflowService {
   // ─── Get workflow for a case (read-only) ────────────────────────────────────────
 
   async getWorkflow(caseId: string, organizationId: string) {
-    await this.getCase(caseId, organizationId);
+    const caseRecord = await this.getCase(caseId, organizationId);
 
     const existingSteps = await db
       .select()
@@ -38,7 +38,17 @@ export class WorkflowService {
       return this.buildWorkflowResponse(caseId, organizationId);
     }
 
-    return { caseId, modules: [], startedAt: null };
+    if (!caseRecord.practiceAreaId) {
+      return { caseId, modules: [], startedAt: null };
+    }
+
+    await hydrateCaseWorkflow({
+      organizationId,
+      caseId,
+      practiceAreaId: caseRecord.practiceAreaId,
+    });
+
+    return this.buildWorkflowResponse(caseId, organizationId);
   }
 
   // ─── Hydrate: copy template → case instances ────────────────────────────────────
@@ -1412,6 +1422,153 @@ export async function pickBestStaff(
     firstName: picked.staff.firstName,
     lastName: picked.staff.lastName,
   };
+}
+
+// ─── Hydrate case workflow from template ──────────────────────────────────────
+
+export async function hydrateCaseWorkflow(data: {
+  organizationId: string;
+  caseId: string;
+  practiceAreaId: string;
+  tx?: any;
+}): Promise<{
+  workflowSteps: (typeof caseWorkflowSteps.$inferSelect)[];
+  template: (typeof workflowTemplates.$inferSelect) | null;
+}> {
+  const conn = (data.tx ?? db) as typeof db;
+
+  const [template] = await conn
+    .select()
+    .from(workflowTemplates)
+    .where(eq(workflowTemplates.practiceAreaId, data.practiceAreaId))
+    .limit(1);
+
+  if (!template) return { workflowSteps: [], template: null };
+
+  const modules = await conn
+    .select()
+    .from(workflowModules)
+    .where(eq(workflowModules.templateId, template.id))
+    .orderBy(asc(workflowModules.orderIndex));
+
+  const allTemplateSteps = await conn
+    .select()
+    .from(workflowTemplateSteps)
+    .where(
+      inArray(
+        workflowTemplateSteps.moduleId,
+        modules.map((m) => m.id),
+      ),
+    )
+    .orderBy(asc(workflowTemplateSteps.orderIndex));
+
+  const moduleStepMap = new Map<string, typeof allTemplateSteps>();
+  for (const step of allTemplateSteps) {
+    const list = moduleStepMap.get(step.moduleId) ?? [];
+    list.push(step);
+    moduleStepMap.set(step.moduleId, list);
+  }
+
+  const stepInserts: (typeof caseWorkflowSteps.$inferInsert)[] = [];
+  let isFirstStep = true;
+
+  for (const mod of modules) {
+    const templateSteps = moduleStepMap.get(mod.id) ?? [];
+    for (const ts of templateSteps) {
+      stepInserts.push({
+        organizationId: data.organizationId,
+        caseId: data.caseId,
+        templateStepId: ts.id,
+        title: ts.title,
+        description: ts.description,
+        orderIndex: mod.orderIndex * 100 + ts.orderIndex,
+        dueDate: ts.dueInDays
+          ? new Date(Date.now() + ts.dueInDays * 86400000)
+              .toISOString()
+              .split("T")[0]
+          : null,
+        status: isFirstStep ? "in_progress" : "pending",
+        assignedToId: null,
+      });
+      isFirstStep = false;
+    }
+  }
+
+  if (stepInserts.length === 0) return { workflowSteps: [], template };
+
+  const workflowSteps = await conn
+    .insert(caseWorkflowSteps)
+    .values(stepInserts)
+    .returning();
+
+  const [firstStep] = workflowSteps;
+  if (firstStep) {
+    const picked = await pickBestStaff(
+      data.organizationId,
+      firstStep.templateStepId,
+      undefined,
+      data.tx,
+    );
+
+    if (picked) {
+      const now = new Date();
+      await conn
+        .update(caseWorkflowSteps)
+        .set({
+          assignedToId: picked.id,
+          assignedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(caseWorkflowSteps.id, firstStep.id));
+
+      firstStep.assignedToId = picked.id;
+      firstStep.assignedAt = now;
+
+      await logStepAction({
+        organizationId: data.organizationId,
+        caseId: data.caseId,
+        stepId: firstStep.id,
+        action: "ASSIGNED",
+        title: `Step auto-assigned: ${firstStep.title}`,
+        assigneeId: picked.id,
+        tx: data.tx,
+      });
+
+      await logEvent({
+        organizationId: data.organizationId,
+        caseId: data.caseId,
+        stepId: firstStep.id,
+        eventType: "STEP_ASSIGNED",
+        title: `Step auto-assigned: ${firstStep.title}`,
+        description: `Assigned to ${picked.firstName} ${picked.lastName}`,
+        metadata: {
+          assignmentStrategy: "workload_balanced",
+          staffId: picked.id,
+          staffName: `${picked.firstName} ${picked.lastName}`,
+        },
+        performedById: null,
+        tx: data.tx,
+      });
+    }
+  }
+
+  await logEvent({
+    organizationId: data.organizationId,
+    caseId: data.caseId,
+    eventType: "WORKFLOW_INITIALIZED",
+    title: "Workflow initialized",
+    description: "Hydrated from template",
+    metadata: {
+      stepCount: stepInserts.length,
+      moduleCount: modules.length,
+      templateId: template.id,
+      timestamp: new Date().toISOString(),
+    },
+    performedById: null,
+    tx: data.tx,
+  });
+
+  return { workflowSteps, template };
 }
 
 export async function logEvent(data: {
