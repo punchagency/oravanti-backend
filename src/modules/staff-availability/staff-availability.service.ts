@@ -1,26 +1,101 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte, ne } from "drizzle-orm";
 import { db } from "../../db/client";
 import {
   staffAvailability,
   staffAvailabilityBreaks,
   staffAvailabilityOverrides,
 } from "../../db/schema/staff-availability";
-import { NotFoundError } from "../../utils/error/app-error";
+import { leaveRequests } from "../../db/schema/leave-requests";
+import { staff } from "../../db/schema/staff";
+import { ConflictError, NotFoundError } from "../../utils/error/app-error";
 import {
   CreateOverrideBody,
+  CreateTimeOffBody,
   SetBreaksBody,
   SetWeeklyAvailabilityBody,
+  UpdateOverrideBody,
+  UpdateTimeOffBody,
 } from "./staff-availability.validation";
 
 export class StaffAvailabilityService {
+  // Writes accept any staffId from admins, so confirm the target staff
+  // actually belongs to the caller's organization before touching rows.
+  private assertStaffInOrg = async (
+    organizationId: string,
+    staffId: string,
+  ) => {
+    const [found] = await db
+      .select({ id: staff.id })
+      .from(staff)
+      .where(and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)))
+      .limit(1);
+
+    if (!found) throw new NotFoundError("Staff member not found");
+  };
+
+  private assertNoOverrideOnDate = async (
+    organizationId: string,
+    staffId: string,
+    date: string,
+    excludeOverrideId?: string,
+  ) => {
+    const conditions = [
+      eq(staffAvailabilityOverrides.organizationId, organizationId),
+      eq(staffAvailabilityOverrides.staffId, staffId),
+      eq(staffAvailabilityOverrides.date, date),
+    ];
+    if (excludeOverrideId) {
+      conditions.push(ne(staffAvailabilityOverrides.id, excludeOverrideId));
+    }
+
+    const [existing] = await db
+      .select({ id: staffAvailabilityOverrides.id })
+      .from(staffAvailabilityOverrides)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (existing) {
+      throw new ConflictError("An override already exists for this date");
+    }
+  };
+
+  private assertNoTimeOffOverlap = async (
+    organizationId: string,
+    staffId: string,
+    startDate: string,
+    endDate: string,
+    excludeTimeOffId?: string,
+  ) => {
+    const conditions = [
+      eq(leaveRequests.organizationId, organizationId),
+      eq(leaveRequests.staffId, staffId),
+      ne(leaveRequests.status, "rejected"),
+      lte(leaveRequests.startDate, endDate),
+      gte(leaveRequests.endDate, startDate),
+    ];
+    if (excludeTimeOffId) {
+      conditions.push(ne(leaveRequests.id, excludeTimeOffId));
+    }
+
+    const [existing] = await db
+      .select({ id: leaveRequests.id })
+      .from(leaveRequests)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (existing) {
+      throw new ConflictError("This period overlaps an existing time-off entry");
+    }
+  };
+
   getAvailability = async (organizationId: string, staffId: string) => {
-    const scope = (table: typeof staffAvailability | typeof staffAvailabilityBreaks | typeof staffAvailabilityOverrides) =>
+    const scope = (table: typeof staffAvailability | typeof staffAvailabilityBreaks | typeof staffAvailabilityOverrides | typeof leaveRequests) =>
       and(
         eq(table.organizationId, organizationId),
         eq(table.staffId, staffId),
       );
 
-    const [windows, breaks, overrides] = await Promise.all([
+    const [windows, breaks, overrides, timeOff] = await Promise.all([
       db
         .select()
         .from(staffAvailability)
@@ -42,9 +117,14 @@ export class StaffAvailabilityService {
         .from(staffAvailabilityOverrides)
         .where(scope(staffAvailabilityOverrides))
         .orderBy(asc(staffAvailabilityOverrides.date)),
+      db
+        .select()
+        .from(leaveRequests)
+        .where(scope(leaveRequests))
+        .orderBy(desc(leaveRequests.startDate)),
     ]);
 
-    return { windows, breaks, overrides };
+    return { windows, breaks, overrides, timeOff };
   };
 
   setWeeklyAvailability = async (
@@ -52,6 +132,8 @@ export class StaffAvailabilityService {
     staffId: string,
     body: SetWeeklyAvailabilityBody,
   ) => {
+    await this.assertStaffInOrg(organizationId, staffId);
+
     return db.transaction(async (tx) => {
       await tx
         .delete(staffAvailability)
@@ -95,6 +177,8 @@ export class StaffAvailabilityService {
     staffId: string,
     body: SetBreaksBody,
   ) => {
+    await this.assertStaffInOrg(organizationId, staffId);
+
     return db.transaction(async (tx) => {
       await tx
         .delete(staffAvailabilityBreaks)
@@ -139,6 +223,9 @@ export class StaffAvailabilityService {
     staffId: string,
     body: CreateOverrideBody,
   ) => {
+    await this.assertStaffInOrg(organizationId, staffId);
+    await this.assertNoOverrideOnDate(organizationId, staffId, body.date);
+
     const [created] = await db
       .insert(staffAvailabilityOverrides)
       .values({
@@ -152,6 +239,42 @@ export class StaffAvailabilityService {
       })
       .returning();
     return created;
+  };
+
+  updateOverride = async (
+    organizationId: string,
+    staffId: string,
+    overrideId: string,
+    body: UpdateOverrideBody,
+  ) => {
+    await this.assertNoOverrideOnDate(
+      organizationId,
+      staffId,
+      body.date,
+      overrideId,
+    );
+
+    const [updated] = await db
+      .update(staffAvailabilityOverrides)
+      .set({
+        date: body.date,
+        type: body.type,
+        startTime: body.type === "custom_hours" ? body.startTime : null,
+        endTime: body.type === "custom_hours" ? body.endTime : null,
+        reason: body.reason ?? null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(staffAvailabilityOverrides.id, overrideId),
+          eq(staffAvailabilityOverrides.organizationId, organizationId),
+          eq(staffAvailabilityOverrides.staffId, staffId),
+        ),
+      )
+      .returning();
+
+    if (!updated) throw new NotFoundError("Availability override not found");
+    return updated;
   };
 
   deleteOverride = async (
@@ -171,6 +294,92 @@ export class StaffAvailabilityService {
       .returning();
 
     if (!deleted) throw new NotFoundError("Availability override not found");
+    return deleted;
+  };
+
+  createTimeOff = async (
+    organizationId: string,
+    staffId: string,
+    body: CreateTimeOffBody,
+  ) => {
+    await this.assertStaffInOrg(organizationId, staffId);
+    await this.assertNoTimeOffOverlap(
+      organizationId,
+      staffId,
+      body.startDate,
+      body.endDate,
+    );
+
+    // Admin-created time off takes effect immediately; pending/rejected are
+    // reserved for the future staff request flow.
+    const [created] = await db
+      .insert(leaveRequests)
+      .values({
+        organizationId,
+        staffId,
+        type: body.type,
+        startDate: body.startDate,
+        endDate: body.endDate,
+        status: "approved",
+        reason: body.reason,
+      })
+      .returning();
+    return created;
+  };
+
+  updateTimeOff = async (
+    organizationId: string,
+    staffId: string,
+    timeOffId: string,
+    body: UpdateTimeOffBody,
+  ) => {
+    await this.assertNoTimeOffOverlap(
+      organizationId,
+      staffId,
+      body.startDate,
+      body.endDate,
+      timeOffId,
+    );
+
+    const [updated] = await db
+      .update(leaveRequests)
+      .set({
+        type: body.type,
+        startDate: body.startDate,
+        endDate: body.endDate,
+        reason: body.reason ?? null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(leaveRequests.id, timeOffId),
+          eq(leaveRequests.organizationId, organizationId),
+          eq(leaveRequests.staffId, staffId),
+        ),
+      )
+      .returning();
+
+    if (!updated) throw new NotFoundError("Time-off entry not found");
+    return updated;
+  };
+
+  deleteTimeOff = async (
+    organizationId: string,
+    staffId: string,
+    timeOffId: string,
+  ) => {
+    const [deleted] = await db
+      .delete(leaveRequests)
+      .where(
+        and(
+          eq(leaveRequests.id, timeOffId),
+          eq(leaveRequests.organizationId, organizationId),
+          eq(leaveRequests.staffId, staffId),
+        ),
+      )
+      .returning();
+
+    if (!deleted) throw new NotFoundError("Time-off entry not found");
     return deleted;
   };
 }
