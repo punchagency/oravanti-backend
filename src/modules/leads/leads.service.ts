@@ -58,9 +58,6 @@ import { staff } from "../../db/schema/staff";
 import { teamPracticeAreaCaseTypes } from "../../db/schema/team-practice-area-case-types";
 import {
   caseWorkflowSteps,
-  workflowModules,
-  workflowTemplates,
-  workflowTemplateSteps
 } from "../../db/schema/workflow";
 import {
   cancelQuestionnaireReminder,
@@ -83,7 +80,7 @@ import {
 import { storageService } from "../../utils/storage/storage.service";
 import { generateCaseNumber } from "../cases/cases.service";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
-import { logEvent, logStepAction, pickBestStaff } from "../workflow/workflow.service";
+import { hydrateCaseWorkflow, logEvent, logStepAction, pickBestStaff } from "../workflow/workflow.service";
 import { generateConsultationSlots } from "./consultation-slots.service";
 import { getESignatureProvider } from "./dropbox-sign.provider";
 import { assembleFeeAgreementDocument } from "./fee-agreement-document";
@@ -3661,139 +3658,12 @@ const openCase = async (
       .returning();
 
     // 4. Instantiate workflow steps from template (proper hydration)
-    const [template] = await tx
-      .select()
-      .from(workflowTemplates)
-      .where(eq(workflowTemplates.practiceAreaId, resolvedPracticeAreaId))
-      .limit(1);
-
-    let workflowSteps: any[] = [];
-    if (template) {
-      const modules = await tx
-        .select()
-        .from(workflowModules)
-        .where(eq(workflowModules.templateId, template.id))
-        .orderBy(asc(workflowModules.orderIndex));
-
-      const allTemplateSteps = await tx
-        .select()
-        .from(workflowTemplateSteps)
-        .where(
-          inArray(
-            workflowTemplateSteps.moduleId,
-            modules.map((m) => m.id),
-          ),
-        )
-        .orderBy(asc(workflowTemplateSteps.orderIndex));
-
-      const moduleStepMap = new Map<string, typeof allTemplateSteps>();
-      for (const step of allTemplateSteps) {
-        const list = moduleStepMap.get(step.moduleId) ?? [];
-        list.push(step);
-        moduleStepMap.set(step.moduleId, list);
-      }
-
-      const stepInserts: (typeof caseWorkflowSteps.$inferInsert)[] = [];
-      let isFirstStep = true;
-
-      for (const mod of modules) {
-        const templateSteps = moduleStepMap.get(mod.id) ?? [];
-        for (const ts of templateSteps) {
-          stepInserts.push({
-            organizationId,
-            caseId: newCase.id,
-            templateStepId: ts.id,
-            title: ts.title,
-            description: ts.description,
-            orderIndex: mod.orderIndex * 100 + ts.orderIndex,
-            dueDate: ts.dueInDays
-              ? new Date(Date.now() + ts.dueInDays * 86400000)
-                  .toISOString()
-                  .split("T")[0]
-              : null,
-            status: isFirstStep ? "in_progress" : "pending",
-            assignedToId: null,
-          });
-          isFirstStep = false;
-        }
-      }
-
-      if (stepInserts.length > 0) {
-        workflowSteps = await tx
-          .insert(caseWorkflowSteps)
-          .values(stepInserts)
-          .returning();
-
-        // Auto-assign first step to best available staff
-        const [firstStep] = workflowSteps;
-        if (firstStep) {
-          const picked = await pickBestStaff(
-            organizationId,
-            firstStep.templateStepId,
-            undefined,
-            tx,
-          );
-
-          if (picked) {
-            const now = new Date();
-            await tx
-              .update(caseWorkflowSteps)
-              .set({
-                assignedToId: picked.id,
-                assignedAt: now,
-                updatedAt: now,
-              })
-              .where(eq(caseWorkflowSteps.id, firstStep.id));
-
-            // Update the returned step object
-            firstStep.assignedToId = picked.id;
-            firstStep.assignedAt = now;
-
-            await logStepAction({
-              organizationId,
-              caseId: newCase.id,
-              stepId: firstStep.id,
-              action: "ASSIGNED",
-              title: `Step auto-assigned: ${firstStep.title}`,
-              assigneeId: picked.id,
-              tx,
-            });
-
-            await logEvent({
-              organizationId,
-              caseId: newCase.id,
-              stepId: firstStep.id,
-              eventType: "STEP_ASSIGNED",
-              title: `Step auto-assigned: ${firstStep.title}`,
-              description: `Assigned to ${picked.firstName} ${picked.lastName}`,
-              metadata: {
-                assignmentStrategy: "workload_balanced",
-                staffId: picked.id,
-                staffName: `${picked.firstName} ${picked.lastName}`,
-              },
-              performedById: null,
-              tx,
-            });
-          }
-        }
-
-        await logEvent({
-          organizationId,
-          caseId: newCase.id,
-          eventType: "WORKFLOW_INITIALIZED",
-          title: "Workflow initialized",
-          description: "Hydrated from template",
-          metadata: {
-            stepCount: stepInserts.length,
-            moduleCount: modules.length,
-            templateId: template.id,
-            timestamp: new Date().toISOString(),
-          },
-          performedById: null,
-          tx,
-        });
-      }
-    }
+    const { workflowSteps } = await hydrateCaseWorkflow({
+      organizationId,
+      caseId: newCase.id,
+      practiceAreaId: resolvedPracticeAreaId,
+      tx,
+    });
 
     // 5. Update lead with conversion data
     const now = new Date();

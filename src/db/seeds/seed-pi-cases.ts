@@ -2,12 +2,16 @@ import { eq, ilike, inArray } from "drizzle-orm";
 import { db } from "../client";
 import { organization } from "../schema/auth-schema";
 import { clients } from "../schema/clients";
-import { cases } from "../schema/cases";
+import { cases, caseStatusEnum, casePriorityEnum, caseBillingTypeEnum } from "../schema/cases";
 import { practiceAreas } from "../schema/practice-areas";
 import { practiceAreaSubcategories } from "../schema/practice-area-subcategories";
 import { practiceAreaCaseTypes } from "../schema/practice-area-case-types";
 import { staff } from "../schema/staff";
 import { team } from "../schema/auth-schema";
+
+type CaseStatus = (typeof caseStatusEnum.enumValues)[number];
+type CasePriority = (typeof casePriorityEnum.enumValues)[number];
+type CaseBillingType = (typeof caseBillingTypeEnum.enumValues)[number];
 
 function isoDateFromNow(days: number): string {
   const d = new Date();
@@ -25,9 +29,9 @@ interface PIClient {
   courtName?: string;
   judge?: string;
   docketNumber?: string;
-  billingType: "hourly" | "flat_fee" | "contingency" | "pro_bono";
-  status: "pre_litigation" | "active" | "on_hold" | "appeals" | "closed" | "pre_filing" | "dismissed";
-  priority: "low" | "medium" | "high" | "urgent" | "critical";
+  billingType: CaseBillingType;
+  status: CaseStatus;
+  priority: CasePriority;
   daysSinceFiling: number;
   daysToCompletion: number;
 }
