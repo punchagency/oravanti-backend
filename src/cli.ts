@@ -3645,7 +3645,8 @@ const runInteractive = async () => {
       }
 
       if (action === "seed-pi-cases") {
-        await seedPICases();
+        const firm = await resolveFirm();
+        if (firm) await seedPICases(firm.id);
       }
 
       if (action === "staff-availability") {
