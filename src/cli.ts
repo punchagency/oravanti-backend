@@ -1546,6 +1546,7 @@ const seedDemoData = async (organizationId?: string) => {
         .values({
           organizationId: firm.id,
           userId: authUser.id,
+          email,
           firstName,
           lastName,
           phone,
@@ -3818,7 +3819,7 @@ const staffTeamsCommand = program
   .command("seed-staff-teams")
   .description("Seed staff members and teams for an organization")
   .argument("[organizationId]", "Organization id")
-  .action(seedStaffAndTeams);
+  .action(async (organizationId?: string) => { await seedStaffAndTeams(organizationId); });
 
 const workflowTemplateCommand = program
   .command("seed-workflow-template")

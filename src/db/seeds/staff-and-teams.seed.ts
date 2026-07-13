@@ -10,10 +10,12 @@ import {
   user,
 } from "../schema/auth-schema";
 import { practiceAreas } from "../schema/practice-areas";
-import { staff } from "../schema/staff";
+import { staff, staffRoleEnum, staffStatusEnum } from "../schema/staff";
 
+type StaffRole = (typeof staffRoleEnum.enumValues)[number];
+type StaffStatus = (typeof staffStatusEnum.enumValues)[number];
 
-const DEMO_EMAIL_DOMAIN = "oravanti.com";
+const DEMO_EMAIL_DOMAIN = "demo.oravanti.test";
 
 const FIRST_NAMES = [
   "Aaliyah",
@@ -341,7 +343,7 @@ const LAST_NAMES = [
   "Zhou",
 ];
 
-const STAFF_STATUS_DISTRIBUTION = [
+const STAFF_STATUS_DISTRIBUTION: StaffStatus[] = [
   "active",
   "active",
   "active",
@@ -359,16 +361,16 @@ const STAFF_STATUS_DISTRIBUTION = [
   "recertify_required",
   "pending_invitation",
   "pending_invitation",
-] as const;
+];
 
-const ROLES = [
+const ROLES: StaffRole[] = [
   "admin",
   "attorney",
   "attorney",
   "attorney",
   "paralegal",
   "paralegal",
-] as const;
+];
 
 const TEAM_NAMES = [
   "Immigration Alpha",
@@ -401,9 +403,15 @@ const range = (count: number) =>
 
 const pad = (value: number, width = 3) => String(value).padStart(width, "0");
 
-export const seedStaffAndTeams = async (organizationId: string) => {
+export const seedStaffAndTeams = async (organizationId?: string) => {
+  if (!organizationId) {
+    note("No organization id provided.");
+    return;
+  }
+  const staffCount = 10;
+  const teamCount = 2;
   const shouldProceed = await confirm({
-    message: `Seed ~100 staff members and ~20 teams for org ${organizationId}?`,
+    message: `Seed ~${staffCount} staff members and ~${teamCount} teams for org ${organizationId}?`,
     initialValue: false,
   });
 
@@ -413,16 +421,14 @@ export const seedStaffAndTeams = async (organizationId: string) => {
   }
 
   const suffix = `staff-${Date.now()}`;
-  const staffCount = 100;
-  const teamCount = 20;
 
   const practiceAreaRows = await db.select().from(practiceAreas);
 
   interface StaffEntry {
     id: string;
     userId: string | null;
-    role: string | null;
-    status: string;
+    role: StaffRole | null;
+    status: StaffStatus;
     email: string;
   }
 
@@ -497,7 +503,7 @@ export const seedStaffAndTeams = async (organizationId: string) => {
           .where(
             and(
               eq(staff.organizationId, organizationId),
-              eq(staff.email, email),
+              eq(staff.userId, authUser.id),
             ),
           )
           .limit(1)
@@ -536,6 +542,11 @@ export const seedStaffAndTeams = async (organizationId: string) => {
 
   const createdTeams: Array<{ id: string }> = [];
 
+  if (createdStaff.length === 0) {
+    console.warn("No staff found or created — skipping team creation.");
+    return createdTeams;
+  }
+
   for (const i of range(teamCount)) {
     const teamName = `${pick(TEAM_NAMES, i)}`;
     const teamId = `seed-team-${suffix}-${pad(i + 1)}`;
@@ -555,7 +566,7 @@ export const seedStaffAndTeams = async (organizationId: string) => {
       name: teamName,
       organizationId,
       createdAt: new Date(),
-      leadId: leadStaff.userId,
+      leadId: leadStaff.id,
       description: `Handles ${pick(TEAM_NAMES, i).toLowerCase()} matters.`,
       maxCaseload: 40 + (i % 5) * 5,
       workloadPercentage: 30 + (i % 7) * 5,
