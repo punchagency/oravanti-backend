@@ -2,32 +2,30 @@
  * @openapi
  * tags:
  *   - name: Staff Availability
- *     description: Per-staff consultation availability (hours, breaks, overrides)
+ *     description: Per-staff consultation availability (hours, breaks, overrides, time off)
  */
-import { NextFunction, Response, Router } from "express";
-import { AuthRequest, requireAuth } from "../../middleware/auth.middleware";
+import { Router } from "express";
+import { requireAuth } from "../../middleware/auth.middleware";
 import { requireStaffOrAdmin } from "../../middleware/staff-or-admin.middleware";
+import { requirePermission } from "../../middleware/permission.middleware";
 import { setFirmContext } from "../../middleware/rls.middleware";
 import { validateRequest } from "../../middleware/validate.middleware";
-import { AuthorizationError } from "../../utils/error/app-error";
 import { StaffAvailabilityController } from "./staff-availability.controller";
 import {
   createOverrideSchema,
+  createTimeOffSchema,
   overrideParamsSchema,
   setBreaksSchema,
   setWeeklyAvailabilitySchema,
   staffIdParamsSchema,
+  timeOffParamsSchema,
+  updateOverrideSchema,
+  updateTimeOffSchema,
 } from "./staff-availability.validation";
 
-// Staff own their availability: writes are restricted to the staff member
-// themselves. Admins can read any staff member's availability but not edit it.
-const requireSelf = (req: AuthRequest, _res: Response, next: NextFunction) => {
-  if (!req.staffId || req.staffId !== req.params.staffId) {
-    throw new AuthorizationError("You can only manage your own availability");
-  }
-  next();
-};
-
+// Admins own staff scheduling data: owner/admin can create/edit/delete any
+// staff member's availability, breaks, overrides, and time off. Staff have
+// read-only access (a request/review flow for staff is planned separately).
 export class StaffAvailabilityRouter {
   public router: Router;
   public path: string;
@@ -57,7 +55,7 @@ export class StaffAvailabilityRouter {
         params: staffIdParamsSchema,
         body: setWeeklyAvailabilitySchema,
       }),
-      requireSelf,
+      requirePermission("staffs", "update"),
       this.controller.setWeeklyAvailability,
     );
 
@@ -67,7 +65,7 @@ export class StaffAvailabilityRouter {
         params: staffIdParamsSchema,
         body: setBreaksSchema,
       }),
-      requireSelf,
+      requirePermission("staffs", "update"),
       this.controller.setBreaks,
     );
 
@@ -77,15 +75,52 @@ export class StaffAvailabilityRouter {
         params: staffIdParamsSchema,
         body: createOverrideSchema,
       }),
-      requireSelf,
+      requirePermission("staffs", "create"),
       this.controller.createOverride,
+    );
+
+    this.router.patch(
+      "/:staffId/overrides/:overrideId",
+      validateRequest({
+        params: overrideParamsSchema,
+        body: updateOverrideSchema,
+      }),
+      requirePermission("staffs", "update"),
+      this.controller.updateOverride,
     );
 
     this.router.delete(
       "/:staffId/overrides/:overrideId",
       validateRequest({ params: overrideParamsSchema }),
-      requireSelf,
+      requirePermission("staffs", "delete"),
       this.controller.deleteOverride,
+    );
+
+    this.router.post(
+      "/:staffId/time-off",
+      validateRequest({
+        params: staffIdParamsSchema,
+        body: createTimeOffSchema,
+      }),
+      requirePermission("staffs", "create"),
+      this.controller.createTimeOff,
+    );
+
+    this.router.patch(
+      "/:staffId/time-off/:timeOffId",
+      validateRequest({
+        params: timeOffParamsSchema,
+        body: updateTimeOffSchema,
+      }),
+      requirePermission("staffs", "update"),
+      this.controller.updateTimeOff,
+    );
+
+    this.router.delete(
+      "/:staffId/time-off/:timeOffId",
+      validateRequest({ params: timeOffParamsSchema }),
+      requirePermission("staffs", "delete"),
+      this.controller.deleteTimeOff,
     );
   }
 }

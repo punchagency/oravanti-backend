@@ -46,6 +46,16 @@ export class StaffAvailabilityController {
     sendSuccess(res, result, "Override created successfully", 201);
   });
 
+  updateOverride = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.service.updateOverride(
+      req.organizationId!,
+      req.params.staffId as string,
+      req.params.overrideId as string,
+      req.body,
+    );
+    sendSuccess(res, result, "Override updated successfully");
+  });
+
   deleteOverride = asyncWrap(async (req: AuthRequest, res: Response) => {
     await this.service.deleteOverride(
       req.organizationId!,
@@ -53,5 +63,33 @@ export class StaffAvailabilityController {
       req.params.overrideId as string,
     );
     sendSuccess(res, null, "Availability override deleted successfully");
+  });
+
+  createTimeOff = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.service.createTimeOff(
+      req.organizationId!,
+      req.params.staffId as string,
+      req.body,
+    );
+    sendSuccess(res, result, "Time off created successfully", 201);
+  });
+
+  updateTimeOff = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const result = await this.service.updateTimeOff(
+      req.organizationId!,
+      req.params.staffId as string,
+      req.params.timeOffId as string,
+      req.body,
+    );
+    sendSuccess(res, result, "Time off updated successfully");
+  });
+
+  deleteTimeOff = asyncWrap(async (req: AuthRequest, res: Response) => {
+    await this.service.deleteTimeOff(
+      req.organizationId!,
+      req.params.staffId as string,
+      req.params.timeOffId as string,
+    );
+    sendSuccess(res, null, "Time-off entry deleted successfully");
   });
 }
