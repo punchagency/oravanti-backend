@@ -105,6 +105,17 @@ export class LeadsRouter {
       ctrl.updateLeadStatus,
     );
 
+    // ── Activity trail (read-only; events are append-only by design) ──────────
+
+    this.router.get(
+      "/:id/activity",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.idParamsSchema }),
+      ctrl.getLeadActivity,
+    );
+
     // ── Conflict Check ────────────────────────────────────────────────────────
 
     this.router.post(

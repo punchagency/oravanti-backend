@@ -63,6 +63,7 @@ import {
   cancelQuestionnaireReminder,
   scheduleQuestionnaireReminder,
 } from "../../queue/queues";
+import { getLeadActivity, logLeadEvent } from "./lead-events.service";
 import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
 import { emailService } from "../../utils/email/email.service";
 import {
@@ -471,6 +472,14 @@ const createLead = async (
       .onConflictDoNothing();
   }
 
+  await logLeadEvent({
+    organizationId,
+    leadId: lead.id,
+    type: "lead_received",
+    actorId: creatorStaffId,
+    metadata: { source: data.source },
+  });
+
   return lead;
 };
 
@@ -739,6 +748,7 @@ const updateLead = async (
     timezone: string;
     language: string;
   }>,
+  actorId?: string,
 ) => {
   const [updated] = await db
     .update(leads)
@@ -747,6 +757,15 @@ const updateLead = async (
     .returning();
 
   if (!updated) throw new NotFoundError("Lead not found");
+
+  await logLeadEvent({
+    organizationId,
+    leadId: id,
+    type: "lead_updated",
+    actorId,
+    metadata: { fields: Object.keys(data) },
+  });
+
   return updated;
 };
 
@@ -754,6 +773,7 @@ const updateLeadStatus = async (
   id: string,
   organizationId: string,
   status: "archived" | "reviewed",
+  actorId?: string,
 ) => {
   const [updated] = await db
     .update(leads)
@@ -762,6 +782,17 @@ const updateLeadStatus = async (
     .returning();
 
   if (!updated) throw new NotFoundError("Lead not found");
+
+  // Archival has its own endpoint (archiveLead) that records the actor and
+  // reason; this path only reaches "archived" from legacy callers.
+  await logLeadEvent({
+    organizationId,
+    leadId: id,
+    type: status === "archived" ? "lead_archived" : "lead_updated",
+    actorId,
+    metadata: { status },
+  });
+
   return updated;
 };
 
@@ -804,10 +835,37 @@ const STAGE_ORDER = [
   "case_opening",
 ] as const;
 
+/**
+ * Stage transitions are the source of truth for time-in-stage metrics, so every
+ * write to leads.pipelineStage — including the implicit ones inside the conflict
+ * check, questionnaire, consultation and case-opening flows — must emit one of
+ * these. A missed call shows up as a gap in the funnel, not as an error.
+ */
+const logStageChange = async (data: {
+  organizationId: string;
+  leadId: string;
+  from: string;
+  to: string;
+  actorId?: string | null;
+  tx?: any;
+}) => {
+  if (data.from === data.to) return;
+
+  await logLeadEvent({
+    organizationId: data.organizationId,
+    leadId: data.leadId,
+    type: "stage_changed",
+    actorId: data.actorId,
+    metadata: { from: data.from, to: data.to },
+    tx: data.tx,
+  });
+};
+
 const advanceLeadStage = async (
   id: string,
   organizationId: string,
   newStage: string,
+  actorId?: string,
 ) => {
   const [lead] = await db
     .select()
@@ -872,6 +930,14 @@ const advanceLeadStage = async (
     .set({ pipelineStage: newStage as any, updatedAt: new Date() })
     .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
     .returning();
+
+  await logStageChange({
+    organizationId,
+    leadId: id,
+    from: lead.pipelineStage,
+    to: newStage,
+    actorId,
+  });
 
   return updated;
 };
@@ -1329,6 +1395,14 @@ const runConflictCheck = async (
       .where(eq(leads.id, leadId));
   }
 
+  await logLeadEvent({
+    organizationId,
+    leadId,
+    type: "conflict_check_run",
+    actorId: checkedById,
+    metadata: { status, matchCount: matches.length },
+  });
+
   // Auto-advance the pipeline stage based on the result, but never regress a
   // lead that is already further along and never touch a terminal lead.
   if (lead.status !== "declined") {
@@ -1340,6 +1414,14 @@ const runConflictCheck = async (
           .update(leads)
           .set({ pipelineStage: "questionnaire", updatedAt: now })
           .where(eq(leads.id, leadId));
+
+        await logStageChange({
+          organizationId,
+          leadId,
+          from: lead.pipelineStage,
+          to: "questionnaire",
+          actorId: checkedById,
+        });
       }
     } else {
       // needs_review / conflict_found are held at conflict_check.
@@ -1348,6 +1430,14 @@ const runConflictCheck = async (
           .update(leads)
           .set({ pipelineStage: "conflict_check", updatedAt: now })
           .where(eq(leads.id, leadId));
+
+        await logStageChange({
+          organizationId,
+          leadId,
+          from: lead.pipelineStage,
+          to: "conflict_check",
+          actorId: checkedById,
+        });
       }
     }
   }
@@ -1465,6 +1555,31 @@ const resolveConflictCheck = async (
           updatedAt: now,
         })
         .where(eq(leads.id, leadId));
+
+      // A hard conflict cleared by a reviewer is an override — the distinction
+      // the trail has to preserve, since it is the accountable decision.
+      await logLeadEvent({
+        organizationId,
+        leadId,
+        type: wasHardConflict
+          ? "conflict_overridden"
+          : "conflict_check_approved",
+        actorId: staffId,
+        metadata: { reviewNotes: data.reviewNotes, priorStatus: cc.status },
+        tx,
+      });
+
+      if (lead.pipelineStage === "conflict_check") {
+        await logStageChange({
+          organizationId,
+          leadId,
+          from: lead.pipelineStage,
+          to: "questionnaire",
+          actorId: staffId,
+          tx,
+        });
+      }
+
       return u;
     }
 
@@ -1485,6 +1600,16 @@ const resolveConflictCheck = async (
       .update(leads)
       .set({ status: "declined", updatedAt: now }) // stage left as-is (terminal)
       .where(eq(leads.id, leadId));
+
+    await logLeadEvent({
+      organizationId,
+      leadId,
+      type: "conflict_check_declined",
+      actorId: staffId,
+      metadata: { reviewNotes: data.reviewNotes },
+      tx,
+    });
+
     return u;
   });
 
@@ -1746,16 +1871,37 @@ const sendQuestionnaire = async (
   // Never move a lead backward: an instant-consultation lead is already at the
   // consultation stage when its questionnaire is auto-sent on completion.
   const currentStageIdx = STAGE_ORDER.indexOf(lead.pipelineStage as any);
+  const advancesToQuestionnaire =
+    currentStageIdx < STAGE_ORDER.indexOf("questionnaire");
+
   await db
     .update(leads)
     .set({
       questionnaireSendId: send.id,
-      ...(currentStageIdx < STAGE_ORDER.indexOf("questionnaire")
+      ...(advancesToQuestionnaire
         ? { pipelineStage: "questionnaire" as const }
         : {}),
       updatedAt: now,
     })
     .where(eq(leads.id, leadId));
+
+  await logLeadEvent({
+    organizationId,
+    leadId,
+    type: "questionnaire_sent",
+    actorId: sentById,
+    metadata: { sendId: send.id, deliveryChannels, language, autoReminderDays },
+  });
+
+  if (advancesToQuestionnaire) {
+    await logStageChange({
+      organizationId,
+      leadId,
+      from: lead.pipelineStage,
+      to: "questionnaire",
+      actorId: sentById,
+    });
+  }
 
   const baseUrl = env.FRONTEND_APP_URL ?? "http://localhost:5173";
   const orgSlug = encodeURIComponent(organizationId);
@@ -1845,6 +1991,7 @@ const initiateConsultation = async (
     emergencyMultiplier?: number;
     autoSendQuestionnaire?: boolean;
   },
+  scheduledById?: string,
 ) => {
   // Instant consultations ("start now") are urgent by definition: they skip
   // the slot queue and require a passed conflict check.
@@ -2006,6 +2153,7 @@ const initiateConsultation = async (
       duration: data.duration,
       mode: data.mode,
       leadAttorneyId: data.leadAttorneyId,
+      scheduledById: scheduledById ?? null,
       locationId: data.mode === "in_person" ? data.locationId : null,
       status,
       feeAmount,
@@ -2055,6 +2203,34 @@ const initiateConsultation = async (
       updatedAt: new Date(),
     })
     .where(eq(leads.id, leadId));
+
+  await logLeadEvent({
+    organizationId,
+    leadId,
+    type: "consultation_scheduled",
+    actorId: scheduledById,
+    metadata: {
+      consultationId: consultation.id,
+      mode: data.mode,
+      scheduledAt: scheduledAt?.toISOString() ?? null,
+      isInstant: startNow,
+      isUrgent: urgent,
+      isFollowUp: Boolean(data.parentConsultationId),
+      leadAttorneyId: data.leadAttorneyId,
+      participantStaffIds: data.participantStaffIds ?? [],
+      feeAmount,
+    },
+  });
+
+  if (!data.parentConsultationId) {
+    await logStageChange({
+      organizationId,
+      leadId,
+      from: lead.pipelineStage,
+      to: "consultation",
+      actorId: scheduledById,
+    });
+  }
 
   // Instant consultation beginning now (invoice_after, pay_in_person, or no
   // fee): finalize immediately into in_progress (mints the Meet link and sends
@@ -2167,6 +2343,7 @@ const updateConsultation = async (
     outcome: "proceed" | "close_no_case" | "refer_elsewhere" | "follow_up";
     feeStatus: "paid";
   }>,
+  actorId?: string,
 ) => {
   const [lead] = await db
     .select()
@@ -2209,6 +2386,42 @@ const updateConsultation = async (
     })
     .where(eq(consultations.id, lead.consultationId))
     .returning();
+
+  if (data.status === "completed" && existing.status !== "completed") {
+    await logLeadEvent({
+      organizationId,
+      leadId,
+      type: "consultation_completed",
+      actorId,
+      metadata: { consultationId: updated.id, outcome: data.outcome ?? null },
+    });
+  } else if (data.scheduledAt && existing.scheduledAt?.getTime() !== data.scheduledAt.getTime()) {
+    await logLeadEvent({
+      organizationId,
+      leadId,
+      type: "consultation_rescheduled",
+      actorId,
+      metadata: {
+        consultationId: updated.id,
+        from: existing.scheduledAt?.toISOString() ?? null,
+        to: data.scheduledAt.toISOString(),
+      },
+    });
+  }
+
+  if (data.feeStatus === "paid" && existing.feeStatus === "unpaid") {
+    await logLeadEvent({
+      organizationId,
+      leadId,
+      type: "payment_received",
+      actorId,
+      metadata: {
+        kind: "consultation_fee",
+        consultationId: updated.id,
+        amount: updated.feeAmount,
+      },
+    });
+  }
 
   // Completion side effects (once — re-PATCHing a completed row is a no-op).
   if (data.status === "completed" && existing.status !== "completed") {
@@ -2735,6 +2948,7 @@ const cancelConsultation = async (
   leadId: string,
   organizationId: string,
   data: { reason?: string } = {},
+  actorId?: string,
 ) => {
   const [lead] = await db
     .select({ consultationId: leads.consultationId })
@@ -2768,11 +2982,23 @@ const cancelConsultation = async (
       status: "cancelled",
       bookingStatus: "revoked",
       cancelledAt: new Date(),
+      cancelledById: actorId ?? null,
       cancellationReason: data.reason ?? null,
       updatedAt: new Date(),
     })
     .where(eq(consultations.id, consultation.id))
     .returning();
+
+  await logLeadEvent({
+    organizationId,
+    leadId,
+    type: "consultation_cancelled",
+    actorId,
+    metadata: {
+      consultationId: consultation.id,
+      reason: data.reason ?? null,
+    },
+  });
 
   // Detach the cancelled consultation from the lead so it no longer counts as
   // the lead's active consultation: the lead drops out of the "in progress"
@@ -2869,6 +3095,7 @@ const generateFeeAgreement = async (
     applyConsultationCredit?: boolean;
     accountSplit?: FeeAgreementDetails["accountSplit"];
   },
+  actorId?: string,
 ) => {
   const [lead] = await db
     .select()
@@ -2975,6 +3202,7 @@ const generateFeeAgreement = async (
       details,
       generatedFrom: (data.generatedFrom ?? "manual") as any,
       status: "draft",
+      generatedById: actorId ?? null,
     })
     .returning();
 
@@ -2982,6 +3210,17 @@ const generateFeeAgreement = async (
     .update(leads)
     .set({ feeAgreementId: agreement.id, updatedAt: new Date() })
     .where(eq(leads.id, leadId));
+
+  await logLeadEvent({
+    organizationId,
+    leadId,
+    type: "fee_agreement_generated",
+    actorId,
+    metadata: {
+      agreementId: agreement.id,
+      feeType: details.attorneyFee?.type ?? null,
+    },
+  });
 
   const document = await assembleFeeAgreementDocument(
     agreement,
@@ -3043,6 +3282,7 @@ const discardDraftFeeAgreement = async (
 const sendFeeAgreement = async (
   agreementId: string,
   organizationId: string,
+  actorId?: string,
 ) => {
   const [agreement] = await db
     .select()
@@ -3115,10 +3355,19 @@ const sendFeeAgreement = async (
       signingToken,
       signingLink,
       documentUrl: documentKey,
+      sentById: actorId ?? null,
       updatedAt: now,
     })
     .where(eq(feeAgreements.id, agreementId))
     .returning();
+
+  await logLeadEvent({
+    organizationId,
+    leadId: agreement.leadId,
+    type: "fee_agreement_sent",
+    actorId,
+    metadata: { agreementId },
+  });
 
   emailService
     .sendEmail({
@@ -3134,12 +3383,47 @@ const sendFeeAgreement = async (
   return { ...updated, clientSigningLink: signingLink };
 };
 
+/**
+ * Move a lead to case_opening, emitting the stage_changed event the funnel
+ * metrics depend on. Several flows reach this stage (manual receipt, the
+ * e-signature webhook, payment landing last), so the read-then-write lives in
+ * one place rather than being repeated at each call site.
+ */
+const advanceLeadToCaseOpening = async (
+  leadId: string,
+  organizationId: string,
+  now: Date,
+  actorId?: string | null,
+) => {
+  const [lead] = await db
+    .select({ pipelineStage: leads.pipelineStage })
+    .from(leads)
+    .where(eq(leads.id, leadId))
+    .limit(1);
+
+  await db
+    .update(leads)
+    .set({ pipelineStage: "case_opening", updatedAt: now })
+    .where(eq(leads.id, leadId));
+
+  if (lead) {
+    await logStageChange({
+      organizationId,
+      leadId,
+      from: lead.pipelineStage,
+      to: "case_opening",
+      actorId,
+    });
+  }
+};
+
 // Staff manually confirms receipt of the signed document: mark the agreement
 // signed and advance the lead to the case-opening stage (the manual equivalent
 // of the e-signature webhook).
 const markFeeAgreementReceived = async (
   agreementId: string,
   organizationId: string,
+  actorId?: string,
 ) => {
   const [agreement] = await db
     .select()
@@ -3162,18 +3446,28 @@ const markFeeAgreementReceived = async (
   if (agreement.status !== "signed") {
     await db
       .update(feeAgreements)
-      .set({ status: "signed", clientSignedAt: now, updatedAt: now })
+      .set({
+        status: "signed",
+        clientSignedAt: now,
+        receivedById: actorId ?? null,
+        updatedAt: now,
+      })
       .where(eq(feeAgreements.id, agreementId));
+
+    await logLeadEvent({
+      organizationId,
+      leadId: agreement.leadId,
+      type: "fee_agreement_signed",
+      actorId,
+      metadata: { agreementId, markedManually: true },
+    });
   }
 
   // Advance only once the payment gate is also satisfied; otherwise the lead
   // stays in the consultation stage, whose agreement card offers the
   // "Mark payment received" action.
   if (feeAgreementPaymentSatisfied(agreement.details)) {
-    await db
-      .update(leads)
-      .set({ pipelineStage: "case_opening", updatedAt: now })
-      .where(eq(leads.id, agreement.leadId));
+    await advanceLeadToCaseOpening(agreement.leadId, organizationId, now, actorId);
   }
 
   return { received: true, agreementId, leadId: agreement.leadId };
@@ -3186,6 +3480,7 @@ const markFeeAgreementReceived = async (
 const markFeeAgreementPaymentReceived = async (
   agreementId: string,
   organizationId: string,
+  actorId?: string,
 ) => {
   const [agreement] = await db
     .select()
@@ -3216,14 +3511,21 @@ const markFeeAgreementPaymentReceived = async (
         updatedAt: now,
       })
       .where(eq(feeAgreements.id, agreementId));
+
+    // Only log on the first (real) receipt — a repeat call is a no-op, and the
+    // trail must not imply the client paid twice.
+    await logLeadEvent({
+      organizationId,
+      leadId: agreement.leadId,
+      type: "payment_received",
+      actorId,
+      metadata: { kind: "fee_agreement", agreementId },
+    });
   }
 
   // Payment was the last missing gate condition once signed.
   if (agreement.status === "signed") {
-    await db
-      .update(leads)
-      .set({ pipelineStage: "case_opening", updatedAt: now })
-      .where(eq(leads.id, agreement.leadId));
+    await advanceLeadToCaseOpening(agreement.leadId, organizationId, now, actorId);
   }
 
   return {
@@ -3444,14 +3746,26 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
       })
       .where(eq(feeAgreements.id, agreement.id));
 
+    // The client signed through the provider, so there is no staff actor here.
+    // Leave it null rather than attributing the signature to whoever sent it.
+    await logLeadEvent({
+      organizationId: agreement.organizationId,
+      leadId: agreement.leadId,
+      type: "fee_agreement_signed",
+      actorId: null,
+      metadata: { agreementId: agreement.id, via: "e_signature" },
+    });
+
     // Auto-advance the lead to case_opening only when the payment gate is also
     // satisfied; otherwise it stays in the consultation stage until staff mark
     // the payment received.
     if (feeAgreementPaymentSatisfied(agreement.details)) {
-      await db
-        .update(leads)
-        .set({ pipelineStage: "case_opening", updatedAt: now })
-        .where(eq(leads.id, agreement.leadId));
+      await advanceLeadToCaseOpening(
+        agreement.leadId,
+        agreement.organizationId,
+        now,
+        null,
+      );
     }
 
     return { processed: true, agreementId: agreement.id };
@@ -3679,6 +3993,28 @@ const openCase = async (
       })
       .where(eq(leads.id, leadId));
 
+    await logStageChange({
+      organizationId,
+      leadId,
+      from: lead.pipelineStage,
+      to: "case_opening",
+      actorId: creatorStaffId,
+      tx,
+    });
+
+    await logLeadEvent({
+      organizationId,
+      leadId,
+      type: "case_opened",
+      actorId: creatorStaffId,
+      metadata: {
+        caseId: newCase.id,
+        caseNumber: newCase.caseNumber,
+        clientId: client.id,
+      },
+      tx,
+    });
+
     // 6. Link questionnaire responses to the new client and case
     if (lead.questionnaireSendId) {
       await tx
@@ -3887,6 +4223,7 @@ export class LeadsService {
   updateLead = updateLead;
   updateLeadStatus = updateLeadStatus;
   getLeadStageCounts = getLeadStageCounts;
+  getLeadActivity = getLeadActivity;
   advanceLeadStage = advanceLeadStage;
   runConflictCheck = runConflictCheck;
   getConflictCheck = getConflictCheck;

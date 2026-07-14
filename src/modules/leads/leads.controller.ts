@@ -56,6 +56,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       req.body,
+      req.staffId,
     );
     sendSuccess(res, lead, "Lead updated successfully");
   };
@@ -64,7 +65,8 @@ export class LeadsController {
     const lead = await this.svc.updateLeadStatus(
       req.params.id as string,
       req.organizationId!,
-      req.body.status
+      req.body.status,
+      req.staffId,
     );
     sendSuccess(res, lead, "Lead status updated successfully");
   };
@@ -74,8 +76,17 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       req.body.stage,
+      req.staffId,
     );
     sendSuccess(res, lead, "Lead stage advanced successfully");
+  };
+
+  getLeadActivity = async (req: AuthRequest, res: Response) => {
+    const events = await this.svc.getLeadActivity(
+      req.params.id as string,
+      req.organizationId!,
+    );
+    sendSuccess(res, events, "Lead activity retrieved successfully");
   };
 
   // ─── Conflict Check ──────────────────────────────────────────────────────────
@@ -135,6 +146,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       req.body,
+      req.staffId,
     );
     sendSuccess(res, result, "Consultation initiated successfully", 201);
   };
@@ -167,6 +179,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       body,
+      req.staffId,
     );
     sendSuccess(res, result, "Consultation updated successfully");
   };
@@ -176,6 +189,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       { reason: req.body?.reason },
+      req.staffId,
     );
     sendSuccess(res, result, "Consultation cancelled successfully");
   };
@@ -215,6 +229,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       req.body,
+      req.staffId,
     );
     sendSuccess(res, result, "Fee agreement generated successfully", 201);
   };
@@ -247,6 +262,7 @@ export class LeadsController {
     const result = await this.svc.sendFeeAgreement(
       req.params.agreementId as string,
       req.organizationId!,
+      req.staffId,
     );
     sendSuccess(res, result, "Fee agreement sent successfully");
   };
@@ -255,6 +271,7 @@ export class LeadsController {
     const result = await this.svc.markFeeAgreementReceived(
       req.params.agreementId as string,
       req.organizationId!,
+      req.staffId,
     );
     sendSuccess(res, result, "Fee agreement marked as received");
   };
@@ -263,6 +280,7 @@ export class LeadsController {
     const result = await this.svc.markFeeAgreementPaymentReceived(
       req.params.agreementId as string,
       req.organizationId!,
+      req.staffId,
     );
     res.json({ success: true, data: result });
   };
