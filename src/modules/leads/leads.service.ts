@@ -488,6 +488,33 @@ const createLead = async (
   return lead;
 };
 
+/**
+ * Practice area and case type are stored on junction tables, but every code
+ * path (and the whole UI) only ever deals with one of each. The API returned
+ * only the `practiceAreas[]` / `caseTypes[]` arrays, while the clients all read
+ * `lead.practiceAreaId` / `lead.caseTypeId` / `lead.caseTypeName` — fields the
+ * response never actually carried, so the practice-area column rendered "—" for
+ * every lead even though the data was saved correctly on creation.
+ *
+ * Project the arrays down to the scalars the clients expect.
+ */
+type NamedRef = { id: string; name: string };
+
+const withScalarRefs = <T extends object>(row: T) => {
+  const { practiceAreas, caseTypes } = row as T & {
+    practiceAreas?: NamedRef[] | null;
+    caseTypes?: NamedRef[] | null;
+  };
+
+  return {
+    ...row,
+    practiceAreaId: practiceAreas?.[0]?.id ?? null,
+    practiceAreaName: practiceAreas?.[0]?.name ?? null,
+    caseTypeId: caseTypes?.[0]?.id ?? null,
+    caseTypeName: caseTypes?.[0]?.name ?? null,
+  };
+};
+
 const getAllLeads = async (
   organizationId: string,
   filters: Partial<PaginationParams> & {
@@ -634,7 +661,7 @@ const getAllLeads = async (
       .from(leads)
       .where(where)
       .orderBy(desc(leads.createdAt));
-    return attachConflictMatches(rows);
+    return (await attachConflictMatches(rows)).map(withScalarRefs);
   }
 
   const page = filters.page ?? 1;
@@ -660,7 +687,7 @@ const getAllLeads = async (
     .limit(limit)
     .offset(offset);
 
-  const enrichedRows = await attachConflictMatches(rows);
+  const enrichedRows = (await attachConflictMatches(rows)).map(withScalarRefs);
 
   return buildPaginatedResponse(
     enrichedRows,
@@ -759,9 +786,11 @@ const getLeadById = async (id: string, organizationId: string) => {
   ).filter((c) => c.id !== lead.consultationId);
 
   return {
-    ...lead,
-    practiceAreas: practiceAreaRows,
-    caseTypes: caseTypeRows,
+    ...withScalarRefs({
+      ...lead,
+      practiceAreas: practiceAreaRows,
+      caseTypes: caseTypeRows,
+    }),
     conflictCheck,
     questionnaireSend,
     consultation,
@@ -770,42 +799,175 @@ const getLeadById = async (id: string, organizationId: string) => {
   };
 };
 
+/** Columns on `leads` that a user may edit directly. */
+const EDITABLE_LEAD_COLUMNS = [
+  "firstName",
+  "lastName",
+  "email",
+  "phone",
+  "source",
+  "situationSummary",
+  "entityType",
+  "intakeAdversePartyName",
+  "intakeAdversePartyEmail",
+  "language",
+] as const;
+
+type EditableColumn = (typeof EDITABLE_LEAD_COLUMNS)[number];
+
 const updateLead = async (
   id: string,
   organizationId: string,
-  data: Partial<{
-    firstName: string;
-    lastName: string;
-    email: string;
-    phone: string;
-    source: string;
-    situationSummary: string;
-    notes: string;
-    respondentId: string;
-    intakeAdversePartyName: string;
-    intakeAdversePartyEmail: string;
-    timezone: string;
-    language: string;
-  }>,
+  data: Partial<
+    Record<EditableColumn, string> & {
+      practiceAreaId: string;
+      caseTypeId: string;
+      notes: string;
+    }
+  >,
   actorId?: string,
 ) => {
-  const [updated] = await db
-    .update(leads)
-    .set({ ...data, source: data.source as any, updatedAt: new Date() })
+  const [existing] = await db
+    .select()
+    .from(leads)
     .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
-    .returning();
+    .limit(1);
 
-  if (!updated) throw new NotFoundError("Lead not found");
+  if (!existing) throw new NotFoundError("Lead not found");
 
-  await logLeadEvent({
-    organizationId,
+  // `leads` has no notes column, so a body carrying `notes` was accepted by the
+  // validator and then silently dropped — the observations staff typed into the
+  // consultation card before a consultation existed were never saved anywhere.
+  // Route them to the notes trail, which is where a note actually belongs.
+  if (data.notes?.trim()) {
+    await addLeadNote(
+      id,
+      organizationId,
+      { type: "general", content: data.notes.trim() },
+      actorId,
+    ).catch((err) => console.error("Failed to save lead note", err));
+  }
+
+  // Only real columns reach .set(). The previous version spread the whole body,
+  // so keys with no matching column (practiceAreaId, caseTypeId, notes,
+  // timezone) were accepted by the validator and then silently dropped.
+  const patch: Record<string, unknown> = {};
+  const changes: Record<string, { from: unknown; to: unknown }> = {};
+
+  for (const column of EDITABLE_LEAD_COLUMNS) {
+    const next = data[column];
+    if (next === undefined) continue;
+
+    const prev = (existing as Record<string, unknown>)[column];
+    if (prev === next) continue;
+
+    patch[column] = next;
+    changes[column] = { from: prev ?? null, to: next };
+  }
+
+  // Practice area and case type live on junction tables, so they need their own
+  // read-diff-write rather than a column assignment.
+  const practiceAreaChange = await diffSingleJunction({
     leadId: id,
-    type: "lead_updated",
-    actorId,
-    metadata: { fields: Object.keys(data) },
+    nextId: data.practiceAreaId,
+    table: leadsToPracticeAreas,
+    key: "practiceAreaId",
+    nameTable: practiceAreas,
+  });
+
+  const caseTypeChange = await diffSingleJunction({
+    leadId: id,
+    nextId: data.caseTypeId,
+    table: leadsToCaseTypes,
+    key: "caseTypeId",
+    nameTable: practiceAreaCaseTypes,
+  });
+
+  if (practiceAreaChange) changes.practiceArea = practiceAreaChange.change;
+  if (caseTypeChange) changes.caseType = caseTypeChange.change;
+
+  // Nothing actually differs — don't touch updatedAt or write a hollow event
+  // claiming an edit happened.
+  if (Object.keys(changes).length === 0) return existing;
+
+  const updated = await db.transaction(async (tx) => {
+    if (Object.keys(patch).length > 0) {
+      await tx
+        .update(leads)
+        .set({ ...patch, updatedAt: new Date() } as any)
+        .where(eq(leads.id, id));
+    } else {
+      await tx.update(leads).set({ updatedAt: new Date() }).where(eq(leads.id, id));
+    }
+
+    if (practiceAreaChange) await practiceAreaChange.apply(tx);
+    if (caseTypeChange) await caseTypeChange.apply(tx);
+
+    await logLeadEvent({
+      organizationId,
+      leadId: id,
+      type: "lead_updated",
+      actorId,
+      // The changed fields with their before and after values, so the activity
+      // trail can say what changed rather than only that something did.
+      metadata: { changes },
+      tx,
+    });
+
+    const [row] = await tx.select().from(leads).where(eq(leads.id, id));
+    return row;
   });
 
   return updated;
+};
+
+/**
+ * Diff a single-valued junction (lead → practice area, lead → case type).
+ * Returns null when the caller didn't supply a value or nothing changed, so an
+ * unrelated edit never rewrites these rows.
+ */
+const diffSingleJunction = async (args: {
+  leadId: string;
+  nextId?: string;
+  table: any;
+  /** TS property key on the junction row, e.g. "practiceAreaId". */
+  key: "practiceAreaId" | "caseTypeId";
+  nameTable: typeof practiceAreas | typeof practiceAreaCaseTypes;
+}) => {
+  if (!args.nextId) return null;
+
+  const [current] = await db
+    .select({ id: args.table[args.key] })
+    .from(args.table)
+    .where(eq(args.table.leadId, args.leadId))
+    .limit(1);
+
+  const prevId: string | null = current?.id ?? null;
+  if (prevId === args.nextId) return null;
+
+  // Log names, not uuids — an activity entry reading "Immigration → Family law"
+  // is legible; one reading two uuids is not.
+  const ids = [prevId, args.nextId].filter((v): v is string => Boolean(v));
+  const names = await db
+    .select({ id: args.nameTable.id, name: args.nameTable.name })
+    .from(args.nameTable as any)
+    .where(inArray(args.nameTable.id, ids));
+
+  const nameById = new Map(names.map((n) => [n.id, n.name]));
+
+  return {
+    change: {
+      from: prevId ? (nameById.get(prevId) ?? prevId) : null,
+      to: nameById.get(args.nextId) ?? args.nextId,
+    },
+    apply: async (tx: any) => {
+      await tx.delete(args.table).where(eq(args.table.leadId, args.leadId));
+      await tx
+        .insert(args.table)
+        .values({ leadId: args.leadId, [args.key]: args.nextId })
+        .onConflictDoNothing();
+    },
+  };
 };
 
 const updateLeadStatus = async (
@@ -2388,6 +2550,29 @@ const initiateConsultation = async (
     })
     .where(eq(leads.id, leadId));
 
+  // Resolve the attorney and any additional attendees to names: the trail has
+  // to say who the consultation is *with*, and a uuid says nothing to a reader.
+  const attendeeIds = [
+    data.leadAttorneyId,
+    ...(data.participantStaffIds ?? []),
+  ].filter(Boolean);
+
+  const attendees = attendeeIds.length
+    ? await db
+        .select({
+          id: staff.id,
+          firstName: staff.firstName,
+          lastName: staff.lastName,
+        })
+        .from(staff)
+        .where(inArray(staff.id, attendeeIds))
+    : [];
+
+  const nameOf = (id: string) => {
+    const s = attendees.find((a) => a.id === id);
+    return s ? `${s.firstName} ${s.lastName}`.trim() : null;
+  };
+
   await logLeadEvent({
     organizationId,
     leadId,
@@ -2401,7 +2586,11 @@ const initiateConsultation = async (
       isUrgent: urgent,
       isFollowUp: Boolean(data.parentConsultationId),
       leadAttorneyId: data.leadAttorneyId,
+      leadAttorneyName: nameOf(data.leadAttorneyId),
       participantStaffIds: data.participantStaffIds ?? [],
+      participantNames: (data.participantStaffIds ?? [])
+        .map(nameOf)
+        .filter(Boolean),
       feeAmount,
     },
   });
