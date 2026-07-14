@@ -17,7 +17,8 @@ export class LeadsController {
   };
 
   getAllLeads = async (req: AuthRequest, res: Response) => {
-    const { stage, status, practiceAreaId, source, search, all } = req.query;
+    const { stage, status, practiceAreaId, source, search, converted, all } =
+      req.query;
     const queryPagination = all ? {} : parsePaginationQuery(req.query);
     const result = await this.svc.getAllLeads(req.organizationId!, {
       ...queryPagination,
@@ -26,6 +27,8 @@ export class LeadsController {
       practiceAreaId: practiceAreaId as string | undefined,
       source: source as string | undefined,
       search: search as string | undefined,
+      converted:
+        converted === undefined ? undefined : converted === "true",
       all: all === "true",
     });
     if (all === "true") {

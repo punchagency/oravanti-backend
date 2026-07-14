@@ -9,6 +9,8 @@ import {
   getTableColumns,
   ilike,
   inArray,
+  isNotNull,
+  isNull,
   ne,
   or,
   sql
@@ -494,6 +496,7 @@ const getAllLeads = async (
     practiceAreaId?: string;
     source?: string;
     search?: string;
+    converted?: boolean;
     all?: boolean;
   } = {},
 ) => {
@@ -508,6 +511,17 @@ const getAllLeads = async (
     conditions.push(ne(leads.status, "declined"));
   }
   if (filters.source) conditions.push(eq(leads.source, filters.source as any));
+
+  // Converted leads. Keyed on convertedAt, not status: openCase writes status
+  // "reviewed" and never "converted", so filtering on the status enum would
+  // always return nothing.
+  if (filters.converted !== undefined) {
+    conditions.push(
+      filters.converted
+        ? isNotNull(leads.convertedCaseId)
+        : isNull(leads.convertedCaseId),
+    );
+  }
 
   // Practice area lives on a junction table. This filter was previously
   // accepted and then silently dropped, so the UI's practice-area select
