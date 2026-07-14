@@ -507,6 +507,24 @@ const getAllLeads = async (
     conditions.push(ne(leads.status, "declined"));
   }
   if (filters.source) conditions.push(eq(leads.source, filters.source as any));
+
+  // Practice area lives on a junction table. This filter was previously
+  // accepted and then silently dropped, so the UI's practice-area select
+  // appeared to work while returning unfiltered results.
+  if (filters.practiceAreaId) {
+    conditions.push(
+      inArray(
+        leads.id,
+        db
+          .select({ id: leadsToPracticeAreas.leadId })
+          .from(leadsToPracticeAreas)
+          .where(
+            eq(leadsToPracticeAreas.practiceAreaId, filters.practiceAreaId),
+          ),
+      ),
+    );
+  }
+
   if (filters.search) {
     const q = `%${filters.search}%`;
     conditions.push(
@@ -514,6 +532,10 @@ const getAllLeads = async (
         ilike(leads.firstName, q),
         ilike(leads.lastName, q),
         ilike(leads.email, q),
+        ilike(leads.phone, q),
+        // Matching the columns separately means "Jane Doe" finds nothing, since
+        // no single column holds the full name.
+        ilike(sql`${leads.firstName} || ' ' || ${leads.lastName}`, q),
       )!,
     );
   }
