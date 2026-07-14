@@ -41,6 +41,14 @@ export class LeadsController {
     sendSuccess(res, counts, "Stage counts retrieved successfully");
   };
 
+  getLeadMetrics = async (req: AuthRequest, res: Response) => {
+    const metrics = await this.svc.getLeadMetrics(
+      req.organizationId!,
+      (req.query.period as "30d" | "90d" | "12mo") ?? "30d",
+    );
+    sendSuccess(res, metrics, "Lead metrics retrieved successfully");
+  };
+
   getLeadById = async (req: AuthRequest, res: Response) => {
     const lead = await this.svc.getLeadById(
       req.params.id as string,

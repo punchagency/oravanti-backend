@@ -65,6 +65,7 @@ import {
   scheduleQuestionnaireReminder,
 } from "../../queue/queues";
 import { getLeadActivity, logLeadEvent } from "./lead-events.service";
+import { getLeadMetrics } from "./lead-metrics.service";
 import { addLeadNote, getLeadNotes } from "./lead-notes.service";
 import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
 import { emailService } from "../../utils/email/email.service";
@@ -4358,6 +4359,7 @@ export class LeadsService {
   updateLead = updateLead;
   updateLeadStatus = updateLeadStatus;
   getLeadStageCounts = getLeadStageCounts;
+  getLeadMetrics = getLeadMetrics;
   getLeadActivity = getLeadActivity;
   getLeadNotes = getLeadNotes;
   addLeadNote = addLeadNote;

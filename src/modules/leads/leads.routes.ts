@@ -51,6 +51,16 @@ export class LeadsRouter {
       ctrl.getLeadStageCounts,
     );
 
+    // Registered before "/:id" so "/metrics" isn't captured as an id.
+    this.router.get(
+      "/metrics",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ query: v.leadMetricsQuerySchema }),
+      ctrl.getLeadMetrics,
+    );
+
     // Registered before "/:id" so "/consultations" isn't captured as an id.
     this.router.get(
       "/consultations",
