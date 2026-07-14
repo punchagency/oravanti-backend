@@ -94,6 +94,27 @@ export const advanceStageBodySchema = z.object({
   ]),
 });
 
+export const archiveLeadBodySchema = z.object({
+  reason: z.string().trim().min(1).max(500).optional(),
+});
+
+// Notes are append-only, so there is deliberately no update schema to pair
+// with this one.
+export const addLeadNoteBodySchema = z.object({
+  type: z
+    .enum([
+      "general",
+      "phone_call",
+      "email",
+      "voicemail",
+      "system_log",
+      "pre_consultation",
+      "post_consultation",
+    ])
+    .optional(),
+  content: z.string().trim().min(1, "A note cannot be empty").max(10_000),
+});
+
 export const resolveConflictCheckBodySchema = z.object({
   action: z.enum(["approve", "decline"]),
   reviewNotes: z

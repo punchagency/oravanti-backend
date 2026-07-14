@@ -37,6 +37,7 @@ import {
   type FeeAgreementDetails,
 } from "../../db/schema/fee-agreements";
 import {
+  leadEvents,
   leads,
   leadsToCaseTypes,
   leadsToPracticeAreas,
@@ -64,6 +65,7 @@ import {
   scheduleQuestionnaireReminder,
 } from "../../queue/queues";
 import { getLeadActivity, logLeadEvent } from "./lead-events.service";
+import { addLeadNote, getLeadNotes } from "./lead-notes.service";
 import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
 import { emailService } from "../../utils/email/email.service";
 import {
@@ -791,6 +793,117 @@ const updateLeadStatus = async (
     type: status === "archived" ? "lead_archived" : "lead_updated",
     actorId,
     metadata: { status },
+  });
+
+  return updated;
+};
+
+/**
+ * Archive a lead, recording who did it and why. Distinct from
+ * `updateLeadStatus({ status: "archived" })`, which cannot express either.
+ */
+const archiveLead = async (
+  id: string,
+  organizationId: string,
+  data: { reason?: string } = {},
+  actorId?: string,
+) => {
+  const [lead] = await db
+    .select()
+    .from(leads)
+    .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
+    .limit(1);
+
+  if (!lead) throw new NotFoundError("Lead not found");
+  if (lead.status === "archived")
+    throw new ConflictError("Lead is already archived");
+  if (lead.convertedCaseId)
+    throw new ConflictError("A converted lead cannot be archived");
+
+  const now = new Date();
+  const [updated] = await db
+    .update(leads)
+    .set({
+      status: "archived",
+      archivedById: actorId ?? null,
+      archivedAt: now,
+      archiveReason: data.reason ?? null,
+      updatedAt: now,
+    })
+    .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
+    .returning();
+
+  await logLeadEvent({
+    organizationId,
+    leadId: id,
+    type: "lead_archived",
+    actorId,
+    metadata: { reason: data.reason ?? null, priorStatus: lead.status },
+  });
+
+  return updated;
+};
+
+/**
+ * Restore an archived lead. `updateLeadStatus` cannot do this: its validator
+ * only accepts archived | reviewed, so a lead could never be returned to "new".
+ * The prior status is recovered from the archival event rather than guessed —
+ * falling back to "new" only when the lead predates the activity trail.
+ */
+const restoreLead = async (
+  id: string,
+  organizationId: string,
+  actorId?: string,
+) => {
+  const [lead] = await db
+    .select()
+    .from(leads)
+    .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
+    .limit(1);
+
+  if (!lead) throw new NotFoundError("Lead not found");
+  if (lead.status !== "archived")
+    throw new ConflictError("Only an archived lead can be restored");
+
+  const [lastArchive] = await db
+    .select({ metadata: leadEvents.metadata })
+    .from(leadEvents)
+    .where(
+      and(eq(leadEvents.leadId, id), eq(leadEvents.type, "lead_archived")),
+    )
+    .orderBy(desc(leadEvents.createdAt))
+    .limit(1);
+
+  const priorStatus = (lastArchive?.metadata as { priorStatus?: string } | null)
+    ?.priorStatus;
+
+  // Only restore to a status the lead could legitimately hold again. A lead
+  // archived while declined stays declined — restoring it to "new" would erase
+  // a conflict decision.
+  const restoredStatus =
+    priorStatus === "reviewed" || priorStatus === "overridden"
+      ? (priorStatus as "reviewed" | "overridden")
+      : "new";
+
+  const now = new Date();
+  const [updated] = await db
+    .update(leads)
+    .set({
+      status: restoredStatus,
+      archivedById: null,
+      archivedAt: null,
+      archiveReason: null,
+      updatedAt: now,
+    })
+    .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
+    .returning();
+
+  await logLeadEvent({
+    organizationId,
+    leadId: id,
+    type: "lead_restored",
+    actorId,
+    metadata: { restoredStatus },
   });
 
   return updated;
@@ -4224,6 +4337,10 @@ export class LeadsService {
   updateLeadStatus = updateLeadStatus;
   getLeadStageCounts = getLeadStageCounts;
   getLeadActivity = getLeadActivity;
+  getLeadNotes = getLeadNotes;
+  addLeadNote = addLeadNote;
+  archiveLead = archiveLead;
+  restoreLead = restoreLead;
   advanceLeadStage = advanceLeadStage;
   runConflictCheck = runConflictCheck;
   getConflictCheck = getConflictCheck;
