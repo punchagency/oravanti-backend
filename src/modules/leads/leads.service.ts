@@ -41,8 +41,6 @@ import {
 import {
   leadEvents,
   leads,
-  leadsToCaseTypes,
-  leadsToPracticeAreas,
 } from "../../db/schema/leads";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreas } from "../../db/schema/practice-areas";
@@ -450,32 +448,14 @@ const createLead = async (
       entityType: (data.entityType ?? "individual") as any,
       source: data.source as any,
       situationSummary: data.situationSummary,
+      practiceAreaId: data.practiceAreaId ?? null,
+      caseTypeId: data.caseTypeId ?? null,
       respondentId: creatorStaffId,
       intakeAdversePartyName: data.intakeAdversePartyName,
       intakeAdversePartyEmail: data.intakeAdversePartyEmail,
       language: data.language,
     })
     .returning();
-
-  if (data.practiceAreaId) {
-    await db
-      .insert(leadsToPracticeAreas)
-      .values({
-        leadId: lead.id,
-        practiceAreaId: data.practiceAreaId,
-      })
-      .onConflictDoNothing();
-  }
-
-  if (data.caseTypeId) {
-    await db
-      .insert(leadsToCaseTypes)
-      .values({
-        leadId: lead.id,
-        caseTypeId: data.caseTypeId,
-      })
-      .onConflictDoNothing();
-  }
 
   await logLeadEvent({
     organizationId,
@@ -486,33 +466,6 @@ const createLead = async (
   });
 
   return lead;
-};
-
-/**
- * Practice area and case type are stored on junction tables, but every code
- * path (and the whole UI) only ever deals with one of each. The API returned
- * only the `practiceAreas[]` / `caseTypes[]` arrays, while the clients all read
- * `lead.practiceAreaId` / `lead.caseTypeId` / `lead.caseTypeName` — fields the
- * response never actually carried, so the practice-area column rendered "—" for
- * every lead even though the data was saved correctly on creation.
- *
- * Project the arrays down to the scalars the clients expect.
- */
-type NamedRef = { id: string; name: string };
-
-const withScalarRefs = <T extends object>(row: T) => {
-  const { practiceAreas, caseTypes } = row as T & {
-    practiceAreas?: NamedRef[] | null;
-    caseTypes?: NamedRef[] | null;
-  };
-
-  return {
-    ...row,
-    practiceAreaId: practiceAreas?.[0]?.id ?? null,
-    practiceAreaName: practiceAreas?.[0]?.name ?? null,
-    caseTypeId: caseTypes?.[0]?.id ?? null,
-    caseTypeName: caseTypes?.[0]?.name ?? null,
-  };
 };
 
 const getAllLeads = async (
@@ -550,21 +503,10 @@ const getAllLeads = async (
     );
   }
 
-  // Practice area lives on a junction table. This filter was previously
-  // accepted and then silently dropped, so the UI's practice-area select
-  // appeared to work while returning unfiltered results.
+  // This filter was previously accepted and then silently dropped, so the UI's
+  // practice-area select appeared to work while returning unfiltered results.
   if (filters.practiceAreaId) {
-    conditions.push(
-      inArray(
-        leads.id,
-        db
-          .select({ id: leadsToPracticeAreas.leadId })
-          .from(leadsToPracticeAreas)
-          .where(
-            eq(leadsToPracticeAreas.practiceAreaId, filters.practiceAreaId),
-          ),
-      ),
-    );
+    conditions.push(eq(leads.practiceAreaId, filters.practiceAreaId));
   }
 
   if (filters.search) {
@@ -623,30 +565,8 @@ const getAllLeads = async (
     return enriched;
   };
 
-  const practiceAreaSubquery = sql<{ id: string; name: string }[]>`
-    COALESCE(
-      (
-        SELECT json_agg(json_build_object('id', ${practiceAreas.id}, 'name', ${practiceAreas.name}))
-        FROM ${leadsToPracticeAreas}
-        INNER JOIN ${practiceAreas} ON ${practiceAreas.id} = ${leadsToPracticeAreas.practiceAreaId}
-        WHERE ${leadsToPracticeAreas.leadId} = ${leads.id}
-      ),
-      '[]'::json
-    )
-  `;
-
-  const caseTypeSubquery = sql<{ id: string; name: string }[]>`
-    COALESCE(
-      (
-        SELECT json_agg(json_build_object('id', ${practiceAreaCaseTypes.id}, 'name', ${practiceAreaCaseTypes.name}))
-        FROM ${leadsToCaseTypes}
-        INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${leadsToCaseTypes.caseTypeId}
-        WHERE ${leadsToCaseTypes.leadId} = ${leads.id}
-      ),
-      '[]'::json
-    )
-  `;
-
+  // Practice area and case type are columns on `leads` again, so their names
+  // come from a plain join rather than a correlated json_agg subquery.
   const nameExpr = sql<string>`${leads.firstName} || ' ' || ${leads.lastName}`;
 
   if (filters.all) {
@@ -654,14 +574,18 @@ const getAllLeads = async (
       .select({
         ...getTableColumns(leads),
         name: nameExpr,
-        practiceAreas: practiceAreaSubquery,
-        caseTypes: caseTypeSubquery,
-        caseTypeName: sql<string>`NULL::text`,
+        practiceAreaName: practiceAreas.name,
+        caseTypeName: practiceAreaCaseTypes.name,
       })
       .from(leads)
+      .leftJoin(practiceAreas, eq(practiceAreas.id, leads.practiceAreaId))
+      .leftJoin(
+        practiceAreaCaseTypes,
+        eq(practiceAreaCaseTypes.id, leads.caseTypeId),
+      )
       .where(where)
       .orderBy(desc(leads.createdAt));
-    return (await attachConflictMatches(rows)).map(withScalarRefs);
+    return attachConflictMatches(rows);
   }
 
   const page = filters.page ?? 1;
@@ -677,17 +601,21 @@ const getAllLeads = async (
     .select({
       ...getTableColumns(leads),
       name: nameExpr,
-      practiceAreas: practiceAreaSubquery,
-      caseTypes: caseTypeSubquery,
-      caseTypeName: sql<string>`NULL::text`,
+      practiceAreaName: practiceAreas.name,
+      caseTypeName: practiceAreaCaseTypes.name,
     })
     .from(leads)
+    .leftJoin(practiceAreas, eq(practiceAreas.id, leads.practiceAreaId))
+    .leftJoin(
+      practiceAreaCaseTypes,
+      eq(practiceAreaCaseTypes.id, leads.caseTypeId),
+    )
     .where(where)
     .orderBy(desc(leads.createdAt))
     .limit(limit)
     .offset(offset);
 
-  const enrichedRows = (await attachConflictMatches(rows)).map(withScalarRefs);
+  const enrichedRows = await attachConflictMatches(rows);
 
   return buildPaginatedResponse(
     enrichedRows,
@@ -705,40 +633,22 @@ const getLeadById = async (id: string, organizationId: string) => {
     .select({
       ...getTableColumns(leads),
       name: sql<string>`${leads.firstName} || ' ' || ${leads.lastName}`,
+      practiceAreaName: practiceAreas.name,
+      caseTypeName: practiceAreaCaseTypes.name,
     })
     .from(leads)
+    .leftJoin(practiceAreas, eq(practiceAreas.id, leads.practiceAreaId))
+    .leftJoin(
+      practiceAreaCaseTypes,
+      eq(practiceAreaCaseTypes.id, leads.caseTypeId),
+    )
     .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
     .limit(1);
 
   if (!lead) return null;
 
-  const [
-    practiceAreaRows,
-    caseTypeRows,
-    conflictCheck,
-    questionnaireSend,
-    consultation,
-    feeAgreement,
-  ] = await Promise.all([
-    db
-      .select({ id: practiceAreas.id, name: practiceAreas.name })
-      .from(leadsToPracticeAreas)
-      .innerJoin(
-        practiceAreas,
-        eq(practiceAreas.id, leadsToPracticeAreas.practiceAreaId),
-      )
-      .where(eq(leadsToPracticeAreas.leadId, id)),
-    db
-      .select({
-        id: practiceAreaCaseTypes.id,
-        name: practiceAreaCaseTypes.name,
-      })
-      .from(leadsToCaseTypes)
-      .innerJoin(
-        practiceAreaCaseTypes,
-        eq(practiceAreaCaseTypes.id, leadsToCaseTypes.caseTypeId),
-      )
-      .where(eq(leadsToCaseTypes.leadId, id)),
+  const [conflictCheck, questionnaireSend, consultation, feeAgreement] =
+    await Promise.all([
     lead.conflictCheckId
       ? db
           .select()
@@ -786,11 +696,7 @@ const getLeadById = async (id: string, organizationId: string) => {
   ).filter((c) => c.id !== lead.consultationId);
 
   return {
-    ...withScalarRefs({
-      ...lead,
-      practiceAreas: practiceAreaRows,
-      caseTypes: caseTypeRows,
-    }),
+    ...lead,
     conflictCheck,
     questionnaireSend,
     consultation,
@@ -865,43 +771,39 @@ const updateLead = async (
     changes[column] = { from: prev ?? null, to: next };
   }
 
-  // Practice area and case type live on junction tables, so they need their own
-  // read-diff-write rather than a column assignment.
-  const practiceAreaChange = await diffSingleJunction({
-    leadId: id,
+  // Practice area and case type are plain columns, but the activity trail must
+  // record their *names* — "Immigration → Family law" is legible where a pair of
+  // uuids is not.
+  const practiceAreaChange = await diffNamedRef({
+    prevId: existing.practiceAreaId,
     nextId: data.practiceAreaId,
-    table: leadsToPracticeAreas,
-    key: "practiceAreaId",
     nameTable: practiceAreas,
   });
 
-  const caseTypeChange = await diffSingleJunction({
-    leadId: id,
+  const caseTypeChange = await diffNamedRef({
+    prevId: existing.caseTypeId,
     nextId: data.caseTypeId,
-    table: leadsToCaseTypes,
-    key: "caseTypeId",
     nameTable: practiceAreaCaseTypes,
   });
 
-  if (practiceAreaChange) changes.practiceArea = practiceAreaChange.change;
-  if (caseTypeChange) changes.caseType = caseTypeChange.change;
+  if (practiceAreaChange) {
+    patch.practiceAreaId = data.practiceAreaId;
+    changes.practiceArea = practiceAreaChange;
+  }
+  if (caseTypeChange) {
+    patch.caseTypeId = data.caseTypeId;
+    changes.caseType = caseTypeChange;
+  }
 
   // Nothing actually differs — don't touch updatedAt or write a hollow event
   // claiming an edit happened.
   if (Object.keys(changes).length === 0) return existing;
 
   const updated = await db.transaction(async (tx) => {
-    if (Object.keys(patch).length > 0) {
-      await tx
-        .update(leads)
-        .set({ ...patch, updatedAt: new Date() } as any)
-        .where(eq(leads.id, id));
-    } else {
-      await tx.update(leads).set({ updatedAt: new Date() }).where(eq(leads.id, id));
-    }
-
-    if (practiceAreaChange) await practiceAreaChange.apply(tx);
-    if (caseTypeChange) await caseTypeChange.apply(tx);
+    await tx
+      .update(leads)
+      .set({ ...patch, updatedAt: new Date() } as any)
+      .where(eq(leads.id, id));
 
     await logLeadEvent({
       organizationId,
@@ -922,32 +824,19 @@ const updateLead = async (
 };
 
 /**
- * Diff a single-valued junction (lead → practice area, lead → case type).
- * Returns null when the caller didn't supply a value or nothing changed, so an
- * unrelated edit never rewrites these rows.
+ * Diff a uuid reference and resolve both sides to display names for the activity
+ * trail. Returns null when the caller supplied no value or nothing changed, so
+ * an unrelated edit never records a spurious change.
  */
-const diffSingleJunction = async (args: {
-  leadId: string;
+const diffNamedRef = async (args: {
+  prevId: string | null;
   nextId?: string;
-  table: any;
-  /** TS property key on the junction row, e.g. "practiceAreaId". */
-  key: "practiceAreaId" | "caseTypeId";
   nameTable: typeof practiceAreas | typeof practiceAreaCaseTypes;
 }) => {
   if (!args.nextId) return null;
+  if (args.prevId === args.nextId) return null;
 
-  const [current] = await db
-    .select({ id: args.table[args.key] })
-    .from(args.table)
-    .where(eq(args.table.leadId, args.leadId))
-    .limit(1);
-
-  const prevId: string | null = current?.id ?? null;
-  if (prevId === args.nextId) return null;
-
-  // Log names, not uuids — an activity entry reading "Immigration → Family law"
-  // is legible; one reading two uuids is not.
-  const ids = [prevId, args.nextId].filter((v): v is string => Boolean(v));
+  const ids = [args.prevId, args.nextId].filter((v): v is string => Boolean(v));
   const names = await db
     .select({ id: args.nameTable.id, name: args.nameTable.name })
     .from(args.nameTable as any)
@@ -956,17 +845,8 @@ const diffSingleJunction = async (args: {
   const nameById = new Map(names.map((n) => [n.id, n.name]));
 
   return {
-    change: {
-      from: prevId ? (nameById.get(prevId) ?? prevId) : null,
-      to: nameById.get(args.nextId) ?? args.nextId,
-    },
-    apply: async (tx: any) => {
-      await tx.delete(args.table).where(eq(args.table.leadId, args.leadId));
-      await tx
-        .insert(args.table)
-        .values({ leadId: args.leadId, [args.key]: args.nextId })
-        .onConflictDoNothing();
-    },
+    from: args.prevId ? (nameById.get(args.prevId) ?? args.prevId) : null,
+    to: nameById.get(args.nextId) ?? args.nextId,
   };
 };
 
@@ -2053,9 +1933,9 @@ const sendQuestionnaire = async (
 
   // Resolve the case type from the junction table
   const [leadCaseType] = await db
-    .select({ caseTypeId: leadsToCaseTypes.caseTypeId })
-    .from(leadsToCaseTypes)
-    .where(eq(leadsToCaseTypes.leadId, leadId))
+    .select({ caseTypeId: leads.caseTypeId })
+    .from(leads)
+    .where(eq(leads.id, leadId))
     .limit(1);
 
   const caseTypeId = leadCaseType?.caseTypeId;
@@ -2862,11 +2742,11 @@ const updateConsultation = async (
     // been sent one. Skipped silently when the lead has no case type yet.
     if (updated.autoSendQuestionnaire && !lead.questionnaireSendId) {
       const [leadCaseType] = await db
-        .select({ id: leadsToCaseTypes.caseTypeId })
-        .from(leadsToCaseTypes)
-        .where(eq(leadsToCaseTypes.leadId, leadId))
+        .select({ id: leads.caseTypeId })
+        .from(leads)
+        .where(eq(leads.id, leadId))
         .limit(1);
-      if (leadCaseType) {
+      if (leadCaseType?.id) {
         await sendQuestionnaire(leadId, organizationId, undefined, {
           language: lead.language ?? undefined,
         }).catch(console.error);
@@ -4198,9 +4078,9 @@ const getEligibleTeamsForLead = async (
   organizationId: string,
 ) => {
   const [leadCaseType] = await db
-    .select({ caseTypeId: leadsToCaseTypes.caseTypeId })
-    .from(leadsToCaseTypes)
-    .where(eq(leadsToCaseTypes.leadId, leadId))
+    .select({ caseTypeId: leads.caseTypeId })
+    .from(leads)
+    .where(eq(leads.id, leadId))
     .limit(1);
 
   if (!leadCaseType?.caseTypeId) return [];
@@ -4318,16 +4198,15 @@ const openCase = async (
 
     // 3. Resolve practice area and case type from junction tables
     const [leadPracticeArea] = await tx
-      .select({ practiceAreaId: leadsToPracticeAreas.practiceAreaId })
-      .from(leadsToPracticeAreas)
-      .where(eq(leadsToPracticeAreas.leadId, leadId))
+      .select({
+        practiceAreaId: leads.practiceAreaId,
+        caseTypeId: leads.caseTypeId,
+      })
+      .from(leads)
+      .where(eq(leads.id, leadId))
       .limit(1);
 
-    const [leadCaseType] = await tx
-      .select({ caseTypeId: leadsToCaseTypes.caseTypeId })
-      .from(leadsToCaseTypes)
-      .where(eq(leadsToCaseTypes.leadId, leadId))
-      .limit(1);
+    const leadCaseType = leadPracticeArea;
 
     const resolvedPracticeAreaId = leadPracticeArea?.practiceAreaId;
     const resolvedCaseTypeId = leadCaseType?.caseTypeId;

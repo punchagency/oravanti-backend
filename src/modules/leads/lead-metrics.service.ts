@@ -2,11 +2,7 @@ import { and, asc, eq, gte, inArray, isNotNull, lt } from "drizzle-orm";
 import { db } from "../../db/client";
 import type { FeeAgreementDetails } from "../../db/schema/fee-agreements";
 import { feeAgreements } from "../../db/schema/fee-agreements";
-import {
-  leadEvents,
-  leads,
-  leadsToPracticeAreas,
-} from "../../db/schema/leads";
+import { leadEvents, leads } from "../../db/schema/leads";
 import { practiceAreas } from "../../db/schema/practice-areas";
 
 export type MetricsPeriod = "30d" | "90d" | "12mo";
@@ -274,16 +270,13 @@ export const getLeadMetrics = async (
   const areaRows = leadIds.length
     ? await db
         .select({
-          leadId: leadsToPracticeAreas.leadId,
+          leadId: leads.id,
           practiceAreaId: practiceAreas.id,
           practiceAreaName: practiceAreas.name,
         })
-        .from(leadsToPracticeAreas)
-        .innerJoin(
-          practiceAreas,
-          eq(leadsToPracticeAreas.practiceAreaId, practiceAreas.id),
-        )
-        .where(inArray(leadsToPracticeAreas.leadId, leadIds))
+        .from(leads)
+        .innerJoin(practiceAreas, eq(leads.practiceAreaId, practiceAreas.id))
+        .where(inArray(leads.id, leadIds))
     : [];
 
   const convertedIds = new Set(converted.map((l) => l.id));

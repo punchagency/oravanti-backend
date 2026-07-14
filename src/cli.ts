@@ -49,7 +49,7 @@ import {
 } from "./db/schema/documents";
 import { feeAgreements } from "./db/schema/fee-agreements";
 import { firmPracticeAreas } from "./db/schema/firm-practice-areas";
-import { leads, leadsToPracticeAreas } from "./db/schema/leads";
+import { leads } from "./db/schema/leads";
 import { leaveRequests } from "./db/schema/leave-requests";
 import { paralegalProfiles } from "./db/schema/paralegal-profiles";
 import { practiceAreaCaseTypes } from "./db/schema/practice-area-case-types";
@@ -2835,8 +2835,7 @@ const deletePracticeAreas = async (ids: readonly string[]) => {
     const leadRows = await tx
       .select({ id: leads.id })
       .from(leads)
-      .innerJoin(leadsToPracticeAreas, eq(leadsToPracticeAreas.leadId, leads.id))
-      .where(inArray(leadsToPracticeAreas.practiceAreaId, areaIds));
+      .where(inArray(leads.practiceAreaId, areaIds));
     const leadIds = leadRows.map((r) => r.id);
 
     const ctqRows = caseTypeIds.length

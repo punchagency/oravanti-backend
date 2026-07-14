@@ -96,7 +96,15 @@ export const leads = pgTable("leads", {
   entityType:     leadEntityTypeEnum("entity_type").notNull().default("individual"),
   source:         leadSourceEnum("source").notNull(),
   situationSummary: text("situation_summary"),
-  
+
+  // A lead has exactly one practice area and one case type. These were briefly
+  // modelled as many-to-many junctions, but every code path only ever read or
+  // wrote the first row (.limit(1)), and the junctions could not be projected
+  // onto the scalar fields the clients read — so the practice-area and matter
+  // type silently rendered empty everywhere. Back to plain columns.
+  practiceAreaId: uuid("practice_area_id").references(() => practiceAreas.id),
+  caseTypeId:     uuid("case_type_id").references(() => practiceAreaCaseTypes.id),
+
   // Compliance / Risk Mitigation checks
   intakeAdversePartyName:  text("intake_adverse_party_name"),
   intakeAdversePartyEmail: text("intake_adverse_party_email"),
@@ -176,25 +184,9 @@ export const leadNotes = pgTable("lead_notes", {
   index("lead_notes_lead_id_created_at_idx").on(t.leadId, t.createdAt),
 ]);
 
-/**
- * Junction Table: Connects multiple Practice Areas to a single Lead.
- */
-export const leadsToPracticeAreas = pgTable("leads_to_practice_areas", {
-  leadId:         uuid("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
-  practiceAreaId: uuid("practice_area_id").notNull().references(() => practiceAreas.id, { onDelete: "cascade" }),
-}, (t) => [
-  { pk: primaryKey({ columns: [t.leadId, t.practiceAreaId] }) }
-]);
-
-/**
- * Junction Table: Connects multiple granular Case Types to a single Lead.
- */
-export const leadsToCaseTypes = pgTable("leads_to_case_types", {
-  leadId:     uuid("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
-  caseTypeId: uuid("case_type_id").notNull().references(() => practiceAreaCaseTypes.id, { onDelete: "cascade" }),
-}, (t) => [
-  { pk: primaryKey({ columns: [t.leadId, t.caseTypeId] }) }
-]);
+// leads_to_practice_areas / leads_to_case_types are gone: a lead's practice
+// area and case type are columns on `leads` again. See the note on those
+// columns above.
 
 export type Lead = typeof leads.$inferSelect;
 export type NewLead = typeof leads.$inferInsert;
