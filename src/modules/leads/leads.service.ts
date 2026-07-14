@@ -1011,6 +1011,40 @@ const logStageChange = async (data: {
   });
 };
 
+/**
+ * Consultation notes live in mutable columns on the consultation
+ * (preConsultationNotes / attorneyNotes), which means they can be overwritten
+ * and carry no author. Mirror each new value into lead_notes so it also lands
+ * in the permanent, attributed, append-only record the Notes tab reads.
+ *
+ * Written only when the text actually changed and is non-empty, so re-saving an
+ * unchanged note doesn't spam the trail. Skipped when there is no staff actor,
+ * because an unattributed note is worthless as a record.
+ */
+const mirrorConsultationNote = async (data: {
+  leadId: string;
+  organizationId: string;
+  type: "pre_consultation" | "post_consultation";
+  content?: string | null;
+  previous?: string | null;
+  actorId?: string;
+}) => {
+  const content = data.content?.trim();
+  if (!content) return;
+  if (content === data.previous?.trim()) return;
+  if (!data.actorId) return;
+
+  await addLeadNote(
+    data.leadId,
+    data.organizationId,
+    { type: data.type, content },
+    data.actorId,
+  ).catch((err) => {
+    // A note that fails to mirror must not roll back the consultation itself.
+    console.error("Failed to mirror consultation note", err);
+  });
+};
+
 const advanceLeadStage = async (
   id: string,
   organizationId: string,
@@ -2372,6 +2406,17 @@ const initiateConsultation = async (
     },
   });
 
+  // Pre-consultation notes were previously written to the consultation row and
+  // never surfaced anywhere — not in the CRM, not in intake. Mirror them into
+  // the notes trail so they are actually readable.
+  await mirrorConsultationNote({
+    leadId,
+    organizationId,
+    type: "pre_consultation",
+    content: data.preConsultationNotes,
+    actorId: scheduledById,
+  });
+
   if (!data.parentConsultationId) {
     await logStageChange({
       organizationId,
@@ -2572,6 +2617,26 @@ const updateConsultation = async (
       },
     });
   }
+
+  // Both note columns are mutable and unattributed; mirror each new value into
+  // the permanent notes trail.
+  await mirrorConsultationNote({
+    leadId,
+    organizationId,
+    type: "pre_consultation",
+    content: data.preConsultationNotes,
+    previous: existing.preConsultationNotes,
+    actorId,
+  });
+
+  await mirrorConsultationNote({
+    leadId,
+    organizationId,
+    type: "post_consultation",
+    content: data.attorneyNotes,
+    previous: existing.attorneyNotes,
+    actorId,
+  });
 
   // Completion side effects (once — re-PATCHing a completed row is a no-op).
   if (data.status === "completed" && existing.status !== "completed") {
