@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, inArray, isNotNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNotNull, lt } from "drizzle-orm";
 import { db } from "../../db/client";
 import type { FeeAgreementDetails } from "../../db/schema/fee-agreements";
 import { feeAgreements } from "../../db/schema/fee-agreements";
@@ -43,6 +43,50 @@ const periodStart = (period: MetricsPeriod): Date => {
   return start;
 };
 
+type CohortRow = {
+  createdAt: Date;
+  convertedAt: Date | null;
+};
+
+/**
+ * Headline stats for a set of leads. Shared by the current window and the
+ * preceding one of equal length, so the two are always computed identically.
+ */
+const summarise = (cohort: CohortRow[]) => {
+  const totalLeads = cohort.length;
+
+  // Conversion is keyed on convertedAt, not status: openCase writes status
+  // "reviewed", never "converted", so a status-keyed metric would read zero.
+  const converted = cohort.filter((l) => l.convertedAt !== null);
+  const conversionRate =
+    totalLeads > 0 ? (converted.length / totalLeads) * 100 : 0;
+
+  const avgDaysToConvert: Measurable<number> =
+    converted.length > 0
+      ? {
+          status: "ok",
+          value:
+            converted.reduce(
+              (sum, l) =>
+                sum +
+                (l.convertedAt!.getTime() - l.createdAt.getTime()) /
+                  (1000 * 60 * 60 * 24),
+              0,
+            ) / converted.length,
+        }
+      : {
+          status: "insufficient_data",
+          reason: "No leads from this period have converted yet",
+        };
+
+  return {
+    totalLeads,
+    convertedLeads: converted.length,
+    conversionRate,
+    avgDaysToConvert,
+  };
+};
+
 /**
  * The contracted value of an agreement, where the agreement itself determines
  * one.
@@ -75,47 +119,54 @@ export const getLeadMetrics = async (
 ) => {
   const since = periodStart(period);
 
-  const cohort = await db
-    .select({
-      id: leads.id,
-      source: leads.source,
-      status: leads.status,
-      pipelineStage: leads.pipelineStage,
-      createdAt: leads.createdAt,
-      convertedAt: leads.convertedAt,
-      feeAgreementId: leads.feeAgreementId,
-    })
-    .from(leads)
-    .where(
-      and(eq(leads.organizationId, organizationId), gte(leads.createdAt, since)),
-    );
+  // The equal-length window immediately before this one, so "vs previous
+  // period" compares like with like.
+  const previousSince = new Date(since);
+  previousSince.setDate(previousSince.getDate() - PERIOD_DAYS[period]);
+
+  const selection = {
+    id: leads.id,
+    source: leads.source,
+    status: leads.status,
+    pipelineStage: leads.pipelineStage,
+    createdAt: leads.createdAt,
+    convertedAt: leads.convertedAt,
+    feeAgreementId: leads.feeAgreementId,
+  };
+
+  const [cohort, previousCohort] = await Promise.all([
+    db
+      .select(selection)
+      .from(leads)
+      .where(
+        and(
+          eq(leads.organizationId, organizationId),
+          gte(leads.createdAt, since),
+        ),
+      ),
+    db
+      .select(selection)
+      .from(leads)
+      .where(
+        and(
+          eq(leads.organizationId, organizationId),
+          gte(leads.createdAt, previousSince),
+          lt(leads.createdAt, since),
+        ),
+      ),
+  ]);
 
   const leadIds = cohort.map((l) => l.id);
-  const totalLeads = cohort.length;
 
-  // Conversion is keyed on convertedAt, not status: openCase writes status
-  // "reviewed", never "converted", so a status-keyed metric would read zero.
+  const current = summarise(cohort);
+  const { totalLeads, convertedLeads, conversionRate, avgDaysToConvert } =
+    current;
   const converted = cohort.filter((l) => l.convertedAt !== null);
-  const conversionRate =
-    totalLeads > 0 ? (converted.length / totalLeads) * 100 : 0;
 
-  const avgDaysToConvert: Measurable<number> =
-    converted.length > 0
-      ? {
-          status: "ok",
-          value:
-            converted.reduce(
-              (sum, l) =>
-                sum +
-                (l.convertedAt!.getTime() - l.createdAt.getTime()) /
-                  (1000 * 60 * 60 * 24),
-              0,
-            ) / converted.length,
-        }
-      : {
-          status: "insufficient_data",
-          reason: "No leads from this period have converted yet",
-        };
+  // Returned raw rather than as a delta so the UI can tell "no change" apart
+  // from "there was no previous period to compare against" — a firm's first
+  // month must not report a triumphant +100%.
+  const previous = summarise(previousCohort);
 
   // ─── Funnel ────────────────────────────────────────────────────────────────
   // Stages are ordinal and a lead never regresses, so "reached stage N" is
@@ -296,9 +347,10 @@ export const getLeadMetrics = async (
     period,
     since: since.toISOString(),
     totalLeads,
-    convertedLeads: converted.length,
+    convertedLeads,
     conversionRate,
     avgDaysToConvert,
+    previous,
     funnel,
     avgDaysInStage,
     leadsBySource,
