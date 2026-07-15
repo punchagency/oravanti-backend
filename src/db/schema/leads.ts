@@ -115,6 +115,11 @@ export const leads = pgTable("leads", {
   // used when auto-sending the intake questionnaire.
   language:       text("language"),
 
+  // IANA timezone for the lead (e.g. "America/New_York"), used to render
+  // consultation times in lead-facing comms. Falls back to the firm zone when
+  // unset — see getLeadTimezone.
+  timezone:       text("timezone"),
+
   // Pipeline tracking references (unlinked raw UUIDs avoiding complex circular references)
   conflictCheckId:     uuid("conflict_check_id"),
   questionnaireSendId: uuid("questionnaire_send_id"),

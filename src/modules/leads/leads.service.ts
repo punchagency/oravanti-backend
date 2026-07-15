@@ -454,6 +454,7 @@ const createLead = async (
       intakeAdversePartyName: data.intakeAdversePartyName,
       intakeAdversePartyEmail: data.intakeAdversePartyEmail,
       language: data.language,
+      timezone: data.timezone,
     })
     .returning();
 
@@ -717,6 +718,7 @@ const EDITABLE_LEAD_COLUMNS = [
   "intakeAdversePartyName",
   "intakeAdversePartyEmail",
   "language",
+  "timezone",
 ] as const;
 
 type EditableColumn = (typeof EDITABLE_LEAD_COLUMNS)[number];
@@ -2936,10 +2938,16 @@ const getConsultationBooking = async (token: string) => {
 
 /** Resolve a lead's timezone, falling back to the firm zone when unset. */
 const getLeadTimezone = async (
-  _leadId: string,
+  leadId: string,
   organizationId: string,
 ): Promise<string> => {
-  return getFirmTimezone(organizationId);
+  const [lead] = await db
+    .select({ timezone: leads.timezone })
+    .from(leads)
+    .where(eq(leads.id, leadId))
+    .limit(1);
+
+  return lead?.timezone ?? getFirmTimezone(organizationId);
 };
 
 const payConsultationFee = async (token: string) => {
