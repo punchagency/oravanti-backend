@@ -27,7 +27,16 @@ export const validateRequest =
       }
 
       if (schema.query) {
-        (req as any).query = schema.query.parse(req.query);
+        // Express 5 exposes `query` as a getter-only accessor on the request
+        // prototype, so a plain assignment throws ("Cannot set property query
+        // ... which has only a getter"). Shadow it with an own data property so
+        // controllers still read the parsed/coerced values off req.query.
+        Object.defineProperty(req, "query", {
+          value: schema.query.parse(req.query),
+          writable: true,
+          configurable: true,
+          enumerable: true,
+        });
       }
 
       if (schema.body) {

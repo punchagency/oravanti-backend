@@ -51,6 +51,16 @@ export class LeadsRouter {
       ctrl.getLeadStageCounts,
     );
 
+    // Registered before "/:id" so "/metrics" isn't captured as an id.
+    this.router.get(
+      "/metrics",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ query: v.leadMetricsQuerySchema }),
+      ctrl.getLeadMetrics,
+    );
+
     // Registered before "/:id" so "/consultations" isn't captured as an id.
     this.router.get(
       "/consultations",
@@ -103,6 +113,65 @@ export class LeadsRouter {
         body: v.updateLeadStatusSchema,
       }),
       ctrl.updateLeadStatus,
+    );
+
+    // ── Activity trail (read-only; events are append-only by design) ──────────
+
+    this.router.get(
+      "/:id/activity",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.idParamsSchema }),
+      ctrl.getLeadActivity,
+    );
+
+    // ── Notes ─────────────────────────────────────────────────────────────────
+    // Read and append only. No PATCH or DELETE is registered here, and none
+    // should be: a note records what someone said at a point in time.
+
+    this.router.get(
+      "/:id/notes",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.idParamsSchema }),
+      ctrl.getLeadNotes,
+    );
+
+    this.router.post(
+      "/:id/notes",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.idParamsSchema,
+        body: v.addLeadNoteBodySchema,
+      }),
+      ctrl.addLeadNote,
+    );
+
+    // ── Archive / restore ─────────────────────────────────────────────────────
+
+    this.router.post(
+      "/:id/archive",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.idParamsSchema,
+        body: v.archiveLeadBodySchema,
+      }),
+      ctrl.archiveLead,
+    );
+
+    this.router.post(
+      "/:id/restore",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.idParamsSchema }),
+      ctrl.restoreLead,
     );
 
     // ── Conflict Check ────────────────────────────────────────────────────────

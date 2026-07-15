@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../../db/client";
 import { consultations } from "../../db/schema/consultations";
 import { feeAgreements } from "../../db/schema/fee-agreements";
-import { leads, leadsToCaseTypes } from "../../db/schema/leads";
+import { leads } from "../../db/schema/leads";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { staff } from "../../db/schema/staff";
 import { FirmInfoService } from "../settings/firm-info/firm-info.service";
@@ -80,10 +80,9 @@ export const assembleFeeAgreementDocument = async (
       assignedStaffId: leads.respondentId,
     })
     .from(leads)
-    .leftJoin(leadsToCaseTypes, eq(leadsToCaseTypes.leadId, leads.id))
     .leftJoin(
       practiceAreaCaseTypes,
-      eq(practiceAreaCaseTypes.id, leadsToCaseTypes.caseTypeId),
+      eq(practiceAreaCaseTypes.id, leads.caseTypeId),
     )
     .where(eq(leads.id, agreement.leadId))
     .limit(1);

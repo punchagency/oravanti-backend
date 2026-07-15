@@ -17,7 +17,8 @@ export class LeadsController {
   };
 
   getAllLeads = async (req: AuthRequest, res: Response) => {
-    const { stage, status, practiceAreaId, source, search, all } = req.query;
+    const { stage, status, practiceAreaId, source, search, converted, all } =
+      req.query;
     const queryPagination = all ? {} : parsePaginationQuery(req.query);
     const result = await this.svc.getAllLeads(req.organizationId!, {
       ...queryPagination,
@@ -26,6 +27,8 @@ export class LeadsController {
       practiceAreaId: practiceAreaId as string | undefined,
       source: source as string | undefined,
       search: search as string | undefined,
+      converted:
+        converted === undefined ? undefined : converted === "true",
       all: all === "true",
     });
     if (all === "true") {
@@ -39,6 +42,14 @@ export class LeadsController {
   getLeadStageCounts = async (req: AuthRequest, res: Response) => {
     const counts = await this.svc.getLeadStageCounts(req.organizationId!);
     sendSuccess(res, counts, "Stage counts retrieved successfully");
+  };
+
+  getLeadMetrics = async (req: AuthRequest, res: Response) => {
+    const metrics = await this.svc.getLeadMetrics(
+      req.organizationId!,
+      (req.query.period as "30d" | "90d" | "12mo") ?? "30d",
+    );
+    sendSuccess(res, metrics, "Lead metrics retrieved successfully");
   };
 
   getLeadById = async (req: AuthRequest, res: Response) => {
@@ -56,6 +67,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       req.body,
+      req.staffId,
     );
     sendSuccess(res, lead, "Lead updated successfully");
   };
@@ -64,7 +76,8 @@ export class LeadsController {
     const lead = await this.svc.updateLeadStatus(
       req.params.id as string,
       req.organizationId!,
-      req.body.status
+      req.body.status,
+      req.staffId,
     );
     sendSuccess(res, lead, "Lead status updated successfully");
   };
@@ -74,8 +87,58 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       req.body.stage,
+      req.staffId,
     );
     sendSuccess(res, lead, "Lead stage advanced successfully");
+  };
+
+  getLeadActivity = async (req: AuthRequest, res: Response) => {
+    const events = await this.svc.getLeadActivity(
+      req.params.id as string,
+      req.organizationId!,
+    );
+    sendSuccess(res, events, "Lead activity retrieved successfully");
+  };
+
+  // ─── Notes (append-only: no update, no delete) ───────────────────────────────
+
+  getLeadNotes = async (req: AuthRequest, res: Response) => {
+    const notes = await this.svc.getLeadNotes(
+      req.params.id as string,
+      req.organizationId!,
+    );
+    sendSuccess(res, notes, "Lead notes retrieved successfully");
+  };
+
+  addLeadNote = async (req: AuthRequest, res: Response) => {
+    const note = await this.svc.addLeadNote(
+      req.params.id as string,
+      req.organizationId!,
+      req.body,
+      req.staffId,
+    );
+    sendSuccess(res, note, "Note added successfully", 201);
+  };
+
+  // ─── Archive / restore ──────────────────────────────────────────────────────
+
+  archiveLead = async (req: AuthRequest, res: Response) => {
+    const lead = await this.svc.archiveLead(
+      req.params.id as string,
+      req.organizationId!,
+      { reason: req.body?.reason },
+      req.staffId,
+    );
+    sendSuccess(res, lead, "Lead archived successfully");
+  };
+
+  restoreLead = async (req: AuthRequest, res: Response) => {
+    const lead = await this.svc.restoreLead(
+      req.params.id as string,
+      req.organizationId!,
+      req.staffId,
+    );
+    sendSuccess(res, lead, "Lead restored successfully");
   };
 
   // ─── Conflict Check ──────────────────────────────────────────────────────────
@@ -135,6 +198,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       req.body,
+      req.staffId,
     );
     sendSuccess(res, result, "Consultation initiated successfully", 201);
   };
@@ -167,6 +231,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       body,
+      req.staffId,
     );
     sendSuccess(res, result, "Consultation updated successfully");
   };
@@ -176,6 +241,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       { reason: req.body?.reason },
+      req.staffId,
     );
     sendSuccess(res, result, "Consultation cancelled successfully");
   };
@@ -215,6 +281,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       req.body,
+      req.staffId,
     );
     sendSuccess(res, result, "Fee agreement generated successfully", 201);
   };
@@ -247,6 +314,7 @@ export class LeadsController {
     const result = await this.svc.sendFeeAgreement(
       req.params.agreementId as string,
       req.organizationId!,
+      req.staffId,
     );
     sendSuccess(res, result, "Fee agreement sent successfully");
   };
@@ -255,6 +323,7 @@ export class LeadsController {
     const result = await this.svc.markFeeAgreementReceived(
       req.params.agreementId as string,
       req.organizationId!,
+      req.staffId,
     );
     sendSuccess(res, result, "Fee agreement marked as received");
   };
@@ -263,6 +332,7 @@ export class LeadsController {
     const result = await this.svc.markFeeAgreementPaymentReceived(
       req.params.agreementId as string,
       req.organizationId!,
+      req.staffId,
     );
     res.json({ success: true, data: result });
   };

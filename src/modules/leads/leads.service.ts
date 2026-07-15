@@ -9,6 +9,8 @@ import {
   getTableColumns,
   ilike,
   inArray,
+  isNotNull,
+  isNull,
   ne,
   or,
   sql
@@ -37,9 +39,8 @@ import {
   type FeeAgreementDetails,
 } from "../../db/schema/fee-agreements";
 import {
+  leadEvents,
   leads,
-  leadsToCaseTypes,
-  leadsToPracticeAreas,
 } from "../../db/schema/leads";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreas } from "../../db/schema/practice-areas";
@@ -63,6 +64,9 @@ import {
   cancelQuestionnaireReminder,
   scheduleQuestionnaireReminder,
 } from "../../queue/queues";
+import { getLeadActivity, logLeadEvent } from "./lead-events.service";
+import { getLeadMetrics } from "./lead-metrics.service";
+import { addLeadNote, getLeadNotes } from "./lead-notes.service";
 import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
 import { emailService } from "../../utils/email/email.service";
 import {
@@ -444,32 +448,23 @@ const createLead = async (
       entityType: (data.entityType ?? "individual") as any,
       source: data.source as any,
       situationSummary: data.situationSummary,
+      practiceAreaId: data.practiceAreaId ?? null,
+      caseTypeId: data.caseTypeId ?? null,
       respondentId: creatorStaffId,
       intakeAdversePartyName: data.intakeAdversePartyName,
       intakeAdversePartyEmail: data.intakeAdversePartyEmail,
       language: data.language,
+      timezone: data.timezone,
     })
     .returning();
 
-  if (data.practiceAreaId) {
-    await db
-      .insert(leadsToPracticeAreas)
-      .values({
-        leadId: lead.id,
-        practiceAreaId: data.practiceAreaId,
-      })
-      .onConflictDoNothing();
-  }
-
-  if (data.caseTypeId) {
-    await db
-      .insert(leadsToCaseTypes)
-      .values({
-        leadId: lead.id,
-        caseTypeId: data.caseTypeId,
-      })
-      .onConflictDoNothing();
-  }
+  await logLeadEvent({
+    organizationId,
+    leadId: lead.id,
+    type: "lead_received",
+    actorId: creatorStaffId,
+    metadata: { source: data.source },
+  });
 
   return lead;
 };
@@ -482,6 +477,7 @@ const getAllLeads = async (
     practiceAreaId?: string;
     source?: string;
     search?: string;
+    converted?: boolean;
     all?: boolean;
   } = {},
 ) => {
@@ -496,6 +492,24 @@ const getAllLeads = async (
     conditions.push(ne(leads.status, "declined"));
   }
   if (filters.source) conditions.push(eq(leads.source, filters.source as any));
+
+  // Converted leads. Keyed on convertedAt, not status: openCase writes status
+  // "reviewed" and never "converted", so filtering on the status enum would
+  // always return nothing.
+  if (filters.converted !== undefined) {
+    conditions.push(
+      filters.converted
+        ? isNotNull(leads.convertedCaseId)
+        : isNull(leads.convertedCaseId),
+    );
+  }
+
+  // This filter was previously accepted and then silently dropped, so the UI's
+  // practice-area select appeared to work while returning unfiltered results.
+  if (filters.practiceAreaId) {
+    conditions.push(eq(leads.practiceAreaId, filters.practiceAreaId));
+  }
+
   if (filters.search) {
     const q = `%${filters.search}%`;
     conditions.push(
@@ -503,6 +517,10 @@ const getAllLeads = async (
         ilike(leads.firstName, q),
         ilike(leads.lastName, q),
         ilike(leads.email, q),
+        ilike(leads.phone, q),
+        // Matching the columns separately means "Jane Doe" finds nothing, since
+        // no single column holds the full name.
+        ilike(sql`${leads.firstName} || ' ' || ${leads.lastName}`, q),
       )!,
     );
   }
@@ -548,30 +566,8 @@ const getAllLeads = async (
     return enriched;
   };
 
-  const practiceAreaSubquery = sql<{ id: string; name: string }[]>`
-    COALESCE(
-      (
-        SELECT json_agg(json_build_object('id', ${practiceAreas.id}, 'name', ${practiceAreas.name}))
-        FROM ${leadsToPracticeAreas}
-        INNER JOIN ${practiceAreas} ON ${practiceAreas.id} = ${leadsToPracticeAreas.practiceAreaId}
-        WHERE ${leadsToPracticeAreas.leadId} = ${leads.id}
-      ),
-      '[]'::json
-    )
-  `;
-
-  const caseTypeSubquery = sql<{ id: string; name: string }[]>`
-    COALESCE(
-      (
-        SELECT json_agg(json_build_object('id', ${practiceAreaCaseTypes.id}, 'name', ${practiceAreaCaseTypes.name}))
-        FROM ${leadsToCaseTypes}
-        INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${leadsToCaseTypes.caseTypeId}
-        WHERE ${leadsToCaseTypes.leadId} = ${leads.id}
-      ),
-      '[]'::json
-    )
-  `;
-
+  // Practice area and case type are columns on `leads` again, so their names
+  // come from a plain join rather than a correlated json_agg subquery.
   const nameExpr = sql<string>`${leads.firstName} || ' ' || ${leads.lastName}`;
 
   if (filters.all) {
@@ -579,11 +575,15 @@ const getAllLeads = async (
       .select({
         ...getTableColumns(leads),
         name: nameExpr,
-        practiceAreas: practiceAreaSubquery,
-        caseTypes: caseTypeSubquery,
-        caseTypeName: sql<string>`NULL::text`,
+        practiceAreaName: practiceAreas.name,
+        caseTypeName: practiceAreaCaseTypes.name,
       })
       .from(leads)
+      .leftJoin(practiceAreas, eq(practiceAreas.id, leads.practiceAreaId))
+      .leftJoin(
+        practiceAreaCaseTypes,
+        eq(practiceAreaCaseTypes.id, leads.caseTypeId),
+      )
       .where(where)
       .orderBy(desc(leads.createdAt));
     return attachConflictMatches(rows);
@@ -602,11 +602,15 @@ const getAllLeads = async (
     .select({
       ...getTableColumns(leads),
       name: nameExpr,
-      practiceAreas: practiceAreaSubquery,
-      caseTypes: caseTypeSubquery,
-      caseTypeName: sql<string>`NULL::text`,
+      practiceAreaName: practiceAreas.name,
+      caseTypeName: practiceAreaCaseTypes.name,
     })
     .from(leads)
+    .leftJoin(practiceAreas, eq(practiceAreas.id, leads.practiceAreaId))
+    .leftJoin(
+      practiceAreaCaseTypes,
+      eq(practiceAreaCaseTypes.id, leads.caseTypeId),
+    )
     .where(where)
     .orderBy(desc(leads.createdAt))
     .limit(limit)
@@ -630,40 +634,22 @@ const getLeadById = async (id: string, organizationId: string) => {
     .select({
       ...getTableColumns(leads),
       name: sql<string>`${leads.firstName} || ' ' || ${leads.lastName}`,
+      practiceAreaName: practiceAreas.name,
+      caseTypeName: practiceAreaCaseTypes.name,
     })
     .from(leads)
+    .leftJoin(practiceAreas, eq(practiceAreas.id, leads.practiceAreaId))
+    .leftJoin(
+      practiceAreaCaseTypes,
+      eq(practiceAreaCaseTypes.id, leads.caseTypeId),
+    )
     .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
     .limit(1);
 
   if (!lead) return null;
 
-  const [
-    practiceAreaRows,
-    caseTypeRows,
-    conflictCheck,
-    questionnaireSend,
-    consultation,
-    feeAgreement,
-  ] = await Promise.all([
-    db
-      .select({ id: practiceAreas.id, name: practiceAreas.name })
-      .from(leadsToPracticeAreas)
-      .innerJoin(
-        practiceAreas,
-        eq(practiceAreas.id, leadsToPracticeAreas.practiceAreaId),
-      )
-      .where(eq(leadsToPracticeAreas.leadId, id)),
-    db
-      .select({
-        id: practiceAreaCaseTypes.id,
-        name: practiceAreaCaseTypes.name,
-      })
-      .from(leadsToCaseTypes)
-      .innerJoin(
-        practiceAreaCaseTypes,
-        eq(practiceAreaCaseTypes.id, leadsToCaseTypes.caseTypeId),
-      )
-      .where(eq(leadsToCaseTypes.leadId, id)),
+  const [conflictCheck, questionnaireSend, consultation, feeAgreement] =
+    await Promise.all([
     lead.conflictCheckId
       ? db
           .select()
@@ -712,8 +698,6 @@ const getLeadById = async (id: string, organizationId: string) => {
 
   return {
     ...lead,
-    practiceAreas: practiceAreaRows,
-    caseTypes: caseTypeRows,
     conflictCheck,
     questionnaireSend,
     consultation,
@@ -722,38 +706,157 @@ const getLeadById = async (id: string, organizationId: string) => {
   };
 };
 
+/** Columns on `leads` that a user may edit directly. */
+const EDITABLE_LEAD_COLUMNS = [
+  "firstName",
+  "lastName",
+  "email",
+  "phone",
+  "source",
+  "situationSummary",
+  "entityType",
+  "intakeAdversePartyName",
+  "intakeAdversePartyEmail",
+  "language",
+  "timezone",
+] as const;
+
+type EditableColumn = (typeof EDITABLE_LEAD_COLUMNS)[number];
+
 const updateLead = async (
   id: string,
   organizationId: string,
-  data: Partial<{
-    firstName: string;
-    lastName: string;
-    email: string;
-    phone: string;
-    source: string;
-    situationSummary: string;
-    notes: string;
-    respondentId: string;
-    intakeAdversePartyName: string;
-    intakeAdversePartyEmail: string;
-    timezone: string;
-    language: string;
-  }>,
+  data: Partial<
+    Record<EditableColumn, string> & {
+      practiceAreaId: string;
+      caseTypeId: string;
+      notes: string;
+    }
+  >,
+  actorId?: string,
 ) => {
-  const [updated] = await db
-    .update(leads)
-    .set({ ...data, source: data.source as any, updatedAt: new Date() })
+  const [existing] = await db
+    .select()
+    .from(leads)
     .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
-    .returning();
+    .limit(1);
 
-  if (!updated) throw new NotFoundError("Lead not found");
+  if (!existing) throw new NotFoundError("Lead not found");
+
+  // `leads` has no notes column, so a body carrying `notes` was accepted by the
+  // validator and then silently dropped — the observations staff typed into the
+  // consultation card before a consultation existed were never saved anywhere.
+  // Route them to the notes trail, which is where a note actually belongs.
+  if (data.notes?.trim()) {
+    await addLeadNote(
+      id,
+      organizationId,
+      { type: "general", content: data.notes.trim() },
+      actorId,
+    ).catch((err) => console.error("Failed to save lead note", err));
+  }
+
+  // Only real columns reach .set(). The previous version spread the whole body,
+  // so keys with no matching column (practiceAreaId, caseTypeId, notes,
+  // timezone) were accepted by the validator and then silently dropped.
+  const patch: Record<string, unknown> = {};
+  const changes: Record<string, { from: unknown; to: unknown }> = {};
+
+  for (const column of EDITABLE_LEAD_COLUMNS) {
+    const next = data[column];
+    if (next === undefined) continue;
+
+    const prev = (existing as Record<string, unknown>)[column];
+    if (prev === next) continue;
+
+    patch[column] = next;
+    changes[column] = { from: prev ?? null, to: next };
+  }
+
+  // Practice area and case type are plain columns, but the activity trail must
+  // record their *names* — "Immigration → Family law" is legible where a pair of
+  // uuids is not.
+  const practiceAreaChange = await diffNamedRef({
+    prevId: existing.practiceAreaId,
+    nextId: data.practiceAreaId,
+    nameTable: practiceAreas,
+  });
+
+  const caseTypeChange = await diffNamedRef({
+    prevId: existing.caseTypeId,
+    nextId: data.caseTypeId,
+    nameTable: practiceAreaCaseTypes,
+  });
+
+  if (practiceAreaChange) {
+    patch.practiceAreaId = data.practiceAreaId;
+    changes.practiceArea = practiceAreaChange;
+  }
+  if (caseTypeChange) {
+    patch.caseTypeId = data.caseTypeId;
+    changes.caseType = caseTypeChange;
+  }
+
+  // Nothing actually differs — don't touch updatedAt or write a hollow event
+  // claiming an edit happened.
+  if (Object.keys(changes).length === 0) return existing;
+
+  const updated = await db.transaction(async (tx) => {
+    await tx
+      .update(leads)
+      .set({ ...patch, updatedAt: new Date() } as any)
+      .where(eq(leads.id, id));
+
+    await logLeadEvent({
+      organizationId,
+      leadId: id,
+      type: "lead_updated",
+      actorId,
+      // The changed fields with their before and after values, so the activity
+      // trail can say what changed rather than only that something did.
+      metadata: { changes },
+      tx,
+    });
+
+    const [row] = await tx.select().from(leads).where(eq(leads.id, id));
+    return row;
+  });
+
   return updated;
+};
+
+/**
+ * Diff a uuid reference and resolve both sides to display names for the activity
+ * trail. Returns null when the caller supplied no value or nothing changed, so
+ * an unrelated edit never records a spurious change.
+ */
+const diffNamedRef = async (args: {
+  prevId: string | null;
+  nextId?: string;
+  nameTable: typeof practiceAreas | typeof practiceAreaCaseTypes;
+}) => {
+  if (!args.nextId) return null;
+  if (args.prevId === args.nextId) return null;
+
+  const ids = [args.prevId, args.nextId].filter((v): v is string => Boolean(v));
+  const names = await db
+    .select({ id: args.nameTable.id, name: args.nameTable.name })
+    .from(args.nameTable as any)
+    .where(inArray(args.nameTable.id, ids));
+
+  const nameById = new Map(names.map((n) => [n.id, n.name]));
+
+  return {
+    from: args.prevId ? (nameById.get(args.prevId) ?? args.prevId) : null,
+    to: nameById.get(args.nextId) ?? args.nextId,
+  };
 };
 
 const updateLeadStatus = async (
   id: string,
   organizationId: string,
   status: "archived" | "reviewed",
+  actorId?: string,
 ) => {
   const [updated] = await db
     .update(leads)
@@ -762,6 +865,128 @@ const updateLeadStatus = async (
     .returning();
 
   if (!updated) throw new NotFoundError("Lead not found");
+
+  // Archival has its own endpoint (archiveLead) that records the actor and
+  // reason; this path only reaches "archived" from legacy callers.
+  await logLeadEvent({
+    organizationId,
+    leadId: id,
+    type: status === "archived" ? "lead_archived" : "lead_updated",
+    actorId,
+    metadata: { status },
+  });
+
+  return updated;
+};
+
+/**
+ * Archive a lead, recording who did it and why. Distinct from
+ * `updateLeadStatus({ status: "archived" })`, which cannot express either.
+ */
+const archiveLead = async (
+  id: string,
+  organizationId: string,
+  data: { reason?: string } = {},
+  actorId?: string,
+) => {
+  const [lead] = await db
+    .select()
+    .from(leads)
+    .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
+    .limit(1);
+
+  if (!lead) throw new NotFoundError("Lead not found");
+  if (lead.status === "archived")
+    throw new ConflictError("Lead is already archived");
+  if (lead.convertedCaseId)
+    throw new ConflictError("A converted lead cannot be archived");
+
+  const now = new Date();
+  const [updated] = await db
+    .update(leads)
+    .set({
+      status: "archived",
+      archivedById: actorId ?? null,
+      archivedAt: now,
+      archiveReason: data.reason ?? null,
+      updatedAt: now,
+    })
+    .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
+    .returning();
+
+  await logLeadEvent({
+    organizationId,
+    leadId: id,
+    type: "lead_archived",
+    actorId,
+    metadata: { reason: data.reason ?? null, priorStatus: lead.status },
+  });
+
+  return updated;
+};
+
+/**
+ * Restore an archived lead. `updateLeadStatus` cannot do this: its validator
+ * only accepts archived | reviewed, so a lead could never be returned to "new".
+ * The prior status is recovered from the archival event rather than guessed —
+ * falling back to "new" only when the lead predates the activity trail.
+ */
+const restoreLead = async (
+  id: string,
+  organizationId: string,
+  actorId?: string,
+) => {
+  const [lead] = await db
+    .select()
+    .from(leads)
+    .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
+    .limit(1);
+
+  if (!lead) throw new NotFoundError("Lead not found");
+  if (lead.status !== "archived")
+    throw new ConflictError("Only an archived lead can be restored");
+
+  const [lastArchive] = await db
+    .select({ metadata: leadEvents.metadata })
+    .from(leadEvents)
+    .where(
+      and(eq(leadEvents.leadId, id), eq(leadEvents.type, "lead_archived")),
+    )
+    .orderBy(desc(leadEvents.createdAt))
+    .limit(1);
+
+  const priorStatus = (lastArchive?.metadata as { priorStatus?: string } | null)
+    ?.priorStatus;
+
+  // Only restore to a status the lead could legitimately hold again. A lead
+  // archived while declined stays declined — restoring it to "new" would erase
+  // a conflict decision.
+  const restoredStatus =
+    priorStatus === "reviewed" || priorStatus === "overridden"
+      ? (priorStatus as "reviewed" | "overridden")
+      : "new";
+
+  const now = new Date();
+  const [updated] = await db
+    .update(leads)
+    .set({
+      status: restoredStatus,
+      archivedById: null,
+      archivedAt: null,
+      archiveReason: null,
+      updatedAt: now,
+    })
+    .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
+    .returning();
+
+  await logLeadEvent({
+    organizationId,
+    leadId: id,
+    type: "lead_restored",
+    actorId,
+    metadata: { restoredStatus },
+  });
+
   return updated;
 };
 
@@ -804,10 +1029,71 @@ const STAGE_ORDER = [
   "case_opening",
 ] as const;
 
+/**
+ * Stage transitions are the source of truth for time-in-stage metrics, so every
+ * write to leads.pipelineStage — including the implicit ones inside the conflict
+ * check, questionnaire, consultation and case-opening flows — must emit one of
+ * these. A missed call shows up as a gap in the funnel, not as an error.
+ */
+const logStageChange = async (data: {
+  organizationId: string;
+  leadId: string;
+  from: string;
+  to: string;
+  actorId?: string | null;
+  tx?: any;
+}) => {
+  if (data.from === data.to) return;
+
+  await logLeadEvent({
+    organizationId: data.organizationId,
+    leadId: data.leadId,
+    type: "stage_changed",
+    actorId: data.actorId,
+    metadata: { from: data.from, to: data.to },
+    tx: data.tx,
+  });
+};
+
+/**
+ * Consultation notes live in mutable columns on the consultation
+ * (preConsultationNotes / attorneyNotes), which means they can be overwritten
+ * and carry no author. Mirror each new value into lead_notes so it also lands
+ * in the permanent, attributed, append-only record the Notes tab reads.
+ *
+ * Written only when the text actually changed and is non-empty, so re-saving an
+ * unchanged note doesn't spam the trail. Skipped when there is no staff actor,
+ * because an unattributed note is worthless as a record.
+ */
+const mirrorConsultationNote = async (data: {
+  leadId: string;
+  organizationId: string;
+  type: "pre_consultation" | "post_consultation";
+  content?: string | null;
+  previous?: string | null;
+  actorId?: string;
+}) => {
+  const content = data.content?.trim();
+  if (!content) return;
+  if (content === data.previous?.trim()) return;
+  if (!data.actorId) return;
+
+  await addLeadNote(
+    data.leadId,
+    data.organizationId,
+    { type: data.type, content },
+    data.actorId,
+  ).catch((err) => {
+    // A note that fails to mirror must not roll back the consultation itself.
+    console.error("Failed to mirror consultation note", err);
+  });
+};
+
 const advanceLeadStage = async (
   id: string,
   organizationId: string,
   newStage: string,
+  actorId?: string,
 ) => {
   const [lead] = await db
     .select()
@@ -872,6 +1158,14 @@ const advanceLeadStage = async (
     .set({ pipelineStage: newStage as any, updatedAt: new Date() })
     .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)))
     .returning();
+
+  await logStageChange({
+    organizationId,
+    leadId: id,
+    from: lead.pipelineStage,
+    to: newStage,
+    actorId,
+  });
 
   return updated;
 };
@@ -1329,6 +1623,14 @@ const runConflictCheck = async (
       .where(eq(leads.id, leadId));
   }
 
+  await logLeadEvent({
+    organizationId,
+    leadId,
+    type: "conflict_check_run",
+    actorId: checkedById,
+    metadata: { status, matchCount: matches.length },
+  });
+
   // Auto-advance the pipeline stage based on the result, but never regress a
   // lead that is already further along and never touch a terminal lead.
   if (lead.status !== "declined") {
@@ -1340,6 +1642,14 @@ const runConflictCheck = async (
           .update(leads)
           .set({ pipelineStage: "questionnaire", updatedAt: now })
           .where(eq(leads.id, leadId));
+
+        await logStageChange({
+          organizationId,
+          leadId,
+          from: lead.pipelineStage,
+          to: "questionnaire",
+          actorId: checkedById,
+        });
       }
     } else {
       // needs_review / conflict_found are held at conflict_check.
@@ -1348,6 +1658,14 @@ const runConflictCheck = async (
           .update(leads)
           .set({ pipelineStage: "conflict_check", updatedAt: now })
           .where(eq(leads.id, leadId));
+
+        await logStageChange({
+          organizationId,
+          leadId,
+          from: lead.pipelineStage,
+          to: "conflict_check",
+          actorId: checkedById,
+        });
       }
     }
   }
@@ -1465,6 +1783,31 @@ const resolveConflictCheck = async (
           updatedAt: now,
         })
         .where(eq(leads.id, leadId));
+
+      // A hard conflict cleared by a reviewer is an override — the distinction
+      // the trail has to preserve, since it is the accountable decision.
+      await logLeadEvent({
+        organizationId,
+        leadId,
+        type: wasHardConflict
+          ? "conflict_overridden"
+          : "conflict_check_approved",
+        actorId: staffId,
+        metadata: { reviewNotes: data.reviewNotes, priorStatus: cc.status },
+        tx,
+      });
+
+      if (lead.pipelineStage === "conflict_check") {
+        await logStageChange({
+          organizationId,
+          leadId,
+          from: lead.pipelineStage,
+          to: "questionnaire",
+          actorId: staffId,
+          tx,
+        });
+      }
+
       return u;
     }
 
@@ -1485,6 +1828,16 @@ const resolveConflictCheck = async (
       .update(leads)
       .set({ status: "declined", updatedAt: now }) // stage left as-is (terminal)
       .where(eq(leads.id, leadId));
+
+    await logLeadEvent({
+      organizationId,
+      leadId,
+      type: "conflict_check_declined",
+      actorId: staffId,
+      metadata: { reviewNotes: data.reviewNotes },
+      tx,
+    });
+
     return u;
   });
 
@@ -1582,9 +1935,9 @@ const sendQuestionnaire = async (
 
   // Resolve the case type from the junction table
   const [leadCaseType] = await db
-    .select({ caseTypeId: leadsToCaseTypes.caseTypeId })
-    .from(leadsToCaseTypes)
-    .where(eq(leadsToCaseTypes.leadId, leadId))
+    .select({ caseTypeId: leads.caseTypeId })
+    .from(leads)
+    .where(eq(leads.id, leadId))
     .limit(1);
 
   const caseTypeId = leadCaseType?.caseTypeId;
@@ -1746,16 +2099,37 @@ const sendQuestionnaire = async (
   // Never move a lead backward: an instant-consultation lead is already at the
   // consultation stage when its questionnaire is auto-sent on completion.
   const currentStageIdx = STAGE_ORDER.indexOf(lead.pipelineStage as any);
+  const advancesToQuestionnaire =
+    currentStageIdx < STAGE_ORDER.indexOf("questionnaire");
+
   await db
     .update(leads)
     .set({
       questionnaireSendId: send.id,
-      ...(currentStageIdx < STAGE_ORDER.indexOf("questionnaire")
+      ...(advancesToQuestionnaire
         ? { pipelineStage: "questionnaire" as const }
         : {}),
       updatedAt: now,
     })
     .where(eq(leads.id, leadId));
+
+  await logLeadEvent({
+    organizationId,
+    leadId,
+    type: "questionnaire_sent",
+    actorId: sentById,
+    metadata: { sendId: send.id, deliveryChannels, language, autoReminderDays },
+  });
+
+  if (advancesToQuestionnaire) {
+    await logStageChange({
+      organizationId,
+      leadId,
+      from: lead.pipelineStage,
+      to: "questionnaire",
+      actorId: sentById,
+    });
+  }
 
   const baseUrl = env.FRONTEND_APP_URL ?? "http://localhost:5173";
   const orgSlug = encodeURIComponent(organizationId);
@@ -1845,6 +2219,7 @@ const initiateConsultation = async (
     emergencyMultiplier?: number;
     autoSendQuestionnaire?: boolean;
   },
+  scheduledById?: string,
 ) => {
   // Instant consultations ("start now") are urgent by definition: they skip
   // the slot queue and require a passed conflict check.
@@ -2006,6 +2381,7 @@ const initiateConsultation = async (
       duration: data.duration,
       mode: data.mode,
       leadAttorneyId: data.leadAttorneyId,
+      scheduledById: scheduledById ?? null,
       locationId: data.mode === "in_person" ? data.locationId : null,
       status,
       feeAmount,
@@ -2055,6 +2431,72 @@ const initiateConsultation = async (
       updatedAt: new Date(),
     })
     .where(eq(leads.id, leadId));
+
+  // Resolve the attorney and any additional attendees to names: the trail has
+  // to say who the consultation is *with*, and a uuid says nothing to a reader.
+  const attendeeIds = [
+    data.leadAttorneyId,
+    ...(data.participantStaffIds ?? []),
+  ].filter(Boolean);
+
+  const attendees = attendeeIds.length
+    ? await db
+        .select({
+          id: staff.id,
+          firstName: staff.firstName,
+          lastName: staff.lastName,
+        })
+        .from(staff)
+        .where(inArray(staff.id, attendeeIds))
+    : [];
+
+  const nameOf = (id: string) => {
+    const s = attendees.find((a) => a.id === id);
+    return s ? `${s.firstName} ${s.lastName}`.trim() : null;
+  };
+
+  await logLeadEvent({
+    organizationId,
+    leadId,
+    type: "consultation_scheduled",
+    actorId: scheduledById,
+    metadata: {
+      consultationId: consultation.id,
+      mode: data.mode,
+      scheduledAt: scheduledAt?.toISOString() ?? null,
+      isInstant: startNow,
+      isUrgent: urgent,
+      isFollowUp: Boolean(data.parentConsultationId),
+      leadAttorneyId: data.leadAttorneyId,
+      leadAttorneyName: nameOf(data.leadAttorneyId),
+      participantStaffIds: data.participantStaffIds ?? [],
+      participantNames: (data.participantStaffIds ?? [])
+        .map(nameOf)
+        .filter(Boolean),
+      feeAmount,
+    },
+  });
+
+  // Pre-consultation notes were previously written to the consultation row and
+  // never surfaced anywhere — not in the CRM, not in intake. Mirror them into
+  // the notes trail so they are actually readable.
+  await mirrorConsultationNote({
+    leadId,
+    organizationId,
+    type: "pre_consultation",
+    content: data.preConsultationNotes,
+    actorId: scheduledById,
+  });
+
+  if (!data.parentConsultationId) {
+    await logStageChange({
+      organizationId,
+      leadId,
+      from: lead.pipelineStage,
+      to: "consultation",
+      actorId: scheduledById,
+    });
+  }
 
   // Instant consultation beginning now (invoice_after, pay_in_person, or no
   // fee): finalize immediately into in_progress (mints the Meet link and sends
@@ -2167,6 +2609,7 @@ const updateConsultation = async (
     outcome: "proceed" | "close_no_case" | "refer_elsewhere" | "follow_up";
     feeStatus: "paid";
   }>,
+  actorId?: string,
 ) => {
   const [lead] = await db
     .select()
@@ -2210,6 +2653,62 @@ const updateConsultation = async (
     .where(eq(consultations.id, lead.consultationId))
     .returning();
 
+  if (data.status === "completed" && existing.status !== "completed") {
+    await logLeadEvent({
+      organizationId,
+      leadId,
+      type: "consultation_completed",
+      actorId,
+      metadata: { consultationId: updated.id, outcome: data.outcome ?? null },
+    });
+  } else if (data.scheduledAt && existing.scheduledAt?.getTime() !== data.scheduledAt.getTime()) {
+    await logLeadEvent({
+      organizationId,
+      leadId,
+      type: "consultation_rescheduled",
+      actorId,
+      metadata: {
+        consultationId: updated.id,
+        from: existing.scheduledAt?.toISOString() ?? null,
+        to: data.scheduledAt.toISOString(),
+      },
+    });
+  }
+
+  if (data.feeStatus === "paid" && existing.feeStatus === "unpaid") {
+    await logLeadEvent({
+      organizationId,
+      leadId,
+      type: "payment_received",
+      actorId,
+      metadata: {
+        kind: "consultation_fee",
+        consultationId: updated.id,
+        amount: updated.feeAmount,
+      },
+    });
+  }
+
+  // Both note columns are mutable and unattributed; mirror each new value into
+  // the permanent notes trail.
+  await mirrorConsultationNote({
+    leadId,
+    organizationId,
+    type: "pre_consultation",
+    content: data.preConsultationNotes,
+    previous: existing.preConsultationNotes,
+    actorId,
+  });
+
+  await mirrorConsultationNote({
+    leadId,
+    organizationId,
+    type: "post_consultation",
+    content: data.attorneyNotes,
+    previous: existing.attorneyNotes,
+    actorId,
+  });
+
   // Completion side effects (once — re-PATCHing a completed row is a no-op).
   if (data.status === "completed" && existing.status !== "completed") {
     // Invoice-after: email the payment link now that the call has ended. The
@@ -2245,11 +2744,11 @@ const updateConsultation = async (
     // been sent one. Skipped silently when the lead has no case type yet.
     if (updated.autoSendQuestionnaire && !lead.questionnaireSendId) {
       const [leadCaseType] = await db
-        .select({ id: leadsToCaseTypes.caseTypeId })
-        .from(leadsToCaseTypes)
-        .where(eq(leadsToCaseTypes.leadId, leadId))
+        .select({ id: leads.caseTypeId })
+        .from(leads)
+        .where(eq(leads.id, leadId))
         .limit(1);
-      if (leadCaseType) {
+      if (leadCaseType?.id) {
         await sendQuestionnaire(leadId, organizationId, undefined, {
           language: lead.language ?? undefined,
         }).catch(console.error);
@@ -2439,10 +2938,16 @@ const getConsultationBooking = async (token: string) => {
 
 /** Resolve a lead's timezone, falling back to the firm zone when unset. */
 const getLeadTimezone = async (
-  _leadId: string,
+  leadId: string,
   organizationId: string,
 ): Promise<string> => {
-  return getFirmTimezone(organizationId);
+  const [lead] = await db
+    .select({ timezone: leads.timezone })
+    .from(leads)
+    .where(eq(leads.id, leadId))
+    .limit(1);
+
+  return lead?.timezone ?? getFirmTimezone(organizationId);
 };
 
 const payConsultationFee = async (token: string) => {
@@ -2735,6 +3240,7 @@ const cancelConsultation = async (
   leadId: string,
   organizationId: string,
   data: { reason?: string } = {},
+  actorId?: string,
 ) => {
   const [lead] = await db
     .select({ consultationId: leads.consultationId })
@@ -2768,11 +3274,23 @@ const cancelConsultation = async (
       status: "cancelled",
       bookingStatus: "revoked",
       cancelledAt: new Date(),
+      cancelledById: actorId ?? null,
       cancellationReason: data.reason ?? null,
       updatedAt: new Date(),
     })
     .where(eq(consultations.id, consultation.id))
     .returning();
+
+  await logLeadEvent({
+    organizationId,
+    leadId,
+    type: "consultation_cancelled",
+    actorId,
+    metadata: {
+      consultationId: consultation.id,
+      reason: data.reason ?? null,
+    },
+  });
 
   // Detach the cancelled consultation from the lead so it no longer counts as
   // the lead's active consultation: the lead drops out of the "in progress"
@@ -2869,6 +3387,7 @@ const generateFeeAgreement = async (
     applyConsultationCredit?: boolean;
     accountSplit?: FeeAgreementDetails["accountSplit"];
   },
+  actorId?: string,
 ) => {
   const [lead] = await db
     .select()
@@ -2975,6 +3494,7 @@ const generateFeeAgreement = async (
       details,
       generatedFrom: (data.generatedFrom ?? "manual") as any,
       status: "draft",
+      generatedById: actorId ?? null,
     })
     .returning();
 
@@ -2982,6 +3502,17 @@ const generateFeeAgreement = async (
     .update(leads)
     .set({ feeAgreementId: agreement.id, updatedAt: new Date() })
     .where(eq(leads.id, leadId));
+
+  await logLeadEvent({
+    organizationId,
+    leadId,
+    type: "fee_agreement_generated",
+    actorId,
+    metadata: {
+      agreementId: agreement.id,
+      feeType: details.attorneyFee?.type ?? null,
+    },
+  });
 
   const document = await assembleFeeAgreementDocument(
     agreement,
@@ -3043,6 +3574,7 @@ const discardDraftFeeAgreement = async (
 const sendFeeAgreement = async (
   agreementId: string,
   organizationId: string,
+  actorId?: string,
 ) => {
   const [agreement] = await db
     .select()
@@ -3115,10 +3647,19 @@ const sendFeeAgreement = async (
       signingToken,
       signingLink,
       documentUrl: documentKey,
+      sentById: actorId ?? null,
       updatedAt: now,
     })
     .where(eq(feeAgreements.id, agreementId))
     .returning();
+
+  await logLeadEvent({
+    organizationId,
+    leadId: agreement.leadId,
+    type: "fee_agreement_sent",
+    actorId,
+    metadata: { agreementId },
+  });
 
   emailService
     .sendEmail({
@@ -3134,12 +3675,47 @@ const sendFeeAgreement = async (
   return { ...updated, clientSigningLink: signingLink };
 };
 
+/**
+ * Move a lead to case_opening, emitting the stage_changed event the funnel
+ * metrics depend on. Several flows reach this stage (manual receipt, the
+ * e-signature webhook, payment landing last), so the read-then-write lives in
+ * one place rather than being repeated at each call site.
+ */
+const advanceLeadToCaseOpening = async (
+  leadId: string,
+  organizationId: string,
+  now: Date,
+  actorId?: string | null,
+) => {
+  const [lead] = await db
+    .select({ pipelineStage: leads.pipelineStage })
+    .from(leads)
+    .where(eq(leads.id, leadId))
+    .limit(1);
+
+  await db
+    .update(leads)
+    .set({ pipelineStage: "case_opening", updatedAt: now })
+    .where(eq(leads.id, leadId));
+
+  if (lead) {
+    await logStageChange({
+      organizationId,
+      leadId,
+      from: lead.pipelineStage,
+      to: "case_opening",
+      actorId,
+    });
+  }
+};
+
 // Staff manually confirms receipt of the signed document: mark the agreement
 // signed and advance the lead to the case-opening stage (the manual equivalent
 // of the e-signature webhook).
 const markFeeAgreementReceived = async (
   agreementId: string,
   organizationId: string,
+  actorId?: string,
 ) => {
   const [agreement] = await db
     .select()
@@ -3162,18 +3738,28 @@ const markFeeAgreementReceived = async (
   if (agreement.status !== "signed") {
     await db
       .update(feeAgreements)
-      .set({ status: "signed", clientSignedAt: now, updatedAt: now })
+      .set({
+        status: "signed",
+        clientSignedAt: now,
+        receivedById: actorId ?? null,
+        updatedAt: now,
+      })
       .where(eq(feeAgreements.id, agreementId));
+
+    await logLeadEvent({
+      organizationId,
+      leadId: agreement.leadId,
+      type: "fee_agreement_signed",
+      actorId,
+      metadata: { agreementId, markedManually: true },
+    });
   }
 
   // Advance only once the payment gate is also satisfied; otherwise the lead
   // stays in the consultation stage, whose agreement card offers the
   // "Mark payment received" action.
   if (feeAgreementPaymentSatisfied(agreement.details)) {
-    await db
-      .update(leads)
-      .set({ pipelineStage: "case_opening", updatedAt: now })
-      .where(eq(leads.id, agreement.leadId));
+    await advanceLeadToCaseOpening(agreement.leadId, organizationId, now, actorId);
   }
 
   return { received: true, agreementId, leadId: agreement.leadId };
@@ -3186,6 +3772,7 @@ const markFeeAgreementReceived = async (
 const markFeeAgreementPaymentReceived = async (
   agreementId: string,
   organizationId: string,
+  actorId?: string,
 ) => {
   const [agreement] = await db
     .select()
@@ -3216,14 +3803,21 @@ const markFeeAgreementPaymentReceived = async (
         updatedAt: now,
       })
       .where(eq(feeAgreements.id, agreementId));
+
+    // Only log on the first (real) receipt — a repeat call is a no-op, and the
+    // trail must not imply the client paid twice.
+    await logLeadEvent({
+      organizationId,
+      leadId: agreement.leadId,
+      type: "payment_received",
+      actorId,
+      metadata: { kind: "fee_agreement", agreementId },
+    });
   }
 
   // Payment was the last missing gate condition once signed.
   if (agreement.status === "signed") {
-    await db
-      .update(leads)
-      .set({ pipelineStage: "case_opening", updatedAt: now })
-      .where(eq(leads.id, agreement.leadId));
+    await advanceLeadToCaseOpening(agreement.leadId, organizationId, now, actorId);
   }
 
   return {
@@ -3444,14 +4038,26 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
       })
       .where(eq(feeAgreements.id, agreement.id));
 
+    // The client signed through the provider, so there is no staff actor here.
+    // Leave it null rather than attributing the signature to whoever sent it.
+    await logLeadEvent({
+      organizationId: agreement.organizationId,
+      leadId: agreement.leadId,
+      type: "fee_agreement_signed",
+      actorId: null,
+      metadata: { agreementId: agreement.id, via: "e_signature" },
+    });
+
     // Auto-advance the lead to case_opening only when the payment gate is also
     // satisfied; otherwise it stays in the consultation stage until staff mark
     // the payment received.
     if (feeAgreementPaymentSatisfied(agreement.details)) {
-      await db
-        .update(leads)
-        .set({ pipelineStage: "case_opening", updatedAt: now })
-        .where(eq(leads.id, agreement.leadId));
+      await advanceLeadToCaseOpening(
+        agreement.leadId,
+        agreement.organizationId,
+        now,
+        null,
+      );
     }
 
     return { processed: true, agreementId: agreement.id };
@@ -3480,9 +4086,9 @@ const getEligibleTeamsForLead = async (
   organizationId: string,
 ) => {
   const [leadCaseType] = await db
-    .select({ caseTypeId: leadsToCaseTypes.caseTypeId })
-    .from(leadsToCaseTypes)
-    .where(eq(leadsToCaseTypes.leadId, leadId))
+    .select({ caseTypeId: leads.caseTypeId })
+    .from(leads)
+    .where(eq(leads.id, leadId))
     .limit(1);
 
   if (!leadCaseType?.caseTypeId) return [];
@@ -3600,16 +4206,15 @@ const openCase = async (
 
     // 3. Resolve practice area and case type from junction tables
     const [leadPracticeArea] = await tx
-      .select({ practiceAreaId: leadsToPracticeAreas.practiceAreaId })
-      .from(leadsToPracticeAreas)
-      .where(eq(leadsToPracticeAreas.leadId, leadId))
+      .select({
+        practiceAreaId: leads.practiceAreaId,
+        caseTypeId: leads.caseTypeId,
+      })
+      .from(leads)
+      .where(eq(leads.id, leadId))
       .limit(1);
 
-    const [leadCaseType] = await tx
-      .select({ caseTypeId: leadsToCaseTypes.caseTypeId })
-      .from(leadsToCaseTypes)
-      .where(eq(leadsToCaseTypes.leadId, leadId))
-      .limit(1);
+    const leadCaseType = leadPracticeArea;
 
     const resolvedPracticeAreaId = leadPracticeArea?.practiceAreaId;
     const resolvedCaseTypeId = leadCaseType?.caseTypeId;
@@ -3678,6 +4283,28 @@ const openCase = async (
         updatedAt: now,
       })
       .where(eq(leads.id, leadId));
+
+    await logStageChange({
+      organizationId,
+      leadId,
+      from: lead.pipelineStage,
+      to: "case_opening",
+      actorId: creatorStaffId,
+      tx,
+    });
+
+    await logLeadEvent({
+      organizationId,
+      leadId,
+      type: "case_opened",
+      actorId: creatorStaffId,
+      metadata: {
+        caseId: newCase.id,
+        caseNumber: newCase.caseNumber,
+        clientId: client.id,
+      },
+      tx,
+    });
 
     // 6. Link questionnaire responses to the new client and case
     if (lead.questionnaireSendId) {
@@ -3887,6 +4514,12 @@ export class LeadsService {
   updateLead = updateLead;
   updateLeadStatus = updateLeadStatus;
   getLeadStageCounts = getLeadStageCounts;
+  getLeadMetrics = getLeadMetrics;
+  getLeadActivity = getLeadActivity;
+  getLeadNotes = getLeadNotes;
+  addLeadNote = addLeadNote;
+  archiveLead = archiveLead;
+  restoreLead = restoreLead;
   advanceLeadStage = advanceLeadStage;
   runConflictCheck = runConflictCheck;
   getConflictCheck = getConflictCheck;
