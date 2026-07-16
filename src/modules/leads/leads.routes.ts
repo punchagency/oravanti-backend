@@ -9,6 +9,265 @@ import { validateRequest } from "../../middleware/validate.middleware";
 import { LeadsController } from "./leads.controller";
 import * as v from "./leads.validation";
 
+// ── Lead Workflow router ─────────────────────────────────────────────────────
+
+export class LeadWorkflowRouter {
+  public router: Router;
+  public path: string;
+  private ctrl: LeadsController;
+
+  constructor(ctrl: LeadsController) {
+    this.router = Router();
+    this.path = "/leads";
+    this.ctrl = ctrl;
+    this.initializeRoutes();
+  }
+
+  private initializeRoutes() {
+    const { ctrl } = this;
+
+    // ── My Tasks (must be before /:leadId routes) ──────────────────────────
+
+    this.router.get(
+      "/my-tasks",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      ctrl.getMyLeadTasks,
+    );
+
+    // ── Review Queue (must be before /:leadId routes) ──────────────────────
+
+    this.router.get(
+      "/review-queue",
+      requireAuth,
+      requireAdmin,
+      setFirmContext,
+      ctrl.getLeadReviewQueue,
+    );
+
+    // ── Tasks ──────────────────────────────────────────────────────────────
+
+    this.router.post(
+      "/:leadId/initialize-pipeline",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.leadIdParamsSchema }),
+      ctrl.initializePipeline,
+    );
+
+    this.router.get(
+      "/:leadId/tasks",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.leadIdParamsSchema }),
+      ctrl.getLeadTasks,
+    );
+
+    this.router.post(
+      "/:leadId/tasks",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.leadIdParamsSchema,
+        body: v.createLeadTaskBodySchema,
+      }),
+      ctrl.createLeadTask,
+    );
+
+    this.router.patch(
+      "/:leadId/tasks/:taskId",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.leadTaskIdParamsSchema,
+        body: v.updateLeadTaskBodySchema,
+      }),
+      ctrl.updateLeadTask,
+    );
+
+    this.router.patch(
+      "/:leadId/tasks/:taskId/status",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.leadTaskIdParamsSchema,
+        body: v.updateLeadTaskStatusBodySchema,
+      }),
+      ctrl.updateLeadTaskStatus,
+    );
+
+    this.router.patch(
+      "/:leadId/tasks/:taskId/assign",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.leadTaskIdParamsSchema,
+        body: v.assignLeadTaskBodySchema,
+      }),
+      ctrl.assignLeadTask,
+    );
+
+    this.router.post(
+      "/:leadId/tasks/:taskId/complete",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.leadTaskIdParamsSchema }),
+      ctrl.completeLeadTask,
+    );
+
+    this.router.post(
+      "/:leadId/tasks/:taskId/submit-review",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.leadTaskIdParamsSchema,
+        body: v.submitReviewBodySchema,
+      }),
+      ctrl.submitLeadTaskForReview,
+    );
+
+    this.router.post(
+      "/:leadId/tasks/:taskId/approve",
+      requireAuth,
+      requireAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.leadTaskIdParamsSchema,
+        body: v.reviewActionBodySchema,
+      }),
+      ctrl.approveLeadTask,
+    );
+
+    this.router.post(
+      "/:leadId/tasks/:taskId/reject",
+      requireAuth,
+      requireAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.leadTaskIdParamsSchema,
+        body: v.rejectReviewBodySchema,
+      }),
+      ctrl.rejectLeadTask,
+    );
+
+    this.router.delete(
+      "/:leadId/tasks/:taskId",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.leadTaskIdParamsSchema }),
+      ctrl.deleteLeadTask,
+    );
+
+    // ── Timeline ───────────────────────────────────────────────────────────
+
+    this.router.get(
+      "/:leadId/timeline",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.leadIdParamsSchema }),
+      ctrl.getLeadTimeline,
+    );
+
+    this.router.post(
+      "/:leadId/timeline",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.leadIdParamsSchema,
+        body: v.createTimelineEventBodySchema,
+      }),
+      ctrl.createLeadTimelineEvent,
+    );
+
+    // ── Documents ──────────────────────────────────────────────────────────
+
+    this.router.get(
+      "/:leadId/documents",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.leadIdParamsSchema }),
+      ctrl.getLeadDocuments,
+    );
+
+    this.router.post(
+      "/:leadId/documents",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.leadIdParamsSchema,
+        body: v.linkDocumentBodySchema,
+      }),
+      ctrl.linkLeadDocument,
+    );
+
+    this.router.delete(
+      "/:leadId/documents/:linkId",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      ctrl.unlinkLeadDocument,
+    );
+
+    // ── Notes ─────────────────────────────────────────────────────────────
+
+    this.router.get(
+      "/:leadId/notes",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.leadIdParamsSchema }),
+      ctrl.getLeadNotes,
+    );
+
+    this.router.post(
+      "/:leadId/notes",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.leadIdParamsSchema,
+        body: v.createLeadNoteBodySchema,
+      }),
+      ctrl.createLeadNote,
+    );
+
+    this.router.patch(
+      "/:leadId/notes/:noteId",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: v.leadNoteIdParamsSchema,
+        body: v.updateLeadNoteBodySchema,
+      }),
+      ctrl.updateLeadNote,
+    );
+
+    this.router.delete(
+      "/:leadId/notes/:noteId",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.leadNoteIdParamsSchema }),
+      ctrl.deleteLeadNote,
+    );
+  }
+}
+
 export class LeadsRouter {
   public router: Router;
   public path: string;
