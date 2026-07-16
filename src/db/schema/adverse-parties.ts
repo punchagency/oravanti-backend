@@ -17,7 +17,7 @@ export const adversePartyEntityTypeEnum = pgEnum('adverse_party_entity_type', [
 export const adverseParties = pgTable('adverse_parties', {
   id:             uuid('id').primaryKey().defaultRandom(),
   organizationId: text('organization_id').notNull().references(() => organization.id),
-  caseId:         uuid('case_id').notNull().references(() => cases.id),
+  caseId:         uuid('case_id').notNull().references(() => cases.id, { onDelete: "cascade" }),
   name:           text('name').notNull(),
   email:          text('email'),
   entityType:     adversePartyEntityTypeEnum('entity_type').notNull().default('individual'),

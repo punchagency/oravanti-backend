@@ -91,7 +91,7 @@ export const feeAgreements = pgTable("fee_agreements", {
     .references(() => organization.id),
   leadId: uuid("lead_id")
     .notNull()
-    .references(() => leads.id),
+    .references(() => leads.id, { onDelete: "cascade" }),
   practiceAreaId: uuid("practice_area_id").references(() => practiceAreas.id),
   caseTypeId: uuid("case_type_id").references(() => practiceAreaCaseTypes.id),
   agreementType: text("agreement_type"),

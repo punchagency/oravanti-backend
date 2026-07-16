@@ -71,7 +71,7 @@ export const consultations = pgTable("consultations", {
     .references(() => organization.id),
   leadId: uuid("lead_id")
     .notNull()
-    .references(() => leads.id),
+    .references(() => leads.id, { onDelete: "cascade" }),
   // Set when this consultation is a follow-up of a prior (completed) one.
   parentConsultationId: uuid("parent_consultation_id").references(
     (): AnyPgColumn => consultations.id,

@@ -24,7 +24,7 @@ export const conflictChecks = pgTable("conflict_checks", {
     .references(() => organization.id),
   leadId: uuid("lead_id")
     .notNull()
-    .references(() => leads.id),
+    .references(() => leads.id, { onDelete: "cascade" }),
   status: conflictCheckStatusEnum("status").notNull().default("pending"),
   /**
    * Array of match objects:

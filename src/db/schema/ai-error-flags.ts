@@ -22,7 +22,7 @@ export const aiErrorFlags = pgTable('ai_error_flags', {
   id:             uuid('id').primaryKey().defaultRandom(),
   organizationId:         text('organization_id').notNull().references(() => organization.id),
   clientId:       uuid('client_id').notNull().references(() => clients.id),
-  caseId:         uuid('case_id').notNull().references(() => cases.id),
+  caseId:         uuid('case_id').notNull().references(() => cases.id, { onDelete: 'cascade' }),
   documentId:     uuid('document_id').references(() => documents.id),
   title:          text('title').notNull(),
   description:    text('description').notNull(),

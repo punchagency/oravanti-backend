@@ -211,9 +211,9 @@ export const questionnaireSends = pgTable(
     organizationId:          text("organization_id").notNull().references(() => organization.id),
     caseTypeQuestionnaireId: uuid("case_type_questionnaire_id").notNull().references(() => caseTypeQuestionnaires.id),
     // leadId populated for intake sends; clientId/caseId populated after conversion
-    leadId:   uuid("lead_id").references(() => leads.id),
+    leadId:   uuid("lead_id").references(() => leads.id, { onDelete: "cascade" }),
     clientId: uuid("client_id").references(() => clients.id),
-    caseId:   uuid("case_id").references(() => cases.id),
+    caseId:   uuid("case_id").references(() => cases.id, { onDelete: "cascade" }),
     caseTypeId: uuid("case_type_id").notNull().references(() => practiceAreaCaseTypes.id),
     sentById:   uuid("sent_by_id").references(() => staff.id),
     status:     questionnaireSendStatusEnum("status").notNull().default("sent"),
@@ -247,9 +247,9 @@ export const questionnaireResponses = pgTable(
     organizationId:          text("organization_id").notNull().references(() => organization.id),
     questionnaireSendId:     uuid("questionnaire_send_id").notNull().references(() => questionnaireSends.id),
     caseTypeQuestionnaireId: uuid("case_type_questionnaire_id").notNull().references(() => caseTypeQuestionnaires.id),
-    leadId:   uuid("lead_id").references(() => leads.id),
+    leadId:   uuid("lead_id").references(() => leads.id, { onDelete: "cascade" }),
     clientId: uuid("client_id").references(() => clients.id),
-    caseId:   uuid("case_id").references(() => cases.id),
+    caseId:   uuid("case_id").references(() => cases.id, { onDelete: "cascade" }),
     caseTypeId: uuid("case_type_id").notNull().references(() => practiceAreaCaseTypes.id),
     status:     questionnaireResponseStatusEnum("status").notNull().default("draft"),
     // { source: 'system' | 'firm', id: string }
@@ -296,6 +296,7 @@ export const questionnaireResponseFiles = pgTable(
     id:             uuid("id").primaryKey().defaultRandom(),
     organizationId: text("organization_id").notNull().references(() => organization.id),
     responseId:     uuid("response_id").notNull().references(() => questionnaireResponses.id),
+    leadId:         uuid("lead_id").references(() => leads.id, { onDelete: "set null" }),
     questionId:     uuid("question_id").notNull(),
     questionSource: questionSourceEnum("question_source").notNull(),
     storagePath:    text("storage_path").notNull(),
@@ -313,6 +314,7 @@ export const questionnaireResponseFiles = pgTable(
   (table) => [
     index("questionnaire_response_files_response_idx").on(table.responseId),
     index("questionnaire_response_files_organization_idx").on(table.organizationId),
+    index("questionnaire_response_files_lead_idx").on(table.leadId),
   ],
 );
 

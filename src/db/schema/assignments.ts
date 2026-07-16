@@ -15,7 +15,7 @@ export const assignments = pgTable("assignments", {
   organizationId: text("organization_id")
     .notNull()
     .references(() => organization.id),
-  caseId: uuid("case_id").references(() => cases.id),
+  caseId: uuid("case_id").references(() => cases.id, { onDelete: "cascade" }),
   assignmentType: assignmentTypeEnum("assignment_type").notNull(),
   filingType: filingTypeEnum("filing_type").notNull(),
   urgencyLevel: urgencyLevelEnum("urgency_level").notNull().default("normal"),
