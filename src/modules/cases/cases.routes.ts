@@ -116,6 +116,38 @@ export class CasesRouter {
 
     /**
      * @openapi
+     * /cases/{caseId}/documents:
+     *   get:
+     *     tags: [Cases]
+     *     summary: Get documents linked to a case
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: caseId
+     *         required: true
+     *         schema: { type: string }
+     *       - in: query
+     *         name: page
+     *         schema: { type: integer }
+     *       - in: query
+     *         name: limit
+     *         schema: { type: integer }
+     *     responses:
+     *       200:
+     *         description: Paginated list of case documents
+     *       404: { description: Case not found }
+     */
+    this.router.get(
+      "/:caseId/documents",
+      requireAuth,
+      requireAdmin,
+      setFirmContext,
+      validateRequest({ params: this.validation.params("caseId") }),
+      this.casesController.getCaseDocuments,
+    );
+
+    /**
+     * @openapi
      * /cases/{id}:
      *   get:
      *     tags: [Cases]
