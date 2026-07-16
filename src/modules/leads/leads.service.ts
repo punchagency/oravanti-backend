@@ -60,6 +60,14 @@ import {
   caseWorkflowSteps,
 } from "../../db/schema/workflow";
 import {
+  documents,
+  documentVersions,
+  documentCaseLinks,
+} from "../../db/schema/documents";
+import {
+  questionnaireResponseFiles,
+} from "../../db/schema/questionnaires";
+import {
   cancelQuestionnaireReminder,
   scheduleQuestionnaireReminder,
 } from "../../queue/queues";
@@ -479,7 +487,7 @@ const getAllLeads = async (
   filters: Partial<PaginationParams> & {
     stage?: string;
     status?: string;
-    practiceAreaId?: string;
+    practiceAreaName?: string;
     source?: string;
     search?: string;
     all?: boolean;
@@ -496,6 +504,14 @@ const getAllLeads = async (
     conditions.push(ne(leads.status, "declined"));
   }
   if (filters.source) conditions.push(eq(leads.source, filters.source as any));
+  if (filters.practiceAreaName) {
+    const paLeads = db
+      .select({ id: leadsToPracticeAreas.leadId })
+      .from(leadsToPracticeAreas)
+      .innerJoin(practiceAreas, eq(practiceAreas.id, leadsToPracticeAreas.practiceAreaId))
+      .where(eq(practiceAreas.name, filters.practiceAreaName as any));
+    conditions.push(inArray(leads.id, paLeads));
+  }
   if (filters.search) {
     const q = `%${filters.search}%`;
     conditions.push(
@@ -548,49 +564,32 @@ const getAllLeads = async (
     return enriched;
   };
 
-  const practiceAreaSubquery = sql<{ id: string; name: string }[]>`
-    COALESCE(
-      (
-        SELECT json_agg(json_build_object('id', ${practiceAreas.id}, 'name', ${practiceAreas.name}))
-        FROM ${leadsToPracticeAreas}
-        INNER JOIN ${practiceAreas} ON ${practiceAreas.id} = ${leadsToPracticeAreas.practiceAreaId}
-        WHERE ${leadsToPracticeAreas.leadId} = ${leads.id}
-      ),
-      '[]'::json
-    )
-  `;
-
-  const caseTypeSubquery = sql<{ id: string; name: string }[]>`
-    COALESCE(
-      (
-        SELECT json_agg(json_build_object('id', ${practiceAreaCaseTypes.id}, 'name', ${practiceAreaCaseTypes.name}))
-        FROM ${leadsToCaseTypes}
-        INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${leadsToCaseTypes.caseTypeId}
-        WHERE ${leadsToCaseTypes.leadId} = ${leads.id}
-      ),
-      '[]'::json
-    )
-  `;
-
   const nameExpr = sql<string>`${leads.firstName} || ' ' || ${leads.lastName}`;
+
+  const baseSelect = {
+    ...getTableColumns(leads),
+    name: nameExpr,
+    practiceAreaId: leadsToPracticeAreas.practiceAreaId,
+    practiceAreaName: practiceAreas.name,
+    caseTypeId: leadsToCaseTypes.caseTypeId,
+    caseTypeName: practiceAreaCaseTypes.name,
+  } as const;
 
   if (filters.all) {
     const rows = await db
-      .select({
-        ...getTableColumns(leads),
-        name: nameExpr,
-        practiceAreas: practiceAreaSubquery,
-        caseTypes: caseTypeSubquery,
-        caseTypeName: sql<string>`NULL::text`,
-      })
+      .select(baseSelect)
       .from(leads)
+      .leftJoin(leadsToPracticeAreas, eq(leadsToPracticeAreas.leadId, leads.id))
+      .leftJoin(practiceAreas, eq(practiceAreas.id, leadsToPracticeAreas.practiceAreaId))
+      .leftJoin(leadsToCaseTypes, eq(leadsToCaseTypes.leadId, leads.id))
+      .leftJoin(practiceAreaCaseTypes, eq(practiceAreaCaseTypes.id, leadsToCaseTypes.caseTypeId))
       .where(where)
       .orderBy(desc(leads.createdAt));
     return attachConflictMatches(rows);
   }
 
   const page = filters.page ?? 1;
-  const limit = filters.limit ?? 20;
+  const limit = filters.limit ?? 10;
   const offset = getPaginationOffset({ page, limit });
 
   const [countRow] = await db
@@ -599,14 +598,12 @@ const getAllLeads = async (
     .where(where);
 
   const rows = await db
-    .select({
-      ...getTableColumns(leads),
-      name: nameExpr,
-      practiceAreas: practiceAreaSubquery,
-      caseTypes: caseTypeSubquery,
-      caseTypeName: sql<string>`NULL::text`,
-    })
+    .select(baseSelect)
     .from(leads)
+    .leftJoin(leadsToPracticeAreas, eq(leadsToPracticeAreas.leadId, leads.id))
+    .leftJoin(practiceAreas, eq(practiceAreas.id, leadsToPracticeAreas.practiceAreaId))
+    .leftJoin(leadsToCaseTypes, eq(leadsToCaseTypes.leadId, leads.id))
+    .leftJoin(practiceAreaCaseTypes, eq(practiceAreaCaseTypes.id, leadsToCaseTypes.caseTypeId))
     .where(where)
     .orderBy(desc(leads.createdAt))
     .limit(limit)
@@ -652,7 +649,9 @@ const getLeadById = async (id: string, organizationId: string) => {
         practiceAreas,
         eq(practiceAreas.id, leadsToPracticeAreas.practiceAreaId),
       )
-      .where(eq(leadsToPracticeAreas.leadId, id)),
+      .where(eq(leadsToPracticeAreas.leadId, id))
+      .limit(1)
+      .then((r) => r[0] ?? null),
     db
       .select({
         id: practiceAreaCaseTypes.id,
@@ -663,7 +662,9 @@ const getLeadById = async (id: string, organizationId: string) => {
         practiceAreaCaseTypes,
         eq(practiceAreaCaseTypes.id, leadsToCaseTypes.caseTypeId),
       )
-      .where(eq(leadsToCaseTypes.leadId, id)),
+      .where(eq(leadsToCaseTypes.leadId, id))
+      .limit(1)
+      .then((r) => r[0] ?? null),
     lead.conflictCheckId
       ? db
           .select()
@@ -712,8 +713,10 @@ const getLeadById = async (id: string, organizationId: string) => {
 
   return {
     ...lead,
-    practiceAreas: practiceAreaRows,
-    caseTypes: caseTypeRows,
+    practiceAreaId: practiceAreaRows?.id ?? null,
+    practiceAreaName: practiceAreaRows?.name ?? null,
+    caseTypeId: caseTypeRows?.id ?? null,
+    caseTypeName: caseTypeRows?.name ?? null,
     conflictCheck,
     questionnaireSend,
     consultation,
@@ -753,7 +756,7 @@ const updateLead = async (
 const updateLeadStatus = async (
   id: string,
   organizationId: string,
-  status: "archived" | "reviewed",
+  status: "archived" | "reviewed" | "new",
 ) => {
   const [updated] = await db
     .update(leads)
@@ -779,7 +782,6 @@ const getLeadStageCounts = async (organizationId: string) => {
     .groupBy(leads.pipelineStage);
 
   const result: Record<string, number> = {
-    lead_inbox: 0,
     conflict_check: 0,
     questionnaire: 0,
     consultation: 0,
@@ -796,7 +798,6 @@ const getLeadStageCounts = async (organizationId: string) => {
 
 // Stage transitions are validated here before updating
 const STAGE_ORDER = [
-  "lead_inbox",
   "conflict_check",
   "questionnaire",
   "consultation",
@@ -3695,6 +3696,52 @@ const openCase = async (
             lead.questionnaireSendId,
           ),
         );
+    }
+
+    // 7. Copy questionnaire response files to documents system
+    const qFiles = await tx
+      .select()
+      .from(questionnaireResponseFiles)
+      .where(eq(questionnaireResponseFiles.leadId, leadId));
+
+    for (const qFile of qFiles) {
+      // Create document record
+      const [doc] = await tx
+        .insert(documents)
+        .values({
+          title: qFile.originalFilename,
+          status: "active",
+          category: qFile.questionSource === "system" ? "identity" : "supporting",
+        })
+        .returning();
+
+      // Create document version
+      const [version] = await tx
+        .insert(documentVersions)
+        .values({
+          documentId: doc.id,
+          filePath: qFile.storagePath,
+          fileUrl: qFile.fileUrl,
+          originalFileName: qFile.originalFilename,
+          mimeType: qFile.mimeType,
+          fileSize: qFile.fileSize,
+          versionNumber: 1,
+          scanStatus: "SKIPPED",
+        })
+        .returning();
+
+      // Update document with current version
+      await tx
+        .update(documents)
+        .set({ currentVersionId: version.id })
+        .where(eq(documents.id, doc.id));
+
+      // Link document to case
+      await tx.insert(documentCaseLinks).values({
+        documentId: doc.id,
+        caseId: newCase.id,
+      });
+
     }
 
     /**
