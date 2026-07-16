@@ -13,3 +13,6 @@ openc*
 skills-lock.json
 drop.ts
 CLAUDE.md
+WORKFLOW_STATE.md
+.opencode/
+.serena/
