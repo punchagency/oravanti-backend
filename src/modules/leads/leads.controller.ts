@@ -649,6 +649,7 @@ export class LeadsController {
   getLeadDocuments = async (req: AuthRequest, res: Response) => {
     const docs = await this.wfSvc.getLinkedDocuments(
       req.params.leadId as string,
+      req.organizationId!,
     );
     sendSuccess(res, docs, "Linked documents retrieved successfully");
   };
@@ -657,7 +658,7 @@ export class LeadsController {
     const link = await this.wfSvc.linkDocument(
       req.body.documentId,
       req.params.leadId as string,
-      req.staffId,
+      req.userId,
     );
     sendSuccess(res, link, "Document linked successfully", 201);
   };

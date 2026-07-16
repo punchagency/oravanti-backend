@@ -363,7 +363,8 @@ export class LeadWorkflowService {
       .from(leadTasks)
       .where(
         and(eq(leadTasks.leadId, leadId), eq(leadTasks.organizationId, organizationId)),
-      );
+      )
+      .orderBy(asc(leadTasks.orderIndex));
     if (existing.length > 0) return existing;
 
     const defaultTasks = [
@@ -440,9 +441,11 @@ export class LeadWorkflowService {
       .select()
       .from(leadTimelineEvents)
       .leftJoin(staff, eq(leadTimelineEvents.createdById, staff.id))
+      .innerJoin(leads, eq(leadTimelineEvents.leadId, leads.id))
       .where(
         and(
           eq(leadTimelineEvents.leadId, leadId),
+          eq(leads.organizationId, organizationId),
         ),
       )
       .orderBy(asc(leadTimelineEvents.createdAt));
@@ -467,7 +470,7 @@ export class LeadWorkflowService {
 
   // ─── Document Links ─────────────────────────────────────────────────────────
 
-  async getLinkedDocuments(leadId: string) {
+  async getLinkedDocuments(leadId: string, organizationId: string) {
     return db
       .select({
         id: leadDocumentLinks.id,
@@ -487,11 +490,14 @@ export class LeadWorkflowService {
       })
       .from(leadDocumentLinks)
       .innerJoin(documents, eq(leadDocumentLinks.documentId, documents.id))
+      .innerJoin(leads, eq(leadDocumentLinks.leadId, leads.id))
       .leftJoin(
         documentVersions,
         eq(documents.currentVersionId, documentVersions.id),
       )
-      .where(eq(leadDocumentLinks.leadId, leadId));
+      .where(
+        and(eq(leadDocumentLinks.leadId, leadId), eq(leads.organizationId, organizationId)),
+      );
   }
 
   async linkDocument(

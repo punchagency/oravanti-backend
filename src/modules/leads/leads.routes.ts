@@ -219,6 +219,7 @@ export class LeadWorkflowRouter {
       requireAuth,
       requireStaffOrAdmin,
       setFirmContext,
+      validateRequest({ params: v.leadDocumentLinkIdParamsSchema }),
       ctrl.unlinkLeadDocument,
     );
 

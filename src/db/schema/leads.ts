@@ -177,8 +177,9 @@ export const leadEvents = pgTable("lead_events", {
 
 /**
  * Lead Notes: a note is a record of what someone said at a point in time.
- * Notes can be updated (content/type) but the author, lead, and timestamp are
- * immutable. Corrections are made by editing the note, not by appending.
+ * Notes can be updated (content/type) but the author and lead are immutable.
+ * createdAt is set once at creation; updatedAt changes on edits.
+ * Corrections are made by editing the note, not by appending.
  */
 export const leadNotes = pgTable("lead_notes", {
   id:        uuid("id").primaryKey().defaultRandom(),

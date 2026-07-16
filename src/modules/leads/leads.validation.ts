@@ -447,6 +447,11 @@ export const leadTaskIdParamsSchema = z.object({
   taskId: uuid,
 });
 
+export const leadDocumentLinkIdParamsSchema = z.object({
+  leadId: uuid,
+  linkId: uuid,
+});
+
 export const createLeadTaskBodySchema = z.object({
   title: z.string().min(1),
   description: z.string().optional(),
