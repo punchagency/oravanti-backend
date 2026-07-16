@@ -476,7 +476,7 @@ export class LeadWorkflowService {
         id: leadDocumentLinks.id,
         documentId: leadDocumentLinks.documentId,
         leadId: leadDocumentLinks.leadId,
-        linkedByUserId: leadDocumentLinks.linkedByUserId,
+        linkedByStaffId: leadDocumentLinks.linkedByStaffId,
         archivedAt: leadDocumentLinks.archivedAt,
         createdAt: leadDocumentLinks.createdAt,
         updatedAt: leadDocumentLinks.updatedAt,
@@ -503,11 +503,11 @@ export class LeadWorkflowService {
   async linkDocument(
     documentId: string,
     leadId: string,
-    linkedByUserId?: string,
+    linkedByStaffId?: string,
   ) {
     const [link] = await db
       .insert(leadDocumentLinks)
-      .values({ documentId, leadId, linkedByUserId })
+      .values({ documentId, leadId, linkedByStaffId })
       .returning();
     return link;
   }

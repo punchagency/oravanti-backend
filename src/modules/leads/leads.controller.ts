@@ -658,7 +658,7 @@ export class LeadsController {
     const link = await this.wfSvc.linkDocument(
       req.body.documentId,
       req.params.leadId as string,
-      req.userId,
+      req.staffId,
     );
     sendSuccess(res, link, "Document linked successfully", 201);
   };
