@@ -1,23 +1,31 @@
+import { Router } from "express";
 import { LeadsController } from "./leads.controller";
 import {
   AgreementSigningRouter,
   AgreementsRouter,
   ConsultationBookingRouter,
+  LeadWorkflowRouter,
   LeadsRouter,
   WebhooksRouter,
 } from "./leads.routes";
+import { LeadWorkflowService } from "./lead-workflow.service";
 import { LeadsService } from "./leads.service";
 
-const buildController = () => new LeadsController(new LeadsService());
+const buildController = () => new LeadsController(new LeadsService(), new LeadWorkflowService());
 
 export class LeadsModule {
   public router: import("express").Router;
   public path: string;
 
   constructor() {
-    const router = new LeadsRouter(buildController());
-    this.router = router.router;
-    this.path = router.path;
+    const ctrl = buildController();
+    const leadsRouter = new LeadsRouter(ctrl);
+    const workflowRouter = new LeadWorkflowRouter(ctrl);
+    this.router = Router();
+    // Mount workflow first so /my-tasks is matched before /:id
+    this.router.use(workflowRouter.router);
+    this.router.use(leadsRouter.router);
+    this.path = leadsRouter.path;
   }
 }
 

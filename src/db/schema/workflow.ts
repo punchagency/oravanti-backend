@@ -88,7 +88,7 @@ export const workflowTemplateSteps = pgTable('workflow_template_steps', {
 export const caseWorkflowSteps = pgTable('case_workflow_steps', {
   id:                 uuid('id').primaryKey().defaultRandom(),
   organizationId:     text('organization_id').notNull().references(() => organization.id),
-  caseId:             uuid('case_id').notNull().references(() => cases.id),
+  caseId:             uuid('case_id').notNull().references(() => cases.id, { onDelete: 'cascade' }),
   templateStepId:     uuid('template_step_id').references(() => workflowTemplateSteps.id),
   title:              text('title').notNull(),
   description:        text('description'),

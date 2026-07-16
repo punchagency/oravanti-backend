@@ -965,8 +965,23 @@ export class WorkflowService {
 
   async getNotes(caseId: string) {
     return db
-      .select()
+      .select({
+        id: caseNotes.id,
+        caseId: caseNotes.caseId,
+        workflowModuleId: caseNotes.workflowModuleId,
+        taskId: caseNotes.taskId,
+        category: caseNotes.category,
+        visibility: caseNotes.visibility,
+        content: caseNotes.content,
+        isEdited: caseNotes.isEdited,
+        createdByUserId: caseNotes.createdByUserId,
+        createdAt: caseNotes.createdAt,
+        updatedAt: caseNotes.updatedAt,
+        authorName: sql<string | null>`concat(${staff.firstName}, ' ', ${staff.lastName})`,
+        authorRole: staff.role,
+      })
       .from(caseNotes)
+      .leftJoin(staff, eq(caseNotes.createdByUserId, staff.id))
       .where(eq(caseNotes.caseId, caseId))
       .orderBy(asc(caseNotes.createdAt));
   }

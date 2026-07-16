@@ -80,12 +80,11 @@ export const updateBookingTimezoneBodySchema = z.object({
 });
 
 export const updateLeadStatusSchema = z.object({
-  status: z.enum(["archived", "reviewed"]),
+  status: z.enum(["archived", "reviewed", "new"]),
 });
 
 export const advanceStageBodySchema = z.object({
   stage: z.enum([
-    "lead_inbox",
     "conflict_check",
     "questionnaire",
     "consultation",
@@ -439,6 +438,93 @@ export const updateAdversePartyBodySchema = z.object({
     .enum(["opposing_party", "opposing_counsel", "witness", "other"])
     .optional(),
   notes: z.string().optional(),
+});
+
+export const leadIdParamsSchema = z.object({ leadId: uuid });
+
+export const leadTaskIdParamsSchema = z.object({
+  leadId: uuid,
+  taskId: uuid,
+});
+
+export const leadDocumentLinkIdParamsSchema = z.object({
+  leadId: uuid,
+  linkId: uuid,
+});
+
+export const createLeadTaskBodySchema = z.object({
+  title: z.string().min(1),
+  description: z.string().optional(),
+  orderIndex: z.number().int().min(0),
+  pipelineStage: z.enum([
+    "conflict_check",
+    "questionnaire",
+    "consultation",
+    "fee_agreement",
+    "case_opening",
+  ]),
+  isRequired: z.boolean().optional(),
+  assignedToId: optionalUuid,
+  dueDate: z.string().optional(),
+});
+
+export const updateLeadTaskBodySchema = z.object({
+  title: z.string().min(1).optional(),
+  description: z.string().optional(),
+  orderIndex: z.number().int().min(0).optional(),
+  isRequired: z.boolean().optional(),
+  dueDate: z.string().optional(),
+  notes: z.string().optional(),
+});
+
+export const updateLeadTaskStatusBodySchema = z.object({
+  status: z.enum(["pending", "in_progress", "in_review", "completed", "skipped"]),
+});
+
+export const submitReviewBodySchema = z.object({
+  notes: z.string().optional(),
+});
+
+export const reviewActionBodySchema = z.object({
+  notes: z.string().optional(),
+});
+
+export const rejectReviewBodySchema = z.object({
+  feedback: z.string().trim().min(1, "Feedback is required"),
+});
+
+export const assignLeadTaskBodySchema = z.object({
+  assignedToId: uuid,
+});
+
+export const linkDocumentBodySchema = z.object({
+  documentId: uuid,
+});
+
+export const leadNoteIdParamsSchema = z.object({
+  leadId: uuid,
+  noteId: uuid,
+});
+
+export const createLeadNoteBodySchema = z.object({
+  content: z.string().trim().min(1, "Note content is required"),
+  type: z
+    .enum(["general", "phone_call", "email", "voicemail", "system_log", "pre_consultation", "post_consultation"])
+    .optional(),
+});
+
+export const updateLeadNoteBodySchema = z.object({
+  content: z.string().trim().min(1).optional(),
+  type: z
+    .enum(["general", "phone_call", "email", "voicemail", "system_log", "pre_consultation", "post_consultation"])
+    .optional(),
+});
+
+export const createTimelineEventBodySchema = z.object({
+  eventType: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string().optional(),
+  metadata: z.record(z.string(), z.any()).optional(),
 });
 
 // Public signing page: the opaque token that resolves to a fee agreement.

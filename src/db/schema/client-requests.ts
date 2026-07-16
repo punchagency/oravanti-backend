@@ -9,7 +9,7 @@ export const clientRequests = pgTable('client_requests', {
   id:          uuid('id').primaryKey().defaultRandom(),
   organizationId:      text('organization_id').notNull().references(() => organization.id),
   clientId:    uuid('client_id').notNull().references(() => clients.id, { onDelete: 'cascade' }),
-  caseId:      uuid('case_id').notNull().references(() => cases.id),
+  caseId:      uuid('case_id').notNull().references(() => cases.id, { onDelete: 'cascade' }),
   description: text('description').notNull(),
   requestedAt: date('requested_at').notNull(),
   status:      clientRequestStatusEnum('status').notNull().default('pending'),

@@ -7,7 +7,7 @@ export const timeEntries = pgTable('time_entries', {
   id:          uuid('id').primaryKey().defaultRandom(),
   organizationId:      text('organization_id').notNull().references(() => organization.id),
   staffId:     uuid('staff_id').notNull().references(() => staff.id, { onDelete: 'cascade' }),
-  caseId:      uuid('case_id').references(() => cases.id),
+  caseId:      uuid('case_id').references(() => cases.id, { onDelete: 'cascade' }),
   hoursWorked: numeric('hours_worked', { precision: 5, scale: 2 }).notNull(),
   entryDate:   date('entry_date').notNull(),
   description: text('description'),

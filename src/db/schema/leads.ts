@@ -59,6 +59,8 @@ export const leadEventTypeEnum = pgEnum("lead_event_type", [
   "lead_archived",
   "lead_restored",
   "note_added",
+  "note_updated",
+  "note_deleted",
   "conflict_check_run",
   "conflict_check_approved",
   "conflict_check_declined",
@@ -109,7 +111,7 @@ export const leads = pgTable("leads", {
   intakeAdversePartyName:  text("intake_adverse_party_name"),
   intakeAdversePartyEmail: text("intake_adverse_party_email"),
   status:         leadStatusEnum("status").notNull().default("new"),
-  pipelineStage:  leadPipelineStageEnum("pipeline_stage").notNull().default("lead_inbox"),
+  pipelineStage: leadPipelineStageEnum("pipeline_stage").notNull().default("conflict_check"),
 
   // Preferred language for lead-facing communications (e.g. "english");
   // used when auto-sending the intake questionnaire.
@@ -174,9 +176,10 @@ export const leadEvents = pgTable("lead_events", {
 ]);
 
 /**
- * Lead Notes: append-only. There is deliberately no `updatedAt` and no update
- * or delete route — a note is a record of what someone said at a point in time,
- * so amending one would rewrite history. Corrections are made by adding a note.
+ * Lead Notes: a note is a record of what someone said at a point in time.
+ * Notes can be updated (content/type) but the author and lead are immutable.
+ * createdAt is set once at creation; updatedAt changes on edits.
+ * Corrections are made by editing the note, not by appending.
  */
 export const leadNotes = pgTable("lead_notes", {
   id:        uuid("id").primaryKey().defaultRandom(),
@@ -185,6 +188,7 @@ export const leadNotes = pgTable("lead_notes", {
   type:      leadNoteTypeEnum("type").notNull().default("general"),
   content:   text("content").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [
   index("lead_notes_lead_id_created_at_idx").on(t.leadId, t.createdAt),
 ]);

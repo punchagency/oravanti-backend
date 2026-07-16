@@ -354,7 +354,7 @@ export const createCase = async (
       practiceAreaId: data.practiceAreaId,
       caseTypeId: resolvedCaseType.caseType.id,
       priority: (data.priority ?? "medium") as any,
-      assignedTeamId: data.assignedTeamId ?? "",
+      assignedTeamId: data.assignedTeamId ?? null,
       filingDate: data.filingDate ?? null,
       estimatedCompletionDate: data.estimatedCompletionDate,
       description: data.description,

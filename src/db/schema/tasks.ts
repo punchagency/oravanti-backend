@@ -34,7 +34,7 @@ export const tasks = pgTable("tasks", {
   description: text("description").notNull(),
   caseId: uuid("case_id")
     .notNull()
-    .references(() => cases.id),
+    .references(() => cases.id, { onDelete: "cascade" }),
   teamId: text("team_id").references(() => team.id),
   assignedToId: uuid("assigned_to_id")
     .notNull()

@@ -126,6 +126,13 @@ export class QuestionnairesRouter {
       ctrl.downloadResponseFile,
     );
 
+    // Get all questionnaire files for a lead
+    this.router.get(
+      "/leads/:leadId/documents",
+      ...staffGuards,
+      ctrl.getFilesByLeadId,
+    );
+
     // ── Authenticated admin routes ────────────────────────────────────────────
     this.router.use(requireAuth, requireAdmin, setFirmContext);
 

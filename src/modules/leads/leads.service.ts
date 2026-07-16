@@ -61,12 +61,20 @@ import {
   caseWorkflowSteps,
 } from "../../db/schema/workflow";
 import {
+  documents,
+  documentVersions,
+  documentCaseLinks,
+} from "../../db/schema/documents";
+import {
+  questionnaireResponseFiles,
+} from "../../db/schema/questionnaires";
+import {
   cancelQuestionnaireReminder,
   scheduleQuestionnaireReminder,
 } from "../../queue/queues";
 import { getLeadActivity, logLeadEvent } from "./lead-events.service";
 import { getLeadMetrics } from "./lead-metrics.service";
-import { addLeadNote, getLeadNotes } from "./lead-notes.service";
+import { addLeadNote, deleteLeadNote, getLeadNotes, updateLeadNote } from "./lead-notes.service";
 import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
 import { emailService } from "../../utils/email/email.service";
 import {
@@ -504,8 +512,6 @@ const getAllLeads = async (
     );
   }
 
-  // This filter was previously accepted and then silently dropped, so the UI's
-  // practice-area select appeared to work while returning unfiltered results.
   if (filters.practiceAreaId) {
     conditions.push(eq(leads.practiceAreaId, filters.practiceAreaId));
   }
@@ -590,7 +596,7 @@ const getAllLeads = async (
   }
 
   const page = filters.page ?? 1;
-  const limit = filters.limit ?? 20;
+  const limit = filters.limit ?? 10;
   const offset = getPaginationOffset({ page, limit });
 
   const [countRow] = await db
@@ -650,6 +656,7 @@ const getLeadById = async (id: string, organizationId: string) => {
 
   const [conflictCheck, questionnaireSend, consultation, feeAgreement] =
     await Promise.all([
+
     lead.conflictCheckId
       ? db
           .select()
@@ -855,7 +862,7 @@ const diffNamedRef = async (args: {
 const updateLeadStatus = async (
   id: string,
   organizationId: string,
-  status: "archived" | "reviewed",
+  status: "archived" | "reviewed" | "new",
   actorId?: string,
 ) => {
   const [updated] = await db
@@ -1004,7 +1011,6 @@ const getLeadStageCounts = async (organizationId: string) => {
     .groupBy(leads.pipelineStage);
 
   const result: Record<string, number> = {
-    lead_inbox: 0,
     conflict_check: 0,
     questionnaire: 0,
     consultation: 0,
@@ -1021,7 +1027,6 @@ const getLeadStageCounts = async (organizationId: string) => {
 
 // Stage transitions are validated here before updating
 const STAGE_ORDER = [
-  "lead_inbox",
   "conflict_check",
   "questionnaire",
   "consultation",
@@ -4255,7 +4260,7 @@ const openCase = async (
         practiceAreaId: resolvedPracticeAreaId,
         caseTypeId: resolvedCaseTypeId,
         priority: "medium",
-        assignedTeamId: data.assignedTeamId ?? lead.respondentId ?? "",
+        assignedTeamId: data.assignedTeamId ?? lead.respondentId ?? null,
         filingDate: new Date().toISOString().split("T")[0],
         description: lead.situationSummary ?? `Case for ${leadName}`,
         openedById: creatorStaffId,
@@ -4322,6 +4327,52 @@ const openCase = async (
             lead.questionnaireSendId,
           ),
         );
+    }
+
+    // 7. Copy questionnaire response files to documents system
+    const qFiles = await tx
+      .select()
+      .from(questionnaireResponseFiles)
+      .where(eq(questionnaireResponseFiles.leadId, leadId));
+
+    for (const qFile of qFiles) {
+      // Create document record
+      const [doc] = await tx
+        .insert(documents)
+        .values({
+          title: qFile.originalFilename,
+          status: "active",
+          category: qFile.questionSource === "system" ? "identity" : "supporting",
+        })
+        .returning();
+
+      // Create document version
+      const [version] = await tx
+        .insert(documentVersions)
+        .values({
+          documentId: doc.id,
+          filePath: qFile.storagePath,
+          fileUrl: qFile.fileUrl,
+          originalFileName: qFile.originalFilename,
+          mimeType: qFile.mimeType,
+          fileSize: qFile.fileSize,
+          versionNumber: 1,
+          scanStatus: "SKIPPED",
+        })
+        .returning();
+
+      // Update document with current version
+      await tx
+        .update(documents)
+        .set({ currentVersionId: version.id })
+        .where(eq(documents.id, doc.id));
+
+      // Link document to case
+      await tx.insert(documentCaseLinks).values({
+        documentId: doc.id,
+        caseId: newCase.id,
+      });
+
     }
 
     /**
@@ -4518,6 +4569,8 @@ export class LeadsService {
   getLeadActivity = getLeadActivity;
   getLeadNotes = getLeadNotes;
   addLeadNote = addLeadNote;
+  updateLeadNote = updateLeadNote;
+  deleteLeadNote = deleteLeadNote;
   archiveLead = archiveLead;
   restoreLead = restoreLead;
   advanceLeadStage = advanceLeadStage;

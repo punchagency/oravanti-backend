@@ -107,9 +107,7 @@ export const cases = pgTable("cases", {
   closeReason: caseCloseReasonEnum("close_reason"),
 
   // Hard Team Assignment metrics
-  assignedTeamId: text("assigned_team_id")
-    .notNull()
-    .references(() => team.id),
+  assignedTeamId: text("assigned_team_id").references(() => team.id),
   assignmentDate: timestamp("assignment_date").notNull().defaultNow(),
   reassignmentDate: timestamp("reassignment_date"),
 

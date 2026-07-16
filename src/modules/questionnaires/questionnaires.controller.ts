@@ -276,4 +276,11 @@ export class QuestionnairesController {
       sendSuccess(res, result, "File uploaded successfully", 201);
     },
   );
+
+  // ── Lead Document Files ────────────────────────────────────────────────────
+
+  getFilesByLeadId = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const files = await this.svc.getFilesByLeadId(req.params.leadId as string);
+    sendSuccess(res, files, "Lead files retrieved successfully");
+  });
 }

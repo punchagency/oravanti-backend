@@ -47,7 +47,7 @@ export const calendarEvents = pgTable("calendar_events", {
   startTime: timestamp("start_time").notNull(),
   endTime: timestamp("end_time"),
   clientId: uuid("client_id").references(() => clients.id),
-  caseId: uuid("case_id").references(() => cases.id),
+  caseId: uuid("case_id").references(() => cases.id, { onDelete: "cascade" }),
   assignedStaffId: uuid("assigned_staff_id").references(() => staff.id),
   teamId: text("team_id").references(() => team.id),
   location: text("location"),

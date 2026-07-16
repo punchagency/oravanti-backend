@@ -2,17 +2,27 @@ import { Request, Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { sendSuccess } from "../../utils/send-success";
+import { LeadWorkflowService } from "./lead-workflow.service";
 import { LeadsService } from "./leads.service";
 
 export class LeadsController {
   private svc: LeadsService;
+  private wfSvc: LeadWorkflowService;
 
-  constructor(leadsService: LeadsService) {
+  constructor(
+    leadsService: LeadsService,
+    workflowService?: LeadWorkflowService,
+  ) {
     this.svc = leadsService;
+    this.wfSvc = workflowService ?? new LeadWorkflowService();
   }
 
   createLead = async (req: AuthRequest, res: Response) => {
-    const lead = await this.svc.createLead(req.organizationId!, req.body, req.staffId!);
+    const lead = await this.svc.createLead(
+      req.organizationId!,
+      req.body,
+      req.staffId!,
+    );
     sendSuccess(res, lead, "Lead created successfully", 201);
   };
 
@@ -27,8 +37,7 @@ export class LeadsController {
       practiceAreaId: practiceAreaId as string | undefined,
       source: source as string | undefined,
       search: search as string | undefined,
-      converted:
-        converted === undefined ? undefined : converted === "true",
+      converted: converted === undefined ? undefined : converted === "true",
       all: all === "true",
     });
     if (all === "true") {
@@ -36,7 +45,9 @@ export class LeadsController {
       return;
     }
     const r = result as { leads: unknown; pagination: unknown };
-    sendSuccess(res, r.leads, "Leads retrieved successfully", 200, { pagination: r.pagination });
+    sendSuccess(res, r.leads, "Leads retrieved successfully", 200, {
+      pagination: r.pagination,
+    });
   };
 
   getLeadStageCounts = async (req: AuthRequest, res: Response) => {
@@ -100,24 +111,57 @@ export class LeadsController {
     sendSuccess(res, events, "Lead activity retrieved successfully");
   };
 
-  // ─── Notes (append-only: no update, no delete) ───────────────────────────────
+  // ─── Notes ────────────────────────────────────────────────────────────────
 
   getLeadNotes = async (req: AuthRequest, res: Response) => {
-    const notes = await this.svc.getLeadNotes(
-      req.params.id as string,
-      req.organizationId!,
-    );
+    const leadId = (req.params.leadId ?? req.params.id) as string;
+    const notes = await this.svc.getLeadNotes(leadId, req.organizationId!);
     sendSuccess(res, notes, "Lead notes retrieved successfully");
   };
 
   addLeadNote = async (req: AuthRequest, res: Response) => {
+    const leadId = (req.params.leadId ?? req.params.id) as string;
     const note = await this.svc.addLeadNote(
-      req.params.id as string,
+      leadId,
       req.organizationId!,
       req.body,
       req.staffId,
     );
     sendSuccess(res, note, "Note added successfully", 201);
+  };
+
+  createLeadNote = async (req: AuthRequest, res: Response) => {
+    const leadId = (req.params.leadId ?? req.params.id) as string;
+    const note = await this.svc.addLeadNote(
+      leadId,
+      req.organizationId!,
+      req.body,
+      req.staffId,
+    );
+    sendSuccess(res, note, "Note created successfully", 201);
+  };
+
+  updateLeadNote = async (req: AuthRequest, res: Response) => {
+    const leadId = (req.params.leadId ?? req.params.id) as string;
+    const note = await this.svc.updateLeadNote(
+      req.params.noteId as string,
+      leadId,
+      req.organizationId!,
+      req.body,
+      req.staffId!,
+    );
+    sendSuccess(res, note, "Note updated successfully");
+  };
+
+  deleteLeadNote = async (req: AuthRequest, res: Response) => {
+    const leadId = (req.params.leadId ?? req.params.id) as string;
+    await this.svc.deleteLeadNote(
+      req.params.noteId as string,
+      leadId,
+      req.organizationId!,
+      req.staffId!,
+    );
+    sendSuccess(res, null, "Note deleted successfully");
   };
 
   // ─── Archive / restore ──────────────────────────────────────────────────────
@@ -213,7 +257,9 @@ export class LeadsController {
       sort: sort as string | undefined,
     });
     const { data, pagination } = result;
-    sendSuccess(res, data, "Consultations retrieved successfully", 200, { pagination });
+    sendSuccess(res, data, "Consultations retrieved successfully", 200, {
+      pagination,
+    });
   };
 
   getConsultation = async (req: AuthRequest, res: Response) => {
@@ -449,5 +495,179 @@ export class LeadsController {
       req.organizationId!,
     );
     sendSuccess(res, null, "Adverse party deleted successfully");
+  };
+
+  // ─── Lead Workflow Tasks ──────────────────────────────────────────────────────
+
+  getMyLeadTasks = async (req: AuthRequest, res: Response) => {
+    const tasks = await this.wfSvc.getMyTasks(
+      req.staffId!,
+      req.organizationId!,
+    );
+    sendSuccess(res, tasks, "My tasks retrieved successfully");
+  };
+
+  initializePipeline = async (req: AuthRequest, res: Response) => {
+    const steps = await this.wfSvc.initializePipelineSteps(
+      req.params.leadId as string,
+      req.organizationId!,
+    );
+    sendSuccess(res, steps, "Pipeline steps initialized successfully");
+  };
+
+  getLeadTasks = async (req: AuthRequest, res: Response) => {
+    const tasks = await this.wfSvc.getTasks(
+      req.params.leadId as string,
+      req.organizationId!,
+    );
+    sendSuccess(res, tasks, "Lead tasks retrieved successfully");
+  };
+
+  createLeadTask = async (req: AuthRequest, res: Response) => {
+    const task = await this.wfSvc.createTask(
+      { ...req.body, leadId: req.params.leadId },
+      req.organizationId!,
+    );
+    sendSuccess(res, task, "Task created successfully", 201);
+  };
+
+  updateLeadTask = async (req: AuthRequest, res: Response) => {
+    const task = await this.wfSvc.updateTask(
+      req.params.taskId as string,
+      req.body,
+      req.organizationId!,
+    );
+    sendSuccess(res, task, "Task updated successfully");
+  };
+
+  updateLeadTaskStatus = async (req: AuthRequest, res: Response) => {
+    const task = await this.wfSvc.updateTaskStatus(
+      req.params.taskId as string,
+      req.body.status,
+      req.organizationId!,
+    );
+    sendSuccess(res, task, "Task status updated successfully");
+  };
+
+  assignLeadTask = async (req: AuthRequest, res: Response) => {
+    const task = await this.wfSvc.assignTask(
+      req.params.taskId as string,
+      req.body.assignedToId,
+      req.organizationId!,
+    );
+    sendSuccess(res, task, "Task assigned successfully");
+  };
+
+  completeLeadTask = async (req: AuthRequest, res: Response) => {
+    const task = await this.wfSvc.completeTask(
+      req.params.taskId as string,
+      req.staffId!,
+      req.organizationId!,
+    );
+    sendSuccess(res, task, "Task completed successfully");
+  };
+
+  submitLeadTaskForReview = async (req: AuthRequest, res: Response) => {
+    const task = await this.wfSvc.submitTaskForReview(
+      req.params.taskId as string,
+      req.staffId!,
+      req.body.notes,
+      req.organizationId!,
+    );
+    sendSuccess(res, task, "Task submitted for review");
+  };
+
+  approveLeadTask = async (req: AuthRequest, res: Response) => {
+    const task = await this.wfSvc.approveTask(
+      req.params.taskId as string,
+      req.staffId!,
+      req.body.notes,
+      req.organizationId!,
+    );
+    sendSuccess(res, task, "Task approved");
+  };
+
+  rejectLeadTask = async (req: AuthRequest, res: Response) => {
+    const task = await this.wfSvc.rejectTask(
+      req.params.taskId as string,
+      req.staffId!,
+      req.body.feedback,
+      req.organizationId!,
+    );
+    sendSuccess(res, task, "Task rejected");
+  };
+
+  getLeadReviewQueue = async (req: AuthRequest, res: Response) => {
+    const status = req.query.status as string | undefined;
+    const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
+    const limit = req.query.limit
+      ? parseInt(req.query.limit as string, 10)
+      : 20;
+    const result = await this.wfSvc.getReviewQueue(
+      req.organizationId!,
+      status,
+      page,
+      limit,
+    );
+    sendSuccess(res, result.items, "Review queue retrieved", 200, {
+      pagination: result.pagination,
+    });
+  };
+
+  deleteLeadTask = async (req: AuthRequest, res: Response) => {
+    await this.wfSvc.deleteTask(
+      req.params.taskId as string,
+      req.organizationId!,
+    );
+    sendSuccess(res, null, "Task deleted successfully");
+  };
+
+  // ─── Lead Timeline ────────────────────────────────────────────────────────────
+
+  getLeadTimeline = async (req: AuthRequest, res: Response) => {
+    const events = await this.wfSvc.getTimelineEvents(
+      req.params.leadId as string,
+      req.organizationId!,
+    );
+    sendSuccess(res, events, "Timeline events retrieved successfully");
+  };
+
+  createLeadTimelineEvent = async (req: AuthRequest, res: Response) => {
+    const event = await this.wfSvc.createTimelineEvent({
+      leadId: req.params.leadId as string,
+      eventType: req.body.eventType,
+      title: req.body.title,
+      description: req.body.description,
+      metadata: req.body.metadata,
+      createdById: req.staffId,
+    });
+    sendSuccess(res, event, "Timeline event created successfully", 201);
+  };
+
+  // ─── Lead Documents ───────────────────────────────────────────────────────────
+
+  getLeadDocuments = async (req: AuthRequest, res: Response) => {
+    const docs = await this.wfSvc.getLinkedDocuments(
+      req.params.leadId as string,
+      req.organizationId!,
+    );
+    sendSuccess(res, docs, "Linked documents retrieved successfully");
+  };
+
+  linkLeadDocument = async (req: AuthRequest, res: Response) => {
+    const link = await this.wfSvc.linkDocument(
+      req.body.documentId,
+      req.params.leadId as string,
+      req.staffId,
+    );
+    sendSuccess(res, link, "Document linked successfully", 201);
+  };
+
+  unlinkLeadDocument = async (req: AuthRequest, res: Response) => {
+    await this.wfSvc.unlinkDocument(
+      req.params.linkId as string,
+      req.params.leadId as string,
+    );
+    sendSuccess(res, null, "Document unlinked successfully");
   };
 }

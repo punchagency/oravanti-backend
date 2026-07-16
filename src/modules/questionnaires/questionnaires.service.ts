@@ -601,6 +601,7 @@ export class QuestionnairesService {
       .values({
         organizationId: send.organizationId,
         responseId: response.id,
+        leadId: send.leadId,
         questionId: data.questionId,
         questionSource,
         storagePath,
@@ -675,6 +676,7 @@ export class QuestionnairesService {
       .values({
         organizationId,
         responseId: response.id,
+        leadId: send?.leadId ?? null,
         questionId: data.questionId,
         questionSource,
         storagePath,
@@ -688,6 +690,20 @@ export class QuestionnairesService {
     await enqueueDocumentScan(file.id).catch(console.error);
 
     return file;
+  };
+
+  /**
+   * Get all questionnaire response files linked to a lead.
+   * Used by the lead documents tab to show files collected during intake.
+   */
+  getFilesByLeadId = async (leadId: string) => {
+    const files = await db
+      .select()
+      .from(questionnaireResponseFiles)
+      .where(eq(questionnaireResponseFiles.leadId, leadId))
+      .orderBy(desc(questionnaireResponseFiles.createdAt));
+
+    return presignResponseFiles(files);
   };
 
   // ── Intake: eligible leads, question bank, response review ──────────────────

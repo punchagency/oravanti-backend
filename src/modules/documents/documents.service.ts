@@ -929,6 +929,130 @@ export class DocumentsService {
       .orderBy(desc(documentActivityLogs.createdAt));
   };
 
+  getCaseDocuments = async (
+    caseId: string,
+    organizationId: string,
+    page?: number,
+    limit?: number,
+  ) => {
+    const resolvedPage = page ?? 1;
+    const resolvedLimit = limit ?? 20;
+    const offset = getPaginationOffset({ page: resolvedPage, limit: resolvedLimit });
+
+    await this.getCaseForFirm(caseId, organizationId);
+
+    const conditions = [
+      eq(documentCaseLinks.caseId, caseId),
+      isNull(documentCaseLinks.archivedAt),
+      eq(documents.status, "active"),
+    ];
+
+    const where = and(...conditions);
+
+    const [{ total }] = await db
+      .select({ total: count() })
+      .from(documents)
+      .innerJoin(
+        documentCaseLinks,
+        and(
+          eq(documentCaseLinks.documentId, documents.id),
+          eq(documentCaseLinks.caseId, caseId),
+          isNull(documentCaseLinks.archivedAt),
+        ),
+      )
+      .leftJoin(
+        documentVersions,
+        eq(documentVersions.id, documents.currentVersionId),
+      )
+      .leftJoin(cases, eq(cases.id, documentCaseLinks.caseId))
+      .leftJoin(clients, eq(clients.id, cases.clientId))
+      .where(where);
+
+    const rows = await db
+      .select({
+        id: documents.id,
+        title: documents.title,
+        category: documents.category,
+        status: documents.status,
+        createdAt: documents.createdAt,
+        updatedAt: documents.updatedAt,
+        versionId: documentVersions.id,
+        filePath: documentVersions.filePath,
+        fileSize: documentVersions.fileSize,
+        mimeType: documentVersions.mimeType,
+        originalFileName: documentVersions.originalFileName,
+        versionNumber: documentVersions.versionNumber,
+        scanStatus: documentVersions.scanStatus,
+        caseId: cases.id,
+        caseTypeId: cases.caseTypeId,
+        clientId: clients.id,
+        clientDisplayName: clients.displayName,
+      })
+      .from(documents)
+      .innerJoin(
+        documentCaseLinks,
+        and(
+          eq(documentCaseLinks.documentId, documents.id),
+          eq(documentCaseLinks.caseId, caseId),
+          isNull(documentCaseLinks.archivedAt),
+        ),
+      )
+      .leftJoin(
+        documentVersions,
+        eq(documentVersions.id, documents.currentVersionId),
+      )
+      .leftJoin(cases, eq(cases.id, documentCaseLinks.caseId))
+      .leftJoin(clients, eq(clients.id, cases.clientId))
+      .where(where)
+      .orderBy(desc(documents.createdAt))
+      .limit(resolvedLimit)
+      .offset(offset);
+
+    const items = await Promise.all(
+      rows.map(async (row) => ({
+        id: row.id,
+        title: row.title,
+        name: row.title,
+        category: row.category,
+        status: row.status,
+        permission: null,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        currentVersion: row.versionId
+          ? {
+              id: row.versionId,
+              versionNumber: row.versionNumber,
+              fileUrl: row.filePath
+                ? await storageService.getSignedDownloadUrl(row.filePath)
+                : null,
+              fileSize: row.fileSize,
+              mimeType: row.mimeType,
+              originalFileName: row.originalFileName,
+              scanStatus: row.scanStatus,
+            }
+          : null,
+        case: row.caseId
+          ? {
+              id: row.caseId,
+              caseType: row.caseTypeId,
+            }
+          : null,
+        client: row.clientId
+          ? { id: row.clientId, name: row.clientDisplayName ?? '' }
+          : null,
+      })),
+    );
+
+    return buildPaginatedResponse(
+      items,
+      {
+        page: resolvedPage,
+        limit: resolvedLimit,
+        total: Number(total),
+      },
+    );
+  };
+
   getExternalRequests = async (userId: string) =>
     db
       .select()

@@ -9,7 +9,7 @@ async function resetDatabase() {
       sql.raw(`
       DROP SCHEMA public CASCADE;
       CREATE SCHEMA public;
-      GRANT ALL ON SCHEMA public TO ubk5ft2mkg0nn8;
+      GRANT ALL ON SCHEMA public TO postgres;
       GRANT ALL ON SCHEMA public TO public;
     `),
     );
