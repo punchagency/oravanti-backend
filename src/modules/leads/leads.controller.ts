@@ -9,26 +9,35 @@ export class LeadsController {
   private svc: LeadsService;
   private wfSvc: LeadWorkflowService;
 
-  constructor(leadsService: LeadsService, workflowService?: LeadWorkflowService) {
+  constructor(
+    leadsService: LeadsService,
+    workflowService?: LeadWorkflowService,
+  ) {
     this.svc = leadsService;
     this.wfSvc = workflowService ?? new LeadWorkflowService();
   }
 
   createLead = async (req: AuthRequest, res: Response) => {
-    const lead = await this.svc.createLead(req.organizationId!, req.body, req.staffId!);
+    const lead = await this.svc.createLead(
+      req.organizationId!,
+      req.body,
+      req.staffId!,
+    );
     sendSuccess(res, lead, "Lead created successfully", 201);
   };
 
   getAllLeads = async (req: AuthRequest, res: Response) => {
-    const { stage, status, practiceAreaName, source, search, all } = req.query;
+    const { stage, status, practiceAreaId, source, search, converted, all } =
+      req.query;
     const queryPagination = all ? {} : parsePaginationQuery(req.query);
     const result = await this.svc.getAllLeads(req.organizationId!, {
       ...queryPagination,
       stage: stage as string | undefined,
       status: status as string | undefined,
-      practiceAreaName: practiceAreaName as string | undefined,
+      practiceAreaId: practiceAreaId as string | undefined,
       source: source as string | undefined,
       search: search as string | undefined,
+      converted: converted === undefined ? undefined : converted === "true",
       all: all === "true",
     });
     if (all === "true") {
@@ -36,12 +45,22 @@ export class LeadsController {
       return;
     }
     const r = result as { leads: unknown; pagination: unknown };
-    sendSuccess(res, r.leads, "Leads retrieved successfully", 200, { pagination: r.pagination });
+    sendSuccess(res, r.leads, "Leads retrieved successfully", 200, {
+      pagination: r.pagination,
+    });
   };
 
   getLeadStageCounts = async (req: AuthRequest, res: Response) => {
     const counts = await this.svc.getLeadStageCounts(req.organizationId!);
     sendSuccess(res, counts, "Stage counts retrieved successfully");
+  };
+
+  getLeadMetrics = async (req: AuthRequest, res: Response) => {
+    const metrics = await this.svc.getLeadMetrics(
+      req.organizationId!,
+      (req.query.period as "30d" | "90d" | "12mo") ?? "30d",
+    );
+    sendSuccess(res, metrics, "Lead metrics retrieved successfully");
   };
 
   getLeadById = async (req: AuthRequest, res: Response) => {
@@ -59,6 +78,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       req.body,
+      req.staffId,
     );
     sendSuccess(res, lead, "Lead updated successfully");
   };
@@ -67,7 +87,8 @@ export class LeadsController {
     const lead = await this.svc.updateLeadStatus(
       req.params.id as string,
       req.organizationId!,
-      req.body.status
+      req.body.status,
+      req.staffId,
     );
     sendSuccess(res, lead, "Lead status updated successfully");
   };
@@ -77,8 +98,91 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       req.body.stage,
+      req.staffId,
     );
     sendSuccess(res, lead, "Lead stage advanced successfully");
+  };
+
+  getLeadActivity = async (req: AuthRequest, res: Response) => {
+    const events = await this.svc.getLeadActivity(
+      req.params.id as string,
+      req.organizationId!,
+    );
+    sendSuccess(res, events, "Lead activity retrieved successfully");
+  };
+
+  // ─── Notes ────────────────────────────────────────────────────────────────
+
+  getLeadNotes = async (req: AuthRequest, res: Response) => {
+    const leadId = (req.params.leadId ?? req.params.id) as string;
+    const notes = await this.svc.getLeadNotes(leadId, req.organizationId!);
+    sendSuccess(res, notes, "Lead notes retrieved successfully");
+  };
+
+  addLeadNote = async (req: AuthRequest, res: Response) => {
+    const leadId = (req.params.leadId ?? req.params.id) as string;
+    const note = await this.svc.addLeadNote(
+      leadId,
+      req.organizationId!,
+      req.body,
+      req.staffId,
+    );
+    sendSuccess(res, note, "Note added successfully", 201);
+  };
+
+  createLeadNote = async (req: AuthRequest, res: Response) => {
+    const leadId = (req.params.leadId ?? req.params.id) as string;
+    const note = await this.svc.addLeadNote(
+      leadId,
+      req.organizationId!,
+      req.body,
+      req.staffId,
+    );
+    sendSuccess(res, note, "Note created successfully", 201);
+  };
+
+  updateLeadNote = async (req: AuthRequest, res: Response) => {
+    const leadId = (req.params.leadId ?? req.params.id) as string;
+    const note = await this.svc.updateLeadNote(
+      req.params.noteId as string,
+      leadId,
+      req.organizationId!,
+      req.body,
+      req.staffId!,
+    );
+    sendSuccess(res, note, "Note updated successfully");
+  };
+
+  deleteLeadNote = async (req: AuthRequest, res: Response) => {
+    const leadId = (req.params.leadId ?? req.params.id) as string;
+    await this.svc.deleteLeadNote(
+      req.params.noteId as string,
+      leadId,
+      req.organizationId!,
+      req.staffId!,
+    );
+    sendSuccess(res, null, "Note deleted successfully");
+  };
+
+  // ─── Archive / restore ──────────────────────────────────────────────────────
+
+  archiveLead = async (req: AuthRequest, res: Response) => {
+    const lead = await this.svc.archiveLead(
+      req.params.id as string,
+      req.organizationId!,
+      { reason: req.body?.reason },
+      req.staffId,
+    );
+    sendSuccess(res, lead, "Lead archived successfully");
+  };
+
+  restoreLead = async (req: AuthRequest, res: Response) => {
+    const lead = await this.svc.restoreLead(
+      req.params.id as string,
+      req.organizationId!,
+      req.staffId,
+    );
+    sendSuccess(res, lead, "Lead restored successfully");
   };
 
   // ─── Conflict Check ──────────────────────────────────────────────────────────
@@ -138,6 +242,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       req.body,
+      req.staffId,
     );
     sendSuccess(res, result, "Consultation initiated successfully", 201);
   };
@@ -152,7 +257,9 @@ export class LeadsController {
       sort: sort as string | undefined,
     });
     const { data, pagination } = result;
-    sendSuccess(res, data, "Consultations retrieved successfully", 200, { pagination });
+    sendSuccess(res, data, "Consultations retrieved successfully", 200, {
+      pagination,
+    });
   };
 
   getConsultation = async (req: AuthRequest, res: Response) => {
@@ -170,6 +277,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       body,
+      req.staffId,
     );
     sendSuccess(res, result, "Consultation updated successfully");
   };
@@ -179,6 +287,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       { reason: req.body?.reason },
+      req.staffId,
     );
     sendSuccess(res, result, "Consultation cancelled successfully");
   };
@@ -218,6 +327,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
       req.body,
+      req.staffId,
     );
     sendSuccess(res, result, "Fee agreement generated successfully", 201);
   };
@@ -250,6 +360,7 @@ export class LeadsController {
     const result = await this.svc.sendFeeAgreement(
       req.params.agreementId as string,
       req.organizationId!,
+      req.staffId,
     );
     sendSuccess(res, result, "Fee agreement sent successfully");
   };
@@ -258,6 +369,7 @@ export class LeadsController {
     const result = await this.svc.markFeeAgreementReceived(
       req.params.agreementId as string,
       req.organizationId!,
+      req.staffId,
     );
     sendSuccess(res, result, "Fee agreement marked as received");
   };
@@ -266,6 +378,7 @@ export class LeadsController {
     const result = await this.svc.markFeeAgreementPaymentReceived(
       req.params.agreementId as string,
       req.organizationId!,
+      req.staffId,
     );
     res.json({ success: true, data: result });
   };
@@ -387,7 +500,10 @@ export class LeadsController {
   // ─── Lead Workflow Tasks ──────────────────────────────────────────────────────
 
   getMyLeadTasks = async (req: AuthRequest, res: Response) => {
-    const tasks = await this.wfSvc.getMyTasks(req.staffId!, req.organizationId!);
+    const tasks = await this.wfSvc.getMyTasks(
+      req.staffId!,
+      req.organizationId!,
+    );
     sendSuccess(res, tasks, "My tasks retrieved successfully");
   };
 
@@ -484,7 +600,9 @@ export class LeadsController {
   getLeadReviewQueue = async (req: AuthRequest, res: Response) => {
     const status = req.query.status as string | undefined;
     const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
-    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 20;
+    const limit = req.query.limit
+      ? parseInt(req.query.limit as string, 10)
+      : 20;
     const result = await this.wfSvc.getReviewQueue(
       req.organizationId!,
       status,
@@ -529,7 +647,9 @@ export class LeadsController {
   // ─── Lead Documents ───────────────────────────────────────────────────────────
 
   getLeadDocuments = async (req: AuthRequest, res: Response) => {
-    const docs = await this.wfSvc.getLinkedDocuments(req.params.leadId as string);
+    const docs = await this.wfSvc.getLinkedDocuments(
+      req.params.leadId as string,
+    );
     sendSuccess(res, docs, "Linked documents retrieved successfully");
   };
 
@@ -548,39 +668,5 @@ export class LeadsController {
       req.params.leadId as string,
     );
     sendSuccess(res, null, "Document unlinked successfully");
-  };
-
-  // ─── Lead Notes ─────────────────────────────────────────────────────────────
-
-  getLeadNotes = async (req: AuthRequest, res: Response) => {
-    const notes = await this.wfSvc.getNotes(req.params.leadId as string);
-    sendSuccess(res, notes, "Lead notes retrieved successfully");
-  };
-
-  createLeadNote = async (req: AuthRequest, res: Response) => {
-    const note = await this.wfSvc.createNote({
-      leadId: req.params.leadId as string,
-      authorId: req.staffId!,
-      content: req.body.content,
-      type: req.body.type,
-    });
-    sendSuccess(res, note, "Note created successfully", 201);
-  };
-
-  updateLeadNote = async (req: AuthRequest, res: Response) => {
-    const note = await this.wfSvc.updateNote(
-      req.params.noteId as string,
-      req.params.leadId as string,
-      req.body,
-    );
-    sendSuccess(res, note, "Note updated successfully");
-  };
-
-  deleteLeadNote = async (req: AuthRequest, res: Response) => {
-    await this.wfSvc.deleteNote(
-      req.params.noteId as string,
-      req.params.leadId as string,
-    );
-    sendSuccess(res, null, "Note deleted successfully");
   };
 }

@@ -122,6 +122,10 @@ export const consultations = pgTable("consultations", {
   // link and removes the Meet event).
   cancelledAt: timestamp("cancelled_at"),
   cancellationReason: text("cancellation_reason"),
+  // Who booked / cancelled this consultation. Distinct from leadAttorneyId,
+  // which is who it is *with*.
+  scheduledById: uuid("scheduled_by_id").references(() => staff.id),
+  cancelledById: uuid("cancelled_by_id").references(() => staff.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

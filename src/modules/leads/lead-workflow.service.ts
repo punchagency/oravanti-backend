@@ -2,7 +2,6 @@ import { and, asc, count, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import {
   leadDocumentLinks,
-  leadNotes,
   leadTasks,
   leadTimelineEvents,
   leads,
@@ -513,66 +512,5 @@ export class LeadWorkflowService {
       .where(
         and(eq(leadDocumentLinks.id, linkId), eq(leadDocumentLinks.leadId, leadId)),
       );
-  }
-
-  // ─── Lead Notes ────────────────────────────────────────────────────────────
-
-  async getNotes(leadId: string) {
-    return db
-      .select({
-        id: leadNotes.id,
-        leadId: leadNotes.leadId,
-        authorId: leadNotes.authorId,
-        type: leadNotes.type,
-        content: leadNotes.content,
-        createdAt: leadNotes.createdAt,
-        updatedAt: leadNotes.updatedAt,
-        authorName: sql<string | null>`concat(${staff.firstName}, ' ', ${staff.lastName})`,
-        authorRole: staff.role,
-      })
-      .from(leadNotes)
-      .leftJoin(staff, eq(leadNotes.authorId, staff.id))
-      .where(eq(leadNotes.leadId, leadId))
-      .orderBy(desc(leadNotes.createdAt));
-  }
-
-  async createNote(data: {
-    leadId: string;
-    authorId: string;
-    content: string;
-    type?: "general" | "phone_call" | "email" | "voicemail" | "system_log";
-  }) {
-    const [note] = await db
-      .insert(leadNotes)
-      .values({
-        leadId: data.leadId,
-        authorId: data.authorId,
-        content: data.content,
-        type: data.type ?? "general",
-      })
-      .returning();
-    return note;
-  }
-
-  async updateNote(
-    noteId: string,
-    leadId: string,
-    data: { content?: string; type?: "general" | "phone_call" | "email" | "voicemail" | "system_log" },
-  ) {
-    const [note] = await db
-      .update(leadNotes)
-      .set({ ...data, updatedAt: new Date() })
-      .where(and(eq(leadNotes.id, noteId), eq(leadNotes.leadId, leadId)))
-      .returning();
-    if (!note) throw new NotFoundError("Lead note not found");
-    return note;
-  }
-
-  async deleteNote(noteId: string, leadId: string) {
-    const [note] = await db
-      .delete(leadNotes)
-      .where(and(eq(leadNotes.id, noteId), eq(leadNotes.leadId, leadId)))
-      .returning();
-    if (!note) throw new NotFoundError("Lead note not found");
   }
 }

@@ -6,7 +6,7 @@ import { formatWithZone } from "../../utils/date";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 import { cases } from "../../db/schema/cases";
 import { conflictChecks } from "../../db/schema/conflict-checks";
-import { leads, leadsToCaseTypes } from "../../db/schema/leads";
+import { leads } from "../../db/schema/leads";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import {
   caseTypeQuestionnaires,
@@ -720,16 +720,15 @@ export class QuestionnairesService {
         firstName: leads.firstName,
         lastName: leads.lastName,
         email: leads.email,
-        caseTypeId: leadsToCaseTypes.caseTypeId,
+        caseTypeId: leads.caseTypeId,
         caseTypeName: practiceAreaCaseTypes.name,
         conflictStatus: conflictChecks.status,
         supervisorOverrideById: conflictChecks.supervisorOverrideById,
       })
       .from(leads)
-      .leftJoin(leadsToCaseTypes, eq(leadsToCaseTypes.leadId, leads.id))
       .leftJoin(
         practiceAreaCaseTypes,
-        eq(practiceAreaCaseTypes.id, leadsToCaseTypes.caseTypeId),
+        eq(practiceAreaCaseTypes.id, leads.caseTypeId),
       )
       .leftJoin(conflictChecks, eq(conflictChecks.id, leads.conflictCheckId))
       .where(

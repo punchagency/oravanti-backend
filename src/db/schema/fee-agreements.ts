@@ -10,6 +10,7 @@ import { organization } from "./auth-schema";
 import { leads } from "./leads";
 import { practiceAreaCaseTypes } from "./practice-area-case-types";
 import { practiceAreas } from "./practice-areas";
+import { staff } from "./staff";
 
 // Structured fee-agreement form data captured before generation.
 // Every field added after the initial release is optional so that rows
@@ -120,6 +121,11 @@ export const feeAgreements = pgTable("fee_agreements", {
   lastWebhookEventAt: timestamp("last_webhook_event_at"),
   clientSignedAt: timestamp("client_signed_at"),
   nudgedAt: timestamp("nudged_at"),
+  // Actors. The client signs via the provider, so there is no staff actor for
+  // the signature itself — receivedById records who *marked* it received manually.
+  generatedById: uuid("generated_by_id").references(() => staff.id),
+  sentById: uuid("sent_by_id").references(() => staff.id),
+  receivedById: uuid("received_by_id").references(() => staff.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
