@@ -70,7 +70,7 @@ export const leads = pgTable("leads", {
   intakeAdversePartyName:  text("intake_adverse_party_name"),
   intakeAdversePartyEmail: text("intake_adverse_party_email"),
   status:         leadStatusEnum("status").notNull().default("new"),
-  pipelineStage:  leadPipelineStageEnum("pipeline_stage").notNull().default("lead_inbox"),
+  pipelineStage: leadPipelineStageEnum("pipeline_stage").notNull().default("conflict_check"),
 
   // Preferred language for lead-facing communications (e.g. "english");
   // used when auto-sending the intake questionnaire.
