@@ -71,6 +71,12 @@ export class OrganizationRouter {
       this.organizationController.getAll,
     );
     this.router.get(
+      "/staff/me",
+      requireAuth,
+      requirePermission("staffs", "read"),
+      this.organizationController.getMyStaff,
+    );
+    this.router.get(
       "/staff/:staffId",
       requireAuth,
       requirePermission("staffs", "read"),
