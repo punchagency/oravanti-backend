@@ -1,4 +1,3 @@
-import { AIErrorDetectionModule } from "./ai-error-detection/ai-error-detection.module";
 import { AuthModule } from "./auth/auth.module";
 import { CalendarModule } from "./calendar/calendar.module";
 import { CasesModule } from "./cases/cases.module";
@@ -46,7 +45,6 @@ export const modules: Module[] = [
   new QuestionnairesModule(),
   new TasksModule(),
   new WorkflowModule(),
-  new AIErrorDetectionModule(),
   new CalendarModule(),
   new CasesModule(),
   new PracticeAreasModule(),

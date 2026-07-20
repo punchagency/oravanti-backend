@@ -4,18 +4,12 @@ import { redisConnection } from "./connection";
 // ─── Queue names ──────────────────────────────────────────────────────────────
 
 export const QUESTIONNAIRE_REMINDERS_QUEUE = "questionnaire-reminders";
-export const DOCUMENT_SCAN_QUEUE = "document-scan";
 
 // ─── Job payloads ─────────────────────────────────────────────────────────────
 
 export type QuestionnaireReminderJob = {
   /** questionnaire_sends.id whose response is awaited */
   sendId: string;
-};
-
-export type DocumentScanJob = {
-  /** questionnaire_response_files.id to scan */
-  fileId: string;
 };
 
 // ─── Producers ────────────────────────────────────────────────────────────────
@@ -35,11 +29,6 @@ export const questionnaireRemindersQueue = new Queue<
   connection: redisConnection,
   defaultJobOptions,
 });
-
-export const documentScanQueue = new Queue<DocumentScanJob, void, string>(
-  DOCUMENT_SCAN_QUEUE,
-  { connection: redisConnection, defaultJobOptions },
-);
 
 /**
  * Schedule a reminder to fire after `days` days. Returns the BullMQ job id so the
@@ -61,9 +50,4 @@ export const scheduleQuestionnaireReminder = async (
 export const cancelQuestionnaireReminder = async (jobId: string) => {
   const job = await questionnaireRemindersQueue.getJob(jobId);
   if (job) await job.remove();
-};
-
-/** Enqueue an immediate document scan for an uploaded file. */
-export const enqueueDocumentScan = async (fileId: string) => {
-  await documentScanQueue.add("scan", { fileId });
 };

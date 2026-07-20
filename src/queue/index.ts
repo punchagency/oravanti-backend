@@ -1,5 +1,4 @@
 import type { Worker } from "bullmq";
-import { createDocumentScanWorker } from "./workers/document-scan.worker";
 import { createReminderWorker } from "./workers/reminder.worker";
 
 /**
@@ -7,7 +6,7 @@ import { createReminderWorker } from "./workers/reminder.worker";
  * (`worker-entry.ts`) so workers run as their own process, separate from the API.
  */
 export const startWorkers = (): Worker[] => {
-  const workers = [createReminderWorker(), createDocumentScanWorker()];
+  const workers = [createReminderWorker()];
   console.log(`[queue] started ${workers.length} workers`);
   return workers;
 };
