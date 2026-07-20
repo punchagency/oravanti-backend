@@ -442,6 +442,11 @@ export const updateAdversePartyBodySchema = z.object({
 
 export const leadIdParamsSchema = z.object({ leadId: uuid });
 
+export const paginationQuerySchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+});
+
 export const leadTaskIdParamsSchema = z.object({
   leadId: uuid,
   taskId: uuid,

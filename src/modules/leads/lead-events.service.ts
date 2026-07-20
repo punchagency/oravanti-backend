@@ -112,6 +112,52 @@ export const getLeadActivity = async (
       ? `${r.firstName} ${r.lastName}`.trim()
       : r.actorNameSnapshot,
     metadata: r.metadata as Record<string, unknown> | null,
+    ipAddress: r.ipAddress,
     createdAt: r.createdAt,
   }));
+};
+
+/**
+ * Log a lead_viewed event, but deduplicate: skip if the same staff member
+ * viewed the same lead within the last 5 minutes. This prevents noise from
+ * tab switches, re-renders, and polling while still recording meaningful
+ * access patterns.
+ */
+export const logLeadView = async (
+  organizationId: string,
+  leadId: string,
+  actorId: string | null | undefined,
+  tab?: string,
+) => {
+  if (!actorId) return;
+
+  const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+
+  try {
+    const [recent] = await db
+      .select({ id: leadEvents.id, createdAt: leadEvents.createdAt })
+      .from(leadEvents)
+      .where(
+        and(
+          eq(leadEvents.organizationId, organizationId),
+          eq(leadEvents.leadId, leadId),
+          eq(leadEvents.actorId, actorId),
+          eq(leadEvents.type, "lead_viewed"),
+        ),
+      )
+      .orderBy(desc(leadEvents.createdAt))
+      .limit(1);
+
+    if (recent && recent.createdAt > fiveMinAgo) return;
+
+    await logLeadEvent({
+      organizationId,
+      leadId,
+      type: "lead_viewed",
+      actorId,
+      metadata: tab ? { tab } : undefined,
+    });
+  } catch (err) {
+    console.error("[logLeadView] failed", err);
+  }
 };
