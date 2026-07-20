@@ -19,6 +19,7 @@ const toSettingsDTO = (row: ConsultationSettings) => ({
   feeStructure: row.feeStructure,
   waiverWindowDays: row.waiverWindowDays,
   timezone: row.timezone,
+  language: row.language,
   smsEnabled: row.smsEnabled,
   updatedAt: row.updatedAt,
 });
@@ -38,6 +39,28 @@ export const getFirmTimezone = async (
   return row?.timezone ?? "UTC";
 };
 
+/**
+ * Resolve the firm's BCP-47 display language, defaulting to English when unset.
+ *
+ * This is the language STAFF read, so it governs how issue prose is rendered
+ * from `case_issues.templateKey` / `templateParams` at read time. It is not the
+ * lead's language (`leads.language`), which governs client-facing messages.
+ *
+ * Rendering at read time — rather than storing prose — is what lets the AI
+ * analysis cache stay content-addressed: facts are language-neutral, so two
+ * firms reading in different languages still share one cached extraction.
+ */
+export const getFirmLanguage = async (
+  organizationId: string,
+): Promise<string> => {
+  const [row] = await db
+    .select({ language: consultationSettings.language })
+    .from(consultationSettings)
+    .where(eq(consultationSettings.organizationId, organizationId))
+    .limit(1);
+  return row?.language ?? "en";
+};
+
 export class ConsultationSettingsService {
   getSettings = async (organizationId: string) => {
     const [row] = await db
@@ -55,6 +78,7 @@ export class ConsultationSettingsService {
         feeStructure: null,
         waiverWindowDays: null,
         timezone: "UTC",
+        language: "en",
         smsEnabled: false,
         updatedAt: null,
       };
@@ -82,6 +106,7 @@ export class ConsultationSettingsService {
           ? body.waiverWindowDays ?? null
           : null,
       ...(body.timezone !== undefined ? { timezone: body.timezone } : {}),
+      ...(body.language !== undefined ? { language: body.language } : {}),
       smsEnabled: body.smsEnabled ?? false,
       updatedAt: new Date(),
     };
