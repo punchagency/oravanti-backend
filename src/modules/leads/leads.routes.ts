@@ -175,7 +175,7 @@ export class LeadWorkflowRouter {
       requireAuth,
       requireStaffOrAdmin,
       setFirmContext,
-      validateRequest({ params: v.leadIdParamsSchema }),
+      validateRequest({ params: v.leadIdParamsSchema, query: v.paginationQuerySchema }),
       ctrl.getLeadTimeline,
     );
 
@@ -189,6 +189,17 @@ export class LeadWorkflowRouter {
         body: v.createTimelineEventBodySchema,
       }),
       ctrl.createLeadTimelineEvent,
+    );
+
+    // ── Audit Log ─────────────────────────────────────────────────────────
+
+    this.router.get(
+      "/:leadId/audit-log",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.leadIdParamsSchema, query: v.paginationQuerySchema }),
+      ctrl.getLeadAuditLog,
     );
 
     // ── Documents ──────────────────────────────────────────────────────────

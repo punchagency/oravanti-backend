@@ -26,6 +26,7 @@ import {
 } from "../../queue/queues";
 import { sendQuestionnaireReminder } from "../../queue/workers/reminder.worker";
 import { emailService } from "../../utils/email/email.service";
+import { logLeadEvent } from "../leads/lead-events.service";
 import {
   BadRequestError,
   ConflictError,
@@ -531,11 +532,22 @@ export class QuestionnairesService {
     },
   ) => {
     const send = await this.getActiveSendByToken(accessToken);
-    return this.saveResponse(send, {
+    const result = await this.saveResponse(send, {
       status: "draft",
       currentSectionRef: data.currentSectionRef,
       answers: data.answers ?? [],
     });
+
+    if (send.leadId) {
+      await logLeadEvent({
+        organizationId: send.organizationId,
+        leadId: send.leadId,
+        type: "questionnaire_draft_saved",
+        metadata: { sendId: send.id },
+      });
+    }
+
+    return result;
   };
 
   submitResponseByToken = async (
@@ -555,6 +567,15 @@ export class QuestionnairesService {
     // Response is in — cancel the pending auto-reminder so it never fires.
     if (send.reminderJobId) {
       await cancelQuestionnaireReminder(send.reminderJobId).catch(console.error);
+    }
+
+    if (send.leadId) {
+      await logLeadEvent({
+        organizationId: send.organizationId,
+        leadId: send.leadId,
+        type: "questionnaire_response_received",
+        metadata: { sendId: send.id, responseId: result.id },
+      });
     }
 
     return result;
@@ -614,6 +635,20 @@ export class QuestionnairesService {
 
     // Kick off the (stubbed) AI document scan asynchronously.
     await enqueueDocumentScan(file.id).catch(console.error);
+
+    if (send.leadId) {
+      await logLeadEvent({
+        organizationId: send.organizationId,
+        leadId: send.leadId,
+        type: "questionnaire_file_uploaded",
+        metadata: {
+          sendId: send.id,
+          responseId: response.id,
+          questionId: data.questionId,
+          filename: data.originalFilename,
+        },
+      });
+    }
 
     return file;
   };
@@ -901,6 +936,13 @@ export class QuestionnairesService {
         .update(leads)
         .set({ pipelineStage: "consultation", updatedAt: new Date() })
         .where(eq(leads.id, response.leadId));
+
+      await logLeadEvent({
+        organizationId,
+        leadId: response.leadId,
+        type: "stage_changed",
+        metadata: { from: "questionnaire", to: "consultation" },
+      });
     }
 
     return { advanced: true, leadId: response.leadId };
@@ -1020,6 +1062,16 @@ export class QuestionnairesService {
         "No reminder sent — the questionnaire is already submitted.",
       );
     }
+
+    if (send.leadId) {
+      await logLeadEvent({
+        organizationId,
+        leadId: send.leadId,
+        type: "reminder_sent",
+        metadata: { sendId: send.id, channel: "questionnaire_reminder" },
+      });
+    }
+
     return { reminderSentAt: new Date() };
   };
 
@@ -1099,6 +1151,15 @@ export class QuestionnairesService {
           );
         }
       }
+    }
+
+    if (send.leadId && missing.length > 0) {
+      await logLeadEvent({
+        organizationId,
+        leadId: send.leadId,
+        type: "missing_documents_requested",
+        metadata: { sendId: send.id, missingCount: missing.length, missing },
+      });
     }
 
     return { missing };

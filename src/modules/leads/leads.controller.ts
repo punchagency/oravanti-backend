@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { sendSuccess } from "../../utils/send-success";
+import { logLeadView } from "./lead-events.service";
 import { LeadWorkflowService } from "./lead-workflow.service";
 import { LeadsService } from "./leads.service";
 
@@ -70,6 +71,9 @@ export class LeadsController {
     );
     if (!lead)
       return res.status(404).json({ success: false, error: "Lead not found" });
+
+    logLeadView(req.organizationId!, req.params.id as string, req.staffId, "overview").catch(() => {});
+
     sendSuccess(res, lead, "Lead retrieved successfully");
   };
 
@@ -108,6 +112,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
     );
+    logLeadView(req.organizationId!, req.params.id as string, req.staffId, "activity").catch(() => {});
     sendSuccess(res, events, "Lead activity retrieved successfully");
   };
 
@@ -116,6 +121,7 @@ export class LeadsController {
   getLeadNotes = async (req: AuthRequest, res: Response) => {
     const leadId = (req.params.leadId ?? req.params.id) as string;
     const notes = await this.svc.getLeadNotes(leadId, req.organizationId!);
+    logLeadView(req.organizationId!, leadId, req.staffId, "notes").catch(() => {});
     sendSuccess(res, notes, "Lead notes retrieved successfully");
   };
 
@@ -201,6 +207,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
     );
+    logLeadView(req.organizationId!, req.params.id as string, req.staffId, "conflict-check").catch(() => {});
     sendSuccess(res, result, "Conflict check retrieved successfully");
   };
 
@@ -232,6 +239,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
     );
+    logLeadView(req.organizationId!, req.params.id as string, req.staffId, "questionnaire").catch(() => {});
     sendSuccess(res, result, "Questionnaire retrieved successfully");
   };
 
@@ -267,6 +275,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
     );
+    logLeadView(req.organizationId!, req.params.id as string, req.staffId, "consultation").catch(() => {});
     sendSuccess(res, result, "Consultation retrieved successfully");
   };
 
@@ -337,6 +346,7 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
     );
+    logLeadView(req.organizationId!, req.params.id as string, req.staffId, "fee-agreement").catch(() => {});
     sendSuccess(res, result, "Fee agreement retrieved successfully");
   };
 
@@ -520,6 +530,7 @@ export class LeadsController {
       req.params.leadId as string,
       req.organizationId!,
     );
+    logLeadView(req.organizationId!, req.params.leadId as string, req.staffId, "intake-pipeline").catch(() => {});
     sendSuccess(res, tasks, "Lead tasks retrieved successfully");
   };
 
@@ -527,6 +538,7 @@ export class LeadsController {
     const task = await this.wfSvc.createTask(
       { ...req.body, leadId: req.params.leadId },
       req.organizationId!,
+      req.staffId,
     );
     sendSuccess(res, task, "Task created successfully", 201);
   };
@@ -536,6 +548,7 @@ export class LeadsController {
       req.params.taskId as string,
       req.body,
       req.organizationId!,
+      req.staffId,
     );
     sendSuccess(res, task, "Task updated successfully");
   };
@@ -545,6 +558,7 @@ export class LeadsController {
       req.params.taskId as string,
       req.body.status,
       req.organizationId!,
+      req.staffId,
     );
     sendSuccess(res, task, "Task status updated successfully");
   };
@@ -554,6 +568,7 @@ export class LeadsController {
       req.params.taskId as string,
       req.body.assignedToId,
       req.organizationId!,
+      req.staffId,
     );
     sendSuccess(res, task, "Task assigned successfully");
   };
@@ -618,6 +633,7 @@ export class LeadsController {
     await this.wfSvc.deleteTask(
       req.params.taskId as string,
       req.organizationId!,
+      req.staffId,
     );
     sendSuccess(res, null, "Task deleted successfully");
   };
@@ -625,11 +641,31 @@ export class LeadsController {
   // ─── Lead Timeline ────────────────────────────────────────────────────────────
 
   getLeadTimeline = async (req: AuthRequest, res: Response) => {
-    const events = await this.wfSvc.getTimelineEvents(
+    const { page, limit } = parsePaginationQuery(req.query);
+    const result = await this.svc.getLeadTimeline(
       req.params.leadId as string,
       req.organizationId!,
+      page,
+      limit,
     );
-    sendSuccess(res, events, "Timeline events retrieved successfully");
+    logLeadView(req.organizationId!, req.params.leadId as string, req.staffId, "timeline").catch(() => {});
+    sendSuccess(res, result.data, "Timeline events retrieved successfully", 200, {
+      pagination: result.pagination,
+    });
+  };
+
+  getLeadAuditLog = async (req: AuthRequest, res: Response) => {
+    const { page, limit } = parsePaginationQuery(req.query);
+    const result = await this.svc.getLeadAuditLog(
+      req.params.leadId as string,
+      req.organizationId!,
+      page,
+      limit,
+    );
+    logLeadView(req.organizationId!, req.params.leadId as string, req.staffId, "audit-log").catch(() => {});
+    sendSuccess(res, result.data, "Audit log retrieved successfully", 200, {
+      pagination: result.pagination,
+    });
   };
 
   createLeadTimelineEvent = async (req: AuthRequest, res: Response) => {
@@ -651,6 +687,7 @@ export class LeadsController {
       req.params.leadId as string,
       req.organizationId!,
     );
+    logLeadView(req.organizationId!, req.params.leadId as string, req.staffId, "documents").catch(() => {});
     sendSuccess(res, docs, "Linked documents retrieved successfully");
   };
 
@@ -659,6 +696,7 @@ export class LeadsController {
       req.body.documentId,
       req.params.leadId as string,
       req.staffId,
+      req.organizationId!,
     );
     sendSuccess(res, link, "Document linked successfully", 201);
   };
@@ -667,6 +705,7 @@ export class LeadsController {
     await this.wfSvc.unlinkDocument(
       req.params.linkId as string,
       req.params.leadId as string,
+      req.organizationId!,
     );
     sendSuccess(res, null, "Document unlinked successfully");
   };

@@ -10,6 +10,7 @@ import { env } from "./config/env";
 
 import { errorMiddleware } from "./middleware/error.middleware";
 import { notFoundMiddleware } from "./middleware/notFound.middleware";
+import { requestContextMiddleware } from "./middleware/request-context";
 import { swaggerSpec } from "./swagger";
 
 export interface Module {
@@ -87,6 +88,7 @@ export class App {
      */
     this.express.all("/api/auth/*splat", toNodeHandler(auth));
     this.express.use(express.json());
+    this.express.use(requestContextMiddleware);
   }
 
   private initializeRoutes() {

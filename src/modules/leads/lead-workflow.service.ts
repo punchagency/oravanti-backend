@@ -6,6 +6,8 @@ import {
   leadTimelineEvents,
   leads,
 } from "../../db/schema";
+import type { LeadEventType } from "../../db/schema/leads";
+import { logLeadEvent } from "./lead-events.service";
 import { documents, documentVersions } from "../../db/schema/documents";
 import { staff } from "../../db/schema/staff";
 import {
@@ -120,11 +122,21 @@ export class LeadWorkflowService {
       dueDate?: string;
     },
     organizationId: string,
+    actorId?: string | null,
   ) {
     const [task] = await db
       .insert(leadTasks)
       .values({ ...data, organizationId })
       .returning();
+
+    await logLeadEvent({
+      organizationId,
+      leadId: data.leadId,
+      type: "task_created" as LeadEventType,
+      actorId,
+      metadata: { taskId: task.id, title: data.title, pipelineStage: data.pipelineStage },
+    });
+
     return task;
   }
 
@@ -139,8 +151,9 @@ export class LeadWorkflowService {
       notes?: string;
     },
     organizationId: string,
+    actorId?: string | null,
   ) {
-    await this.getTask(taskId, organizationId);
+    const existing = await this.getTask(taskId, organizationId);
     const [task] = await db
       .update(leadTasks)
       .set({ ...data, updatedAt: new Date() })
@@ -148,6 +161,15 @@ export class LeadWorkflowService {
         and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
       )
       .returning();
+
+    await logLeadEvent({
+      organizationId,
+      leadId: existing.leadId,
+      type: "task_updated" as LeadEventType,
+      actorId,
+      metadata: { taskId, title: task.title, changes: data },
+    });
+
     return task;
   }
 
@@ -155,8 +177,9 @@ export class LeadWorkflowService {
     taskId: string,
     assignedToId: string,
     organizationId: string,
+    actorId?: string | null,
   ) {
-    await this.getTask(taskId, organizationId);
+    const existing = await this.getTask(taskId, organizationId);
     const [task] = await db
       .update(leadTasks)
       .set({
@@ -168,6 +191,21 @@ export class LeadWorkflowService {
         and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
       )
       .returning();
+
+    const [assignee] = await db
+      .select({ name: sql<string>`concat(${staff.firstName}, ' ', ${staff.lastName})` })
+      .from(staff)
+      .where(eq(staff.id, assignedToId))
+      .limit(1);
+
+    await logLeadEvent({
+      organizationId,
+      leadId: existing.leadId,
+      type: "task_assigned" as LeadEventType,
+      actorId,
+      metadata: { taskId, title: existing.title, assignedToId, assigneeName: assignee?.name },
+    });
+
     return task;
   }
 
@@ -176,7 +214,7 @@ export class LeadWorkflowService {
     completedById: string,
     organizationId: string,
   ) {
-    await this.getTask(taskId, organizationId);
+    const existing = await this.getTask(taskId, organizationId);
     const [task] = await db
       .update(leadTasks)
       .set({
@@ -189,6 +227,15 @@ export class LeadWorkflowService {
         and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
       )
       .returning();
+
+    await logLeadEvent({
+      organizationId,
+      leadId: existing.leadId,
+      type: "task_completed" as LeadEventType,
+      actorId: completedById,
+      metadata: { taskId, title: existing.title },
+    });
+
     return task;
   }
 
@@ -196,8 +243,9 @@ export class LeadWorkflowService {
     taskId: string,
     status: "pending" | "in_progress" | "in_review" | "completed" | "skipped",
     organizationId: string,
+    actorId?: string | null,
   ) {
-    await this.getTask(taskId, organizationId);
+    const existing = await this.getTask(taskId, organizationId);
     const updateData: Record<string, unknown> = { status, updatedAt: new Date() };
     if (status === "completed") {
       updateData.completedAt = new Date();
@@ -209,16 +257,33 @@ export class LeadWorkflowService {
         and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
       )
       .returning();
+
+    await logLeadEvent({
+      organizationId,
+      leadId: existing.leadId,
+      type: "task_status_changed" as LeadEventType,
+      actorId,
+      metadata: { taskId, title: existing.title, from: existing.status, to: status },
+    });
+
     return task;
   }
 
-  async deleteTask(taskId: string, organizationId: string) {
-    await this.getTask(taskId, organizationId);
+  async deleteTask(taskId: string, organizationId: string, actorId?: string | null) {
+    const existing = await this.getTask(taskId, organizationId);
     await db
       .delete(leadTasks)
       .where(
         and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
       );
+
+    await logLeadEvent({
+      organizationId,
+      leadId: existing.leadId,
+      type: "task_deleted" as LeadEventType,
+      actorId,
+      metadata: { taskId, title: existing.title, pipelineStage: existing.pipelineStage },
+    });
   }
 
   async submitTaskForReview(
@@ -244,6 +309,15 @@ export class LeadWorkflowService {
         and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
       )
       .returning();
+
+    await logLeadEvent({
+      organizationId,
+      leadId: task.leadId,
+      type: "task_submitted_for_review" as LeadEventType,
+      actorId: submittedById,
+      metadata: { taskId, title: task.title, note: notes },
+    });
+
     return updated;
   }
 
@@ -270,6 +344,15 @@ export class LeadWorkflowService {
         and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
       )
       .returning();
+
+    await logLeadEvent({
+      organizationId,
+      leadId: task.leadId,
+      type: "task_approved" as LeadEventType,
+      actorId: approverId,
+      metadata: { taskId, title: task.title, note: notes },
+    });
+
     return updated;
   }
 
@@ -296,6 +379,15 @@ export class LeadWorkflowService {
         and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
       )
       .returning();
+
+    await logLeadEvent({
+      organizationId,
+      leadId: task.leadId,
+      type: "task_rejected" as LeadEventType,
+      actorId: reviewerId,
+      metadata: { taskId, title: task.title, feedback },
+    });
+
     return updated;
   }
 
@@ -431,6 +523,14 @@ export class LeadWorkflowService {
     ];
 
     const steps = await db.insert(leadTasks).values(defaultTasks).returning();
+
+    await logLeadEvent({
+      organizationId,
+      leadId,
+      type: "pipeline_initialized",
+      metadata: { taskCount: steps.length },
+    });
+
     return steps;
   }
 
@@ -504,19 +604,47 @@ export class LeadWorkflowService {
     documentId: string,
     leadId: string,
     linkedByStaffId?: string,
+    organizationId?: string,
   ) {
     const [link] = await db
       .insert(leadDocumentLinks)
       .values({ documentId, leadId, linkedByStaffId })
       .returning();
+
+    if (organizationId) {
+      await logLeadEvent({
+        organizationId,
+        leadId,
+        type: "document_linked" as LeadEventType,
+        actorId: linkedByStaffId,
+        metadata: { documentId, linkId: link.id },
+      });
+    }
+
     return link;
   }
 
-  async unlinkDocument(linkId: string, leadId: string) {
+  async unlinkDocument(linkId: string, leadId: string, organizationId?: string) {
+    const [existing] = await db
+      .select()
+      .from(leadDocumentLinks)
+      .where(
+        and(eq(leadDocumentLinks.id, linkId), eq(leadDocumentLinks.leadId, leadId)),
+      );
+
     await db
       .delete(leadDocumentLinks)
       .where(
         and(eq(leadDocumentLinks.id, linkId), eq(leadDocumentLinks.leadId, leadId)),
       );
+
+    if (organizationId && existing) {
+      await logLeadEvent({
+        organizationId,
+        leadId,
+        type: "document_unlinked" as LeadEventType,
+        metadata: { documentId: existing.documentId, linkId },
+      });
+    }
   }
 }
