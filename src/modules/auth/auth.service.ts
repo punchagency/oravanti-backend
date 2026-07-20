@@ -473,7 +473,7 @@ export class AuthService {
               fileSize: identification.fileSize,
               versionNumber: 1,
               uploadedByUserId: userId,
-              scanStatus: "SKIPPED",
+              virusScanStatus: "SKIPPED",
             })
             .returning();
 
@@ -511,7 +511,7 @@ export class AuthService {
               fileSize: certification.fileSize,
               versionNumber: 1,
               uploadedByUserId: userId,
-              scanStatus: "SKIPPED",
+              virusScanStatus: "SKIPPED",
             })
             .returning();
 

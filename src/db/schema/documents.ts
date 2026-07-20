@@ -40,12 +40,31 @@ export const documentRequestStatusEnum = pgEnum("document_request_status", [
   "CANCELLED",
 ]);
 
-export const documentScanStatusEnum = pgEnum("document_scan_status", [
+/**
+ * Antivirus scan outcome. Distinct from `aiScanStatusEnum` below — this axis is
+ * about malware ("is this file safe to store/serve"), which is why it carries
+ * INFECTED. The two were previously conflated under one `scanStatus` column.
+ */
+export const virusScanStatusEnum = pgEnum("virus_scan_status", [
   "PENDING",
   "CLEAN",
   "INFECTED",
   "FAILED",
   "SKIPPED",
+]);
+
+/**
+ * AI document-review lifecycle for a document version. Denormalized read
+ * optimisation only — `document_analyses` (keyed by checksum) is the source of
+ * truth for the facts themselves.
+ */
+export const aiScanStatusEnum = pgEnum("ai_scan_status", [
+  "pending",
+  "queued",
+  "running",
+  "complete",
+  "failed",
+  "skipped",
 ]);
 
 export const documentActivityActionEnum = pgEnum("document_activity_action", [
@@ -98,12 +117,18 @@ export const documentVersions = pgTable(
     checksum: text("checksum"),
     versionNumber: integer("version_number").notNull(),
     uploadedByUserId: text("uploaded_by_user_id").references(() => user.id),
-    scanStatus: documentScanStatusEnum("scan_status")
+    // ── Antivirus scan (malware) ──
+    virusScanStatus: virusScanStatusEnum("virus_scan_status")
       .notNull()
       .default("PENDING"),
-    scanProvider: text("scan_provider"),
-    scanResult: text("scan_result"),
-    scannedAt: timestamp("scanned_at"),
+    virusScanProvider: text("virus_scan_provider"),
+    virusScanResult: text("virus_scan_result"),
+    virusScannedAt: timestamp("virus_scanned_at"),
+    // ── AI document review (facts extraction) ──
+    // Denormalized from document_analyses for cheap listing; the analyses table
+    // (keyed by checksum) remains the source of truth.
+    aiScanStatus: aiScanStatusEnum("ai_scan_status").notNull().default("pending"),
+    aiScannedAt: timestamp("ai_scanned_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
@@ -114,7 +139,10 @@ export const documentVersions = pgTable(
     ),
     index("document_versions_document_idx").on(table.documentId),
     index("document_versions_uploaded_by_idx").on(table.uploadedByUserId),
-    index("document_versions_scan_status_idx").on(table.scanStatus),
+    index("document_versions_virus_scan_status_idx").on(table.virusScanStatus),
+    index("document_versions_ai_scan_status_idx").on(table.aiScanStatus),
+    // Checksum is the AI analysis cache key — indexed for cache lookups.
+    index("document_versions_checksum_idx").on(table.checksum),
   ],
 );
 
@@ -212,7 +240,7 @@ export const externalSubmissions = pgTable(
     filePath: text("file_path").notNull(),
     mimeType: text("mime_type").notNull(),
     fileSize: integer("file_size").notNull(),
-    scanStatus: documentScanStatusEnum("scan_status")
+    virusScanStatus: virusScanStatusEnum("virus_scan_status")
       .notNull()
       .default("PENDING"),
     createdAt: timestamp("created_at").notNull().defaultNow(),

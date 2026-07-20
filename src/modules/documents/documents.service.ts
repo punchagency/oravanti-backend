@@ -233,7 +233,7 @@ export class DocumentsService {
             fileSize: data.fileSize,
             versionNumber,
             uploadedByUserId: data.uploadedByUserId,
-            scanStatus: "SKIPPED",
+            virusScanStatus: "SKIPPED",
           })
           .returning();
 
@@ -349,7 +349,7 @@ export class DocumentsService {
         mimeType: documentVersions.mimeType,
         originalFileName: documentVersions.originalFileName,
         versionNumber: documentVersions.versionNumber,
-        scanStatus: documentVersions.scanStatus,
+        virusScanStatus: documentVersions.virusScanStatus,
         caseId: cases.id,
         caseTypeId: cases.caseTypeId,
         clientId: clients.id,
@@ -392,7 +392,7 @@ export class DocumentsService {
               fileSize: row.fileSize,
               mimeType: row.mimeType,
               originalFileName: row.originalFileName,
-              scanStatus: row.scanStatus,
+              virusScanStatus: row.virusScanStatus,
             }
           : null,
         case: row.caseId
@@ -582,7 +582,7 @@ export class DocumentsService {
             fileSize: data.fileSize,
             versionNumber,
             uploadedByUserId: data.uploadedByUserId,
-            scanStatus: "SKIPPED",
+            virusScanStatus: "SKIPPED",
           })
           .returning();
 
@@ -819,7 +819,7 @@ export class DocumentsService {
             mimeType: data.mimeType,
             fileSize: data.fileSize,
             versionNumber: 1,
-            scanStatus: "SKIPPED",
+            virusScanStatus: "SKIPPED",
           })
           .returning();
 
@@ -841,7 +841,7 @@ export class DocumentsService {
             filePath: storagePath,
             mimeType: data.mimeType,
             fileSize: data.fileSize,
-            scanStatus: "SKIPPED",
+            virusScanStatus: "SKIPPED",
           })
           .returning();
 
@@ -982,7 +982,7 @@ export class DocumentsService {
         mimeType: documentVersions.mimeType,
         originalFileName: documentVersions.originalFileName,
         versionNumber: documentVersions.versionNumber,
-        scanStatus: documentVersions.scanStatus,
+        virusScanStatus: documentVersions.virusScanStatus,
         caseId: cases.id,
         caseTypeId: cases.caseTypeId,
         clientId: clients.id,
@@ -1028,7 +1028,7 @@ export class DocumentsService {
               fileSize: row.fileSize,
               mimeType: row.mimeType,
               originalFileName: row.originalFileName,
-              scanStatus: row.scanStatus,
+              virusScanStatus: row.virusScanStatus,
             }
           : null,
         case: row.caseId
