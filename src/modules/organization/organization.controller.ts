@@ -45,6 +45,23 @@ export class OrganizationController {
     sendSuccess(res, result, "Staff retrieved successfully");
   });
 
+  getMyStaff = asyncWrap(async (req: AuthRequest, res) => {
+    if (!req.organizationId) {
+      return res.status(400).json({ error: "No active organization" });
+    }
+    if (!req.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const result = await this.organizationService.getStaffByUserId(
+      req.userId,
+      req.organizationId,
+    );
+    if (!result) {
+      return res.status(404).json({ error: "Staff member not found" });
+    }
+    sendSuccess(res, result, "Staff retrieved successfully");
+  });
+
   getTeam = asyncWrap(async (req: AuthRequest, res) => {
     if (!req.organizationId) {
       return res.status(400).json({ error: "No active organization" });

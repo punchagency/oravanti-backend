@@ -42,6 +42,7 @@ import {
   leadEvents,
   leads,
 } from "../../db/schema/leads";
+import { leadTimelineEvents } from "../../db/schema/lead-timeline-events";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import {
@@ -2941,6 +2942,13 @@ const getConsultationBooking = async (token: string) => {
 
   const leadName = lead ? `${lead.firstName} ${lead.lastName}` : null;
 
+  await logLeadEvent({
+    organizationId: consultation.organizationId,
+    leadId: consultation.leadId,
+    type: "consultation_booking_opened",
+    metadata: { consultationId: consultation.id },
+  });
+
   return {
     firmName: firm?.name ?? null,
     leadName,
@@ -2997,6 +3005,14 @@ const payConsultationFee = async (token: string) => {
       .where(eq(consultations.id, consultation.id))
       .returning();
     if (begins) await finalizeConsultation(paid, { begin: true });
+
+    await logLeadEvent({
+      organizationId: consultation.organizationId,
+      leadId: consultation.leadId,
+      type: "payment_received",
+      metadata: { consultationId: consultation.id, amount: Number(consultation.feeAmount), instant: true },
+    });
+
     return { success: true };
   }
 
@@ -3022,6 +3038,14 @@ const payConsultationFee = async (token: string) => {
 
   if (consultation.isUrgent) {
     await finalizeConsultation(paid);
+
+    await logLeadEvent({
+      organizationId: consultation.organizationId,
+      leadId: consultation.leadId,
+      type: "payment_received",
+      metadata: { consultationId: consultation.id, amount: Number(consultation.feeAmount), urgent: true },
+    });
+
     return { success: true };
   }
 
@@ -3048,6 +3072,13 @@ const payConsultationFee = async (token: string) => {
       })
       .catch(console.error);
   }
+
+  await logLeadEvent({
+    organizationId: consultation.organizationId,
+    leadId: consultation.leadId,
+    type: "payment_received",
+    metadata: { consultationId: consultation.id, amount: Number(consultation.feeAmount) },
+  });
 
   return { success: true };
 };
@@ -3254,6 +3285,13 @@ const selectConsultationSlot = async (token: string, startIso: string) => {
   // Persist the chosen slot, then finalize (Meet link + confirmation emails).
   consultation.scheduledAt = start;
   await finalizeConsultation(consultation);
+
+  await logLeadEvent({
+    organizationId: consultation.organizationId,
+    leadId: consultation.leadId,
+    type: "consultation_slot_selected",
+    metadata: { consultationId: consultation.id, slot: startIso },
+  });
 
   return { success: true, scheduledAt: start.toISOString() };
 };
@@ -3583,6 +3621,13 @@ const discardDraftFeeAgreement = async (
         ),
       );
     await tx.delete(feeAgreements).where(eq(feeAgreements.id, agreementId));
+  });
+
+  await logLeadEvent({
+    organizationId,
+    leadId: agreement.leadId,
+    type: "fee_agreement_discarded",
+    metadata: { agreementId },
   });
 
   // The stored config is returned so the client can seed the wizard with it.
@@ -3938,6 +3983,13 @@ const nudgeClient = async (agreementId: string, organizationId: string) => {
       <p>Please complete this as soon as possible to proceed with your case.</p>`,
   });
 
+  await logLeadEvent({
+    organizationId,
+    leadId: lead.id,
+    type: "nudge_sent",
+    metadata: { agreementId },
+  });
+
   return { reminderSentAt: now };
 };
 
@@ -4098,6 +4150,14 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
         .update(feeAgreements)
         .set({ status: "voided", updatedAt: now })
         .where(eq(feeAgreements.id, agreement.id));
+
+      await logLeadEvent({
+        organizationId: agreement.organizationId,
+        leadId: agreement.leadId,
+        type: "fee_agreement_voided",
+        actorId: null,
+        metadata: { agreementId: agreement.id, reason: event.event_type },
+      });
     }
     return { processed: true, agreementId: agreement.id, voided: true };
   }
@@ -4457,6 +4517,17 @@ const updateCaseWorkflowStep = async (
     .returning();
 
   if (!updated) throw new NotFoundError("Workflow step not found");
+
+  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(eq(cases.id, caseId)).limit(1);
+  if (caseRow?.leadId) {
+    await logLeadEvent({
+      organizationId,
+      leadId: caseRow.leadId,
+      type: "case_workflow_step_updated",
+      metadata: { caseId, stepId, changes: data },
+    });
+  }
+
   return updated;
 };
 
@@ -4498,6 +4569,16 @@ const addAdverseParty = async (
     })
     .returning();
 
+  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(eq(cases.id, caseId)).limit(1);
+  if (caseRow?.leadId) {
+    await logLeadEvent({
+      organizationId,
+      leadId: caseRow.leadId,
+      type: "adverse_party_added",
+      metadata: { caseId, partyId: created.id, name: data.name, relationship: data.relationship },
+    });
+  }
+
   return created;
 };
 
@@ -4531,6 +4612,17 @@ const updateAdverseParty = async (
     .returning();
 
   if (!updated) throw new NotFoundError("Adverse party not found");
+
+  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(eq(cases.id, caseId)).limit(1);
+  if (caseRow?.leadId) {
+    await logLeadEvent({
+      organizationId,
+      leadId: caseRow.leadId,
+      type: "adverse_party_updated",
+      metadata: { caseId, partyId, changes: data },
+    });
+  }
+
   return updated;
 };
 
@@ -4548,6 +4640,279 @@ const deleteAdverseParty = async (
         eq(adverseParties.organizationId, organizationId),
       ),
     );
+
+  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(eq(cases.id, caseId)).limit(1);
+  if (caseRow?.leadId) {
+    await logLeadEvent({
+      organizationId,
+      leadId: caseRow.leadId,
+      type: "adverse_party_deleted",
+      metadata: { caseId, partyId },
+    });
+  }
+};
+
+// ─── Unified Timeline ──────────────────────────────────────────────────────
+// Merges lead_events + lead_timeline_events into a single sorted timeline,
+// matching the cases pattern (case_timeline_events + step_action_logs).
+
+const EVENT_TITLE_MAP: Record<string, string> = {
+  lead_received: "Lead received",
+  lead_updated: "Lead updated",
+  lead_viewed: "Lead viewed",
+  stage_changed: "Stage changed",
+  lead_assigned: "Lead assigned",
+  lead_archived: "Lead archived",
+  lead_restored: "Lead restored",
+  note_added: "Note added",
+  note_updated: "Note updated",
+  note_deleted: "Note deleted",
+  conflict_check_run: "Conflict check run",
+  conflict_check_approved: "Conflict check approved",
+  conflict_check_declined: "Conflict check declined",
+  conflict_overridden: "Conflict overridden",
+  questionnaire_sent: "Questionnaire sent",
+  questionnaire_opened: "Questionnaire opened",
+  questionnaire_draft_saved: "Questionnaire draft saved",
+  questionnaire_response_received: "Questionnaire response received",
+  questionnaire_file_uploaded: "Questionnaire file uploaded",
+  consultation_scheduled: "Consultation scheduled",
+  consultation_rescheduled: "Consultation rescheduled",
+  consultation_cancelled: "Consultation cancelled",
+  consultation_completed: "Consultation completed",
+  consultation_booking_opened: "Consultation booking opened",
+  consultation_slot_selected: "Consultation slot selected",
+  fee_agreement_generated: "Fee agreement generated",
+  fee_agreement_sent: "Fee agreement sent",
+  fee_agreement_signed: "Fee agreement signed",
+  fee_agreement_discarded: "Fee agreement discarded",
+  fee_agreement_voided: "Fee agreement voided",
+  payment_received: "Payment received",
+  case_opened: "Case opened",
+  case_workflow_step_updated: "Case workflow step updated",
+  nudge_sent: "Reminder sent",
+  pipeline_initialized: "Pipeline initialized",
+  task_created: "Task created",
+  task_updated: "Task updated",
+  task_assigned: "Task assigned",
+  task_completed: "Task completed",
+  task_status_changed: "Task status changed",
+  task_deleted: "Task deleted",
+  task_submitted_for_review: "Task submitted for review",
+  task_approved: "Task approved",
+  task_rejected: "Task rejected",
+  document_linked: "Document linked",
+  document_unlinked: "Document unlinked",
+  adverse_party_added: "Adverse party added",
+  adverse_party_updated: "Adverse party updated",
+  adverse_party_deleted: "Adverse party deleted",
+  missing_documents_requested: "Missing documents requested",
+  reminder_sent: "Reminder sent",
+};
+
+const getLeadTimeline = async (leadId: string, organizationId: string, page = 1, limit = 20) => {
+  const [events, timelineEvents] = await Promise.all([
+    db
+      .select({
+        id: leadEvents.id,
+        eventType: leadEvents.type,
+        title: leadEvents.type,
+        description: sql<string | null>`null`,
+        metadata: leadEvents.metadata,
+        ipAddress: leadEvents.ipAddress,
+        createdById: leadEvents.actorId,
+        createdAt: leadEvents.createdAt,
+      })
+      .from(leadEvents)
+      .where(
+        and(
+          eq(leadEvents.leadId, leadId),
+          eq(leadEvents.organizationId, organizationId),
+        ),
+      ),
+    db
+      .select({
+        id: leadTimelineEvents.id,
+        eventType: leadTimelineEvents.eventType,
+        title: leadTimelineEvents.title,
+        description: leadTimelineEvents.description,
+        metadata: leadTimelineEvents.metadata,
+        createdById: leadTimelineEvents.createdById,
+        createdAt: leadTimelineEvents.createdAt,
+      })
+      .from(leadTimelineEvents)
+      .innerJoin(leads, eq(leadTimelineEvents.leadId, leads.id))
+      .where(
+        and(
+          eq(leadTimelineEvents.leadId, leadId),
+          eq(leads.organizationId, organizationId),
+        ),
+      ),
+  ]);
+
+  // Resolve staff names for both sources
+  const allActorIds = [
+    ...new Set([
+      ...events.map((e) => e.createdById).filter(Boolean) as string[],
+      ...timelineEvents.map((e) => e.createdById).filter(Boolean) as string[],
+    ]),
+  ];
+
+  let staffMap: Record<string, string> = {};
+  if (allActorIds.length > 0) {
+    const staffRows = await db
+      .select({
+        id: staff.id,
+        name: sql<string>`concat(${staff.firstName}, ' ', ${staff.lastName})`,
+      })
+      .from(staff)
+      .where(inArray(staff.id, allActorIds));
+    staffMap = Object.fromEntries(staffRows.map((r) => [r.id, r.name]));
+  }
+
+  // Normalize and merge
+  const merged = [
+    ...events.map((e) => ({
+      id: e.id,
+      eventType: e.eventType,
+      title: EVENT_TITLE_MAP[e.eventType] ?? e.eventType,
+      description: e.description,
+      metadata: e.metadata as Record<string, unknown> | null,
+      ipAddress: e.ipAddress,
+      createdBy: e.createdById
+        ? { id: e.createdById, name: staffMap[e.createdById] ?? "Unknown" }
+        : null,
+      createdAt: e.createdAt,
+    })),
+    ...timelineEvents.map((e) => ({
+      id: e.id,
+      eventType: e.eventType,
+      title: e.title,
+      description: e.description,
+      metadata: e.metadata as Record<string, unknown> | null,
+      ipAddress: null as string | null,
+      createdBy: e.createdById
+        ? { id: e.createdById, name: staffMap[e.createdById] ?? "Unknown" }
+        : null,
+      createdAt: e.createdAt,
+    })),
+  ];
+
+  merged.sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+
+  const total = merged.length;
+  const offset = (page - 1) * limit;
+  const data = merged.slice(offset, offset + limit);
+
+  return { data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+};
+
+// ─── Audit Log ─────────────────────────────────────────────────────────────
+// Read-only view of the lead_events audit trail, formatted for the audit log
+// tab. Uses UPPER_SNAKE_CASE event types to match the cases audit log pattern.
+
+const AUDIT_EVENT_TYPE_MAP: Record<string, string> = {
+  lead_received: "LEAD_RECEIVED",
+  lead_updated: "LEAD_UPDATED",
+  lead_viewed: "LEAD_VIEWED",
+  stage_changed: "STAGE_CHANGED",
+  lead_assigned: "LEAD_ASSIGNED",
+  lead_archived: "LEAD_ARCHIVED",
+  lead_restored: "LEAD_RESTORED",
+  note_added: "NOTE_ADDED",
+  note_updated: "NOTE_UPDATED",
+  note_deleted: "NOTE_DELETED",
+  conflict_check_run: "CONFLICT_CHECK_RUN",
+  conflict_check_approved: "CONFLICT_CHECK_APPROVED",
+  conflict_check_declined: "CONFLICT_CHECK_DECLINED",
+  conflict_overridden: "CONFLICT_OVERRIDDEN",
+  questionnaire_sent: "QUESTIONNAIRE_SENT",
+  questionnaire_opened: "QUESTIONNAIRE_OPENED",
+  questionnaire_draft_saved: "QUESTIONNAIRE_DRAFT_SAVED",
+  questionnaire_response_received: "QUESTIONNAIRE_RESPONSE_RECEIVED",
+  questionnaire_file_uploaded: "QUESTIONNAIRE_FILE_UPLOADED",
+  consultation_scheduled: "CONSULTATION_SCHEDULED",
+  consultation_rescheduled: "CONSULTATION_RESCHEDULED",
+  consultation_cancelled: "CONSULTATION_CANCELLED",
+  consultation_completed: "CONSULTATION_COMPLETED",
+  consultation_booking_opened: "CONSULTATION_BOOKING_OPENED",
+  consultation_slot_selected: "CONSULTATION_SLOT_SELECTED",
+  fee_agreement_generated: "FEE_AGREEMENT_GENERATED",
+  fee_agreement_sent: "FEE_AGREEMENT_SENT",
+  fee_agreement_signed: "FEE_AGREEMENT_SIGNED",
+  fee_agreement_discarded: "FEE_AGREEMENT_DISCARDED",
+  fee_agreement_voided: "FEE_AGREEMENT_VOIDED",
+  payment_received: "PAYMENT_RECEIVED",
+  case_opened: "CASE_OPENED",
+  case_workflow_step_updated: "CASE_WORKFLOW_STEP_UPDATED",
+  nudge_sent: "NUDGE_SENT",
+  pipeline_initialized: "PIPELINE_INITIALIZED",
+  task_created: "TASK_CREATED",
+  task_updated: "TASK_UPDATED",
+  task_assigned: "TASK_ASSIGNED",
+  task_completed: "TASK_COMPLETED",
+  task_status_changed: "TASK_STATUS_CHANGED",
+  task_deleted: "TASK_DELETED",
+  task_submitted_for_review: "TASK_SUBMITTED_FOR_REVIEW",
+  task_approved: "TASK_APPROVED",
+  task_rejected: "TASK_REJECTED",
+  document_linked: "DOCUMENT_LINKED",
+  document_unlinked: "DOCUMENT_UNLINKED",
+  adverse_party_added: "ADVERSE_PARTY_ADDED",
+  adverse_party_updated: "ADVERSE_PARTY_UPDATED",
+  adverse_party_deleted: "ADVERSE_PARTY_DELETED",
+  missing_documents_requested: "MISSING_DOCUMENTS_REQUESTED",
+  reminder_sent: "REMINDER_SENT",
+};
+
+const getLeadAuditLog = async (leadId: string, organizationId: string, page = 1, limit = 20) => {
+  const rows = await db
+    .select({
+      id: leadEvents.id,
+      type: leadEvents.type,
+      actorId: leadEvents.actorId,
+      actorNameSnapshot: leadEvents.actorNameSnapshot,
+      firstName: staff.firstName,
+      lastName: staff.lastName,
+      metadata: leadEvents.metadata,
+      ipAddress: leadEvents.ipAddress,
+      createdAt: leadEvents.createdAt,
+    })
+    .from(leadEvents)
+    .leftJoin(staff, eq(leadEvents.actorId, staff.id))
+    .where(
+      and(
+        eq(leadEvents.leadId, leadId),
+        eq(leadEvents.organizationId, organizationId),
+      ),
+    )
+    .orderBy(desc(leadEvents.createdAt));
+
+  const total = rows.length;
+  const offset = (page - 1) * limit;
+  const pageRows = rows.slice(offset, offset + limit);
+
+  const data = pageRows.map((r) => ({
+    id: r.id,
+    eventType: AUDIT_EVENT_TYPE_MAP[r.type] ?? r.type.toUpperCase(),
+    title: EVENT_TITLE_MAP[r.type] ?? r.type,
+    description: null as string | null,
+    metadata: r.metadata as Record<string, unknown> | null,
+    ipAddress: r.ipAddress,
+    performedBy: r.actorId
+      ? {
+          id: r.actorId,
+          name: r.firstName
+            ? `${r.firstName} ${r.lastName}`.trim()
+            : r.actorNameSnapshot ?? "Unknown",
+        }
+      : null,
+    createdAt: r.createdAt,
+  }));
+
+  return { data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
 };
 
 export class LeadsService {
@@ -4598,4 +4963,6 @@ export class LeadsService {
   addAdverseParty = addAdverseParty;
   updateAdverseParty = updateAdverseParty;
   deleteAdverseParty = deleteAdverseParty;
+  getLeadTimeline = getLeadTimeline;
+  getLeadAuditLog = getLeadAuditLog;
 }

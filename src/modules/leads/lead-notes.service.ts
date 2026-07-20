@@ -102,6 +102,7 @@ export const addLeadNote = async (
     );
 
   const type = data.type ?? "general";
+  const contentPreview = data.content.slice(0, 200);
 
   const note = await db.transaction(async (tx) => {
     const [created] = await tx
@@ -114,7 +115,7 @@ export const addLeadNote = async (
       leadId,
       type: "note_added",
       actorId: authorId,
-      metadata: { noteId: created.id, noteType: type },
+      metadata: { noteId: created.id, noteType: type, contentPreview },
       tx,
     });
 
@@ -144,6 +145,8 @@ export const updateLeadNote = async (
     .select({
       id: leadNotes.id,
       authorId: leadNotes.authorId,
+      content: leadNotes.content,
+      type: leadNotes.type,
       leadOrganizationId: leads.organizationId,
     })
     .from(leadNotes)
@@ -159,6 +162,9 @@ export const updateLeadNote = async (
     throw new AuthorizationError("Only the note author may update a note");
   }
 
+  const previousContent = existing.content;
+  const previousType = existing.type;
+
   const [updated] = await db
     .update(leadNotes)
     .set({ ...data, updatedAt: new Date() })
@@ -167,12 +173,26 @@ export const updateLeadNote = async (
 
   if (!updated) throw new NotFoundError("Lead note not found");
 
+  const changes: Record<string, unknown> = {};
+  if (data.content !== undefined && data.content !== previousContent) {
+    changes.content = { from: previousContent.slice(0, 200), to: data.content.slice(0, 200) };
+  }
+  if (data.type !== undefined && data.type !== previousType) {
+    changes.type = { from: previousType, to: data.type };
+  }
+
   await logLeadEvent({
     organizationId,
     leadId,
     type: "note_updated",
     actorId,
-    metadata: { noteId: updated.id },
+    metadata: {
+      noteId: updated.id,
+      noteType: updated.type,
+      previousContent: previousContent.slice(0, 200),
+      newContent: updated.content.slice(0, 200),
+      changes,
+    },
   });
 
   return {
@@ -197,6 +217,8 @@ export const deleteLeadNote = async (
     .select({
       id: leadNotes.id,
       authorId: leadNotes.authorId,
+      content: leadNotes.content,
+      type: leadNotes.type,
       leadOrganizationId: leads.organizationId,
     })
     .from(leadNotes)
@@ -212,6 +234,9 @@ export const deleteLeadNote = async (
     throw new AuthorizationError("Only the note author may delete a note");
   }
 
+  const deletedContent = existing.content;
+  const deletedType = existing.type;
+
   await db
     .delete(leadNotes)
     .where(and(eq(leadNotes.id, noteId), eq(leadNotes.leadId, leadId)));
@@ -221,6 +246,10 @@ export const deleteLeadNote = async (
     leadId,
     type: "note_deleted",
     actorId,
-    metadata: { noteId },
+    metadata: {
+      noteId,
+      noteType: deletedType,
+      deletedContent: deletedContent.slice(0, 200),
+    },
   });
 };

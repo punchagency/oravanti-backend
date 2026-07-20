@@ -1312,6 +1312,107 @@ export class OrganizationService {
     };
   }
 
+  async getStaffByUserId(userId: string, organizationId: string) {
+    const [row] = await db
+      .select({
+        id: staff.id,
+        userId: staff.userId,
+        firstName: staff.firstName,
+        lastName: staff.lastName,
+        email: user.email,
+        orgEmail: staff.orgEmail,
+        phone: staff.phone,
+        role: member.role,
+        staffRole: staff.role,
+        status: staff.status,
+        startDate: staff.startDate,
+        maxCaseload: staff.maxCaseload,
+        practiceAreas: sql<{ id: string; name: string }[]>`
+          COALESCE(
+            (
+              SELECT json_agg(DISTINCT jsonb_build_object('id', ${practiceAreas.id}, 'name', ${practiceAreas.name}))
+              FROM ${staffPracticeAreaCaseTypes}
+              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${staffPracticeAreaCaseTypes.caseTypeId}
+              INNER JOIN ${practiceAreaSubcategories} ON ${practiceAreaSubcategories.id} = ${practiceAreaCaseTypes.subcategoryId}
+              INNER JOIN ${practiceAreas} ON ${practiceAreas.id} = ${practiceAreaSubcategories.practiceAreaId}
+              WHERE ${staffPracticeAreaCaseTypes.staffId} = ${staff.id}
+            ),
+            '[]'::json
+          )
+        `,
+        subcategories: sql<{ id: string; name: string }[]>`
+          COALESCE(
+            (
+              SELECT json_agg(DISTINCT jsonb_build_object('id', ${practiceAreaSubcategories.id}, 'name', ${practiceAreaSubcategories.name}))
+              FROM ${staffPracticeAreaCaseTypes}
+              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${staffPracticeAreaCaseTypes.caseTypeId}
+              INNER JOIN ${practiceAreaSubcategories} ON ${practiceAreaSubcategories.id} = ${practiceAreaCaseTypes.subcategoryId}
+              WHERE ${staffPracticeAreaCaseTypes.staffId} = ${staff.id}
+            ),
+            '[]'::json
+          )
+        `,
+        caseTypes: sql<{ id: string; name: string }[]>`
+          COALESCE(
+            (
+              SELECT json_agg(json_build_object('id', ${staffPracticeAreaCaseTypes.caseTypeId}, 'name', ${practiceAreaCaseTypes.name}))
+              FROM ${staffPracticeAreaCaseTypes}
+              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${staffPracticeAreaCaseTypes.caseTypeId}
+              WHERE ${staffPracticeAreaCaseTypes.staffId} = ${staff.id}
+            ),
+            '[]'::json
+          )
+        `,
+        teams: sql<{ id: string; name: string }[]>`
+          COALESCE(
+            (
+              SELECT json_agg(json_build_object('id', ${teamTable.id}, 'name', ${teamTable.name}) ORDER BY ${teamTable.name})
+              FROM ${teamMember}
+              INNER JOIN ${teamTable} ON ${teamTable.id} = ${teamMember.teamId}
+              WHERE ${teamMember.userId} = ${staff.userId}
+            ),
+            '[]'::json
+          )
+        `,
+      })
+      .from(staff)
+      .leftJoin(user, eq(staff.userId, user.id))
+      .leftJoin(
+        member,
+        and(
+          eq(member.userId, staff.userId),
+          eq(member.organizationId, staff.organizationId),
+        ),
+      )
+      .where(
+        and(
+          eq(staff.userId, userId),
+          eq(staff.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      userId: row.userId,
+      firstName: row.firstName,
+      lastName: row.lastName,
+      email: row.email,
+      orgEmail: row.orgEmail,
+      phone: row.phone,
+      role: row.role ?? row.staffRole,
+      status: row.status,
+      startDate: row.startDate,
+      maxCaseload: row.maxCaseload,
+      practiceAreas: row.practiceAreas ?? [],
+      subcategories: row.subcategories ?? [],
+      caseTypes: row.caseTypes ?? [],
+      teams: row.teams ?? [],
+    };
+  }
+
   async deleteStaff(staffId: string, organizationId: string) {
     const [staffMember] = await db
       .select({ userId: staff.userId })
