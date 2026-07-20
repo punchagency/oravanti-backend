@@ -60,14 +60,8 @@ import { teamPracticeAreaCaseTypes } from "../../db/schema/team-practice-area-ca
 import {
   caseWorkflowSteps,
 } from "../../db/schema/workflow";
-import {
-  documents,
-  documentVersions,
-  documentCaseLinks,
-} from "../../db/schema/documents";
-import {
-  questionnaireResponseFiles,
-} from "../../db/schema/questionnaires";
+import { scenarioDocumentRequirements } from "../../db/schema/document-requirements";
+import { relinkLeadDocumentsToCase } from "../documents/document-ingest";
 import {
   cancelQuestionnaireReminder,
   scheduleQuestionnaireReminder,
@@ -2084,6 +2078,33 @@ const sendQuestionnaire = async (
       autoReminderDays,
     })
     .returning();
+
+  // Snapshot every file_upload question as a document requirement.
+  //
+  // Materialized rather than derived at query time so that later edits to the
+  // questionnaire template cannot retroactively rewrite what this matter was
+  // asked for — the audit trail has to reflect what the client actually saw.
+  const fileUploadQuestions = (finalSnapshot.sections ?? []).flatMap(
+    (section: any) =>
+      (section.questions ?? []).filter((q: any) => q.type === "file_upload"),
+  );
+
+  if (fileUploadQuestions.length) {
+    await db
+      .insert(scenarioDocumentRequirements)
+      .values(
+        fileUploadQuestions.map((q: any, index: number) => ({
+          organizationId,
+          leadId,
+          label: q.label as string,
+          isRequired: Boolean(q.isRequired),
+          orderIndex: index,
+          source: "questionnaire" as const,
+          questionnaireQuestionId: q.id as string,
+        })),
+      )
+      .onConflictDoNothing();
+  }
 
   // Schedule the auto-reminder as a delayed job; remember its id so we can cancel
   // it when the response is submitted.
@@ -4329,51 +4350,22 @@ const openCase = async (
         );
     }
 
-    // 7. Copy questionnaire response files to documents system
-    const qFiles = await tx
-      .select()
-      .from(questionnaireResponseFiles)
-      .where(eq(questionnaireResponseFiles.leadId, leadId));
+    // 7. Carry the lead's documents onto the case.
+    //
+    // These are RE-LINKED, not copied. Questionnaire uploads are already
+    // first-class `documents` rows, so adding a case link preserves document
+    // identity — and with it the checksum, the cached AI analysis, and any
+    // findings or resolved issues attached to the document during intake.
+    // Copying would mint a second identity for the same bytes and strand all
+    // of that at exactly the point the firm cares most.
+    await relinkLeadDocumentsToCase(tx, leadId, newCase.id);
 
-    for (const qFile of qFiles) {
-      // Create document record
-      const [doc] = await tx
-        .insert(documents)
-        .values({
-          title: qFile.originalFilename,
-          status: "active",
-          category: qFile.questionSource === "system" ? "identity" : "supporting",
-        })
-        .returning();
-
-      // Create document version
-      const [version] = await tx
-        .insert(documentVersions)
-        .values({
-          documentId: doc.id,
-          filePath: qFile.storagePath,
-          fileUrl: qFile.fileUrl,
-          originalFileName: qFile.originalFilename,
-          mimeType: qFile.mimeType,
-          fileSize: qFile.fileSize,
-          versionNumber: 1,
-          scanStatus: "SKIPPED",
-        })
-        .returning();
-
-      // Update document with current version
-      await tx
-        .update(documents)
-        .set({ currentVersionId: version.id })
-        .where(eq(documents.id, doc.id));
-
-      // Link document to case
-      await tx.insert(documentCaseLinks).values({
-        documentId: doc.id,
-        caseId: newCase.id,
-      });
-
-    }
+    // Requirements MOVE from the lead to the case (single row, identity and
+    // satisfaction preserved) rather than being duplicated.
+    await tx
+      .update(scenarioDocumentRequirements)
+      .set({ leadId: null, caseId: newCase.id, updatedAt: new Date() })
+      .where(eq(scenarioDocumentRequirements.leadId, leadId));
 
     /**
      * TODO: Notify assigned team lead of new case. This is commented out for now because the assigned team may not be set at the time of case opening, and we don't want to send notifications to the wrong person. We will revisit this logic once we have a clearer understanding of how team assignments will work in the future.

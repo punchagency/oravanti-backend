@@ -13,6 +13,7 @@ import {
 import { organization } from "./auth-schema";
 import { cases } from "./cases";
 import { clients } from "./clients";
+import { documents } from "./documents";
 import { leads } from "./leads";
 import { practiceAreaCaseTypes } from "./practice-area-case-types";
 import { staff } from "./staff";
@@ -68,11 +69,6 @@ export const questionnaireResponseStatusEnum = pgEnum(
 );
 
 export const questionSourceEnum = pgEnum("question_source", ["system", "firm"]);
-
-export const questionnaireFileScanStatusEnum = pgEnum(
-  "questionnaire_file_scan_status",
-  ["pending", "scanning", "clean", "issues_found", "failed"],
-);
 
 // ─── System Questionnaires (platform-owned, one per case type) ────────────────
 
@@ -290,31 +286,37 @@ export const questionnaireAnswers = pgTable(
   ],
 );
 
+/**
+ * Join table only: "this document answers this file_upload question".
+ *
+ * The file itself lives in `documents` / `document_versions` like every other
+ * document in the system — this table no longer carries storage metadata. That
+ * normalization is what gives questionnaire uploads versioning, checksums (the
+ * AI analysis cache key), and a single access path; and it makes lead→case
+ * conversion a relink rather than a byte-identical copy under a new id.
+ *
+ * Lead linkage lives on `lead_document_links`, not here.
+ */
 export const questionnaireResponseFiles = pgTable(
   "questionnaire_response_files",
   {
     id:             uuid("id").primaryKey().defaultRandom(),
     organizationId: text("organization_id").notNull().references(() => organization.id),
     responseId:     uuid("response_id").notNull().references(() => questionnaireResponses.id),
-    leadId:         uuid("lead_id").references(() => leads.id, { onDelete: "set null" }),
+    documentId:     uuid("document_id").notNull().references(() => documents.id),
     questionId:     uuid("question_id").notNull(),
     questionSource: questionSourceEnum("question_source").notNull(),
-    storagePath:    text("storage_path").notNull(),
-    fileUrl:        text("file_url").notNull(),
-    mimeType:       text("mime_type").notNull(),
-    fileSize:       integer("file_size").notNull(),
-    originalFilename: text("original_filename").notNull(),
-    // AI document scan (stubbed until the AI service is wired). scanResult holds
-    // an array of { severity, title, description, affectedField? } findings.
-    scanStatus:     questionnaireFileScanStatusEnum("scan_status").notNull().default("pending"),
-    scanResult:     jsonb("scan_result"),
-    scannedAt:      timestamp("scanned_at"),
     createdAt:      timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [
     index("questionnaire_response_files_response_idx").on(table.responseId),
     index("questionnaire_response_files_organization_idx").on(table.organizationId),
-    index("questionnaire_response_files_lead_idx").on(table.leadId),
+    index("questionnaire_response_files_document_idx").on(table.documentId),
+    // One document per question per response — re-answering replaces the row.
+    unique("questionnaire_response_files_response_question_unique").on(
+      table.responseId,
+      table.questionId,
+    ),
   ],
 );
 
