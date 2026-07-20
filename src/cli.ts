@@ -2200,7 +2200,7 @@ const seedDemoData = async (organizationId?: string) => {
         .set({
           isActive: true,
           crossCheckingEnabled: true,
-          inaValidationActive: true,
+          photoComparisonEnabled: false,
           realtimeAnalysis: true,
           updatedAt: new Date(),
         })
@@ -2210,7 +2210,7 @@ const seedDemoData = async (organizationId?: string) => {
         organizationId: firm.id,
         isActive: true,
         crossCheckingEnabled: true,
-        inaValidationActive: true,
+        photoComparisonEnabled: false,
         realtimeAnalysis: true,
       });
     }

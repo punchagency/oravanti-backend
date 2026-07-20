@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import {
   leadDocumentLinks,
@@ -587,6 +587,9 @@ export class LeadWorkflowService {
         mimeType: documentVersions.mimeType,
         fileSize: documentVersions.fileSize,
         versionNumber: documentVersions.versionNumber,
+        // Two independent axes: malware vs. AI document review.
+        virusScanStatus: documentVersions.virusScanStatus,
+        aiScanStatus: documentVersions.aiScanStatus,
       })
       .from(leadDocumentLinks)
       .innerJoin(documents, eq(leadDocumentLinks.documentId, documents.id))
@@ -596,7 +599,12 @@ export class LeadWorkflowService {
         eq(documents.currentVersionId, documentVersions.id),
       )
       .where(
-        and(eq(leadDocumentLinks.leadId, leadId), eq(leads.organizationId, organizationId)),
+        and(
+          eq(leadDocumentLinks.leadId, leadId),
+          eq(leads.organizationId, organizationId),
+          // Unlinked documents keep their row for audit; don't surface them.
+          isNull(leadDocumentLinks.archivedAt),
+        ),
       );
   }
 

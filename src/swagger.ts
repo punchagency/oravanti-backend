@@ -625,7 +625,7 @@ const options: swaggerJsdoc.Options = {
           properties: {
             isActive: { type: "boolean" },
             crossCheckingEnabled: { type: "boolean" },
-            inaValidationActive: { type: "boolean" },
+            photoComparisonEnabled: { type: "boolean" },
             realtimeAnalysis: { type: "boolean" },
           },
         },
