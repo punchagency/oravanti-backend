@@ -17,7 +17,6 @@ import { env } from "./config/env";
 import { closeDb, db } from "./db/client";
 import { admins } from "./db/schema/admins";
 import { adverseParties } from "./db/schema/adverse-parties";
-import { aiErrorFlags } from "./db/schema/ai-error-flags";
 import { aiSystemConfig } from "./db/schema/ai-system-config";
 import { assignments } from "./db/schema/assignments";
 import {
@@ -215,7 +214,6 @@ type DemoSeedResult = {
   clientRequestCount: number;
   timeEntryCount: number;
   leaveRequestCount: number;
-  aiErrorFlagCount: number;
 };
 
 const program = new Command();
@@ -376,7 +374,6 @@ const printDemoSeedResult = (result: DemoSeedResult) => {
       clientRequests: result.clientRequestCount,
       timeEntries: result.timeEntryCount,
       leaveRequests: result.leaveRequestCount,
-      aiErrorFlags: result.aiErrorFlagCount,
     },
   ]);
 };
@@ -1043,7 +1040,6 @@ const DEMO_TARGETS = {
   clientRequests: 60,
   timeEntries: 120,
   leaveRequests: 20,
-  aiErrorFlags: 30,
 } as const;
 
 const DEMO_CERTIFICATIONS = [
@@ -1922,10 +1918,10 @@ const seedDemoData = async (organizationId?: string) => {
           fileSize: 128000 + index * 1536,
           versionNumber: 1,
           uploadedByUserId: uploader.userId,
-          scanStatus: index % 3 !== 0 ? "CLEAN" : "SKIPPED",
-          scanProvider: "demo",
-          scanResult: "Generated demo document",
-          scannedAt: index % 3 !== 0 ? timestampFromNow(-index) : undefined,
+          virusScanStatus: index % 3 !== 0 ? "CLEAN" : "SKIPPED",
+          virusScanProvider: "demo",
+          virusScanResult: "Generated demo document",
+          virusScannedAt: index % 3 !== 0 ? timestampFromNow(-index) : undefined,
           createdAt: document.createdAt,
           updatedAt: document.updatedAt,
         };
@@ -2219,34 +2215,8 @@ const seedDemoData = async (organizationId?: string) => {
       });
     }
 
-    const createdAiErrorFlags = await tx
-      .insert(aiErrorFlags)
-      .values(
-        range(DEMO_TARGETS.aiErrorFlags).map((index) => {
-          const currentCase = pick(createdCases, index);
-          const document = pick(createdDocuments, index);
-          const isResolved = pick(errorStatuses, index) === "resolved";
-
-          return {
-            organizationId: firm.id,
-            clientId: currentCase.clientId,
-            caseId: currentCase.id,
-            documentId: document.id,
-            title: `Demo AI review flag ${pad(index + 1)}`,
-            description: `Generated AI validation flag ${pad(index + 1)} for demo review queues.`,
-            severity: pick(errorSeverities, index),
-            status: pick(errorStatuses, index),
-            affectedField: pick(
-              ["name", "date_of_birth", "address", "signature"] as const,
-              index,
-            ),
-            documentRef: document.title,
-            resolvedById: isResolved ? firmAdmin.id : undefined,
-            resolvedAt: isResolved ? timestampFromNow(-index) : undefined,
-          };
-        }),
-      )
-      .returning();
+    // TODO(ai-review Phase 1 todo 4.7): re-add demo seeding against the new
+    // case_issues / case_issue_documents / case_issue_events tables.
 
     return {
       firm: {
@@ -2282,7 +2252,6 @@ const seedDemoData = async (organizationId?: string) => {
       clientRequestCount: createdClientRequests.length,
       timeEntryCount: createdTimeEntries.length,
       leaveRequestCount: createdLeaveRequests.length,
-      aiErrorFlagCount: createdAiErrorFlags.length,
     } satisfies DemoSeedResult;
   });
 
@@ -2387,14 +2356,6 @@ const dropDemoData = async (organizationId?: string) => {
     const record = (key: string, rows: unknown[]) => {
       deleted[key] = rows.length;
     };
-
-    record(
-      "aiErrorFlags",
-      await tx
-        .delete(aiErrorFlags)
-        .where(eq(aiErrorFlags.organizationId, firm.id))
-        .returning(),
-    );
 
     if (documentRequestIds.length || documentIds.length) {
       const externalSubmissionConditions = [];
@@ -2959,9 +2920,6 @@ const deletePracticeAreas = async (ids: readonly string[]) => {
         .where(inArray(workflowTemplates.id, templateIds));
     }
     if (caseIds.length) {
-      await tx
-        .delete(aiErrorFlags)
-        .where(inArray(aiErrorFlags.caseId, caseIds));
       await tx
         .delete(adverseParties)
         .where(inArray(adverseParties.caseId, caseIds));
