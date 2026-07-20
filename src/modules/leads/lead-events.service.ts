@@ -1,8 +1,9 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "../../db/client";
-import { leadEvents } from "../../db/schema/leads";
 import type { LeadEventType } from "../../db/schema/leads";
+import { leadEvents } from "../../db/schema/leads";
 import { staff } from "../../db/schema/staff";
+import { getRequestContext } from "../../middleware/request-context";
 
 /**
  * Append-only activity trail for a lead. Mirrors the shape of
@@ -49,6 +50,7 @@ const actorNameFor = async (
 export const logLeadEvent = async (data: LogLeadEventInput) => {
   const conn = (data.tx ?? db) as typeof db;
   const actorId = data.actorId ?? null;
+  const ctx = getRequestContext();
 
   await conn.insert(leadEvents).values({
     organizationId: data.organizationId,
@@ -57,6 +59,7 @@ export const logLeadEvent = async (data: LogLeadEventInput) => {
     actorId,
     actorNameSnapshot: await actorNameFor(conn, actorId),
     metadata: (data.metadata as any) ?? null,
+    ipAddress: ctx.ipAddress,
   });
 };
 
@@ -71,6 +74,7 @@ export type LeadActivityEntry = {
    */
   actorName: string | null;
   metadata: Record<string, unknown> | null;
+  ipAddress: string | null;
   createdAt: Date;
 };
 
@@ -84,11 +88,10 @@ export const getLeadActivity = async (
       type: leadEvents.type,
       actorId: leadEvents.actorId,
       actorNameSnapshot: leadEvents.actorNameSnapshot,
-      // Prefer the live staff name so a rename is reflected, and fall back to
-      // the snapshot when the staff row is gone.
       firstName: staff.firstName,
       lastName: staff.lastName,
       metadata: leadEvents.metadata,
+      ipAddress: leadEvents.ipAddress,
       createdAt: leadEvents.createdAt,
     })
     .from(leadEvents)
