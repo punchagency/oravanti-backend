@@ -277,6 +277,35 @@ export class LeadWorkflowRouter {
       validateRequest({ params: v.leadNoteIdParamsSchema }),
       ctrl.deleteLeadNote,
     );
+
+    // ── Bulk operations ─────────────────────────────────────────────────────
+
+    this.router.post(
+      "/:leadId/notes/bulk-delete",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.leadIdParamsSchema, body: v.bulkDeleteNotesBodySchema }),
+      ctrl.bulkDeleteNotes,
+    );
+
+    this.router.post(
+      "/:leadId/notes/bulk-pin",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.leadIdParamsSchema, body: v.bulkPinNotesBodySchema }),
+      ctrl.bulkPinNotes,
+    );
+
+    this.router.post(
+      "/:leadId/notes/:noteId/toggle-pin",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: v.leadNoteIdParamsSchema }),
+      ctrl.toggleNotePin,
+    );
   }
 }
 
