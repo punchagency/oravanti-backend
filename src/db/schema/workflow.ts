@@ -39,6 +39,14 @@ export const noteVisibilityEnum = pgEnum('note_visibility', [
   'admins_only',
 ]);
 
+export const caseNoteContextEnum = pgEnum('case_note_context', [
+  'notes_tab',
+  'workflow_step',
+  'task',
+  'lead_conversion',
+  'system',
+]);
+
 export const moduleActivationTypeEnum = pgEnum('module_activation_type', [
   'auto',
   'conditional',
@@ -117,6 +125,8 @@ export const caseNotes = pgTable('case_notes', {
   taskId:            uuid('task_id').references(() => caseWorkflowSteps.id, { onDelete: 'set null' }),
   category:          noteCategoryEnum('category').notNull().default('internal_strategy'),
   visibility:        noteVisibilityEnum('visibility').notNull().default('all_staff'),
+  isPinned:          boolean('is_pinned').notNull().default(false),
+  context:           caseNoteContextEnum('context').notNull().default('notes_tab'),
   content:           text('content').notNull(),
   isEdited:          boolean('is_edited').notNull().default(false),
   createdByUserId:   uuid('created_by_user_id').notNull(),
