@@ -67,6 +67,9 @@ export const updateLeadBodySchema = z.object({
     .optional(),
   situationSummary: z.string().optional(),
   notes: z.string().optional(),
+  noteContext: z
+    .enum(["manual", "consultation", "lead_update", "intake", "system"])
+    .optional(),
   assignedStaffId: optionalUuid,
   intakeAdversePartyName: z.string().min(1).optional(),
   intakeAdversePartyEmail: z.string().email().optional(),
@@ -115,6 +118,13 @@ export const addLeadNoteBodySchema = z.object({
       "post_consultation",
     ])
     .optional(),
+  context: z
+    .enum(["manual", "consultation", "lead_update", "intake", "system"])
+    .optional(),
+  visibility: z
+    .enum(["all_staff", "attorneys_only", "admins_only"])
+    .optional(),
+  isPinned: z.boolean().optional(),
   content: z.string().trim().min(1, "A note cannot be empty").max(10_000),
 });
 
@@ -516,6 +526,13 @@ export const createLeadNoteBodySchema = z.object({
   type: z
     .enum(["general", "phone_call", "email", "voicemail", "system_log", "pre_consultation", "post_consultation"])
     .optional(),
+  context: z
+    .enum(["manual", "consultation", "lead_update", "intake", "system"])
+    .optional(),
+  visibility: z
+    .enum(["all_staff", "attorneys_only", "admins_only"])
+    .optional(),
+  isPinned: z.boolean().optional(),
 });
 
 export const updateLeadNoteBodySchema = z.object({
@@ -523,6 +540,19 @@ export const updateLeadNoteBodySchema = z.object({
   type: z
     .enum(["general", "phone_call", "email", "voicemail", "system_log", "pre_consultation", "post_consultation"])
     .optional(),
+  visibility: z
+    .enum(["all_staff", "attorneys_only", "admins_only"])
+    .optional(),
+  isPinned: z.boolean().optional(),
+});
+
+export const bulkDeleteNotesBodySchema = z.object({
+  noteIds: z.array(z.string().uuid()).min(1, "At least one note ID is required"),
+});
+
+export const bulkPinNotesBodySchema = z.object({
+  noteIds: z.array(z.string().uuid()).min(1, "At least one note ID is required"),
+  pinned: z.boolean(),
 });
 
 export const createTimelineEventBodySchema = z.object({
