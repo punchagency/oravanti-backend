@@ -10,6 +10,7 @@ import { practiceAreaSubcategories } from "../../db/schema/practice-area-subcate
 import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
 import { ensureCaseTypeBelongsToPracticeArea } from "../practice-areas/practice-areas.utils";
+import { logCaseEvent } from "./case-events.service";
 
 // ─── Case Number Generation ──────────────────────────────────────────────────
 
@@ -363,6 +364,32 @@ export const createCase = async (
     })
     .returning();
 
+  const actorId = creator?.adminId ?? creator?.staffId;
+
+  // Log case created event
+  await logCaseEvent({
+    organizationId,
+    caseId: newCase.id,
+    eventType: "case_created",
+    title: "Case created",
+    description: `Case ${newCase.caseNumber} created`,
+    metadata: { caseNumber: newCase.caseNumber, description: data.description },
+    actorId,
+  });
+
+  // Log team assigned event if team was provided
+  if (data.assignedTeamId) {
+    await logCaseEvent({
+      organizationId,
+      caseId: newCase.id,
+      eventType: "case_team_assigned",
+      title: "Team assigned",
+      description: `Team assigned to case`,
+      metadata: { teamId: data.assignedTeamId },
+      actorId,
+    });
+  }
+
   return newCase;
 };
 
@@ -370,20 +397,19 @@ export const updateCase = async (
   id: string,
   organizationId: string,
   data: Partial<typeof cases.$inferInsert>,
+  actorId?: string,
 ) => {
+  // Fetch current state for change detection
+  const [currentCase] = await db
+    .select()
+    .from(cases)
+    .where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)))
+    .limit(1);
+
+  if (!currentCase) return null;
+
   if (data.practiceAreaId || data.caseTypeId) {
-    const [existing] = await db
-      .select({
-        practiceAreaId: cases.practiceAreaId,
-        caseTypeId: cases.caseTypeId,
-      })
-      .from(cases)
-      .where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)))
-      .limit(1);
-
-    if (!existing) return null;
-
-    data.caseTypeId = data.caseTypeId ?? existing.caseTypeId;
+    data.caseTypeId = data.caseTypeId ?? currentCase.caseTypeId;
   }
 
   const [updated] = await db
@@ -391,10 +417,93 @@ export const updateCase = async (
     .set({ ...data, updatedAt: new Date() })
     .where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)))
     .returning();
+
+  // Log specific change events
+  if (data.status && data.status !== currentCase.status) {
+    await logCaseEvent({
+      organizationId,
+      caseId: id,
+      eventType: "case_status_changed",
+      title: "Status changed",
+      description: `Status changed from ${currentCase.status} to ${data.status}`,
+      metadata: { previousStatus: currentCase.status, newStatus: data.status },
+      actorId,
+    });
+  }
+
+  if (data.priority && data.priority !== currentCase.priority) {
+    await logCaseEvent({
+      organizationId,
+      caseId: id,
+      eventType: "case_priority_changed",
+      title: "Priority changed",
+      description: `Priority changed from ${currentCase.priority} to ${data.priority}`,
+      metadata: { previousPriority: currentCase.priority, newPriority: data.priority },
+      actorId,
+    });
+  }
+
+  if (data.assignedTeamId !== undefined && data.assignedTeamId !== currentCase.assignedTeamId) {
+    const eventType = currentCase.assignedTeamId ? "case_team_reassigned" : "case_team_assigned";
+    const title = currentCase.assignedTeamId ? "Team reassigned" : "Team assigned";
+
+    const teamIds = [currentCase.assignedTeamId, data.assignedTeamId].filter(Boolean) as string[];
+    let teamNames: Record<string, string> = {};
+    if (teamIds.length > 0) {
+      const teams = await db
+        .select({ id: team.id, name: team.name })
+        .from(team)
+        .where(sql`${team.id} IN ${teamIds}`);
+      for (const t of teams) {
+        teamNames[t.id] = t.name;
+      }
+    }
+
+    const previousTeam = currentCase.assignedTeamId
+      ? { id: currentCase.assignedTeamId, name: teamNames[currentCase.assignedTeamId] ?? null }
+      : null;
+    const newTeam = data.assignedTeamId
+      ? { id: data.assignedTeamId, name: teamNames[data.assignedTeamId] ?? null }
+      : null;
+
+    await logCaseEvent({
+      organizationId,
+      caseId: id,
+      eventType,
+      title,
+      description: `Team changed from ${previousTeam?.name ?? "none"} to ${newTeam?.name ?? "none"}`,
+      metadata: { previousTeam, newTeam },
+      actorId,
+    });
+  }
+
+  // Generic update event for any other changes
+  if (data.description && data.description !== currentCase.description) {
+    await logCaseEvent({
+      organizationId,
+      caseId: id,
+      eventType: "case_description_updated",
+      title: "Description updated",
+      description: "Case description updated",
+      metadata: { changes: Object.keys(data).filter(k => k !== "updatedAt") },
+      actorId,
+    });
+  }
+
   return updated;
 };
 
-export const deleteCase = async (id: string, organizationId: string) => {
+export const deleteCase = async (id: string, organizationId: string, actorId?: string) => {
+  // Log deletion event before deleting
+  await logCaseEvent({
+    organizationId,
+    caseId: id,
+    eventType: "case_deleted",
+    title: "Case deleted",
+    description: "Case deleted",
+    actorId,
+  });
+
   await db
     .delete(cases)
     .where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)));
@@ -405,6 +514,8 @@ export class CasesService {
   getAllCases = getAllCases;
   getCaseById = getCaseById;
   createCase = createCase;
-  updateCase = updateCase;
-  deleteCase = deleteCase;
+  updateCase = (id: string, organizationId: string, data: Partial<typeof cases.$inferInsert>, actorId?: string) =>
+    updateCase(id, organizationId, data, actorId);
+  deleteCase = (id: string, organizationId: string, actorId?: string) =>
+    deleteCase(id, organizationId, actorId);
 }

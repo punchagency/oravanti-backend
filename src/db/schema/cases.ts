@@ -1,7 +1,9 @@
 import {
   boolean,
   date,
+  index,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   primaryKey,
@@ -71,6 +73,32 @@ export const certificationStatusEnum = pgEnum("certification_status", [
   "received",
   "expired",
   "not_required",
+]);
+
+export const caseEventTypeEnum = pgEnum("case_event_type", [
+  "case_created",
+  "case_updated",
+  "case_deleted",
+  "case_viewed",
+  "case_status_changed",
+  "case_priority_changed",
+  "case_team_assigned",
+  "case_team_reassigned",
+  "case_note_created",
+  "case_note_updated",
+  "case_note_deleted",
+  "case_note_pinned",
+  "case_note_unpinned",
+  "case_document_linked",
+  "case_document_unlinked",
+  "case_description_updated",
+  "workflow_initialized",
+  "module_activated",
+  "step_assigned",
+  "step_completed",
+  "step_submitted_for_review",
+  "step_approved",
+  "step_rejected",
 ]);
 
 // =========================================================================
@@ -194,8 +222,35 @@ export const casesToCertifications = pgTable(
     dueDate: date("due_date"),
     completedAt: timestamp("completed_at"),
   },
-  (t) => [{ pk: primaryKey({ columns: [t.caseId, t.certificationId] }) }],
+  (t) => [{ pk:primaryKey({ columns: [t.caseId, t.certificationId] }) }],
 );
+
+// =========================================================================
+// CASE EVENTS (Append-Only Audit Trail)
+// =========================================================================
+
+/**
+ * Case Events: append-only audit trail for all case-level actions.
+ * Mirrors the proven `lead_events` pattern for consistency.
+ *
+ * `actorNameSnapshot` is denormalised deliberately: the trail must still read
+ * correctly after a staff member is removed.
+ */
+export const caseEvents = pgTable("case_events", {
+  id:             uuid("id").primaryKey().defaultRandom(),
+  organizationId: text("organization_id").notNull().references(() => organization.id),
+  caseId:         uuid("case_id").notNull().references(() => cases.id, { onDelete: "cascade" }),
+  eventType:      caseEventTypeEnum("event_type").notNull(),
+  title:          text("title").notNull(),
+  description:    text("description"),
+  metadata:       jsonb("metadata"),
+  actorId:        uuid("actor_id").references(() => staff.id),
+  actorNameSnapshot: text("actor_name_snapshot"),
+  ipAddress:      text("ip_address"),
+  createdAt:      timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("case_events_case_id_created_at_idx").on(t.caseId, t.createdAt),
+]);
 
 export type Case = typeof cases.$inferSelect;
 export type NewCase = typeof cases.$inferInsert;
@@ -204,3 +259,7 @@ export type CaseRecordNote = typeof caseRecordNotes.$inferSelect;
 export type Certification = typeof certifications.$inferSelect;
 export type NewCertification = typeof certifications.$inferInsert;
 export type CaseToCertification = typeof casesToCertifications.$inferSelect;
+
+export type CaseEvent = typeof caseEvents.$inferSelect;
+export type NewCaseEvent = typeof caseEvents.$inferInsert;
+export type CaseEventType = (typeof caseEventTypeEnum.enumValues)[number];

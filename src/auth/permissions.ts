@@ -28,7 +28,7 @@ export const paralegal = ac.newRole({
 });
 
 export const attorney = ac.newRole({
-  cases: [],
+  cases: ["read"],
   clients: [],
   staffs: ["read"], // list attorneys for the consultation wizard
   conflicts: [],
@@ -38,7 +38,7 @@ export const attorney = ac.newRole({
 
 export const owner = ac.newRole({
   clients: [],
-  cases: [],
+  cases: ["read", "create", "update", "delete"],
   staffs: ["read", "create", "update", "delete"],
   invitations: ["read", "create", "update", "delete"],
   conflicts: ["review"],

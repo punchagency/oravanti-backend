@@ -4321,7 +4321,7 @@ const openCase = async (
         practiceAreaId: resolvedPracticeAreaId,
         caseTypeId: resolvedCaseTypeId,
         priority: "medium",
-        assignedTeamId: data.assignedTeamId ?? lead.respondentId ?? null,
+        assignedTeamId: data.assignedTeamId ?? null,
         filingDate: new Date().toISOString().split("T")[0],
         description: lead.situationSummary ?? `Case for ${leadName}`,
         openedById: creatorStaffId,
