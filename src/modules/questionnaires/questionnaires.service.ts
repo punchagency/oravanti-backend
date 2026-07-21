@@ -43,6 +43,7 @@ import {
   computeChecksum,
   ingestDocument,
 } from "../documents/document-ingest";
+import { triggerScenarioScan } from "../ai-scan/scan-triggers";
 
 type JsonObject = Record<string, unknown>;
 type AnswerInput = { questionId: string; value: unknown };
@@ -850,8 +851,17 @@ export class QuestionnairesService {
       return { joinRow, ingested };
     });
 
-    // TODO(ai-review Phase 3): enqueue a scenario-level AI scan here
-    // (enqueueScenarioScan) rather than a per-file scan.
+    // Scan the lead once the upload is committed. Fire-and-forget: a scan is a
+    // side effect, never a precondition for the upload succeeding. Coalescing
+    // collapses a burst of question uploads into one scan.
+    if (input.leadId) {
+      triggerScenarioScan({
+        organizationId: input.organizationId,
+        scenarioType: "lead",
+        scenarioId: input.leadId,
+        trigger: "upload",
+      });
+    }
 
     return {
       id: result.joinRow.id,

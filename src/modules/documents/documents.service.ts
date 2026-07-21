@@ -33,6 +33,10 @@ import {
   getPaginationOffset,
 } from "../../utils/pagination";
 import { storageService } from "../../utils/storage/storage.service";
+import {
+  triggerScanForDocument,
+  triggerScenarioScan,
+} from "../ai-scan/scan-triggers";
 
 type DocumentPermission = "VIEW" | "COMMENT" | "EDIT" | "ADMIN";
 type DocumentStatus = "active" | "archived" | "deleted";
@@ -212,7 +216,7 @@ export class DocumentsService {
     });
 
     try {
-      return await db.transaction(async (tx) => {
+      const created = await db.transaction(async (tx) => {
         const [doc] = await tx
           .insert(documents)
           .values({
@@ -265,6 +269,16 @@ export class DocumentsService {
 
         return { ...updatedDocument, currentVersion: version };
       });
+
+      // Scan the case once the upload is committed (fire-and-forget).
+      triggerScenarioScan({
+        organizationId,
+        scenarioType: "case",
+        scenarioId: data.caseId,
+        trigger: "upload",
+      });
+
+      return created;
     } catch (error) {
       await this.removeFromStorage(storagePath).catch(() => undefined);
       throw error;
@@ -571,7 +585,7 @@ export class DocumentsService {
     });
 
     try {
-      return await db.transaction(async (tx) => {
+      const created = await db.transaction(async (tx) => {
         const [version] = await tx
           .insert(documentVersions)
           .values({
@@ -600,6 +614,12 @@ export class DocumentsService {
 
         return version;
       });
+
+      // A new version invalidates prior analysis (new checksum) — re-scan every
+      // scenario this document belongs to. Resolves scenario + org internally.
+      void triggerScanForDocument(id, "upload");
+
+      return created;
     } catch (error) {
       await this.removeFromStorage(storagePath).catch(() => undefined);
       throw error;
@@ -615,8 +635,8 @@ export class DocumentsService {
     await this.ensurePermission(id, userId, "EDIT");
     await this.getCaseForFirm(caseId, organizationId);
 
-    return db.transaction(async (tx) => {
-      const [link] = await tx
+    const link = await db.transaction(async (tx) => {
+      const [row] = await tx
         .insert(documentCaseLinks)
         .values({ documentId: id, caseId, linkedByUserId: userId })
         .onConflictDoUpdate({
@@ -632,8 +652,18 @@ export class DocumentsService {
         metadata: { caseId, scope: "case_link" },
       });
 
-      return link;
+      return row;
     });
+
+    // A newly-linked document is now in the case's scan set.
+    triggerScenarioScan({
+      organizationId,
+      scenarioType: "case",
+      scenarioId: caseId,
+      trigger: "upload",
+    });
+
+    return link;
   };
 
   grantUserAccess = async (
@@ -800,7 +830,7 @@ export class DocumentsService {
     });
 
     try {
-      return await db.transaction(async (tx) => {
+      const result = await db.transaction(async (tx) => {
         const [doc] = await tx
           .insert(documents)
           .values({
@@ -875,6 +905,11 @@ export class DocumentsService {
 
         return { document: updatedDocument, version, submission };
       });
+
+      // External submission adds a document to the request's case — scan it.
+      void triggerScanForDocument(result.document.id, "upload");
+
+      return result;
     } catch (error) {
       await this.removeFromStorage(storagePath).catch(() => undefined);
       throw error;

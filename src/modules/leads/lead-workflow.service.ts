@@ -7,6 +7,7 @@ import {
   leads,
 } from "../../db/schema";
 import type { LeadEventType } from "../../db/schema/leads";
+import { triggerScenarioScan } from "../ai-scan/scan-triggers";
 import { logLeadEvent } from "./lead-events.service";
 import { documents, documentVersions } from "../../db/schema/documents";
 import { staff } from "../../db/schema/staff";
@@ -626,6 +627,15 @@ export class LeadWorkflowService {
         type: "document_linked" as LeadEventType,
         actorId: linkedByStaffId,
         metadata: { documentId, linkId: link.id },
+      });
+
+      // A newly-linked document is now in the lead's scan set.
+      triggerScenarioScan({
+        organizationId,
+        scenarioType: "lead",
+        scenarioId: leadId,
+        trigger: "upload",
+        requestedByStaffId: linkedByStaffId,
       });
     }
 
