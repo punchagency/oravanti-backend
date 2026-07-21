@@ -7,6 +7,7 @@
 import { Router } from "express";
 import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
+import { requirePermission } from "../../middleware/permission.middleware";
 import { setFirmContext } from "../../middleware/rls.middleware";
 import { requireStaffOrAdmin } from "../../middleware/staff-or-admin.middleware";
 import { validateRequest } from "../../middleware/validate.middleware";
@@ -143,7 +144,7 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/steps/:stepId/complete",
       requireAuth,
-      requireAdmin,
+      requireStaffOrAdmin,
       setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "stepId") }),
       this.workflowController.completeStep,
@@ -172,7 +173,7 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/steps/:stepId/submit-review",
       requireAuth,
-      // requireAdmin,
+      requireStaffOrAdmin,
       setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "stepId") }),
       this.workflowController.submitForReview,
@@ -201,7 +202,7 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/steps/:stepId/approve",
       requireAuth,
-      requireAdmin,
+      requireStaffOrAdmin,
       setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "stepId") }),
       this.workflowController.approveStep,
@@ -230,7 +231,7 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/steps/:stepId/reject",
       requireAuth,
-      requireAdmin,
+      requireStaffOrAdmin,
       setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "stepId") }),
       this.workflowController.rejectStep,
@@ -259,7 +260,7 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/steps/:stepId/assign",
       requireAuth,
-      requireAdmin,
+      requireStaffOrAdmin,
       setFirmContext,
       validateRequest({
         params: this.validation.params("caseId", "stepId"),
@@ -291,7 +292,7 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/modules/:moduleId/activate",
       requireAuth,
-      requireAdmin,
+      requireStaffOrAdmin,
       setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "moduleId") }),
       this.workflowController.activateModule,
@@ -368,7 +369,7 @@ export class WorkflowRouter {
     this.router.get(
       "/:caseId/workflow/notes",
       requireAuth,
-      requireAdmin,
+      requirePermission({ cases: ["read"] }),
       setFirmContext,
       validateRequest({ params: this.validation.params("caseId") }),
       this.workflowController.getNotes,
@@ -393,7 +394,7 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/notes",
       requireAuth,
-      requireAdmin,
+      requireStaffOrAdmin,
       setFirmContext,
       validateRequest({
         params: this.validation.params("caseId"),
@@ -425,7 +426,7 @@ export class WorkflowRouter {
     this.router.patch(
       "/:caseId/workflow/notes/:noteId",
       requireAuth,
-      requireAdmin,
+      requireStaffOrAdmin,
       setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "noteId") }),
       this.workflowController.updateNote,
@@ -454,10 +455,152 @@ export class WorkflowRouter {
     this.router.delete(
       "/:caseId/workflow/notes/:noteId",
       requireAuth,
-      requireAdmin,
+      requireStaffOrAdmin,
       setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "noteId") }),
       this.workflowController.deleteNote,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/workflow/notes/{noteId}/toggle-pin:
+     *   post:
+     *     tags: [Workflow]
+     *     summary: Toggle pin status of a case note
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: caseId
+     *         required: true
+     *         schema: { type: string }
+     *       - in: path
+     *         name: noteId
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200:
+     *         description: Pin status toggled
+     */
+    this.router.post(
+      "/:caseId/workflow/notes/:noteId/toggle-pin",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({ params: this.validation.params("caseId", "noteId") }),
+      this.workflowController.toggleNotePin,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/workflow/notes/bulk-delete:
+     *   post:
+     *     tags: [Workflow]
+     *     summary: Bulk delete case notes
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: caseId
+     *         required: true
+     *         schema: { type: string }
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             properties:
+     *               noteIds:
+     *                 type: array
+     *                 items:
+     *                   type: string
+     *     responses:
+     *       200:
+     *         description: Notes deleted
+     */
+    this.router.post(
+      "/:caseId/workflow/notes/bulk-delete",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: this.validation.params("caseId"),
+        body: this.validation.requiredBody("noteIds"),
+      }),
+      this.workflowController.bulkDeleteNotes,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/workflow/notes/bulk-pin:
+     *   post:
+     *     tags: [Workflow]
+     *     summary: Bulk pin/unpin case notes
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: caseId
+     *         required: true
+     *         schema: { type: string }
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             properties:
+     *               noteIds:
+     *                 type: array
+     *                 items:
+     *                   type: string
+     *               isPinned:
+     *                 type: boolean
+     *     responses:
+     *       200:
+     *         description: Notes pinned/unpinned
+     */
+    this.router.post(
+      "/:caseId/workflow/notes/bulk-pin",
+      requireAuth,
+      requireStaffOrAdmin,
+      setFirmContext,
+      validateRequest({
+        params: this.validation.params("caseId"),
+        body: this.validation.requiredBody("noteIds", "isPinned"),
+      }),
+      this.workflowController.bulkPinNotes,
+    );
+
+    // ── Case Audit Log ──────────────────────────────────────────────────────────
+
+    /**
+     * @openapi
+     * /cases/{caseId}/audit-log:
+     *   get:
+     *     tags: [Workflow]
+     *     summary: Get case audit log (case events)
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: caseId
+     *         required: true
+     *         schema: { type: string }
+     *       - in: query
+     *         name: page
+     *         schema: { type: integer }
+     *       - in: query
+     *         name: limit
+     *         schema: { type: integer }
+     *     responses:
+     *       200:
+     *         description: Paginated audit log entries
+     */
+    this.router.get(
+      "/:caseId/audit-log",
+      requireAuth,
+      requireAdmin,
+      setFirmContext,
+      validateRequest({ params: this.validation.params("caseId") }),
+      this.workflowController.getAuditLog,
     );
   }
 }

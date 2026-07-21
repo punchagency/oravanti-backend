@@ -3,6 +3,7 @@ import { AuthRequest } from "../../middleware/auth.middleware";
 import asyncWrap from "../../utils/asyncWrapper";
 import { BadRequestError } from "../../utils/error/app-error";
 import { sendSuccess } from "../../utils/send-success";
+import { getCaseActivityPaginated } from "../cases/case-events.service";
 import { WorkflowService } from "./workflow.service";
 
 export class WorkflowController {
@@ -177,7 +178,7 @@ export class WorkflowController {
 
   createNote = asyncWrap(async (req: AuthRequest, res: Response) => {
     const caseId = req.params.caseId as string;
-    const { workflowModuleId, taskId, category, visibility, content } =
+    const { workflowModuleId, taskId, category, visibility, isPinned, context, content } =
       req.body;
     if (!content) throw new BadRequestError("content is required");
 
@@ -188,6 +189,8 @@ export class WorkflowController {
       taskId,
       category,
       visibility,
+      isPinned,
+      context,
       content,
       createdByUserId: req.staffId ?? req.adminId ?? req.user?.id ?? "",
     });
@@ -196,26 +199,86 @@ export class WorkflowController {
 
   getNotes = asyncWrap(async (req: AuthRequest, res: Response) => {
     const caseId = req.params.caseId as string;
-    const result = await this.workflowService.getNotes(caseId);
-    sendSuccess(res, result, "Notes retrieved successfully");
+    const { pinnedOnly, authorId, context, page, limit } = req.query;
+
+    // Look up user role from staff table
+    const userRole = req.adminId ? "admin" : "staff";
+
+    const result = await this.workflowService.getNotes({
+      caseId,
+      userRole,
+      userId: req.staffId ?? req.adminId ?? "",
+      pinnedOnly: pinnedOnly === "true" ? true : undefined,
+      authorId: authorId as string | undefined,
+      context: context as string | undefined,
+      page: page ? parseInt(page as string, 10) : undefined,
+      limit: limit ? parseInt(limit as string, 10) : undefined,
+    });
+    sendSuccess(res, result.data, "Notes retrieved successfully", 200, { pagination: result.pagination });
   });
 
   updateNote = asyncWrap(async (req: AuthRequest, res: Response) => {
     const caseId = req.params.caseId as string;
     const noteId = req.params.noteId as string;
-    const { content, category, visibility } = req.body;
+    const { content, category, visibility, isPinned } = req.body;
     const result = await this.workflowService.updateNote(noteId, caseId, {
       content,
       category,
       visibility,
-    });
+      isPinned,
+    }, req.staffId ?? req.adminId);
     sendSuccess(res, result, "Note updated successfully");
   });
 
   deleteNote = asyncWrap(async (req: AuthRequest, res: Response) => {
     const caseId = req.params.caseId as string;
     const noteId = req.params.noteId as string;
-    await this.workflowService.deleteNote(noteId, caseId);
+    await this.workflowService.deleteNote(noteId, caseId, req.staffId ?? req.adminId);
     sendSuccess(res, null, "Note deleted successfully");
+  });
+
+  toggleNotePin = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const caseId = req.params.caseId as string;
+    const noteId = req.params.noteId as string;
+    const actorId = req.staffId ?? req.adminId;
+    const result = await this.workflowService.toggleNotePin(noteId, caseId, req.organizationId, actorId);
+    sendSuccess(res, result, "Note pin toggled successfully");
+  });
+
+  bulkDeleteNotes = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const caseId = req.params.caseId as string;
+    const { noteIds } = req.body;
+    if (!noteIds || !Array.isArray(noteIds)) {
+      throw new BadRequestError("noteIds array is required");
+    }
+    const actorId = req.staffId ?? req.adminId;
+    await this.workflowService.bulkDeleteNotes(noteIds, caseId, req.organizationId, actorId);
+    sendSuccess(res, null, "Notes deleted successfully");
+  });
+
+  bulkPinNotes = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const caseId = req.params.caseId as string;
+    const { noteIds, pinned } = req.body;
+    if (!noteIds || !Array.isArray(noteIds)) {
+      throw new BadRequestError("noteIds array is required");
+    }
+    if (typeof pinned !== "boolean") {
+      throw new BadRequestError("pinned boolean is required");
+    }
+    const actorId = req.staffId ?? req.adminId;
+    await this.workflowService.bulkPinNotes(noteIds, caseId, pinned, req.organizationId, actorId);
+    sendSuccess(res, null, "Notes pinned successfully");
+  });
+
+  getAuditLog = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const caseId = req.params.caseId as string;
+    const { page, limit } = req.query;
+    const result = await getCaseActivityPaginated({
+      caseId,
+      organizationId: req.organizationId!,
+      page: page ? parseInt(page as string, 10) : undefined,
+      limit: limit ? parseInt(limit as string, 10) : undefined,
+    });
+    sendSuccess(res, result.data, "Audit log retrieved successfully", 200, { pagination: result.pagination });
   });
 }

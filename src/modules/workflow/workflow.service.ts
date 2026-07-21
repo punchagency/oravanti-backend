@@ -1,4 +1,4 @@
-import { and, asc, count, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import { stepActionLogs } from "../../db/schema";
 import { cases } from "../../db/schema/cases";
@@ -16,6 +16,41 @@ import {
   workflowTemplates,
 } from "../../db/schema/workflow";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import { logCaseEvent } from "../cases/case-events.service";
+
+// ─── Metadata helpers ──────────────────────────────────────────────────────────
+
+async function resolveModuleName(
+  templateStepId: string | null | undefined,
+): Promise<string | null> {
+  if (!templateStepId) return null;
+  const [ts] = await db
+    .select({ moduleId: workflowTemplateSteps.moduleId })
+    .from(workflowTemplateSteps)
+    .where(eq(workflowTemplateSteps.id, templateStepId))
+    .limit(1);
+  if (!ts) return null;
+  const [mod] = await db
+    .select({ name: workflowModules.name })
+    .from(workflowModules)
+    .where(eq(workflowModules.id, ts.moduleId))
+    .limit(1);
+  return mod?.name ?? null;
+}
+
+async function resolveStaffNames(
+  ...ids: (string | null | undefined)[]
+): Promise<Map<string, string>> {
+  const unique = [...new Set(ids.filter((id): id is string => !!id))];
+  if (unique.length === 0) return new Map();
+  const rows = await db
+    .select({ id: staff.id, firstName: staff.firstName, lastName: staff.lastName })
+    .from(staff)
+    .where(inArray(staff.id, unique));
+  const map = new Map<string, string>();
+  for (const r of rows) map.set(r.id, `${r.firstName} ${r.lastName}`.trim());
+  return map;
+}
 
 export class WorkflowService {
   // ─── Get workflow for a case (read-only) ────────────────────────────────────────
@@ -271,6 +306,23 @@ export class WorkflowService {
 
   // ─── Complete a step ────────────────────────────────────────────────────────────
 
+  private async createStepNote(
+    caseId: string,
+    stepId: string,
+    organizationId: string,
+    performedById: string,
+    content: string,
+  ) {
+    return this.createNote({
+      caseId,
+      organizationId,
+      taskId: stepId,
+      context: "workflow_step",
+      content,
+      createdByUserId: performedById,
+    });
+  }
+
   async completeStep(
     caseId: string,
     stepId: string,
@@ -311,6 +363,12 @@ export class WorkflowService {
       })
       .where(eq(caseWorkflowSteps.id, stepId));
 
+    const [moduleName, staffMap] = await Promise.all([
+      resolveModuleName(step.templateStepId),
+      resolveStaffNames(performedById),
+    ]);
+    const completedByName = performedById ? (staffMap.get(performedById) ?? null) : null;
+
     await logStepAction({
       organizationId,
       caseId,
@@ -328,15 +386,26 @@ export class WorkflowService {
       stepId,
       eventType: "STEP_COMPLETED",
       title: `Step completed: ${step.title}`,
+      description: completedByName
+        ? `${completedByName} completed "${step.title}"`
+        : `Step "${step.title}" completed`,
       metadata: {
         previousStatus: step.status,
         newStatus: "completed",
         timeTakenMs,
         completedById: performedById,
+        completedByName,
+        moduleName,
+        stepTitle: step.title,
+        note: notes?.trim() || null,
         timestamp: now.toISOString(),
       },
       performedById: performedById ?? null,
     });
+
+    if (notes?.trim() && performedById) {
+      await this.createStepNote(caseId, stepId, organizationId, performedById, notes.trim());
+    }
 
     // Auto-assign next pending step within same module
     await this.autoAssignNextStep(
@@ -411,21 +480,34 @@ export class WorkflowService {
       note: overrideRationale || null,
     });
 
+    const [moduleName2, assignerMap] = await Promise.all([
+      resolveModuleName(step.templateStepId),
+      resolveStaffNames(performedById),
+    ]);
+    const assignerName = performedById ? (assignerMap.get(performedById) ?? null) : null;
+
     await logEvent({
       organizationId,
       caseId,
       stepId,
       eventType: "STEP_ASSIGNED",
       title: `Step assigned: ${step.title}`,
-      description: `Assigned to ${staffMember.firstName} ${staffMember.lastName}`,
+      description: assignerName
+        ? `${assignerName} assigned "${step.title}" to ${staffMember.firstName} ${staffMember.lastName}`
+        : `Assigned to ${staffMember.firstName} ${staffMember.lastName}`,
       metadata: {
-        assignmentStrategy: "manual_override",
+        assignmentStrategy: overrideRationale ? "manual_override" : "system",
         staffId,
         staffName: `${staffMember.firstName} ${staffMember.lastName}`,
+        assignerId: performedById ?? null,
+        assignerName,
+        moduleName: moduleName2,
+        stepTitle: step.title,
         overrideRationale: overrideRationale ?? null,
+        note: overrideRationale || null,
         timestamp: now.toISOString(),
       },
-      performedById: staffId,
+      performedById: performedById ?? null,
     });
 
     return this.buildWorkflowResponse(caseId, organizationId);
@@ -478,6 +560,7 @@ export class WorkflowService {
       moduleId,
       eventType: "MODULE_ACTIVATED",
       title: `Module activated: ${mod?.name ?? moduleId}`,
+      description: `Module "${mod?.name ?? moduleId}" activated`,
       metadata: {
         moduleName: mod?.name,
         activationType: mod?.activationType,
@@ -666,6 +749,11 @@ export class WorkflowService {
       );
 
     const now = new Date();
+    let timeTakenMs: number | null = null;
+    if (step.assignedAt) {
+      timeTakenMs = now.getTime() - new Date(step.assignedAt).getTime();
+    }
+
     await db
       .update(caseWorkflowSteps)
       .set({ status: "in_review", updatedAt: now })
@@ -679,7 +767,14 @@ export class WorkflowService {
       title: `Step submitted for review: ${step.title}`,
       actorId: performedById,
       note: notes?.trim() || null,
+      timeTakenMs,
     });
+
+    const [subModName, subActorMap] = await Promise.all([
+      resolveModuleName(step.templateStepId),
+      resolveStaffNames(performedById),
+    ]);
+    const submittedByName = performedById ? (subActorMap.get(performedById) ?? null) : null;
 
     await logEvent({
       organizationId,
@@ -687,13 +782,26 @@ export class WorkflowService {
       stepId,
       eventType: "STEP_SUBMITTED_FOR_REVIEW",
       title: `Step submitted for review: ${step.title}`,
+      description: submittedByName
+        ? `${submittedByName} submitted "${step.title}" for review`
+        : `Step "${step.title}" submitted for review`,
       metadata: {
         previousStatus: "in_progress",
         newStatus: "in_review",
+        stepTitle: step.title,
+        moduleName: subModName,
+        submittedById: performedById ?? null,
+        submittedByName,
+        timeTakenMs,
+        note: notes?.trim() || null,
         timestamp: now.toISOString(),
       },
       performedById: performedById ?? null,
     });
+
+    if (notes?.trim() && performedById) {
+      await this.createStepNote(caseId, stepId, organizationId, performedById, notes.trim());
+    }
 
     return this.buildWorkflowResponse(caseId, organizationId);
   }
@@ -752,20 +860,41 @@ export class WorkflowService {
       timeTakenMs,
     });
 
+    const [apprModName, apprActorMap] = await Promise.all([
+      resolveModuleName(step.templateStepId),
+      resolveStaffNames(performedById, step.assignedToId),
+    ]);
+    const reviewerName = performedById ? (apprActorMap.get(performedById) ?? null) : null;
+    const assigneeName = step.assignedToId ? (apprActorMap.get(step.assignedToId) ?? null) : null;
+
     await logEvent({
       organizationId,
       caseId,
       stepId,
       eventType: "STEP_APPROVED",
       title: `Step approved: ${step.title}`,
+      description: reviewerName
+        ? `${reviewerName} approved "${step.title}"`
+        : `Step "${step.title}" approved`,
       metadata: {
         previousStatus: "in_review",
         newStatus: "completed",
         reviewerId: performedById,
+        reviewerName,
+        assigneeId: step.assignedToId,
+        assigneeName,
+        moduleName: apprModName,
+        stepTitle: step.title,
+        timeTakenMs,
+        note: notes?.trim() || null,
         timestamp: now.toISOString(),
       },
       performedById: performedById ?? null,
     });
+
+    if (notes?.trim() && performedById) {
+      await this.createStepNote(caseId, stepId, organizationId, performedById, notes.trim());
+    }
 
     // Auto-assign next step within same module
     await this.autoAssignNextStep(
@@ -804,6 +933,11 @@ export class WorkflowService {
       throw new BadRequestError("Step must be in_review to reject");
 
     const now = new Date();
+    let timeTakenMs: number | null = null;
+    if (step.assignedAt) {
+      timeTakenMs = now.getTime() - new Date(step.assignedAt).getTime();
+    }
+
     await db
       .update(caseWorkflowSteps)
       .set({
@@ -820,7 +954,15 @@ export class WorkflowService {
       title: `Step rejected: ${step.title}`,
       actorId: performedById,
       note: feedback?.trim() || null,
+      timeTakenMs,
     });
+
+    const [rejModName, rejActorMap] = await Promise.all([
+      resolveModuleName(step.templateStepId),
+      resolveStaffNames(performedById, step.assignedToId),
+    ]);
+    const rejReviewerName = performedById ? (rejActorMap.get(performedById) ?? null) : null;
+    const rejAssigneeName = step.assignedToId ? (rejActorMap.get(step.assignedToId) ?? null) : null;
 
     await logEvent({
       organizationId,
@@ -828,16 +970,29 @@ export class WorkflowService {
       stepId,
       eventType: "STEP_REJECTED",
       title: `Step rejected: ${step.title}`,
-      description: feedback,
+      description: rejReviewerName
+        ? `${rejReviewerName} rejected "${step.title}"`
+        : `Step "${step.title}" rejected`,
       metadata: {
         previousStatus: "in_review",
         newStatus: "in_progress",
         feedback,
         reviewerId: performedById,
+        reviewerName: rejReviewerName,
+        assigneeId: step.assignedToId,
+        assigneeName: rejAssigneeName,
+        moduleName: rejModName,
+        stepTitle: step.title,
+        timeTakenMs,
+        note: feedback?.trim() || null,
         timestamp: now.toISOString(),
       },
       performedById: performedById ?? null,
     });
+
+    if (feedback?.trim() && performedById) {
+      await this.createStepNote(caseId, stepId, organizationId, performedById, feedback.trim());
+    }
 
     return this.buildWorkflowResponse(caseId, organizationId);
   }
@@ -905,6 +1060,10 @@ export class WorkflowService {
       updateData.assignedToId = picked.id;
       updateData.assignedAt = now;
 
+      const autoNextModName = await resolveModuleName(nextStep.templateStepId);
+      const autoNextActorMap = await resolveStaffNames(performedById);
+      const autoAssignerName = performedById ? (autoNextActorMap.get(performedById) ?? null) : null;
+
       await logStepAction({
         organizationId,
         caseId,
@@ -920,11 +1079,18 @@ export class WorkflowService {
         stepId: nextStep.id,
         eventType: "STEP_ASSIGNED",
         title: `Step auto-assigned: ${nextStep.title}`,
-        description: `Assigned to ${picked.firstName} ${picked.lastName}`,
+        description: autoAssignerName
+          ? `${autoAssignerName} assigned "${nextStep.title}" to ${picked.firstName} ${picked.lastName}`
+          : `Assigned to ${picked.firstName} ${picked.lastName}`,
         metadata: {
           assignmentStrategy: "workload_balanced",
           staffId: picked.id,
           staffName: `${picked.firstName} ${picked.lastName}`,
+          assignerId: performedById ?? null,
+          assignerName: autoAssignerName,
+          moduleName: autoNextModName,
+          stepTitle: nextStep.title,
+          timestamp: now.toISOString(),
         },
         performedById: performedById ?? null,
       });
@@ -945,6 +1111,8 @@ export class WorkflowService {
     taskId?: string;
     category?: string;
     visibility?: string;
+    isPinned?: boolean;
+    context?: string;
     content: string;
     createdByUserId: string;
   }) {
@@ -956,15 +1124,75 @@ export class WorkflowService {
         taskId: data.taskId,
         category: (data.category as any) ?? "internal_strategy",
         visibility: (data.visibility as any) ?? "all_staff",
+        isPinned: data.isPinned ?? false,
+        context: (data.context as any) ?? "notes_tab",
         content: data.content,
         createdByUserId: data.createdByUserId,
       })
       .returning();
+
+    await logCaseEvent({
+      organizationId: data.organizationId,
+      caseId: data.caseId,
+      eventType: "case_note_created",
+      title: "Note added",
+      description: `Note added: "${data.content.substring(0, 80)}${data.content.length > 80 ? "..." : ""}"`,
+      metadata: {
+        noteId: note.id,
+        category: note.category,
+        visibility: note.visibility,
+        context: note.context,
+        isPinned: note.isPinned,
+        contentPreview: data.content.substring(0, 100),
+      },
+      actorId: data.createdByUserId,
+    });
+
     return note;
   }
 
-  async getNotes(caseId: string) {
-    return db
+  async getNotes(params: {
+    caseId: string;
+    userRole: string;
+    userId: string;
+    pinnedOnly?: boolean;
+    authorId?: string;
+    context?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = params.page ?? 1;
+    const limit = params.limit ?? 10;
+    const offset = (page - 1) * limit;
+
+    // Role-based visibility filtering
+    const visibilityConditions = this.getVisibilityConditions(params.userRole);
+
+    const conditions = [
+      eq(caseNotes.caseId, params.caseId),
+      ...visibilityConditions,
+    ];
+
+    if (params.pinnedOnly) {
+      conditions.push(eq(caseNotes.isPinned, true));
+    } else {
+      conditions.push(eq(caseNotes.isPinned, false));
+    }
+
+    if (params.authorId) {
+      conditions.push(eq(caseNotes.createdByUserId, params.authorId));
+    }
+
+    if (params.context) {
+      conditions.push(eq(caseNotes.context, params.context as any));
+    }
+
+    const [{ count }] = await db
+      .select({ count: sql<number>`COUNT(*)::int` })
+      .from(caseNotes)
+      .where(and(...conditions));
+
+    const notes = await db
       .select({
         id: caseNotes.id,
         caseId: caseNotes.caseId,
@@ -972,6 +1200,8 @@ export class WorkflowService {
         taskId: caseNotes.taskId,
         category: caseNotes.category,
         visibility: caseNotes.visibility,
+        isPinned: caseNotes.isPinned,
+        context: caseNotes.context,
         content: caseNotes.content,
         isEdited: caseNotes.isEdited,
         createdByUserId: caseNotes.createdByUserId,
@@ -982,18 +1212,127 @@ export class WorkflowService {
       })
       .from(caseNotes)
       .leftJoin(staff, eq(caseNotes.createdByUserId, staff.id))
-      .where(eq(caseNotes.caseId, caseId))
-      .orderBy(asc(caseNotes.createdAt));
+      .where(and(...conditions))
+      .orderBy(desc(caseNotes.isPinned), desc(caseNotes.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    return {
+      data: notes,
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages: Math.ceil(count / limit),
+      },
+    };
+  }
+
+  private getVisibilityConditions(userRole: string) {
+    switch (userRole) {
+      case "admin":
+        return [];
+      case "attorney":
+        return [
+          or(
+            eq(caseNotes.visibility, "all_staff"),
+            eq(caseNotes.visibility, "attorneys_only"),
+          ),
+        ];
+      default:
+        return [eq(caseNotes.visibility, "all_staff")];
+    }
+  }
+
+  async toggleNotePin(noteId: string, caseId: string, organizationId?: string, actorId?: string) {
+    const [existing] = await db
+      .select()
+      .from(caseNotes)
+      .where(and(eq(caseNotes.id, noteId), eq(caseNotes.caseId, caseId)))
+      .limit(1);
+
+    if (!existing) throw new NotFoundError("Note not found");
+
+    const newPinnedState = !existing.isPinned;
+
+    await db
+      .update(caseNotes)
+      .set({ isPinned: newPinnedState, updatedAt: new Date() })
+      .where(eq(caseNotes.id, noteId));
+
+    if (organizationId) {
+      await logCaseEvent({
+        organizationId,
+        caseId,
+        eventType: newPinnedState ? "case_note_pinned" : "case_note_unpinned",
+        title: newPinnedState ? "Note pinned" : "Note unpinned",
+        description: newPinnedState ? "Note pinned" : "Note unpinned",
+        metadata: { noteId },
+        actorId,
+      });
+    }
+
+    return { isPinned: newPinnedState };
+  }
+
+  async bulkDeleteNotes(noteIds: string[], caseId: string, organizationId?: string, actorId?: string) {
+    await db
+      .delete(caseNotes)
+      .where(and(inArray(caseNotes.id, noteIds), eq(caseNotes.caseId, caseId)));
+
+    if (organizationId) {
+      await logCaseEvent({
+        organizationId,
+        caseId,
+        eventType: "case_note_deleted",
+        title: `${noteIds.length} note(s) deleted`,
+        description: `${noteIds.length} note(s) deleted`,
+        metadata: { noteIds },
+        actorId,
+      });
+    }
+  }
+
+  async bulkPinNotes(noteIds: string[], caseId: string, isPinned: boolean, organizationId?: string, actorId?: string) {
+    await db
+      .update(caseNotes)
+      .set({ isPinned, updatedAt: new Date() })
+      .where(and(inArray(caseNotes.id, noteIds), eq(caseNotes.caseId, caseId)));
+
+    if (organizationId) {
+      await logCaseEvent({
+        organizationId,
+        caseId,
+        eventType: isPinned ? "case_note_pinned" : "case_note_unpinned",
+        title: isPinned ? `${noteIds.length} note(s) pinned` : `${noteIds.length} note(s) unpinned`,
+        description: isPinned ? `${noteIds.length} note(s) pinned` : `${noteIds.length} note(s) unpinned`,
+        metadata: { noteIds },
+        actorId,
+      });
+    }
   }
 
   async updateNote(
     noteId: string,
     caseId: string,
-    data: { content?: string; category?: string; visibility?: string },
+    data: { content?: string; category?: string; visibility?: string; isPinned?: boolean },
+    actorId?: string,
   ) {
     const [existing] = await db
-      .select()
+      .select({
+        id: caseNotes.id,
+        caseId: caseNotes.caseId,
+        content: caseNotes.content,
+        category: caseNotes.category,
+        visibility: caseNotes.visibility,
+        isEdited: caseNotes.isEdited,
+        createdByUserId: caseNotes.createdByUserId,
+        createdAt: caseNotes.createdAt,
+        updatedAt: caseNotes.updatedAt,
+        organizationId: cases.organizationId,
+      })
       .from(caseNotes)
+      .innerJoin(cases, eq(caseNotes.caseId, cases.id))
       .where(and(eq(caseNotes.id, noteId), eq(caseNotes.caseId, caseId)))
       .limit(1);
 
@@ -1005,25 +1344,54 @@ export class WorkflowService {
       updateFields.isEdited = true;
     }
     if (data.category !== undefined) updateFields.category = data.category;
-    if (data.visibility !== undefined)
-      updateFields.visibility = data.visibility;
+    if (data.visibility !== undefined) updateFields.visibility = data.visibility;
+    if (data.isPinned !== undefined) updateFields.isPinned = data.isPinned;
 
     const [updated] = await db
       .update(caseNotes)
       .set(updateFields)
       .where(eq(caseNotes.id, noteId))
       .returning();
+
+    // Log note updated event
+    await logCaseEvent({
+      organizationId: existing.organizationId,
+      caseId,
+      eventType: "case_note_updated",
+      title: "Note updated",
+      description: "Note updated",
+      metadata: { noteId, contentPreview: data.content?.substring(0, 100) },
+      actorId,
+    });
+
     return updated;
   }
 
-  async deleteNote(noteId: string, caseId: string) {
+  async deleteNote(noteId: string, caseId: string, actorId?: string) {
     const [existing] = await db
-      .select()
+      .select({
+        id: caseNotes.id,
+        caseId: caseNotes.caseId,
+        content: caseNotes.content,
+        organizationId: cases.organizationId,
+      })
       .from(caseNotes)
+      .innerJoin(cases, eq(caseNotes.caseId, cases.id))
       .where(and(eq(caseNotes.id, noteId), eq(caseNotes.caseId, caseId)))
       .limit(1);
 
     if (!existing) throw new NotFoundError("Note not found");
+
+    // Log note deleted event before deleting
+    await logCaseEvent({
+      organizationId: existing.organizationId,
+      caseId,
+      eventType: "case_note_deleted",
+      title: "Note deleted",
+      description: "Note deleted",
+      metadata: { noteId, content: existing.content },
+      actorId,
+    });
 
     await db.delete(caseNotes).where(eq(caseNotes.id, noteId));
   }
@@ -1539,6 +1907,8 @@ export async function hydrateCaseWorkflow(data: {
       firstStep.assignedToId = picked.id;
       firstStep.assignedAt = now;
 
+      const autoModuleName = await resolveModuleName(firstStep.templateStepId);
+
       await logStepAction({
         organizationId: data.organizationId,
         caseId: data.caseId,
@@ -1555,11 +1925,16 @@ export async function hydrateCaseWorkflow(data: {
         stepId: firstStep.id,
         eventType: "STEP_ASSIGNED",
         title: `Step auto-assigned: ${firstStep.title}`,
-        description: `Assigned to ${picked.firstName} ${picked.lastName}`,
+        description: `System assigned "${firstStep.title}" to ${picked.firstName} ${picked.lastName}`,
         metadata: {
           assignmentStrategy: "workload_balanced",
           staffId: picked.id,
           staffName: `${picked.firstName} ${picked.lastName}`,
+          moduleName: autoModuleName,
+          stepTitle: firstStep.title,
+          assignerId: null,
+          assignerName: "System",
+          timestamp: now.toISOString(),
         },
         performedById: null,
         tx: data.tx,
@@ -1610,6 +1985,37 @@ export async function logEvent(data: {
     metadata: (data.metadata as any) ?? null,
     performedById: data.performedById,
   });
+
+  // Mirror to unified case_events table
+  const workflowToCaseEventMap: Record<string, string> = {
+    WORKFLOW_INITIALIZED: "workflow_initialized",
+    MODULE_ACTIVATED: "module_activated",
+    STEP_ASSIGNED: "step_assigned",
+    STEP_COMPLETED: "step_completed",
+    STEP_SUBMITTED_FOR_REVIEW: "step_submitted_for_review",
+    STEP_APPROVED: "step_approved",
+    STEP_REJECTED: "step_rejected",
+  };
+  const caseEventType = workflowToCaseEventMap[data.eventType];
+  if (caseEventType) {
+    try {
+      await logCaseEvent({
+        organizationId: data.organizationId,
+        caseId: data.caseId,
+        eventType: caseEventType,
+        title: data.title,
+        description: data.description,
+        metadata: {
+          ...data.metadata,
+          stepId: data.stepId,
+          moduleId: data.moduleId,
+        },
+        actorId: data.performedById,
+      });
+    } catch {
+      // Non-critical: don't break workflow operations if case_events insert fails
+    }
+  }
 }
 
 export async function logStepAction(data: {
