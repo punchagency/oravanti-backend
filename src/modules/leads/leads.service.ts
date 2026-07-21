@@ -75,7 +75,7 @@ import {
 } from "../../queue/queues";
 import { getLeadActivity, logLeadEvent } from "./lead-events.service";
 import { getLeadMetrics } from "./lead-metrics.service";
-import { addLeadNote, deleteLeadNote, getLeadNotes, updateLeadNote } from "./lead-notes.service";
+import { addLeadNote, bulkDeleteNotes, bulkPinNotes, deleteLeadNote, getLeadNotes, toggleNotePin, updateLeadNote } from "./lead-notes.service";
 import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
 import { emailService } from "../../utils/email/email.service";
 import {
@@ -739,6 +739,7 @@ const updateLead = async (
       practiceAreaId: string;
       caseTypeId: string;
       notes: string;
+      noteContext: string;
     }
   >,
   actorId?: string,
@@ -759,7 +760,7 @@ const updateLead = async (
     await addLeadNote(
       id,
       organizationId,
-      { type: "general", content: data.notes.trim() },
+      { type: "general", content: data.notes.trim(), context: (data.noteContext as any) ?? "lead_update" },
       actorId,
     ).catch((err) => console.error("Failed to save lead note", err));
   }
@@ -1087,7 +1088,7 @@ const mirrorConsultationNote = async (data: {
   await addLeadNote(
     data.leadId,
     data.organizationId,
-    { type: data.type, content },
+    { type: data.type, content, context: "consultation" },
     data.actorId,
   ).catch((err) => {
     // A note that fails to mirror must not roll back the consultation itself.
@@ -4675,6 +4676,8 @@ const EVENT_TITLE_MAP: Record<string, string> = {
   note_added: "Note added",
   note_updated: "Note updated",
   note_deleted: "Note deleted",
+  note_pinned: "Note pinned",
+  note_unpinned: "Note unpinned",
   conflict_check_run: "Conflict check run",
   conflict_check_approved: "Conflict check approved",
   conflict_check_declined: "Conflict check declined",
@@ -4832,6 +4835,8 @@ const AUDIT_EVENT_TYPE_MAP: Record<string, string> = {
   note_added: "NOTE_ADDED",
   note_updated: "NOTE_UPDATED",
   note_deleted: "NOTE_DELETED",
+  note_pinned: "NOTE_PINNED",
+  note_unpinned: "NOTE_UNPINNED",
   conflict_check_run: "CONFLICT_CHECK_RUN",
   conflict_check_approved: "CONFLICT_CHECK_APPROVED",
   conflict_check_declined: "CONFLICT_CHECK_DECLINED",
@@ -4936,6 +4941,9 @@ export class LeadsService {
   addLeadNote = addLeadNote;
   updateLeadNote = updateLeadNote;
   deleteLeadNote = deleteLeadNote;
+  bulkDeleteNotes = bulkDeleteNotes;
+  bulkPinNotes = bulkPinNotes;
+  toggleNotePin = toggleNotePin;
   archiveLead = archiveLead;
   restoreLead = restoreLead;
   advanceLeadStage = advanceLeadStage;

@@ -1,4 +1,7 @@
+import { eq } from "drizzle-orm";
 import { Request, Response } from "express";
+import { db } from "../../db/client";
+import { staff } from "../../db/schema/staff";
 import { AuthRequest } from "../../middleware/auth.middleware";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { sendSuccess } from "../../utils/send-success";
@@ -72,7 +75,12 @@ export class LeadsController {
     if (!lead)
       return res.status(404).json({ success: false, error: "Lead not found" });
 
-    logLeadView(req.organizationId!, req.params.id as string, req.staffId, "overview").catch(() => {});
+    logLeadView(
+      req.organizationId!,
+      req.params.id as string,
+      req.staffId,
+      "overview",
+    ).catch(() => {});
 
     sendSuccess(res, lead, "Lead retrieved successfully");
   };
@@ -112,7 +120,12 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
     );
-    logLeadView(req.organizationId!, req.params.id as string, req.staffId, "activity").catch(() => {});
+    logLeadView(
+      req.organizationId!,
+      req.params.id as string,
+      req.staffId,
+      "activity",
+    ).catch(() => {});
     sendSuccess(res, events, "Lead activity retrieved successfully");
   };
 
@@ -120,9 +133,39 @@ export class LeadsController {
 
   getLeadNotes = async (req: AuthRequest, res: Response) => {
     const leadId = (req.params.leadId ?? req.params.id) as string;
-    const notes = await this.svc.getLeadNotes(leadId, req.organizationId!);
-    logLeadView(req.organizationId!, leadId, req.staffId, "notes").catch(() => {});
-    sendSuccess(res, notes, "Lead notes retrieved successfully");
+    const context = req.query.context as string | undefined;
+    const authorId = req.query.authorId as string | undefined;
+    const pinnedOnly = req.query.pinned === "true";
+    const page = req.query.page ? Number(req.query.page) : undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+
+    // Look up user role for visibility filtering via staff table
+    let userRole: string | undefined;
+    if (req.staffId) {
+      const [staffMember] = await db
+        .select({ role: staff.role })
+        .from(staff)
+        .where(eq(staff.id, req.staffId))
+        .limit(1);
+      userRole = staffMember?.role ?? undefined;
+    }
+
+    console.log({ userRole });
+
+    const result = await this.svc.getLeadNotes(leadId, req.organizationId!, {
+      context,
+      authorId,
+      userRole,
+      pinnedOnly,
+      page,
+      limit,
+    });
+    logLeadView(req.organizationId!, leadId, req.staffId, "notes").catch(
+      () => {},
+    );
+    sendSuccess(res, result.data, "Lead notes retrieved successfully", 200, {
+      pagination: result.pagination,
+    });
   };
 
   addLeadNote = async (req: AuthRequest, res: Response) => {
@@ -170,6 +213,40 @@ export class LeadsController {
     sendSuccess(res, null, "Note deleted successfully");
   };
 
+  bulkDeleteNotes = async (req: AuthRequest, res: Response) => {
+    const leadId = (req.params.leadId ?? req.params.id) as string;
+    const result = await this.svc.bulkDeleteNotes(
+      leadId,
+      req.body.noteIds,
+      req.organizationId!,
+      req.staffId!,
+    );
+    sendSuccess(res, result, `${result.deleted} note(s) deleted`);
+  };
+
+  bulkPinNotes = async (req: AuthRequest, res: Response) => {
+    const leadId = (req.params.leadId ?? req.params.id) as string;
+    const result = await this.svc.bulkPinNotes(
+      leadId,
+      req.body.noteIds,
+      req.body.pinned,
+      req.organizationId!,
+      req.staffId!,
+    );
+    sendSuccess(res, result, `${result.updated} note(s) updated`);
+  };
+
+  toggleNotePin = async (req: AuthRequest, res: Response) => {
+    const leadId = (req.params.leadId ?? req.params.id) as string;
+    const note = await this.svc.toggleNotePin(
+      req.params.noteId as string,
+      leadId,
+      req.organizationId!,
+      req.staffId!,
+    );
+    sendSuccess(res, note, "Note pin toggled");
+  };
+
   // ─── Archive / restore ──────────────────────────────────────────────────────
 
   archiveLead = async (req: AuthRequest, res: Response) => {
@@ -207,7 +284,12 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
     );
-    logLeadView(req.organizationId!, req.params.id as string, req.staffId, "conflict-check").catch(() => {});
+    logLeadView(
+      req.organizationId!,
+      req.params.id as string,
+      req.staffId,
+      "conflict-check",
+    ).catch(() => {});
     sendSuccess(res, result, "Conflict check retrieved successfully");
   };
 
@@ -239,7 +321,12 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
     );
-    logLeadView(req.organizationId!, req.params.id as string, req.staffId, "questionnaire").catch(() => {});
+    logLeadView(
+      req.organizationId!,
+      req.params.id as string,
+      req.staffId,
+      "questionnaire",
+    ).catch(() => {});
     sendSuccess(res, result, "Questionnaire retrieved successfully");
   };
 
@@ -275,7 +362,12 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
     );
-    logLeadView(req.organizationId!, req.params.id as string, req.staffId, "consultation").catch(() => {});
+    logLeadView(
+      req.organizationId!,
+      req.params.id as string,
+      req.staffId,
+      "consultation",
+    ).catch(() => {});
     sendSuccess(res, result, "Consultation retrieved successfully");
   };
 
@@ -346,7 +438,12 @@ export class LeadsController {
       req.params.id as string,
       req.organizationId!,
     );
-    logLeadView(req.organizationId!, req.params.id as string, req.staffId, "fee-agreement").catch(() => {});
+    logLeadView(
+      req.organizationId!,
+      req.params.id as string,
+      req.staffId,
+      "fee-agreement",
+    ).catch(() => {});
     sendSuccess(res, result, "Fee agreement retrieved successfully");
   };
 
@@ -530,7 +627,12 @@ export class LeadsController {
       req.params.leadId as string,
       req.organizationId!,
     );
-    logLeadView(req.organizationId!, req.params.leadId as string, req.staffId, "intake-pipeline").catch(() => {});
+    logLeadView(
+      req.organizationId!,
+      req.params.leadId as string,
+      req.staffId,
+      "intake-pipeline",
+    ).catch(() => {});
     sendSuccess(res, tasks, "Lead tasks retrieved successfully");
   };
 
@@ -648,10 +750,21 @@ export class LeadsController {
       page,
       limit,
     );
-    logLeadView(req.organizationId!, req.params.leadId as string, req.staffId, "timeline").catch(() => {});
-    sendSuccess(res, result.data, "Timeline events retrieved successfully", 200, {
-      pagination: result.pagination,
-    });
+    logLeadView(
+      req.organizationId!,
+      req.params.leadId as string,
+      req.staffId,
+      "timeline",
+    ).catch(() => {});
+    sendSuccess(
+      res,
+      result.data,
+      "Timeline events retrieved successfully",
+      200,
+      {
+        pagination: result.pagination,
+      },
+    );
   };
 
   getLeadAuditLog = async (req: AuthRequest, res: Response) => {
@@ -662,7 +775,12 @@ export class LeadsController {
       page,
       limit,
     );
-    logLeadView(req.organizationId!, req.params.leadId as string, req.staffId, "audit-log").catch(() => {});
+    logLeadView(
+      req.organizationId!,
+      req.params.leadId as string,
+      req.staffId,
+      "audit-log",
+    ).catch(() => {});
     sendSuccess(res, result.data, "Audit log retrieved successfully", 200, {
       pagination: result.pagination,
     });
@@ -687,7 +805,12 @@ export class LeadsController {
       req.params.leadId as string,
       req.organizationId!,
     );
-    logLeadView(req.organizationId!, req.params.leadId as string, req.staffId, "documents").catch(() => {});
+    logLeadView(
+      req.organizationId!,
+      req.params.leadId as string,
+      req.staffId,
+      "documents",
+    ).catch(() => {});
     sendSuccess(res, docs, "Linked documents retrieved successfully");
   };
 

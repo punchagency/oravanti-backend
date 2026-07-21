@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, pgEnum, primaryKey, jsonb, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, pgEnum, primaryKey, jsonb, index, boolean } from "drizzle-orm/pg-core";
 import { organization } from "./auth-schema"; 
 import { practiceAreas } from "./practice-areas"; 
 import { practiceAreaCaseTypes } from "./practice-area-case-types"; 
@@ -47,6 +47,20 @@ export const leadNoteTypeEnum = pgEnum("lead_note_type", [
   "post_consultation",
 ]);
 
+export const leadNoteContextEnum = pgEnum("lead_note_context", [
+  "manual",
+  "consultation",
+  "lead_update",
+  "intake",
+  "system",
+]);
+
+export const leadNoteVisibilityEnum = pgEnum("lead_note_visibility", [
+  "all_staff",
+  "attorneys_only",
+  "admins_only",
+]);
+
 /**
  * Every action that can be taken on a lead during intake. Written append-only
  * to `lead_events`; no code path updates or deletes an event.
@@ -62,6 +76,8 @@ export const leadEventTypeEnum = pgEnum("lead_event_type", [
   "note_added",
   "note_updated",
   "note_deleted",
+  "note_pinned",
+  "note_unpinned",
   "conflict_check_run",
   "conflict_check_approved",
   "conflict_check_declined",
@@ -210,13 +226,16 @@ export const leadEvents = pgTable("lead_events", {
  * Corrections are made by editing the note, not by appending.
  */
 export const leadNotes = pgTable("lead_notes", {
-  id:        uuid("id").primaryKey().defaultRandom(),
-  leadId:    uuid("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
-  authorId:  uuid("author_id").notNull().references(() => staff.id),
-  type:      leadNoteTypeEnum("type").notNull().default("general"),
-  content:   text("content").notNull(),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  id:         uuid("id").primaryKey().defaultRandom(),
+  leadId:     uuid("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  authorId:   uuid("author_id").notNull().references(() => staff.id),
+  type:       leadNoteTypeEnum("type").notNull().default("general"),
+  context:    leadNoteContextEnum("context").notNull().default("manual"),
+  visibility: leadNoteVisibilityEnum("visibility").notNull().default("all_staff"),
+  isPinned:   boolean("is_pinned").notNull().default(false),
+  content:    text("content").notNull(),
+  createdAt:  timestamp("created_at").notNull().defaultNow(),
+  updatedAt:  timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [
   index("lead_notes_lead_id_created_at_idx").on(t.leadId, t.createdAt),
 ]);
@@ -233,3 +252,5 @@ export type LeadEvent = typeof leadEvents.$inferSelect;
 export type NewLeadEvent = typeof leadEvents.$inferInsert;
 export type LeadEventType = (typeof leadEventTypeEnum.enumValues)[number];
 export type LeadNoteType = (typeof leadNoteTypeEnum.enumValues)[number];
+export type LeadNoteContext = (typeof leadNoteContextEnum.enumValues)[number];
+export type LeadNoteVisibility = (typeof leadNoteVisibilityEnum.enumValues)[number];
