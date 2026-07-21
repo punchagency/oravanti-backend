@@ -5,6 +5,7 @@ import { NotFoundError } from "../../utils/error/app-error";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { sendSuccess } from "../../utils/send-success";
 import { DocumentsService } from "../documents/documents.service";
+import { logCaseView, getCaseActivityPaginated } from "./case-events.service";
 import { CasesService } from "./cases.service";
 
 export class CasesController {
@@ -58,6 +59,14 @@ export class CasesController {
     if (!result) {
       throw new NotFoundError("Case not found");
     }
+
+    // Log case view
+    await logCaseView(
+      req.organizationId!,
+      req.params.id as string,
+      req.staffId ?? req.adminId,
+    );
+
     sendSuccess(res, result, "Case retrieved successfully");
   });
 
@@ -74,6 +83,7 @@ export class CasesController {
       req.params.id as string,
       req.organizationId!,
       req.body,
+      req.staffId ?? req.adminId,
     );
     if (!result) {
       throw new NotFoundError("Case not found");
@@ -82,7 +92,11 @@ export class CasesController {
   });
 
   deleteCase = asyncWrap(async (req: AuthRequest, res: Response) => {
-    await this.casesService.deleteCase(req.params.id as string, req.organizationId!);
+    await this.casesService.deleteCase(
+      req.params.id as string,
+      req.organizationId!,
+      req.staffId ?? req.adminId,
+    );
     sendSuccess(res, null, "Case deleted successfully");
   });
 
@@ -97,5 +111,32 @@ export class CasesController {
     );
     const { data, pagination } = result;
     sendSuccess(res, data, "Case documents retrieved successfully", 200, { pagination });
+  });
+
+  reassignTeam = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const caseId = req.params.id as string;
+    const { teamId } = req.body;
+
+    // Update case with new team
+    await this.casesService.updateCase(caseId, req.organizationId!, {
+      assignedTeamId: teamId,
+      reassignmentDate: new Date(),
+    }, req.staffId ?? req.adminId);
+
+    sendSuccess(res, null, "Team reassigned successfully");
+  });
+
+  getCaseAuditLog = asyncWrap(async (req: AuthRequest, res: Response) => {
+    const caseId = req.params.id as string;
+    const { page, limit } = req.query;
+    const queryPagination = parsePaginationQuery({ page, limit });
+    const result = await getCaseActivityPaginated({
+      caseId,
+      organizationId: req.organizationId!,
+      page: queryPagination.page,
+      limit: queryPagination.limit,
+    });
+    const { data, pagination } = result;
+    sendSuccess(res, data, "Case audit log retrieved successfully", 200, { pagination });
   });
 }
