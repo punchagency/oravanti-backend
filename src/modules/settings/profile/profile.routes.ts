@@ -7,6 +7,7 @@
 import { Router } from "express";
 import multer from "multer";
 import { requireAuth } from "../../../middleware/auth.middleware";
+import { resolveActorContext } from "../../../middleware/resolve-actor-context";
 import { CommonValidation } from "../../../validation/common.validation";
 import { validateRequest } from "../../../middleware/validate.middleware";
 import { ProfileController } from "./profile.controller";

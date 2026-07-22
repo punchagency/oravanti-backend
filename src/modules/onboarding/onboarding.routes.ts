@@ -6,6 +6,7 @@
  */
 import { Router } from "express";
 import { requireAuth } from "../../middleware/auth.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { OnboardingController } from "./onboarding.controller";
 
 export class OnboardingRouter {

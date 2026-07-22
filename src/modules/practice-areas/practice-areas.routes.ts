@@ -5,11 +5,12 @@
  *     description: Practice area catalog & firm subscriptions
  */
 import { Router } from "express";
-import { requireAdmin } from "../../middleware/admin.middleware";
+
 import { requireAuth } from "../../middleware/auth.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { CommonValidation } from "../../validation/common.validation";
-import { setFirmContext } from "../../middleware/rls.middleware";
-import { requireStaffOrAdmin } from "../../middleware/staff-or-admin.middleware";
+
+
 import { validateRequest } from "../../middleware/validate.middleware";
 import { PracticeAreasController } from "./practice-areas.controller";
 
@@ -80,8 +81,6 @@ export class PracticeAreasRouter {
     this.router.get(
       "/firm",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       this.practiceAreasController.getFirmPracticeAreas,
     );
 
@@ -109,8 +108,6 @@ export class PracticeAreasRouter {
     this.router.post(
       "/subscriptions",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       validateRequest({ body: this.validation.optionalBody() }),
       this.practiceAreasController.createSubscriptions,
     );
@@ -139,8 +136,6 @@ export class PracticeAreasRouter {
     this.router.patch(
       "/subscriptions/cancel",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       validateRequest({ body: this.validation.optionalBody() }),
       this.practiceAreasController.cancelSubscriptions,
     );

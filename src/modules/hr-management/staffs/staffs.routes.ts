@@ -5,9 +5,10 @@
  *     description: Staff management
  */
 import { Router } from "express";
-import { requireAdmin } from "../../../middleware/admin.middleware";
+
 import { requireAuth } from "../../../middleware/auth.middleware";
-import { setFirmContext } from "../../../middleware/rls.middleware";
+import { resolveActorContext } from "../../../middleware/resolve-actor-context";
+
 import { CommonValidation } from "../../../validation/common.validation";
 import { StaffController } from "./staffs.controller";
 
@@ -28,7 +29,8 @@ export class StaffRouter {
 
   private initializeRoutes() {
     this.router.use(this.path, this.router);
-    this.router.use(requireAuth, requireAdmin, setFirmContext);
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
 
     //     /**
     //      * @openapi

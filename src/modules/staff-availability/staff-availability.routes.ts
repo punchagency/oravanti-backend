@@ -6,9 +6,10 @@
  */
 import { Router } from "express";
 import { requireAuth } from "../../middleware/auth.middleware";
-import { requireStaffOrAdmin } from "../../middleware/staff-or-admin.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
+
 import { requirePermission } from "../../middleware/permission.middleware";
-import { setFirmContext } from "../../middleware/rls.middleware";
+
 import { validateRequest } from "../../middleware/validate.middleware";
 import { StaffAvailabilityController } from "./staff-availability.controller";
 import {
@@ -41,7 +42,8 @@ export class StaffAvailabilityRouter {
 
   private initializeRoutes() {
     this.router.use(this.path, this.router);
-    this.router.use(requireAuth, requireStaffOrAdmin, setFirmContext);
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
 
     this.router.get(
       "/:staffId",

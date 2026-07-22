@@ -7,9 +7,10 @@
 import { Router } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { requireAdmin } from "../../middleware/admin.middleware";
+
 import { requireAuth } from "../../middleware/auth.middleware";
-import { setFirmContext } from "../../middleware/rls.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
+
 import { validateRequest } from "../../middleware/validate.middleware";
 import { CommonValidation } from "../../validation/common.validation";
 import { DocumentsController } from "./documents.controller";
@@ -80,7 +81,8 @@ export class DocumentsRouter {
       this.documentsController.submitExternalDocument,
     );
 
-    this.router.use(requireAuth, requireAdmin, setFirmContext);
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
 
     /**
      * @openapi
