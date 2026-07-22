@@ -12,6 +12,7 @@ import {
 } from "../../db/schema/documents";
 import { leadDocumentLinks } from "../../db/schema/lead-document-links";
 import type { AiScanResultJob } from "./contract";
+import { syncScenarioIssues } from "../case-review/issue-sync";
 import { enqueueScenarioScan } from "./scan-producer";
 import type { ScenarioType } from "./scan-payload";
 
@@ -214,12 +215,31 @@ export const persistScanResult = async (
       .where(eq(aiScanJobs.id, job.id));
   });
 
-  // TODO(Phase 4): hand `result` to the rules engine here to derive issues and
-  // set ai_scan_jobs.issuesFound.
+  // Derive issues from the freshly-persisted facts + the scan's conflicts, and
+  // record how many remain active on the job. Isolated: a rules failure must not
+  // fail result persistence (facts are already stored).
+  const scenario = scenarioOf(job);
+  if (scenario) {
+    try {
+      const sync = await syncScenarioIssues(
+        {
+          type: scenario.type,
+          id: scenario.id,
+          organizationId: job.organizationId,
+        },
+        result,
+      );
+      await db
+        .update(aiScanJobs)
+        .set({ issuesFound: sync.active, updatedAt: new Date() })
+        .where(eq(aiScanJobs.id, job.id));
+    } catch (err) {
+      console.error(`[ai-scan] issue sync failed for job ${job.id}:`, err);
+    }
+  }
 
   // Coalescing re-check: documents uploaded while this scan was running (or a
   // brand-new version) sit at 'pending' — kick off another scan to cover them.
-  const scenario = scenarioOf(job);
   if (scenario && (await hasPendingDocuments(scenario))) {
     await enqueueScenarioScan({
       organizationId: job.organizationId,
