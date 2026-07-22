@@ -9,7 +9,8 @@ import {
 import { documents } from "../../db/schema/documents";
 import { computeFingerprint } from "./fingerprint";
 import { buildRuleContext, type ScenarioParams } from "./rule-context";
-import { runRules } from "./rule-registry";
+import { ALL_RULES, runRules } from "./rule-registry";
+import { SCAN_DEPENDENT_ISSUE_TYPES } from "./rules";
 import type { CandidateIssue, Conflict, PhotoComparison } from "./types";
 
 export type SyncSummary = {
@@ -59,13 +60,22 @@ const mapPhotoComparisons = (result: AiScanResultJob): PhotoComparison[] =>
 export const syncScenarioIssues = async (
   params: ScenarioParams,
   result: AiScanResultJob,
+  opts: { includeScanRules?: boolean } = {},
 ): Promise<SyncSummary> => {
+  const includeScanRules = opts.includeScanRules ?? true;
+
   const ctx = await buildRuleContext(params, {
     conflicts: mapConflicts(result),
     photoComparisons: mapPhotoComparisons(result),
   });
 
-  const candidates = runRules(ctx);
+  // A deterministic sweep (no fresh scan) runs only the non-scan-dependent
+  // rules and must NOT touch AI-scan issues — otherwise an AI-less pass would
+  // supersede genuine conflicts/photo mismatches.
+  const rules = includeScanRules
+    ? ALL_RULES
+    : ALL_RULES.filter((r) => !r.scanDependent);
+  const candidates = runRules(ctx, rules);
 
   // Fingerprint each candidate; de-dupe on issueKey (first wins).
   const byKey = new Map<
@@ -212,6 +222,10 @@ export const syncScenarioIssues = async (
     // Supersede active issues the current run no longer detects.
     for (const ex of existing) {
       if (byKey.has(ex.issueKey)) continue;
+      // A deterministic sweep didn't run the scan rules, so it must not
+      // supersede their issues.
+      if (!includeScanRules && SCAN_DEPENDENT_ISSUE_TYPES.has(ex.issueType))
+        continue;
       if (ex.status !== "open" && ex.status !== "under_review") continue;
       await tx
         .update(caseIssues)

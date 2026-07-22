@@ -107,6 +107,13 @@ export type CandidateIssue = {
 export type Rule = {
   issueType: string;
   version: string;
+  /**
+   * True when the rule needs a fresh scan result (reads ctx.conflicts /
+   * ctx.photoComparisons). Such rules are skipped by the deterministic sweep,
+   * and their issues are left untouched there so an AI-less pass can't supersede
+   * them.
+   */
+  scanDependent?: boolean;
   /** Config gate (e.g. photo comparison off). Defaults to always-on. */
   enabled?: (ctx: RuleContext) => boolean;
   evaluate: (ctx: RuleContext) => CandidateIssue[];

@@ -203,6 +203,7 @@ const conflictCandidate = (
 const fieldConflictAcrossDocuments: Rule = {
   issueType: "field_conflict_across_documents",
   version: "1",
+  scanDependent: true,
   enabled: (ctx) => ctx.config.crossCheckingEnabled,
   evaluate: (ctx) =>
     ctx.conflicts
@@ -225,6 +226,7 @@ const fieldConflictAcrossDocuments: Rule = {
 const fieldConflictWithScenarioRecord: Rule = {
   issueType: "field_conflict_with_scenario_record",
   version: "1",
+  scanDependent: true,
   enabled: (ctx) => ctx.config.crossCheckingEnabled,
   evaluate: (ctx) =>
     ctx.conflicts
@@ -246,6 +248,7 @@ const fieldConflictWithScenarioRecord: Rule = {
 const photoMismatch: Rule = {
   issueType: "photo_mismatch",
   version: "1",
+  scanDependent: true,
   enabled: (ctx) => ctx.config.photoComparisonEnabled,
   evaluate: (ctx) =>
     ctx.photoComparisons
@@ -299,3 +302,8 @@ export const ALL_RULES: Rule[] = [
   photoMismatch,
   documentAuthenticitySuspect,
 ];
+
+/** Issue types that require a fresh scan; the deterministic sweep leaves these alone. */
+export const SCAN_DEPENDENT_ISSUE_TYPES = new Set(
+  ALL_RULES.filter((r) => r.scanDependent).map((r) => r.issueType),
+);

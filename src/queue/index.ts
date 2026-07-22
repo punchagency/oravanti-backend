@@ -1,4 +1,5 @@
 import type { Worker } from "bullmq";
+import { sweepDeterministicIssues } from "../modules/case-review/deterministic-sweep";
 import {
   createAiScanQueueEvents,
   createAiScanResultWorker,
@@ -17,7 +18,30 @@ export const startWorkers = (): Worker[] => {
   // up jobs that never reported back. Not Workers, but started alongside them.
   createAiScanQueueEvents();
   startAiScanReconciliation();
+  startDeterministicSweep();
 
   console.log(`[queue] started ${workers.length} workers`);
   return workers;
+};
+
+const SWEEP_INTERVAL_MS = 12 * 60 * 60 * 1000; // twice a day
+
+/**
+ * Re-evaluate deterministic (deadline / missing-document) issues on a schedule,
+ * so they appear and escalate as time passes rather than only on the next scan.
+ */
+const startDeterministicSweep = (): NodeJS.Timeout => {
+  const timer = setInterval(() => {
+    void sweepDeterministicIssues()
+      .then(({ scenarios, errors }) => {
+        if (scenarios) {
+          console.log(
+            `[case-review] deterministic sweep: ${scenarios} scenario(s), ${errors} error(s)`,
+          );
+        }
+      })
+      .catch((err) => console.error("[case-review] sweep failed:", err));
+  }, SWEEP_INTERVAL_MS);
+  timer.unref?.();
+  return timer;
 };
