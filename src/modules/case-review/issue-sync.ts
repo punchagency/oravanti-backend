@@ -1,7 +1,12 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../../db/client";
 import type { AiScanResultJob } from "../ai-scan/contract";
-import { caseIssueEvents, caseIssues } from "../../db/schema/case-issues";
+import {
+  caseIssueDocuments,
+  caseIssueEvents,
+  caseIssues,
+} from "../../db/schema/case-issues";
+import { documents } from "../../db/schema/documents";
 import { computeFingerprint } from "./fingerprint";
 import { buildRuleContext, type ScenarioParams } from "./rule-context";
 import { runRules } from "./rule-registry";
@@ -104,6 +109,22 @@ export const syncScenarioIssues = async (
       .where(and(eq(caseIssues.organizationId, params.organizationId), scenarioMatch));
     const existingByKey = new Map(existing.map((e) => [e.issueKey, e]));
 
+    // Validate the documents referenced by candidates in one query — the
+    // junction FKs documents.id, and a doc could vanish between scan and sync.
+    const referenced = [
+      ...new Set([...byKey.values()].flatMap((v) => v.candidate.documentIds)),
+    ];
+    const validDocs = new Set(
+      referenced.length
+        ? (
+            await tx
+              .select({ id: documents.id })
+              .from(documents)
+              .where(inArray(documents.id, referenced))
+          ).map((r) => r.id)
+        : [],
+    );
+
     for (const [issueKey, { candidate, contentHash }] of byKey) {
       const ex = existingByKey.get(issueKey);
 
@@ -135,6 +156,12 @@ export const syncScenarioIssues = async (
           toStatus: "open",
           note: "detected",
         });
+        // documentIds are part of the issueKey, so they're fixed for the life of
+        // an issue — the junction is written once, on creation.
+        const docRows = candidate.documentIds
+          .filter((docId) => validDocs.has(docId))
+          .map((docId) => ({ issueId: inserted.id, documentId: docId }));
+        if (docRows.length) await tx.insert(caseIssueDocuments).values(docRows);
         summary.created += 1;
         continue;
       }
