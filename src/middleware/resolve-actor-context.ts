@@ -1,6 +1,7 @@
 import { eq, and } from "drizzle-orm";
 import { Request, Response, NextFunction } from "express";
-import { db } from "../db/client";
+import { db, systemDb } from "../db/client";
+import { user } from "../db/schema/auth-schema";
 import { staff } from "../db/schema/staff";
 import { getRequestContext, setRequestContext } from "./request-context";
 
@@ -11,8 +12,22 @@ export async function resolveActorContext(
 ) {
   const { userId, organizationId } = getRequestContext();
 
-  if (userId && organizationId) {
-    try {
+  if (!userId) {
+    return next();
+  }
+
+  try {
+    // Look up user type to determine how to resolve the actor
+    const [userRecord] = await systemDb
+      .select({ accountType: user.accountType })
+      .from(user)
+      .where(eq(user.id, userId))
+      .limit(1);
+
+    const accountType = userRecord?.accountType;
+
+    // Staff/firm_admin: resolve staffId from staff table
+    if ((accountType === "staff" || accountType === "firm_admin") && organizationId) {
       const [staffRecord] = await db
         .select({ id: staff.id })
         .from(staff)
@@ -25,9 +40,10 @@ export async function resolveActorContext(
         .limit(1);
 
       setRequestContext({ staffId: staffRecord?.id ?? null });
-    } catch {
-      setRequestContext({ staffId: null });
     }
+    // Clients/contractors: no staffId, just userId (already set by requireAuth)
+  } catch {
+    setRequestContext({ staffId: null });
   }
 
   next();

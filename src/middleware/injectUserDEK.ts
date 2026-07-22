@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { NextFunction, Request, Response } from "express";
-import { db } from "../config/db";
+import { systemDb } from "../db/client";
 import { env } from "../config/env";
 import { getRequestContext, setRequestContext } from "../middleware/request-context";
 import { decryptUserDEK, rotateUserDEK } from "../utils/cryptoUtils";
@@ -25,7 +25,7 @@ export async function injectUserDEK(
   }
 
   try {
-    const [userKeys] = await db
+    const [userKeys] = await systemDb
       .select({
         id: user.id,
         email: user.email,
@@ -65,7 +65,7 @@ export async function injectUserDEK(
 
         const upgradedKeys = rotateUserDEK(userKeys, OLD_KEY, PRIMARY_KEY);
 
-        db.update(user)
+        systemDb.update(user)
           .set({
             encryptedDEK: upgradedKeys.encryptedDEK,
             dekIv: upgradedKeys.dekIv,

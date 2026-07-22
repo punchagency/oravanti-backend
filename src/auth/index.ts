@@ -10,7 +10,7 @@ import {
 } from "better-auth/plugins";
 import { and, eq } from "drizzle-orm";
 import { env } from "../config/env";
-import { db } from "../db/client";
+import { systemDb } from "../db/client";
 import { staff } from "../db/schema";
 import { consultationSettings } from "../db/schema/consultation-settings";
 import { profiles } from "../db/schema/profiles";
@@ -57,7 +57,7 @@ export const auth = betterAuth({
       secure: isProduction,
     },
   },
-  database: drizzleAdapter(db, {
+  database: drizzleAdapter(systemDb, {
     provider: "pg",
     schema: {
       user,
@@ -145,7 +145,7 @@ export const auth = betterAuth({
       async sendInvitationEmail(data) {
         const inviteLink = `http://localhost:5137/accept-invitation?id=${data.id}`;
 
-        const [staffRecord] = await db
+        const [staffRecord] = await systemDb
           .select({ tempPassword: staff.tempPassword })
           .from(staff)
           .where(
@@ -183,13 +183,13 @@ export const auth = betterAuth({
       },
       organizationHooks: {
         afterAcceptInvitation: async ({ member, user }) => {
-          await db
+          await systemDb
             .update(staff)
             .set({ role: member.role as any, status: "active" })
             .where(eq(staff.userId, user.id));
         },
         afterUpdateMemberRole: async ({ member }) => {
-          await db
+          await systemDb
             .update(staff)
             .set({ role: member.role as any })
             .where(eq(staff.userId, member.userId));
@@ -246,7 +246,7 @@ export const auth = betterAuth({
       let memberRole: string | null = null;
       let firmTimezone = "UTC";
       if (activeOrganizationId) {
-        const [membership] = await db
+        const [membership] = await systemDb
           .select({ role: member.role })
           .from(member)
           .where(
@@ -259,7 +259,7 @@ export const auth = betterAuth({
         memberRole = membership?.role ?? null;
 
         // Firm timezone drives business-logic and coordination (firm) display.
-        const [settings] = await db
+        const [settings] = await systemDb
           .select({ timezone: consultationSettings.timezone })
           .from(consultationSettings)
           .where(eq(consultationSettings.organizationId, activeOrganizationId))
@@ -268,7 +268,7 @@ export const auth = betterAuth({
       }
 
       // User's own timezone preference (null → client falls back to browser).
-      const [profile] = await db
+      const [profile] = await systemDb
         .select({ timezone: profiles.timezone })
         .from(profiles)
         .where(eq(profiles.userId, user.id))
