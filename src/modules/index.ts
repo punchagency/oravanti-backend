@@ -12,6 +12,7 @@ import { OnboardingModule } from "./onboarding/onboarding.module";
 import { OrganizationModule } from "./organization/organization.module";
 import { PracticeAreasModule } from "./practice-areas/practice-areas.module";
 import { AiScanModule } from "./ai-scan/ai-scan.module";
+import { CaseReviewModule } from "./case-review/case-review.module";
 import { QuestionnairesModule } from "./questionnaires/questionnaires.module";
 import { RevenueAnalyticsModule } from "./revenue-analytics/revenue-analytics.module";
 import { AccessControlModule } from "./settings/access-control/access-control.module";
@@ -45,6 +46,7 @@ export const modules: Module[] = [
   new EmailAccountModule(),
   new QuestionnairesModule(),
   new AiScanModule(),
+  new CaseReviewModule(),
   new TasksModule(),
   new WorkflowModule(),
   new CalendarModule(),
