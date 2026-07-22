@@ -1,5 +1,5 @@
-import { Response } from "express";
-import { AuthRequest } from "../../../middleware/auth.middleware";
+import { Request, Response } from "express";
+import { getRequestContext } from "../../../middleware/request-context";
 import { FilingType } from "../../../types/hr.types";
 import asyncWrap from "../../../utils/asyncWrapper";
 import { NotFoundError } from "../../../utils/error/app-error";
@@ -14,34 +14,38 @@ export class AssignmentsController {
   }
 
   getAvailableContractors = asyncWrap(
-    async (req: AuthRequest, res: Response) => {
+    async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
       const { filingType } = req.query;
 
       const result = await this.assignmentsService.getAvailableContractors(
         filingType as FilingType,
-        req.organizationId!,
+        organizationId!,
       );
       sendSuccess(res, result, "Available contractors retrieved successfully");
     },
   );
 
-  assignCase = asyncWrap(async (req: AuthRequest, res: Response) => {
+  assignCase = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const result = await this.assignmentsService.assignCase({
       ...req.body,
-      organizationId: req.organizationId!,
+      organizationId: organizationId!,
     });
     sendSuccess(res, result, "Case assigned successfully", 201);
   });
 
-  getAllAssignments = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.assignmentsService.getAllAssignments(req.organizationId!);
+  getAllAssignments = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    const result = await this.assignmentsService.getAllAssignments(organizationId!);
     sendSuccess(res, result, "Assignments retrieved successfully");
   });
 
-  getAssignmentById = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getAssignmentById = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const result = await this.assignmentsService.getAssignmentById(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Assignment not found");
@@ -50,12 +54,13 @@ export class AssignmentsController {
   });
 
   updateAssignmentStatus = asyncWrap(
-    async (req: AuthRequest, res: Response) => {
+    async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
       const { status } = req.body;
 
       const result = await this.assignmentsService.updateAssignmentStatus(
         req.params.id as string,
-        req.organizationId!,
+        organizationId!,
         status,
       );
       if (!result) {

@@ -1,8 +1,8 @@
-import { eq } from "drizzle-orm";
+﻿import { eq } from "drizzle-orm";
 import { Request, Response } from "express";
 import { db } from "../../db/client";
 import { staff } from "../../db/schema/staff";
-import { AuthRequest } from "../../middleware/auth.middleware";
+import { getRequestContext } from "../../middleware/request-context";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { sendSuccess } from "../../utils/send-success";
 import { logLeadView } from "./lead-events.service";
@@ -21,20 +21,24 @@ export class LeadsController {
     this.wfSvc = workflowService ?? new LeadWorkflowService();
   }
 
-  createLead = async (req: AuthRequest, res: Response) => {
+  createLead = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const lead = await this.svc.createLead(
-      req.organizationId!,
+      organizationId!,
       req.body,
-      req.staffId!,
+      staffId!,
     );
     sendSuccess(res, lead, "Lead created successfully", 201);
   };
 
-  getAllLeads = async (req: AuthRequest, res: Response) => {
+  getAllLeads = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const { stage, status, practiceAreaId, source, search, converted, all } =
       req.query;
     const queryPagination = all ? {} : parsePaginationQuery(req.query);
-    const result = await this.svc.getAllLeads(req.organizationId!, {
+    const result = await this.svc.getAllLeads(organizationId!, {
       ...queryPagination,
       stage: stage as string | undefined,
       status: status as string | undefined,
@@ -54,84 +58,100 @@ export class LeadsController {
     });
   };
 
-  getLeadStageCounts = async (req: AuthRequest, res: Response) => {
-    const counts = await this.svc.getLeadStageCounts(req.organizationId!);
+  getLeadStageCounts = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
+    const counts = await this.svc.getLeadStageCounts(organizationId!);
     sendSuccess(res, counts, "Stage counts retrieved successfully");
   };
 
-  getLeadMetrics = async (req: AuthRequest, res: Response) => {
+  getLeadMetrics = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const metrics = await this.svc.getLeadMetrics(
-      req.organizationId!,
+      organizationId!,
       (req.query.period as "30d" | "90d" | "12mo") ?? "30d",
     );
     sendSuccess(res, metrics, "Lead metrics retrieved successfully");
   };
 
-  getLeadById = async (req: AuthRequest, res: Response) => {
+  getLeadById = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const lead = await this.svc.getLeadById(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
     );
     if (!lead)
       return res.status(404).json({ success: false, error: "Lead not found" });
 
     logLeadView(
-      req.organizationId!,
+      organizationId!,
       req.params.id as string,
-      req.staffId,
+      staffId,
       "overview",
     ).catch(() => {});
 
     sendSuccess(res, lead, "Lead retrieved successfully");
   };
 
-  updateLead = async (req: AuthRequest, res: Response) => {
+  updateLead = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const lead = await this.svc.updateLead(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
       req.body,
-      req.staffId,
+      staffId,
     );
     sendSuccess(res, lead, "Lead updated successfully");
   };
 
-  updateLeadStatus = async (req: AuthRequest, res: Response) => {
+  updateLeadStatus = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const lead = await this.svc.updateLeadStatus(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
       req.body.status,
-      req.staffId,
+      staffId,
     );
     sendSuccess(res, lead, "Lead status updated successfully");
   };
 
-  advanceLeadStage = async (req: AuthRequest, res: Response) => {
+  advanceLeadStage = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const lead = await this.svc.advanceLeadStage(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
       req.body.stage,
-      req.staffId,
+      staffId,
     );
     sendSuccess(res, lead, "Lead stage advanced successfully");
   };
 
-  getLeadActivity = async (req: AuthRequest, res: Response) => {
+  getLeadActivity = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const events = await this.svc.getLeadActivity(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
     );
     logLeadView(
-      req.organizationId!,
+      organizationId!,
       req.params.id as string,
-      req.staffId,
+      staffId,
       "activity",
     ).catch(() => {});
     sendSuccess(res, events, "Lead activity retrieved successfully");
   };
 
-  // ─── Notes ────────────────────────────────────────────────────────────────
+  // Notes
 
-  getLeadNotes = async (req: AuthRequest, res: Response) => {
+  getLeadNotes = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const leadId = (req.params.leadId ?? req.params.id) as string;
     const context = req.query.context as string | undefined;
     const authorId = req.query.authorId as string | undefined;
@@ -141,18 +161,18 @@ export class LeadsController {
 
     // Look up user role for visibility filtering via staff table
     let userRole: string | undefined;
-    if (req.staffId) {
+    if (staffId) {
       const [staffMember] = await db
         .select({ role: staff.role })
         .from(staff)
-        .where(eq(staff.id, req.staffId))
+        .where(eq(staff.id, staffId))
         .limit(1);
       userRole = staffMember?.role ?? undefined;
     }
 
     console.log({ userRole });
 
-    const result = await this.svc.getLeadNotes(leadId, req.organizationId!, {
+    const result = await this.svc.getLeadNotes(leadId, organizationId!, {
       context,
       authorId,
       userRole,
@@ -160,7 +180,7 @@ export class LeadsController {
       page,
       limit,
     });
-    logLeadView(req.organizationId!, leadId, req.staffId, "notes").catch(
+    logLeadView(organizationId!, leadId, staffId, "notes").catch(
       () => {},
     );
     sendSuccess(res, result.data, "Lead notes retrieved successfully", 200, {
@@ -168,184 +188,216 @@ export class LeadsController {
     });
   };
 
-  addLeadNote = async (req: AuthRequest, res: Response) => {
+  addLeadNote = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const leadId = (req.params.leadId ?? req.params.id) as string;
     const note = await this.svc.addLeadNote(
       leadId,
-      req.organizationId!,
+      organizationId!,
       req.body,
-      req.staffId,
+      staffId,
     );
     sendSuccess(res, note, "Note added successfully", 201);
   };
 
-  createLeadNote = async (req: AuthRequest, res: Response) => {
+  createLeadNote = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const leadId = (req.params.leadId ?? req.params.id) as string;
     const note = await this.svc.addLeadNote(
       leadId,
-      req.organizationId!,
+      organizationId!,
       req.body,
-      req.staffId,
+      staffId,
     );
     sendSuccess(res, note, "Note created successfully", 201);
   };
 
-  updateLeadNote = async (req: AuthRequest, res: Response) => {
+  updateLeadNote = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const leadId = (req.params.leadId ?? req.params.id) as string;
     const note = await this.svc.updateLeadNote(
       req.params.noteId as string,
       leadId,
-      req.organizationId!,
+      organizationId!,
       req.body,
-      req.staffId!,
+      staffId!,
     );
     sendSuccess(res, note, "Note updated successfully");
   };
 
-  deleteLeadNote = async (req: AuthRequest, res: Response) => {
+  deleteLeadNote = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const leadId = (req.params.leadId ?? req.params.id) as string;
     await this.svc.deleteLeadNote(
       req.params.noteId as string,
       leadId,
-      req.organizationId!,
-      req.staffId!,
+      organizationId!,
+      staffId!,
     );
     sendSuccess(res, null, "Note deleted successfully");
   };
 
-  bulkDeleteNotes = async (req: AuthRequest, res: Response) => {
+  bulkDeleteNotes = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const leadId = (req.params.leadId ?? req.params.id) as string;
     const result = await this.svc.bulkDeleteNotes(
       leadId,
       req.body.noteIds,
-      req.organizationId!,
-      req.staffId!,
+      organizationId!,
+      staffId!,
     );
     sendSuccess(res, result, `${result.deleted} note(s) deleted`);
   };
 
-  bulkPinNotes = async (req: AuthRequest, res: Response) => {
+  bulkPinNotes = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const leadId = (req.params.leadId ?? req.params.id) as string;
     const result = await this.svc.bulkPinNotes(
       leadId,
       req.body.noteIds,
       req.body.pinned,
-      req.organizationId!,
-      req.staffId!,
+      organizationId!,
+      staffId!,
     );
     sendSuccess(res, result, `${result.updated} note(s) updated`);
   };
 
-  toggleNotePin = async (req: AuthRequest, res: Response) => {
+  toggleNotePin = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const leadId = (req.params.leadId ?? req.params.id) as string;
     const note = await this.svc.toggleNotePin(
       req.params.noteId as string,
       leadId,
-      req.organizationId!,
-      req.staffId!,
+      organizationId!,
+      staffId!,
     );
     sendSuccess(res, note, "Note pin toggled");
   };
 
-  // ─── Archive / restore ──────────────────────────────────────────────────────
+  // Archive / restore
 
-  archiveLead = async (req: AuthRequest, res: Response) => {
+  archiveLead = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const lead = await this.svc.archiveLead(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
       { reason: req.body?.reason },
-      req.staffId,
+      staffId,
     );
     sendSuccess(res, lead, "Lead archived successfully");
   };
 
-  restoreLead = async (req: AuthRequest, res: Response) => {
+  restoreLead = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const lead = await this.svc.restoreLead(
       req.params.id as string,
-      req.organizationId!,
-      req.staffId,
+      organizationId!,
+      staffId,
     );
     sendSuccess(res, lead, "Lead restored successfully");
   };
 
-  // ─── Conflict Check ──────────────────────────────────────────────────────────
+  // Conflict Check
 
-  runConflictCheck = async (req: AuthRequest, res: Response) => {
+  runConflictCheck = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const result = await this.svc.runConflictCheck(
       req.params.id as string,
-      req.organizationId!,
-      req.staffId,
+      organizationId!,
+      staffId,
     );
     sendSuccess(res, result, "Conflict check completed successfully");
   };
 
-  getConflictCheck = async (req: AuthRequest, res: Response) => {
+  getConflictCheck = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const result = await this.svc.getConflictCheck(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
     );
     logLeadView(
-      req.organizationId!,
+      organizationId!,
       req.params.id as string,
-      req.staffId,
+      staffId,
       "conflict-check",
     ).catch(() => {});
     sendSuccess(res, result, "Conflict check retrieved successfully");
   };
 
-  resolveConflictCheck = async (req: AuthRequest, res: Response) => {
-    const staffId = req.staffId;
+  resolveConflictCheck = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
+    // staffId already in context
     const result = await this.svc.resolveConflictCheck(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
       staffId!,
       req.body,
     );
     sendSuccess(res, result, "Conflict check resolved successfully");
   };
 
-  // ─── Questionnaire ───────────────────────────────────────────────────────────
+  // Questionnaire
 
-  sendQuestionnaire = async (req: AuthRequest, res: Response) => {
+  sendQuestionnaire = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const result = await this.svc.sendQuestionnaire(
       req.params.id as string,
-      req.organizationId!,
-      req.staffId,
+      organizationId!,
+      staffId,
       req.body ?? {},
     );
     sendSuccess(res, result, "Questionnaire sent successfully");
   };
 
-  getLeadQuestionnaire = async (req: AuthRequest, res: Response) => {
+  getLeadQuestionnaire = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const result = await this.svc.getLeadQuestionnaire(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
     );
     logLeadView(
-      req.organizationId!,
+      organizationId!,
       req.params.id as string,
-      req.staffId,
+      staffId,
       "questionnaire",
     ).catch(() => {});
     sendSuccess(res, result, "Questionnaire retrieved successfully");
   };
 
-  // ─── Consultation ────────────────────────────────────────────────────────────
+  // Consultation
 
-  initiateConsultation = async (req: AuthRequest, res: Response) => {
+  initiateConsultation = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const result = await this.svc.initiateConsultation(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
       req.body,
-      req.staffId,
+      staffId,
     );
     sendSuccess(res, result, "Consultation initiated successfully", 201);
   };
 
-  getConsultations = async (req: AuthRequest, res: Response) => {
+  getConsultations = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const { search, attorneyId, sort } = req.query;
     const queryPagination = parsePaginationQuery(req.query);
-    const result = await this.svc.getConsultations(req.organizationId!, {
+    const result = await this.svc.getConsultations(organizationId!, {
       ...queryPagination,
       search: search as string | undefined,
       attorneyId: attorneyId as string | undefined,
@@ -357,45 +409,53 @@ export class LeadsController {
     });
   };
 
-  getConsultation = async (req: AuthRequest, res: Response) => {
+  getConsultation = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const result = await this.svc.getConsultation(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
     );
     logLeadView(
-      req.organizationId!,
+      organizationId!,
       req.params.id as string,
-      req.staffId,
+      staffId,
       "consultation",
     ).catch(() => {});
     sendSuccess(res, result, "Consultation retrieved successfully");
   };
 
-  updateConsultation = async (req: AuthRequest, res: Response) => {
+  updateConsultation = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const body = { ...req.body };
     if (body.scheduledAt) body.scheduledAt = new Date(body.scheduledAt);
     const result = await this.svc.updateConsultation(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
       body,
-      req.staffId,
+      staffId,
     );
     sendSuccess(res, result, "Consultation updated successfully");
   };
 
-  cancelConsultation = async (req: AuthRequest, res: Response) => {
+  cancelConsultation = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const result = await this.svc.cancelConsultation(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
       { reason: req.body?.reason },
-      req.staffId,
+      staffId,
     );
     sendSuccess(res, result, "Consultation cancelled successfully");
   };
 
-  // ─── Public booking flow (token-gated, no auth) ──────────────────────────────
+  // Public booking flow (token-gated, no auth)
 
   getConsultationBooking = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const result = await this.svc.getConsultationBooking(
       req.params.token as string,
     );
@@ -403,6 +463,8 @@ export class LeadsController {
   };
 
   payConsultationFee = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const result = await this.svc.payConsultationFee(
       req.params.token as string,
     );
@@ -410,6 +472,8 @@ export class LeadsController {
   };
 
   selectConsultationSlot = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const result = await this.svc.selectConsultationSlot(
       req.params.token as string,
       req.body.start,
@@ -418,98 +482,120 @@ export class LeadsController {
   };
 
   updateBookingTimezone = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     sendSuccess(res, null, "Timezone updated successfully");
   };
 
-  // ─── Fee Agreement ───────────────────────────────────────────────────────────
+  // Fee Agreement
 
-  generateFeeAgreement = async (req: AuthRequest, res: Response) => {
+  generateFeeAgreement = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const result = await this.svc.generateFeeAgreement(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
       req.body,
-      req.staffId,
+      staffId,
     );
     sendSuccess(res, result, "Fee agreement generated successfully", 201);
   };
 
-  getFeeAgreement = async (req: AuthRequest, res: Response) => {
+  getFeeAgreement = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const result = await this.svc.getFeeAgreement(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
     );
     logLeadView(
-      req.organizationId!,
+      organizationId!,
       req.params.id as string,
-      req.staffId,
+      staffId,
       "fee-agreement",
     ).catch(() => {});
     sendSuccess(res, result, "Fee agreement retrieved successfully");
   };
 
-  getFeeAgreementPreview = async (req: AuthRequest, res: Response) => {
+  getFeeAgreementPreview = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const result = await this.svc.getFeeAgreementPreview(
       req.params.agreementId as string,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, result, "Fee agreement preview retrieved successfully");
   };
 
-  nudgeClient = async (req: AuthRequest, res: Response) => {
+  nudgeClient = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const result = await this.svc.nudgeClient(
       req.params.agreementId as string,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, result, "Client nudged successfully");
   };
 
-  sendFeeAgreement = async (req: AuthRequest, res: Response) => {
+  sendFeeAgreement = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const result = await this.svc.sendFeeAgreement(
       req.params.agreementId as string,
-      req.organizationId!,
-      req.staffId,
+      organizationId!,
+      staffId,
     );
     sendSuccess(res, result, "Fee agreement sent successfully");
   };
 
-  markFeeAgreementReceived = async (req: AuthRequest, res: Response) => {
+  markFeeAgreementReceived = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const result = await this.svc.markFeeAgreementReceived(
       req.params.agreementId as string,
-      req.organizationId!,
-      req.staffId,
+      organizationId!,
+      staffId,
     );
     sendSuccess(res, result, "Fee agreement marked as received");
   };
 
-  markFeeAgreementPaymentReceived = async (req: AuthRequest, res: Response) => {
+  markFeeAgreementPaymentReceived = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const result = await this.svc.markFeeAgreementPaymentReceived(
       req.params.agreementId as string,
-      req.organizationId!,
-      req.staffId,
+      organizationId!,
+      staffId,
     );
     res.json({ success: true, data: result });
   };
 
-  discardDraftFeeAgreement = async (req: AuthRequest, res: Response) => {
+  discardDraftFeeAgreement = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const result = await this.svc.discardDraftFeeAgreement(
       req.params.agreementId as string,
-      req.organizationId!,
+      organizationId!,
     );
     res.json({ success: true, data: result });
   };
 
-  // ─── Embedded signing session (public, token-gated) ─────────────────────────
+  // Embedded signing session (public, token-gated)
 
   getEmbeddedSignSession = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const result = await this.svc.getEmbeddedSignSession(
       req.params.token as string,
     );
     sendSuccess(res, result, "Signing session retrieved successfully");
   };
 
-  // ─── Dropbox Sign Webhook (public) ──────────────────────────────────────────
+  // Dropbox Sign Webhook (public)
 
   handleDropboxSignWebhook = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const raw = (req.body as { json?: string })?.json;
     if (!raw) {
       res.status(400).send("Missing event payload");
@@ -526,202 +612,242 @@ export class LeadsController {
     res.status(200).send("Hello API Event Received");
   };
 
-  // ─── Case Opening ─────────────────────────────────────────────────────────────
+  // Case Opening
 
-  getEligibleTeamsForLead = async (req: AuthRequest, res: Response) => {
+  getEligibleTeamsForLead = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const teams = await this.svc.getEligibleTeamsForLead(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, teams, "Eligible teams retrieved");
   };
 
-  openCase = async (req: AuthRequest, res: Response) => {
+  openCase = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const result = await this.svc.openCase(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
       req.body,
-      req.staffId!,
+      staffId!,
     );
     sendSuccess(res, result, "Case opened successfully", 201);
   };
 
-  // ─── Case Workflow Steps ─────────────────────────────────────────────────────
+  // Case Workflow Steps
 
-  getCaseWorkflowSteps = async (req: AuthRequest, res: Response) => {
+  getCaseWorkflowSteps = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const steps = await this.svc.getCaseWorkflowSteps(
       req.params.caseId as string,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, steps, "Workflow steps retrieved successfully");
   };
 
-  updateCaseWorkflowStep = async (req: AuthRequest, res: Response) => {
+  updateCaseWorkflowStep = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const step = await this.svc.updateCaseWorkflowStep(
       req.params.caseId as string,
       req.params.stepId as string,
-      req.organizationId!,
+      organizationId!,
       req.body,
     );
     sendSuccess(res, step, "Workflow step updated successfully");
   };
 
-  // ─── Adverse Parties ─────────────────────────────────────────────────────────
+  // Adverse Parties
 
-  getAdverseParties = async (req: AuthRequest, res: Response) => {
+  getAdverseParties = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const parties = await this.svc.getAdverseParties(
       req.params.caseId as string,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, parties, "Adverse parties retrieved successfully");
   };
 
-  addAdverseParty = async (req: AuthRequest, res: Response) => {
+  addAdverseParty = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const party = await this.svc.addAdverseParty(
       req.params.caseId as string,
-      req.organizationId!,
+      organizationId!,
       req.body,
     );
     sendSuccess(res, party, "Adverse party added successfully", 201);
   };
 
-  updateAdverseParty = async (req: AuthRequest, res: Response) => {
+  updateAdverseParty = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const party = await this.svc.updateAdverseParty(
       req.params.caseId as string,
       req.params.partyId as string,
-      req.organizationId!,
+      organizationId!,
       req.body,
     );
     sendSuccess(res, party, "Adverse party updated successfully");
   };
 
-  deleteAdverseParty = async (req: AuthRequest, res: Response) => {
+  deleteAdverseParty = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     await this.svc.deleteAdverseParty(
       req.params.caseId as string,
       req.params.partyId as string,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, null, "Adverse party deleted successfully");
   };
 
-  // ─── Lead Workflow Tasks ──────────────────────────────────────────────────────
+  // Lead Workflow Tasks
 
-  getMyLeadTasks = async (req: AuthRequest, res: Response) => {
+  getMyLeadTasks = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const tasks = await this.wfSvc.getMyTasks(
-      req.staffId!,
-      req.organizationId!,
+      staffId!,
+      organizationId!,
     );
     sendSuccess(res, tasks, "My tasks retrieved successfully");
   };
 
-  initializePipeline = async (req: AuthRequest, res: Response) => {
+  initializePipeline = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const steps = await this.wfSvc.initializePipelineSteps(
       req.params.leadId as string,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, steps, "Pipeline steps initialized successfully");
   };
 
-  getLeadTasks = async (req: AuthRequest, res: Response) => {
+  getLeadTasks = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const tasks = await this.wfSvc.getTasks(
       req.params.leadId as string,
-      req.organizationId!,
+      organizationId!,
     );
     logLeadView(
-      req.organizationId!,
+      organizationId!,
       req.params.leadId as string,
-      req.staffId,
+      staffId,
       "intake-pipeline",
     ).catch(() => {});
     sendSuccess(res, tasks, "Lead tasks retrieved successfully");
   };
 
-  createLeadTask = async (req: AuthRequest, res: Response) => {
+  createLeadTask = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const task = await this.wfSvc.createTask(
       { ...req.body, leadId: req.params.leadId },
-      req.organizationId!,
-      req.staffId,
+      organizationId!,
+      staffId,
     );
     sendSuccess(res, task, "Task created successfully", 201);
   };
 
-  updateLeadTask = async (req: AuthRequest, res: Response) => {
+  updateLeadTask = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const task = await this.wfSvc.updateTask(
       req.params.taskId as string,
       req.body,
-      req.organizationId!,
-      req.staffId,
+      organizationId!,
+      staffId,
     );
     sendSuccess(res, task, "Task updated successfully");
   };
 
-  updateLeadTaskStatus = async (req: AuthRequest, res: Response) => {
+  updateLeadTaskStatus = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const task = await this.wfSvc.updateTaskStatus(
       req.params.taskId as string,
       req.body.status,
-      req.organizationId!,
-      req.staffId,
+      organizationId!,
+      staffId,
     );
     sendSuccess(res, task, "Task status updated successfully");
   };
 
-  assignLeadTask = async (req: AuthRequest, res: Response) => {
+  assignLeadTask = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const task = await this.wfSvc.assignTask(
       req.params.taskId as string,
       req.body.assignedToId,
-      req.organizationId!,
-      req.staffId,
+      organizationId!,
+      staffId,
     );
     sendSuccess(res, task, "Task assigned successfully");
   };
 
-  completeLeadTask = async (req: AuthRequest, res: Response) => {
+  completeLeadTask = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const task = await this.wfSvc.completeTask(
       req.params.taskId as string,
-      req.staffId!,
-      req.organizationId!,
+      staffId!,
+      organizationId!,
     );
     sendSuccess(res, task, "Task completed successfully");
   };
 
-  submitLeadTaskForReview = async (req: AuthRequest, res: Response) => {
+  submitLeadTaskForReview = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const task = await this.wfSvc.submitTaskForReview(
       req.params.taskId as string,
-      req.staffId!,
+      staffId!,
       req.body.notes,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, task, "Task submitted for review");
   };
 
-  approveLeadTask = async (req: AuthRequest, res: Response) => {
+  approveLeadTask = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const task = await this.wfSvc.approveTask(
       req.params.taskId as string,
-      req.staffId!,
+      staffId!,
       req.body.notes,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, task, "Task approved");
   };
 
-  rejectLeadTask = async (req: AuthRequest, res: Response) => {
+  rejectLeadTask = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const task = await this.wfSvc.rejectTask(
       req.params.taskId as string,
-      req.staffId!,
+      staffId!,
       req.body.feedback,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, task, "Task rejected");
   };
 
-  getLeadReviewQueue = async (req: AuthRequest, res: Response) => {
+  getLeadReviewQueue = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     const status = req.query.status as string | undefined;
     const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
     const limit = req.query.limit
       ? parseInt(req.query.limit as string, 10)
       : 20;
     const result = await this.wfSvc.getReviewQueue(
-      req.organizationId!,
+      organizationId!,
       status,
       page,
       limit,
@@ -731,29 +857,33 @@ export class LeadsController {
     });
   };
 
-  deleteLeadTask = async (req: AuthRequest, res: Response) => {
+  deleteLeadTask = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     await this.wfSvc.deleteTask(
       req.params.taskId as string,
-      req.organizationId!,
-      req.staffId,
+      organizationId!,
+      staffId,
     );
     sendSuccess(res, null, "Task deleted successfully");
   };
 
-  // ─── Lead Timeline ────────────────────────────────────────────────────────────
+  // Lead Timeline
 
-  getLeadTimeline = async (req: AuthRequest, res: Response) => {
+  getLeadTimeline = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const { page, limit } = parsePaginationQuery(req.query);
     const result = await this.svc.getLeadTimeline(
       req.params.leadId as string,
-      req.organizationId!,
+      organizationId!,
       page,
       limit,
     );
     logLeadView(
-      req.organizationId!,
+      organizationId!,
       req.params.leadId as string,
-      req.staffId,
+      staffId,
       "timeline",
     ).catch(() => {});
     sendSuccess(
@@ -767,18 +897,20 @@ export class LeadsController {
     );
   };
 
-  getLeadAuditLog = async (req: AuthRequest, res: Response) => {
+  getLeadAuditLog = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const { page, limit } = parsePaginationQuery(req.query);
     const result = await this.svc.getLeadAuditLog(
       req.params.leadId as string,
-      req.organizationId!,
+      organizationId!,
       page,
       limit,
     );
     logLeadView(
-      req.organizationId!,
+      organizationId!,
       req.params.leadId as string,
-      req.staffId,
+      staffId,
       "audit-log",
     ).catch(() => {});
     sendSuccess(res, result.data, "Audit log retrieved successfully", 200, {
@@ -786,49 +918,57 @@ export class LeadsController {
     });
   };
 
-  createLeadTimelineEvent = async (req: AuthRequest, res: Response) => {
+  createLeadTimelineEvent = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const event = await this.wfSvc.createTimelineEvent({
       leadId: req.params.leadId as string,
       eventType: req.body.eventType,
       title: req.body.title,
       description: req.body.description,
       metadata: req.body.metadata,
-      createdById: req.staffId,
+      createdById: staffId ?? undefined,
     });
     sendSuccess(res, event, "Timeline event created successfully", 201);
   };
 
-  // ─── Lead Documents ───────────────────────────────────────────────────────────
+  // Lead Documents
 
-  getLeadDocuments = async (req: AuthRequest, res: Response) => {
+  getLeadDocuments = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const docs = await this.wfSvc.getLinkedDocuments(
       req.params.leadId as string,
-      req.organizationId!,
+      organizationId!,
     );
     logLeadView(
-      req.organizationId!,
+      organizationId!,
       req.params.leadId as string,
-      req.staffId,
+      staffId,
       "documents",
     ).catch(() => {});
     sendSuccess(res, docs, "Linked documents retrieved successfully");
   };
 
-  linkLeadDocument = async (req: AuthRequest, res: Response) => {
+  linkLeadDocument = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
     const link = await this.wfSvc.linkDocument(
       req.body.documentId,
       req.params.leadId as string,
-      req.staffId,
-      req.organizationId!,
+      staffId,
+      organizationId!,
     );
     sendSuccess(res, link, "Document linked successfully", 201);
   };
 
-  unlinkLeadDocument = async (req: AuthRequest, res: Response) => {
+  unlinkLeadDocument = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+
     await this.wfSvc.unlinkDocument(
       req.params.linkId as string,
       req.params.leadId as string,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, null, "Document unlinked successfully");
   };

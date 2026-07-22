@@ -1,5 +1,5 @@
-import { Response } from "express";
-import { AuthRequest } from "../../middleware/auth.middleware";
+import { Request, Response } from "express";
+import { getRequestContext } from "../../middleware/request-context";
 import asyncWrap from "../../utils/asyncWrapper";
 import { NotFoundError } from "../../utils/error/app-error";
 import { sendSuccess } from "../../utils/send-success";
@@ -12,17 +12,19 @@ export class ClientResponsivenessController {
     this.clientResponsivenessService = clientResponsivenessService;
   }
 
-  getStats = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const stats = await this.clientResponsivenessService.getStats(req.organizationId!);
+  getStats = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const stats = await this.clientResponsivenessService.getStats(organizationId!);
     sendSuccess(res, stats, "Client responsiveness stats retrieved successfully");
   });
 
   getAllClientResponsiveness = asyncWrap(
-    async (req: AuthRequest, res: Response) => {
+    async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
       const { filter, search } = req.query;
       const result =
         await this.clientResponsivenessService.getAllClientResponsiveness(
-          req.organizationId!,
+          organizationId!,
           {
             filter: filter as string,
             search: search as string,
@@ -32,21 +34,23 @@ export class ClientResponsivenessController {
     },
   );
 
-  addRequests = asyncWrap(async (req: AuthRequest, res: Response) => {
+  addRequests = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { caseId, items, requestedAt } = req.body;
 
     const result = await this.clientResponsivenessService.addRequests(
       req.params.clientId as string,
-      req.organizationId!,
+      organizationId!,
       { caseId, items, requestedAt },
     );
     sendSuccess(res, result, "Requests added successfully", 201);
   });
 
-  fulfillRequest = asyncWrap(async (req: AuthRequest, res: Response) => {
+  fulfillRequest = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.clientResponsivenessService.fulfillRequest(
       req.params.requestId as string,
-      req.organizationId!,
+      organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Request not found");
@@ -55,11 +59,12 @@ export class ClientResponsivenessController {
   });
 
   generateTerminationLetter = asyncWrap(
-    async (req: AuthRequest, res: Response) => {
+    async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
       const result =
         await this.clientResponsivenessService.getTerminationLetterData(
           req.params.clientId as string,
-          req.organizationId!,
+          organizationId!,
         );
       if (!result) {
         throw new NotFoundError("Client not found");
@@ -68,10 +73,11 @@ export class ClientResponsivenessController {
     },
   );
 
-  exportReport = asyncWrap(async (req: AuthRequest, res: Response) => {
+  exportReport = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.clientResponsivenessService.exportClientReport(
       req.params.clientId as string,
-      req.organizationId!,
+      organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Client not found");
