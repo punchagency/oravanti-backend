@@ -31,6 +31,9 @@ export class EmailAccountRouter {
   }
 
   private initializeRoutes() {
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
+
     /**
      * @openapi
      * /email-accounts/classify:

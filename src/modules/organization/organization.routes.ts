@@ -24,6 +24,9 @@ export class OrganizationRouter {
   }
 
   initializeRoutes() {
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
+
     /**
      * @openapi
      * /organization/invite:

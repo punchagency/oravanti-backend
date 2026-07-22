@@ -34,6 +34,9 @@ export class WorkflowRouter {
   }
 
   private initializeRoutes() {
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
+
     /**
      * @openapi
      * /cases/workflow/my-tasks:
