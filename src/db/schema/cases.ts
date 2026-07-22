@@ -9,9 +9,11 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { organization } from "./auth-schema";
+import { user } from "./auth-schema";
 import { clients } from "./clients";
 import { leads } from "./leads";
 import { practiceAreaCaseTypes } from "./practice-area-case-types";
@@ -120,6 +122,12 @@ export const cases = pgTable("cases", {
   clientId: uuid("client_id")
     .notNull()
     .references(() => clients.id),
+
+  // Direct link to client's user account (for client portal RLS)
+  clientUserId: text("client_user_id").references(() => user.id, {
+    onDelete: "set null",
+  }),
+
   leadId: uuid("lead_id").references(() => leads.id, { onDelete: "set null" }),
 
   practiceAreaId: uuid("practice_area_id")
@@ -252,6 +260,37 @@ export const caseEvents = pgTable("case_events", {
   index("case_events_case_id_created_at_idx").on(t.caseId, t.createdAt),
 ]);
 
+// =========================================================================
+// CASE ASSIGNMENTS (Client & Contractor Junction)
+// =========================================================================
+
+/**
+ * Case Assignments: Links users (clients/contractors) to cases.
+ * Used for RLS user-ownership policies — a user sees cases they're assigned to.
+ */
+export const caseAssignmentRoleEnum = pgEnum("case_assignment_role", [
+  "client",
+  "contractor",
+]);
+
+export const caseAssignments = pgTable(
+  "case_assignments",
+  {
+    caseId: uuid("case_id")
+      .notNull()
+      .references(() => cases.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    role: caseAssignmentRoleEnum("role").notNull(),
+    assignedAt: timestamp("assigned_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.caseId, t.userId, t.role] }),
+    index("case_assignments_user_idx").on(t.userId),
+  ],
+);
+
 export type Case = typeof cases.$inferSelect;
 export type NewCase = typeof cases.$inferInsert;
 export type CaseRecordNote = typeof caseRecordNotes.$inferSelect;
@@ -263,3 +302,7 @@ export type CaseToCertification = typeof casesToCertifications.$inferSelect;
 export type CaseEvent = typeof caseEvents.$inferSelect;
 export type NewCaseEvent = typeof caseEvents.$inferInsert;
 export type CaseEventType = (typeof caseEventTypeEnum.enumValues)[number];
+
+export type CaseAssignment = typeof caseAssignments.$inferSelect;
+export type NewCaseAssignment = typeof caseAssignments.$inferInsert;
+export type CaseAssignmentRole = (typeof caseAssignmentRoleEnum.enumValues)[number];

@@ -272,6 +272,7 @@ export const questionnaireAnswers = pgTable(
   "questionnaire_answers",
   {
     id:             uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id").notNull().references(() => organization.id),
     responseId:     uuid("response_id").notNull().references(() => questionnaireResponses.id),
     // questionId references caseTypeQuestionnaireQuestions OR firmQuestionnaireQuestions
     // based on questionSource — no FK constraint to allow dual-table reference
@@ -286,6 +287,7 @@ export const questionnaireAnswers = pgTable(
       table.responseId,
       table.questionId,
     ),
+    index("questionnaire_answers_organization_idx").on(table.organizationId),
     index("questionnaire_answers_response_idx").on(table.responseId),
   ],
 );
