@@ -1,9 +1,9 @@
 import { fromNodeHeaders } from "better-auth/node";
-import type { NextFunction, Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 import { auth } from "../auth";
 import { ac } from "../auth/permissions";
 import { AuthorizationError } from "../utils/error/app-error";
-import type { AuthRequest } from "./auth.middleware";
+import { getRequestContext } from "./request-context";
 
 type Statement = typeof ac.statements;
 type Resources = keyof Statement;
@@ -16,17 +16,19 @@ type PermissionsInput = {
 
 export function requirePermission(
   permissions: PermissionsInput,
-): (req: AuthRequest, res: Response, next: NextFunction) => Promise<void>;
+): (req: Request, res: Response, next: NextFunction) => Promise<void>;
 export function requirePermission<Resource extends Resources>(
   resource: Resource,
   action: Action<Resource> | Action<Resource>[],
-): (req: AuthRequest, res: Response, next: NextFunction) => Promise<void>;
+): (req: Request, res: Response, next: NextFunction) => Promise<void>;
 export function requirePermission<Resource extends Resources>(
   resourceOrPermissions: Resource | PermissionsInput,
   action?: Action<Resource> | Action<Resource>[],
 ) {
-  return async (req: AuthRequest, _res: Response, next: NextFunction) => {
-    if (!req.organizationId) {
+  return async (req: Request, _res: Response, next: NextFunction) => {
+    const { organizationId } = getRequestContext();
+
+    if (!organizationId) {
       throw new AuthorizationError("Access denied");
     }
 
@@ -39,7 +41,7 @@ export function requirePermission<Resource extends Resources>(
 
     const result = await auth.api.hasPermission({
       body: {
-        organizationId: req.organizationId,
+        organizationId,
         permissions: permissions as Record<string, string[]>,
       },
       headers: fromNodeHeaders(req.headers as Record<string, string>),

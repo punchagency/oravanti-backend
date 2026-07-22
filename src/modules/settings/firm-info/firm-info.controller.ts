@@ -1,5 +1,5 @@
-import { Response } from "express";
-import { AuthRequest } from "../../../middleware/auth.middleware";
+﻿import { Request, Response } from "express";
+import { getRequestContext } from "../../../middleware/request-context";
 import { UpsertFirmInfoBody } from "../../../types/settings.types";
 import asyncWrap from "../../../utils/asyncWrapper";
 import { NotFoundError } from "../../../utils/error/app-error";
@@ -13,8 +13,9 @@ export class FirmInfoController {
     this.firmInfoService = firmInfoService;
   }
 
-  getFirmInfo = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.firmInfoService.getFirmInfo(req.organizationId!);
+  getFirmInfo = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.firmInfoService.getFirmInfo(organizationId!);
     if (!result) {
       throw new NotFoundError("Firm info not set up yet");
     }
@@ -22,9 +23,10 @@ export class FirmInfoController {
   });
 
   upsertFirmInfo = asyncWrap(
-    async (req: AuthRequest & { body: UpsertFirmInfoBody }, res: Response) => {
+    async (req: Request & { body: UpsertFirmInfoBody }, res: Response) => {
+      const { organizationId } = getRequestContext();
       const result = await this.firmInfoService.upsertFirmInfo(
-        req.organizationId!,
+        organizationId!,
         req.body,
       );
       sendSuccess(res, result, "Firm info saved successfully");

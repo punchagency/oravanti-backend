@@ -1,5 +1,5 @@
-import { Response } from "express";
-import { AuthRequest } from "../../../middleware/auth.middleware";
+import { Request, Response } from "express";
+import { getRequestContext } from "../../../middleware/request-context";
 import asyncWrap from "../../../utils/asyncWrapper";
 import { sendSuccess } from "../../../utils/send-success";
 import { ConsultationSettingsService } from "./consultation-settings.service";
@@ -11,48 +11,54 @@ export class ConsultationSettingsController {
     this.service = service;
   }
 
-  getSettings = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.service.getSettings(req.organizationId!);
+  getSettings = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    const result = await this.service.getSettings(organizationId!);
     sendSuccess(res, result, "Consultation settings retrieved successfully");
   });
 
-  upsertSettings = asyncWrap(async (req: AuthRequest, res: Response) => {
+  upsertSettings = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const result = await this.service.upsertSettings(
-      req.organizationId!,
+      organizationId!,
       req.body,
     );
     sendSuccess(res, result, "Consultation settings saved successfully");
   });
 
-  listLocations = asyncWrap(async (req: AuthRequest, res: Response) => {
+  listLocations = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const includeInactive = req.query.includeInactive === "true";
     const result = await this.service.listLocations(
-      req.organizationId!,
+      organizationId!,
       includeInactive,
     );
     sendSuccess(res, result, "Locations retrieved successfully");
   });
 
-  createLocation = asyncWrap(async (req: AuthRequest, res: Response) => {
+  createLocation = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const result = await this.service.createLocation(
-      req.organizationId!,
+      organizationId!,
       req.body,
     );
     sendSuccess(res, result, "Location created successfully", 201);
   });
 
-  updateLocation = asyncWrap(async (req: AuthRequest, res: Response) => {
+  updateLocation = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const result = await this.service.updateLocation(
-      req.organizationId!,
+      organizationId!,
       req.params.locationId as string,
       req.body,
     );
     sendSuccess(res, result, "Location updated successfully");
   });
 
-  deleteLocation = asyncWrap(async (req: AuthRequest, res: Response) => {
+  deleteLocation = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     await this.service.deleteLocation(
-      req.organizationId!,
+      organizationId!,
       req.params.locationId as string,
     );
     sendSuccess(res, null, "Consultation location deleted successfully");

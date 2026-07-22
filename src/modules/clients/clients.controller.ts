@@ -1,5 +1,5 @@
-import { Response } from "express";
-import { AuthRequest } from "../../middleware/auth.middleware";
+﻿import { Request, Response } from "express";
+import { getRequestContext } from "../../middleware/request-context";
 import asyncWrap from "../../utils/asyncWrapper";
 import { NotFoundError } from "../../utils/error/app-error";
 import { sendSuccess } from "../../utils/send-success";
@@ -16,23 +16,25 @@ export class ClientsController {
     this.svc = clientsService;
   }
 
-  getCertifications = asyncWrap(async (_req: AuthRequest, res: Response) => {
+  getCertifications = asyncWrap(async (_req: Request, res: Response) => {
     sendSuccess(res, await this.svc.getCertifications(), "Certifications retrieved successfully");
   });
 
-  getTeamStaff = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getTeamStaff = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     sendSuccess(res,
-      await this.svc.getTeamStaff(req.params.teamId as string, req.organizationId!),
+      await this.svc.getTeamStaff(req.params.teamId as string, organizationId!),
       "Team staff retrieved successfully",
     );
   });
 
-  // ─── Clients ────────────────────────────────────────────────────────────────
+  // Clients
 
-  getAllClients = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getAllClients = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const { search, page, limit, all } = req.query;
     const bypassPagination = parseBooleanQuery(all, "all");
-    const result = await this.svc.getAllClients(req.organizationId!, {
+    const result = await this.svc.getAllClients(organizationId!, {
       search: search as string | undefined,
       all: bypassPagination,
       ...(!bypassPagination ? parsePaginationQuery({ page, limit }) : {}),
@@ -45,77 +47,87 @@ export class ClientsController {
     }
   });
 
-  getClientById = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.svc.getClientById(req.params.id as string, req.organizationId!);
+  getClientById = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    const result = await this.svc.getClientById(req.params.id as string, organizationId!);
     if (!result) throw new NotFoundError("Client not found");
     sendSuccess(res, result, "Client retrieved successfully");
   });
 
-  updateClient = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.svc.updateClient(req.params.id as string, req.organizationId!, req.body);
+  updateClient = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    const result = await this.svc.updateClient(req.params.id as string, organizationId!, req.body);
     if (!result) throw new NotFoundError("Client not found");
     sendSuccess(res, result, "Client updated successfully");
   });
 
-  deleteClient = asyncWrap(async (req: AuthRequest, res: Response) => {
-    await this.svc.deleteClient(req.params.id as string, req.organizationId!);
+  deleteClient = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    await this.svc.deleteClient(req.params.id as string, organizationId!);
     sendSuccess(res, null, "Client deleted successfully");
   });
 
-  // ─── Contacts ───────────────────────────────────────────────────────────────
+  // Contacts
 
-  getClientContacts = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getClientContacts = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     sendSuccess(res,
-      await this.svc.getClientContacts(req.params.id as string, req.organizationId!),
+      await this.svc.getClientContacts(req.params.id as string, organizationId!),
       "Client contacts retrieved successfully",
     );
   });
 
-  addClientContact = asyncWrap(async (req: AuthRequest, res: Response) => {
+  addClientContact = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     sendSuccess(res,
-      await this.svc.addClientContact(req.params.id as string, req.organizationId!, req.body),
+      await this.svc.addClientContact(req.params.id as string, organizationId!, req.body),
       "Client contact added successfully",
       201,
     );
   });
 
-  updateClientContact = asyncWrap(async (req: AuthRequest, res: Response) => {
+  updateClientContact = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const result = await this.svc.updateClientContact(
       req.params.contactId as string,
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
       req.body,
     );
     if (!result) throw new NotFoundError("Contact not found");
     sendSuccess(res, result, "Client contact updated successfully");
   });
 
-  deleteClientContact = asyncWrap(async (req: AuthRequest, res: Response) => {
-    await this.svc.deleteClientContact(req.params.contactId as string, req.params.id as string, req.organizationId!);
+  deleteClientContact = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    await this.svc.deleteClientContact(req.params.contactId as string, req.params.id as string, organizationId!);
     sendSuccess(res, null, "Client contact removed successfully");
   });
 
-  // ─── Company ────────────────────────────────────────────────────────────────
+  // Company
 
-  getClientCompany = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.svc.getClientCompany(req.params.id as string, req.organizationId!);
+  getClientCompany = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    const result = await this.svc.getClientCompany(req.params.id as string, organizationId!);
     if (!result) throw new NotFoundError("No company linked to this client");
     sendSuccess(res, result, "Client company retrieved successfully");
   });
 
-  upsertClientCompany = asyncWrap(async (req: AuthRequest, res: Response) => {
+  upsertClientCompany = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     sendSuccess(res,
-      await this.svc.upsertClientCompany(req.params.id as string, req.organizationId!, req.body),
+      await this.svc.upsertClientCompany(req.params.id as string, organizationId!, req.body),
       "Client company saved successfully",
     );
   });
 
-  // ─── Cases ──────────────────────────────────────────────────────────────────
+  // Cases
 
-  getClientCases = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getClientCases = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const { page, limit, all } = req.query;
     const bypassPagination = parseBooleanQuery(all, "all");
-    const result = await this.svc.getClientCases(req.params.id as string, req.organizationId!, {
+    const result = await this.svc.getClientCases(req.params.id as string, organizationId!, {
       all: bypassPagination,
       ...(!bypassPagination ? parsePaginationQuery({ page, limit }) : {}),
     });

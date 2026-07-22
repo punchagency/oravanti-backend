@@ -1,5 +1,5 @@
-import { Response } from "express";
-import { AuthRequest } from "../../../middleware/auth.middleware";
+﻿import { Request, Response } from "express";
+import { getRequestContext } from "../../../middleware/request-context";
 import asyncWrap from "../../../utils/asyncWrapper";
 import { sendSuccess } from "../../../utils/send-success";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
@@ -17,18 +17,20 @@ export class FinancialAccessController {
     this.auditLogService = auditLogService;
   }
 
-  getFinancialAccess = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getFinancialAccess = asyncWrap(async (req: Request, res: Response) => {
+    const { userId, organizationId } = getRequestContext();
     const result = await this.financialAccessService.getFinancialAccess(
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, result, "Financial access retrieved successfully");
   });
 
-  updateFinancialAccess = asyncWrap(async (req: AuthRequest, res: Response) => {
+  updateFinancialAccess = asyncWrap(async (req: Request, res: Response) => {
+    const { userId, organizationId } = getRequestContext();
     const { controls } = req.body;
 
     await this.financialAccessService.updateFinancialAccess(
-      req.organizationId!,
+      organizationId!,
       controls,
     );
 
@@ -37,7 +39,7 @@ export class FinancialAccessController {
         ? `Updated financial access for ${controls[0].role} role`
         : "Updated financial access controls";
     this.auditLogService
-      .logPermissionChange(action, req.userId!, req.organizationId!)
+      .logPermissionChange(action, userId!, organizationId!)
       .catch(() => {});
 
     sendSuccess(res, null, "Financial access controls updated");

@@ -935,7 +935,7 @@ export class QuestionnairesService {
       await db
         .update(leads)
         .set({ pipelineStage: "consultation", updatedAt: new Date() })
-        .where(eq(leads.id, response.leadId));
+        .where(and(eq(leads.id, response.leadId), eq(leads.organizationId, organizationId)));
 
       await logLeadEvent({
         organizationId,

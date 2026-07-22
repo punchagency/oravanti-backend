@@ -1,10 +1,11 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import multer from "multer";
-import { requireAdmin } from "../../middleware/admin.middleware";
+
 import { requireAuth } from "../../middleware/auth.middleware";
-import { requireStaffOrAdmin } from "../../middleware/staff-or-admin.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
+
 import { requirePermission } from "../../middleware/permission.middleware";
-import { setFirmContext } from "../../middleware/rls.middleware";
+
 import { validateRequest } from "../../middleware/validate.middleware";
 import { QuestionnairesController } from "./questionnaires.controller";
 import { QuestionnairesValidation } from "./questionnaires.validation";
@@ -33,7 +34,7 @@ export class QuestionnairesRouter {
     const ctrl = this.questionnairesController;
     const v = this.questionnairesValidation;
 
-    // ── Public token-based client endpoints ──────────────────────────────────
+    // Public token-based client endpoints
     this.router.get(
       "/client/:token",
       validateRequest({ params: v.questionnaireClientTokenParamsSchema }),
@@ -59,10 +60,10 @@ export class QuestionnairesRouter {
       ctrl.uploadResponseFile,
     );
 
-    // ── Authenticated staff-or-admin intake routes ───────────────────────────
+    // Authenticated staff-or-admin intake routes
     // Send-wizard data, response review, accept, and manual reminders are usable
     // by firm staff (attorney/paralegal), not just org admins.
-    const staffGuards = [requireAuth, requireStaffOrAdmin, setFirmContext];
+    const staffGuards = [requireAuth, resolveActorContext];
 
     this.router.get("/eligible-leads", ...staffGuards, ctrl.getEligibleLeads);
     this.router.get("/question-bank", ...staffGuards, ctrl.getQuestionBank);
@@ -109,7 +110,7 @@ export class QuestionnairesRouter {
       ctrl.uploadResponseFileForStaff,
     );
 
-    // Response answers PDF — available to any staff (documents excluded).
+    // Response answers PDF available to any staff (documents excluded).
     this.router.get(
       "/responses/:responseId/pdf",
       ...staffGuards,
@@ -117,7 +118,7 @@ export class QuestionnairesRouter {
       ctrl.downloadResponsePdf,
     );
 
-    // Individual uploaded document — gated by the documents:download permission.
+    // Individual uploaded document gated by the documents:download permission.
     this.router.get(
       "/files/:fileId/download",
       ...staffGuards,
@@ -133,8 +134,9 @@ export class QuestionnairesRouter {
       ctrl.getFilesByLeadId,
     );
 
-    // ── Authenticated admin routes ────────────────────────────────────────────
-    this.router.use(requireAuth, requireAdmin, setFirmContext);
+    // Authenticated admin routes
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
 
     // System questionnaire management (platform admin)
     this.router.get("/system", ctrl.getSystemQuestionnaires);

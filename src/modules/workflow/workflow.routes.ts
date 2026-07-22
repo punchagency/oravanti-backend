@@ -5,11 +5,12 @@
  *     description: Workflow automation engine
  */
 import { Router } from "express";
-import { requireAdmin } from "../../middleware/admin.middleware";
+
 import { requireAuth } from "../../middleware/auth.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { requirePermission } from "../../middleware/permission.middleware";
-import { setFirmContext } from "../../middleware/rls.middleware";
-import { requireStaffOrAdmin } from "../../middleware/staff-or-admin.middleware";
+
+
 import { validateRequest } from "../../middleware/validate.middleware";
 import { CommonValidation } from "../../validation/common.validation";
 import { WorkflowController } from "./workflow.controller";
@@ -47,8 +48,6 @@ export class WorkflowRouter {
     this.router.get(
       "/workflow/my-tasks",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       this.workflowController.getMyTasks,
     );
 
@@ -66,8 +65,6 @@ export class WorkflowRouter {
     this.router.get(
       "/workflow/review-queue",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       this.workflowController.getReviewQueue,
     );
 
@@ -90,8 +87,6 @@ export class WorkflowRouter {
     this.router.get(
       "/:caseId/workflow",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       validateRequest({ params: this.validation.params("caseId") }),
       this.workflowController.getWorkflow,
     );
@@ -115,8 +110,6 @@ export class WorkflowRouter {
     this.router.get(
       "/:caseId/workflow/summary",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       validateRequest({ params: this.validation.params("caseId") }),
       this.workflowController.getWorkflowSummary,
     );
@@ -144,8 +137,6 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/steps/:stepId/complete",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "stepId") }),
       this.workflowController.completeStep,
     );
@@ -155,7 +146,7 @@ export class WorkflowRouter {
      * /cases/{caseId}/workflow/steps/{stepId}/submit-review:
      *   post:
      *     tags: [Workflow]
-     *     summary: Submit a step for review (in_progress → in_review)
+     *     summary: Submit a step for review (in_progress â†’ in_review)
      *     security: [{ bearerAuth: [] }]
      *     parameters:
      *       - in: path
@@ -173,8 +164,6 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/steps/:stepId/submit-review",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "stepId") }),
       this.workflowController.submitForReview,
     );
@@ -184,7 +173,7 @@ export class WorkflowRouter {
      * /cases/{caseId}/workflow/steps/{stepId}/approve:
      *   post:
      *     tags: [Workflow]
-     *     summary: Approve a step (in_review → completed)
+     *     summary: Approve a step (in_review â†’ completed)
      *     security: [{ bearerAuth: [] }]
      *     parameters:
      *       - in: path
@@ -202,8 +191,6 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/steps/:stepId/approve",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "stepId") }),
       this.workflowController.approveStep,
     );
@@ -213,7 +200,7 @@ export class WorkflowRouter {
      * /cases/{caseId}/workflow/steps/{stepId}/reject:
      *   post:
      *     tags: [Workflow]
-     *     summary: Reject a step with feedback (in_review → in_progress)
+     *     summary: Reject a step with feedback (in_review â†’ in_progress)
      *     security: [{ bearerAuth: [] }]
      *     parameters:
      *       - in: path
@@ -231,8 +218,6 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/steps/:stepId/reject",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "stepId") }),
       this.workflowController.rejectStep,
     );
@@ -260,8 +245,6 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/steps/:stepId/assign",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: this.validation.params("caseId", "stepId"),
         body: this.validation.requiredBody("staffId"),
@@ -292,8 +275,6 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/modules/:moduleId/activate",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "moduleId") }),
       this.workflowController.activateModule,
     );
@@ -317,8 +298,6 @@ export class WorkflowRouter {
     this.router.get(
       "/:caseId/workflow/timeline",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       validateRequest({ params: this.validation.params("caseId") }),
       this.workflowController.getTimeline,
     );
@@ -342,13 +321,11 @@ export class WorkflowRouter {
     this.router.get(
       "/:caseId/workflow/logs",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       validateRequest({ params: this.validation.params("caseId") }),
       this.workflowController.getLogs,
     );
 
-    // ── Case Notes ──────────────────────────────────────────────────────────────
+    // â”€â”€ Case Notes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /**
      * @openapi
@@ -370,7 +347,6 @@ export class WorkflowRouter {
       "/:caseId/workflow/notes",
       requireAuth,
       requirePermission({ cases: ["read"] }),
-      setFirmContext,
       validateRequest({ params: this.validation.params("caseId") }),
       this.workflowController.getNotes,
     );
@@ -394,8 +370,6 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/notes",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: this.validation.params("caseId"),
         body: this.validation.requiredBody("content"),
@@ -426,8 +400,6 @@ export class WorkflowRouter {
     this.router.patch(
       "/:caseId/workflow/notes/:noteId",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "noteId") }),
       this.workflowController.updateNote,
     );
@@ -455,8 +427,6 @@ export class WorkflowRouter {
     this.router.delete(
       "/:caseId/workflow/notes/:noteId",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "noteId") }),
       this.workflowController.deleteNote,
     );
@@ -484,8 +454,6 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/notes/:noteId/toggle-pin",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: this.validation.params("caseId", "noteId") }),
       this.workflowController.toggleNotePin,
     );
@@ -520,8 +488,6 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/notes/bulk-delete",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: this.validation.params("caseId"),
         body: this.validation.requiredBody("noteIds"),
@@ -561,8 +527,6 @@ export class WorkflowRouter {
     this.router.post(
       "/:caseId/workflow/notes/bulk-pin",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: this.validation.params("caseId"),
         body: this.validation.requiredBody("noteIds", "isPinned"),
@@ -570,7 +534,7 @@ export class WorkflowRouter {
       this.workflowController.bulkPinNotes,
     );
 
-    // ── Case Audit Log ──────────────────────────────────────────────────────────
+    // â”€â”€ Case Audit Log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /**
      * @openapi
@@ -597,8 +561,6 @@ export class WorkflowRouter {
     this.router.get(
       "/:caseId/audit-log",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       validateRequest({ params: this.validation.params("caseId") }),
       this.workflowController.getAuditLog,
     );

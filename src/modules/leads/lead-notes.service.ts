@@ -419,7 +419,7 @@ export const toggleNotePin = async (
   const [updated] = await db
     .update(leadNotes)
     .set({ isPinned: newPinned, updatedAt: new Date() })
-    .where(eq(leadNotes.id, noteId))
+    .where(and(eq(leadNotes.id, noteId), eq(leadNotes.leadId, leadId)))
     .returning();
 
   await logLeadEvent({

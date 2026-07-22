@@ -1,5 +1,5 @@
-import { Response } from "express";
-import { AuthRequest } from "../../../middleware/auth.middleware";
+﻿import { Request, Response } from "express";
+import { getRequestContext } from "../../../middleware/request-context";
 import { UpdateProfileBody } from "../../../types/settings.types";
 import asyncWrap from "../../../utils/asyncWrapper";
 import { BadRequestError, NotFoundError } from "../../../utils/error/app-error";
@@ -13,8 +13,9 @@ export class ProfileController {
     this.profileService = profileService;
   }
 
-  getProfile = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.profileService.getProfile(req.userId!);
+  getProfile = asyncWrap(async (req: Request, res: Response) => {
+    const { userId, organizationId } = getRequestContext();
+    const result = await this.profileService.getProfile(userId!);
     if (!result) {
       throw new NotFoundError("Profile not found");
     }
@@ -22,16 +23,18 @@ export class ProfileController {
   });
 
   updateProfile = asyncWrap(
-    async (req: AuthRequest & { body: UpdateProfileBody }, res: Response) => {
+    async (req: Request & { body: UpdateProfileBody }, res: Response) => {
+      const { userId } = getRequestContext();
       const result = await this.profileService.upsertProfile(
-        req.userId!,
+        userId!,
         req.body,
       );
       sendSuccess(res, result, "Profile updated successfully");
     },
   );
 
-  uploadAvatar = asyncWrap(async (req: AuthRequest, res: Response) => {
+  uploadAvatar = asyncWrap(async (req: Request, res: Response) => {
+    const { userId, organizationId } = getRequestContext();
     if (!req.file) {
       throw new BadRequestError("No file uploaded");
     }
@@ -46,7 +49,7 @@ export class ProfileController {
     }
 
     const result = await this.profileService.uploadAvatar(
-      req.userId!,
+      userId!,
       req.file,
     );
     sendSuccess(res, result, "Avatar uploaded successfully");

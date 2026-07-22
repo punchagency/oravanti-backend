@@ -3,6 +3,7 @@ import { Request, Response } from "express";
 import { auth } from "../../auth";
 import { db } from "../../db/client";
 import { connectedEmailAccount } from "../../db/schema/email";
+import { getRequestContext } from "../../middleware/request-context";
 import asyncWrap from "../../utils/asyncWrapper";
 import { encryptData } from "../../utils/cryptoUtils";
 import { BadRequestError } from "../../utils/error/app-error";
@@ -17,16 +18,14 @@ export class EmailAccountController {
   }
 
   classify = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { email } = req.body;
-    const organizationId = (req as any).organizationId;
 
     if (!email || !email.includes("@")) {
       throw new BadRequestError("A valid email address is required.");
     }
 
-    await this.emailAccountService.ensureEmailNotDuplicated(
-      email,
-      organizationId,
+    await this.emailAccountService.ensureEmailNotDuplicated(email, organizationId!,
     );
 
     const provider = await this.emailAccountService.identifyProvider(email);
@@ -39,9 +38,8 @@ export class EmailAccountController {
   });
 
   connectCustomAuto = asyncWrap(async (req: Request, res: Response) => {
+    const { userId, organizationId } = getRequestContext();
     const { email, password } = req.body;
-    const userId = (req as any).userId;
-    const organizationId = (req as any).organizationId;
 
     const discoveryResult =
       await this.emailAccountService.attemptCustomAutoDiscovery(
@@ -59,7 +57,7 @@ export class EmailAccountController {
     }
 
     const { settings } = discoveryResult;
-    const encryptedPayload = encryptData(password, req.rawUserDEK!);
+    const encryptedPayload = encryptData(password, getRequestContext().rawUserDEK!);
 
     const customSettings: any = {
       protocol: settings.protocol,
@@ -84,7 +82,7 @@ export class EmailAccountController {
       email,
       provider: "custom",
       customSettings,
-    });
+    } as any);
 
     sendSuccess(
       res,
@@ -94,6 +92,7 @@ export class EmailAccountController {
   });
 
   connectCustomManual = asyncWrap(async (req: Request, res: Response) => {
+    const { userId, organizationId } = getRequestContext();
     const {
       email,
       password,
@@ -106,8 +105,6 @@ export class EmailAccountController {
       smtpPort,
       secure,
     } = req.body;
-    const userId = (req as any).userId;
-    const organizationId = (req as any).organizationId;
 
     try {
       await this.emailAccountService.verifyExplicitConfig({
@@ -128,13 +125,13 @@ export class EmailAccountController {
       );
     }
 
-    const encryptedPayload = encryptData(password, req.rawUserDEK!);
+    const encryptedPayload = encryptData(password, getRequestContext().rawUserDEK!);
 
     const resolvedProtocol = protocol === "pop3" ? "pop3" : "imap";
 
     await db.insert(connectedEmailAccount).values({
-      userId,
-      organizationId,
+      userId: userId!,
+      organizationId: organizationId!,
       email,
       provider: "custom",
       customSettings: {
@@ -158,16 +155,15 @@ export class EmailAccountController {
   });
 
   list = asyncWrap(async (req: Request, res: Response) => {
-    const userId = (req as any).userId;
-    const organizationId = (req as any).organizationId;
+    const { userId, organizationId } = getRequestContext();
     const status = req.query.status as string | undefined;
 
     const validStatus =
       status === "active" || status === "disabled" ? status : undefined;
 
     const emailAccounts = await this.emailAccountService.listEmailAccounts(
-      userId,
-      organizationId,
+      userId!,
+      organizationId!,
       validStatus,
     );
 
@@ -179,37 +175,37 @@ export class EmailAccountController {
   });
 
   enable = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { id } = req.params;
-    const organizationId = (req as any).organizationId;
 
     await this.emailAccountService.enableEmailAccount(
       String(id),
-      organizationId,
+      organizationId!,
     );
 
     sendSuccess(res, null, "Email account enabled successfully.");
   });
 
   disable = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { id } = req.params;
-    const organizationId = (req as any).organizationId;
 
     await this.emailAccountService.disableEmailAccount(
       String(id),
-      organizationId,
+      organizationId!,
     );
 
     sendSuccess(res, null, "Email account disabled successfully.");
   });
 
   remove = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { id } = req.params;
-    const organizationId = (req as any).organizationId;
 
     // Find the account before deleting so we can unlink the social connection
     const account = await this.emailAccountService.findEmailAccount(
       String(id),
-      organizationId,
+      organizationId!,
     );
 
     if (account && account.provider !== "custom" && account.providerAccountId) {
@@ -229,7 +225,7 @@ export class EmailAccountController {
 
     await this.emailAccountService.deleteEmailAccount(
       String(id),
-      organizationId,
+      organizationId!,
     );
 
     sendSuccess(res, null, "Email account deleted permanently.");
@@ -259,11 +255,13 @@ export class EmailAccountController {
   };
 
   initiateGoogleOAuth = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const url = await this.buildOAuthRedirect(req, "google");
     res.redirect(url);
   });
 
   initiateMicrosoftOAuth = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const url = await this.buildOAuthRedirect(req, "microsoft");
     res.redirect(url);
   });

@@ -5,10 +5,11 @@
  *     description: Security settings, 2FA & session management
  */
 import { Router } from "express";
-import { requireAdmin } from "../../../middleware/admin.middleware";
+
 import { requireAuth } from "../../../middleware/auth.middleware";
+import { resolveActorContext } from "../../../middleware/resolve-actor-context";
 import { CommonValidation } from "../../../validation/common.validation";
-import { setFirmContext } from "../../../middleware/rls.middleware";
+
 import { validateRequest } from "../../../middleware/validate.middleware";
 import { SecurityController } from "./security.controller";
 
@@ -28,7 +29,8 @@ export class SecurityRouter {
   }
 
   private initializeRoutes() {
-    this.router.use(requireAuth, requireAdmin, setFirmContext);
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
 
     /**
      * @openapi

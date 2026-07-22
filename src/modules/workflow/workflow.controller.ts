@@ -1,5 +1,5 @@
-import { Response } from "express";
-import { AuthRequest } from "../../middleware/auth.middleware";
+﻿import { Request, Response } from "express";
+import { getRequestContext } from "../../middleware/request-context";
 import asyncWrap from "../../utils/asyncWrapper";
 import { BadRequestError } from "../../utils/error/app-error";
 import { sendSuccess } from "../../utils/send-success";
@@ -13,130 +13,140 @@ export class WorkflowController {
     this.workflowService = workflowService;
   }
 
-  getWorkflow = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getWorkflow = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const result = await this.workflowService.getWorkflow(
       caseId,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, result, "Workflow retrieved successfully");
   });
 
-  getWorkflowSummary = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getWorkflowSummary = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const result = await this.workflowService.getWorkflowSummary(
       caseId,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, result, "Workflow summary retrieved successfully");
   });
 
-  completeStep = asyncWrap(async (req: AuthRequest, res: Response) => {
+  completeStep = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const stepId = req.params.stepId as string;
     const { notes } = req.body;
     const result = await this.workflowService.completeStep(
       caseId,
       stepId,
-      req.organizationId!,
-      req.staffId ?? req.adminId,
+      organizationId!,
+      staffId ?? undefined,
       notes,
     );
     sendSuccess(res, result, "Step completed successfully");
   });
 
-  submitForReview = asyncWrap(async (req: AuthRequest, res: Response) => {
+  submitForReview = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const stepId = req.params.stepId as string;
     const { notes } = req.body;
     const result = await this.workflowService.submitForReview(
       caseId,
       stepId,
-      req.organizationId!,
-      req.staffId ?? req.adminId,
+      organizationId!,
+      staffId ?? undefined,
       notes,
     );
     sendSuccess(res, result, "Step submitted for review successfully");
   });
 
-  approveStep = asyncWrap(async (req: AuthRequest, res: Response) => {
+  approveStep = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const stepId = req.params.stepId as string;
     const { notes } = req.body;
     const result = await this.workflowService.approveStep(
       caseId,
       stepId,
-      req.organizationId!,
-      req.staffId ?? req.adminId,
+      organizationId!,
+      staffId ?? undefined,
       notes,
     );
     sendSuccess(res, result, "Step approved successfully");
   });
 
-  rejectStep = asyncWrap(async (req: AuthRequest, res: Response) => {
+  rejectStep = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const stepId = req.params.stepId as string;
     const { feedback } = req.body;
     const result = await this.workflowService.rejectStep(
       caseId,
       stepId,
-      req.organizationId!,
-      req.staffId ?? req.adminId,
+      organizationId!,
+      staffId ?? undefined,
       feedback,
     );
     sendSuccess(res, result, "Step rejected");
   });
 
-  assignStep = asyncWrap(async (req: AuthRequest, res: Response) => {
+  assignStep = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId: _actorStaffId, organizationId } = getRequestContext();
+    const actorStaffId = _actorStaffId ?? undefined;
     const caseId = req.params.caseId as string;
     const stepId = req.params.stepId as string;
-    const { staffId, overrideRationale } = req.body;
-    if (!staffId) throw new BadRequestError("staffId is required");
+    const { staffId: assigneeStaffId, overrideRationale } = req.body;
+    if (!assigneeStaffId) throw new BadRequestError("staffId is required");
 
     const result = await this.workflowService.assignStep(
       caseId,
       stepId,
-      staffId,
-      req.organizationId!,
-      overrideRationale,
-      req.staffId ?? req.adminId,
+      assigneeStaffId,
+      actorStaffId!,
     );
     sendSuccess(res, result, "Step assigned successfully");
   });
 
-  activateModule = asyncWrap(async (req: AuthRequest, res: Response) => {
+  activateModule = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const moduleId = req.params.moduleId as string;
     const result = await this.workflowService.activateModule(
       caseId,
       moduleId,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, result, "Module activated successfully");
   });
 
-  getTimeline = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getTimeline = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const result = await this.workflowService.getTimeline(
       caseId,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, result, "Timeline retrieved successfully");
   });
 
-  getLogs = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getLogs = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const result = await this.workflowService.getLogs(
       caseId,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, result, "Logs retrieved successfully");
   });
 
-  // ─── My Tasks ───────────────────────────────────────────────────────────────────
+  // My Tasks
 
-  getMyTasks = asyncWrap(async (req: AuthRequest, res: Response) => {
-    if (!req.staffId) {
+  getMyTasks = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    if (!staffId) {
       sendSuccess(res, [], "My tasks retrieved successfully", 200, { pagination: { total: 0, limit: 10, offset: 0 } });
       return;
     }
@@ -146,8 +156,8 @@ export class WorkflowController {
       ? parseInt(req.query.limit as string, 10)
       : 10;
     const result = await this.workflowService.getMyTasks(
-      req.staffId,
-      req.organizationId!,
+      staffId,
+      organizationId!,
       status,
       page,
       limit,
@@ -156,16 +166,17 @@ export class WorkflowController {
     sendSuccess(res, data, "My tasks retrieved successfully", 200, { pagination, counts });
   });
 
-  // ─── Review Queue ───────────────────────────────────────────────────────────────
+  // Review Queue
 
-  getReviewQueue = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getReviewQueue = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const status = req.query.status as string | undefined;
     const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
     const limit = req.query.limit
       ? parseInt(req.query.limit as string, 10)
       : 10;
     const result = await this.workflowService.getReviewQueue(
-      req.organizationId!,
+      organizationId!,
       status,
       page,
       limit,
@@ -174,9 +185,10 @@ export class WorkflowController {
     sendSuccess(res, data, "Review queue retrieved successfully", 200, { pagination, counts });
   });
 
-  // ─── Case Notes ─────────────────────────────────────────────────────────────────
+  // Case Notes
 
-  createNote = asyncWrap(async (req: AuthRequest, res: Response) => {
+  createNote = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const { workflowModuleId, taskId, category, visibility, isPinned, context, content } =
       req.body;
@@ -184,7 +196,7 @@ export class WorkflowController {
 
     const result = await this.workflowService.createNote({
       caseId,
-      organizationId: req.organizationId!,
+      organizationId: organizationId!,
       workflowModuleId,
       taskId,
       category,
@@ -192,22 +204,23 @@ export class WorkflowController {
       isPinned,
       context,
       content,
-      createdByUserId: req.staffId ?? req.adminId ?? req.user?.id ?? "",
+      createdByUserId: staffId!,
     });
     sendSuccess(res, result, "Note created successfully", 201);
   });
 
-  getNotes = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getNotes = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const { pinnedOnly, authorId, context, page, limit } = req.query;
 
     // Look up user role from staff table
-    const userRole = req.adminId ? "admin" : "staff";
+    const userRole = staffId ? "admin" : "staff";
 
     const result = await this.workflowService.getNotes({
       caseId,
       userRole,
-      userId: req.staffId ?? req.adminId ?? "",
+      userId: staffId!,
       pinnedOnly: pinnedOnly === "true" ? true : undefined,
       authorId: authorId as string | undefined,
       context: context as string | undefined,
@@ -217,7 +230,8 @@ export class WorkflowController {
     sendSuccess(res, result.data, "Notes retrieved successfully", 200, { pagination: result.pagination });
   });
 
-  updateNote = asyncWrap(async (req: AuthRequest, res: Response) => {
+  updateNote = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const noteId = req.params.noteId as string;
     const { content, category, visibility, isPinned } = req.body;
@@ -226,37 +240,41 @@ export class WorkflowController {
       category,
       visibility,
       isPinned,
-    }, req.staffId ?? req.adminId);
+    }, staffId ?? undefined, organizationId ?? undefined);
     sendSuccess(res, result, "Note updated successfully");
   });
 
-  deleteNote = asyncWrap(async (req: AuthRequest, res: Response) => {
+  deleteNote = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const noteId = req.params.noteId as string;
-    await this.workflowService.deleteNote(noteId, caseId, req.staffId ?? req.adminId);
+    await this.workflowService.deleteNote(noteId, caseId, staffId ?? undefined, organizationId ?? undefined);
     sendSuccess(res, null, "Note deleted successfully");
   });
 
-  toggleNotePin = asyncWrap(async (req: AuthRequest, res: Response) => {
+  toggleNotePin = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const noteId = req.params.noteId as string;
-    const actorId = req.staffId ?? req.adminId;
-    const result = await this.workflowService.toggleNotePin(noteId, caseId, req.organizationId, actorId);
+    const actorId = staffId ?? undefined;
+    const result = await this.workflowService.toggleNotePin(noteId, caseId, organizationId ?? undefined, actorId ?? undefined);
     sendSuccess(res, result, "Note pin toggled successfully");
   });
 
-  bulkDeleteNotes = asyncWrap(async (req: AuthRequest, res: Response) => {
+  bulkDeleteNotes = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const { noteIds } = req.body;
     if (!noteIds || !Array.isArray(noteIds)) {
       throw new BadRequestError("noteIds array is required");
     }
-    const actorId = req.staffId ?? req.adminId;
-    await this.workflowService.bulkDeleteNotes(noteIds, caseId, req.organizationId, actorId);
+    const actorId = staffId ?? undefined;
+    await this.workflowService.bulkDeleteNotes(noteIds, caseId, organizationId ?? undefined, actorId ?? undefined);
     sendSuccess(res, null, "Notes deleted successfully");
   });
 
-  bulkPinNotes = asyncWrap(async (req: AuthRequest, res: Response) => {
+  bulkPinNotes = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const { noteIds, pinned } = req.body;
     if (!noteIds || !Array.isArray(noteIds)) {
@@ -265,17 +283,18 @@ export class WorkflowController {
     if (typeof pinned !== "boolean") {
       throw new BadRequestError("pinned boolean is required");
     }
-    const actorId = req.staffId ?? req.adminId;
-    await this.workflowService.bulkPinNotes(noteIds, caseId, pinned, req.organizationId, actorId);
+    const actorId = staffId ?? undefined;
+    await this.workflowService.bulkPinNotes(noteIds, caseId, pinned, organizationId ?? undefined, actorId ?? undefined);
     sendSuccess(res, null, "Notes pinned successfully");
   });
 
-  getAuditLog = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getAuditLog = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const { page, limit } = req.query;
     const result = await getCaseActivityPaginated({
       caseId,
-      organizationId: req.organizationId!,
+      organizationId: organizationId!,
       page: page ? parseInt(page as string, 10) : undefined,
       limit: limit ? parseInt(limit as string, 10) : undefined,
     });

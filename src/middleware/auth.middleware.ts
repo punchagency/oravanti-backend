@@ -2,16 +2,10 @@ import { fromNodeHeaders } from "better-auth/node";
 import { NextFunction, Request, Response } from "express";
 import { auth, getActiveOrganization } from "../auth";
 import { AuthenticationError } from "../utils/error/app-error";
-
-export interface AuthRequest extends Request {
-  userId?: string;
-  adminId?: string;
-  staffId?: string;
-  organizationId?: string;
-}
+import { setRequestContext } from "./request-context";
 
 export const requireAuth = async (
-  req: AuthRequest,
+  req: Request,
   _res: Response,
   next: NextFunction,
 ) => {
@@ -23,16 +17,19 @@ export const requireAuth = async (
     throw new AuthenticationError("Missing or invalid session");
   }
 
-  req.userId = session.user.id;
+  const userId = session.user.id;
 
   const activeOrganizationId = (session.session as { activeOrganizationId?: string })
     .activeOrganizationId;
+  let organizationId: string | undefined;
   if (activeOrganizationId) {
-    req.organizationId = activeOrganizationId;
+    organizationId = activeOrganizationId;
   } else {
-    const organization = await getActiveOrganization(session.user.id);
-    req.organizationId = organization?.id;
+    const organization = await getActiveOrganization(userId);
+    organizationId = organization?.id;
   }
+
+  setRequestContext({ userId, organizationId: organizationId ?? null });
 
   next();
 };

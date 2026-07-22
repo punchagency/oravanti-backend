@@ -35,13 +35,14 @@ type LogCaseEventInput = {
 const actorNameFor = async (
   conn: typeof db,
   actorId: string | null | undefined,
+  organizationId: string,
 ): Promise<string | null> => {
   if (!actorId) return null;
 
   const [row] = await conn
     .select({ firstName: staff.firstName, lastName: staff.lastName })
     .from(staff)
-    .where(eq(staff.id, actorId))
+    .where(and(eq(staff.id, actorId), eq(staff.organizationId, organizationId)))
     .limit(1);
 
   return row ? `${row.firstName} ${row.lastName}`.trim() : null;
@@ -56,7 +57,7 @@ export const logCaseEvent = async (data: LogCaseEventInput) => {
   let actorNameSnapshot = data.actorNameSnapshot ?? null;
   if (!actorNameSnapshot) {
     if (hasActor) {
-      actorNameSnapshot = await actorNameFor(conn, effectiveActorId);
+      actorNameSnapshot = await actorNameFor(conn, effectiveActorId, data.organizationId);
     } else {
       actorNameSnapshot = "System";
     }
@@ -146,7 +147,7 @@ export const getCaseActivityPaginated = async (params: {
   const [{ count }] = await db
     .select({ count: sql<number>`COUNT(*)::int` })
     .from(caseEvents)
-    .where(eq(caseEvents.caseId, params.caseId));
+    .where(and(eq(caseEvents.caseId, params.caseId), eq(caseEvents.organizationId, params.organizationId)));
 
   const rows = await db
     .select({
@@ -164,7 +165,7 @@ export const getCaseActivityPaginated = async (params: {
     })
     .from(caseEvents)
     .leftJoin(staff, eq(caseEvents.actorId, staff.id))
-    .where(eq(caseEvents.caseId, params.caseId))
+    .where(and(eq(caseEvents.caseId, params.caseId), eq(caseEvents.organizationId, params.organizationId)))
     .orderBy(desc(caseEvents.createdAt))
     .limit(limit)
     .offset(offset);

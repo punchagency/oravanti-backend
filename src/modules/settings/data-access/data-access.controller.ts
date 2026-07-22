@@ -1,5 +1,5 @@
-import { Response } from "express";
-import { AuthRequest } from "../../../middleware/auth.middleware";
+﻿import { Request, Response } from "express";
+import { getRequestContext } from "../../../middleware/request-context";
 import asyncWrap from "../../../utils/asyncWrapper";
 import { sendSuccess } from "../../../utils/send-success";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
@@ -17,19 +17,21 @@ export class DataAccessController {
     this.auditLogService = auditLogService;
   }
 
-  getDataAccessControls = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getDataAccessControls = asyncWrap(async (req: Request, res: Response) => {
+    const { userId, organizationId } = getRequestContext();
     const result = await this.dataAccessService.getDataAccessControls(
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, result, "Data access controls retrieved successfully");
   });
 
   updateDataAccessControls = asyncWrap(
-    async (req: AuthRequest, res: Response) => {
+    async (req: Request, res: Response) => {
+    const { userId, organizationId } = getRequestContext();
       const { controls } = req.body;
 
       await this.dataAccessService.updateDataAccessControls(
-        req.organizationId!,
+        organizationId!,
         controls,
       );
 
@@ -38,7 +40,7 @@ export class DataAccessController {
           ? `Updated ${controls[0].dataType.replace(/_/g, " ")} access for ${controls[0].role} role`
           : "Updated data access controls";
       this.auditLogService
-        .logPermissionChange(action, req.userId!, req.organizationId!)
+        .logPermissionChange(action, userId!, organizationId!)
         .catch(() => {});
 
       sendSuccess(res, null, "Data access controls updated");

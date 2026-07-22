@@ -1,5 +1,5 @@
-import { Response } from "express";
-import { AuthRequest } from "../../middleware/auth.middleware";
+﻿import { Request, Response } from "express";
+import { getRequestContext } from "../../middleware/request-context";
 import asyncWrap from "../../utils/asyncWrapper";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { parsePaginationQuery } from "../../utils/pagination";
@@ -13,40 +13,45 @@ export class QuestionnairesController {
     this.svc = questionnairesService;
   }
 
-  // ── System Questionnaire Read ──────────────────────────────────────────────
+  // System Questionnaire Read
 
-  getSystemQuestionnaires = asyncWrap(async (_req: AuthRequest, res: Response) => {
+  getSystemQuestionnaires = asyncWrap(async (_req: Request, res: Response) => {
     const result = await this.svc.getSystemQuestionnaires();
     sendSuccess(res, result, "System questionnaires retrieved successfully");
   });
 
-  getSystemQuestionnaireByCaseType = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getSystemQuestionnaireByCaseType = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.getSystemQuestionnaireByCaseType(req.params.caseTypeId as string);
     if (!result) throw new NotFoundError("Questionnaire not found for this case type");
     sendSuccess(res, result, "Questionnaire retrieved successfully");
   });
 
-  getSystemQuestionnaireById = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getSystemQuestionnaireById = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.getSystemQuestionnaireById(req.params.id as string);
     if (!result) throw new NotFoundError("Questionnaire not found");
     sendSuccess(res, result, "Questionnaire retrieved successfully");
   });
 
-  // ── System Questionnaire Management (admin only) ─────────────────────────
+  // System Questionnaire Management (admin only)
 
-  createSystemQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
+  createSystemQuestionnaire = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { caseTypeId, title, description, sections } = req.body;
     const result = await this.svc.createSystemQuestionnaire({ caseTypeId, title, description, sections });
     sendSuccess(res, result, "System questionnaire created successfully", 201);
   });
 
-  addSystemSection = asyncWrap(async (req: AuthRequest, res: Response) => {
+  addSystemSection = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { title, description, orderIndex } = req.body;
     const result = await this.svc.addSystemSection(req.params.id as string, { title, description, orderIndex });
     sendSuccess(res, result, "Section added successfully", 201);
   });
 
-  addSystemQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
+  addSystemQuestion = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.addSystemQuestion(
       req.params.id as string,
       req.params.sectionId as string,
@@ -55,70 +60,78 @@ export class QuestionnairesController {
     sendSuccess(res, result, "Question added successfully", 201);
   });
 
-  // ── Firm Questionnaire Additions ────────────────────────────────────────────
+  // Firm Questionnaire Additions
 
-  getMergedQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getMergedQuestionnaire = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.getMergedQuestionnaire(
-      req.organizationId!,
+      organizationId!,
       req.params.caseTypeId as string,
     );
     sendSuccess(res, result, "Questionnaire retrieved successfully");
   });
 
-  addFirmSection = asyncWrap(async (req: AuthRequest, res: Response) => {
+  addFirmSection = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { title, description, orderIndex } = req.body;
     const result = await this.svc.addFirmSection(
-      req.organizationId!,
+      organizationId!,
       req.params.caseTypeId as string,
       { title, description, orderIndex },
     );
     sendSuccess(res, result, "Firm section added successfully", 201);
   });
 
-  updateFirmSection = asyncWrap(async (req: AuthRequest, res: Response) => {
+  updateFirmSection = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.updateFirmSection(
-      req.organizationId!,
+      organizationId!,
       req.params.sectionId as string,
       req.body,
     );
     sendSuccess(res, result, "Firm section updated successfully");
   });
 
-  deleteFirmSection = asyncWrap(async (req: AuthRequest, res: Response) => {
-    await this.svc.deleteFirmSection(req.organizationId!, req.params.sectionId as string);
+  deleteFirmSection = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    await this.svc.deleteFirmSection(organizationId!, req.params.sectionId as string);
     sendSuccess(res, null, "Section deleted successfully");
   });
 
-  addFirmQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
+  addFirmQuestion = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.addFirmQuestion(
-      req.organizationId!,
+      organizationId!,
       req.params.caseTypeId as string,
       req.body,
     );
     sendSuccess(res, result, "Question added successfully", 201);
   });
 
-  updateFirmQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
+  updateFirmQuestion = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.updateFirmQuestion(
-      req.organizationId!,
+      organizationId!,
       req.params.questionId as string,
       req.body,
     );
     sendSuccess(res, result, "Question updated successfully");
   });
 
-  deleteFirmQuestion = asyncWrap(async (req: AuthRequest, res: Response) => {
-    await this.svc.deleteFirmQuestion(req.organizationId!, req.params.questionId as string);
+  deleteFirmQuestion = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    await this.svc.deleteFirmQuestion(organizationId!, req.params.questionId as string);
     sendSuccess(res, null, "Question deleted successfully");
   });
 
-  // ── Responses ─────────────────────────────────────────────────────────────
+  // Responses
 
-  getResponses = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getResponses = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { caseTypeId, page, limit } = req.query;
     const queryPagination = parsePaginationQuery({ page, limit });
     const result = await this.svc.getResponses(
-      req.organizationId!,
+      organizationId!,
       req.params.id as string,
       { caseTypeId: caseTypeId as string, ...queryPagination },
     );
@@ -126,73 +139,81 @@ export class QuestionnairesController {
     sendSuccess(res, data, "Responses retrieved successfully", 200, { pagination });
   });
 
-  getEligibleQuestionnairesForCase = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getEligibleQuestionnairesForCase = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.getEligibleQuestionnairesForCase(
-      req.organizationId!,
+      organizationId!,
       req.params.caseId as string,
     );
     sendSuccess(res, result, "Eligible questionnaires retrieved successfully");
   });
 
-  // ── Intake: eligible leads, question bank, response review ──────────────────
+  // Intake: eligible leads, question bank, response review
 
-  getEligibleLeads = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getEligibleLeads = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.getEligibleLeadsForQuestionnaire(
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, result, "Eligible leads retrieved successfully");
   });
 
-  getQuestionBank = asyncWrap(async (_req: AuthRequest, res: Response) => {
+  getQuestionBank = asyncWrap(async (_req: Request, res: Response) => {
     const result = await this.svc.getQuestionBank();
     sendSuccess(res, result, "Question bank retrieved successfully");
   });
 
-  getCaseTypePreview = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getCaseTypePreview = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.getMergedQuestionnaire(
-      req.organizationId!,
+      organizationId!,
       req.params.caseTypeId as string,
     );
     sendSuccess(res, result, "Case type preview retrieved successfully");
   });
 
-  getResponseDetail = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getResponseDetail = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.getResponseDetailById(
-      req.organizationId!,
+      organizationId!,
       req.params.responseId as string,
     );
     sendSuccess(res, result, "Response detail retrieved successfully");
   });
 
-  acceptResponse = asyncWrap(async (req: AuthRequest, res: Response) => {
+  acceptResponse = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.acceptResponseAndAdvance(
-      req.organizationId!,
+      organizationId!,
       req.params.responseId as string,
     );
     sendSuccess(res, result, "Response accepted successfully");
   });
 
-  sendReminder = asyncWrap(async (req: AuthRequest, res: Response) => {
+  sendReminder = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.sendManualReminder(
-      req.organizationId!,
+      organizationId!,
       req.params.sendId as string,
     );
     sendSuccess(res, result, "Reminder sent successfully");
   });
 
   requestMissingDocuments = asyncWrap(
-    async (req: AuthRequest, res: Response) => {
+    async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
       const result = await this.svc.requestMissingDocuments(
-        req.organizationId!,
+        organizationId!,
         req.params.sendId as string,
       );
       sendSuccess(res, result, "Missing documents requested successfully");
     },
   );
 
-  downloadResponsePdf = asyncWrap(async (req: AuthRequest, res: Response) => {
+  downloadResponsePdf = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { buffer, filename } = await this.svc.generateResponsePdf(
-      req.organizationId!,
+      organizationId!,
       req.params.responseId as string,
     );
     res.setHeader("Content-Type", "application/pdf");
@@ -203,10 +224,11 @@ export class QuestionnairesController {
     res.status(200).send(buffer);
   });
 
-  downloadResponseFile = asyncWrap(async (req: AuthRequest, res: Response) => {
+  downloadResponseFile = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { buffer, mimeType, filename } =
       await this.svc.getResponseFileForDownload(
-        req.organizationId!,
+        organizationId!,
         req.params.fileId as string,
       );
     res.setHeader("Content-Type", mimeType);
@@ -217,24 +239,28 @@ export class QuestionnairesController {
     res.status(200).send(buffer);
   });
 
-  // ── Token-Based Client Endpoints ───────────────────────────────────────────
+  // Token-Based Client Endpoints
 
-  getClientQuestionnaire = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getClientQuestionnaire = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.getClientQuestionnaireByToken(req.params.token as string);
     sendSuccess(res, result, "Questionnaire retrieved successfully");
   });
 
-  saveDraftResponse = asyncWrap(async (req: AuthRequest, res: Response) => {
+  saveDraftResponse = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.saveDraftResponseByToken(req.params.token as string, req.body);
     sendSuccess(res, result, "Draft saved successfully");
   });
 
-  submitResponse = asyncWrap(async (req: AuthRequest, res: Response) => {
+  submitResponse = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.submitResponseByToken(req.params.token as string, req.body);
     sendSuccess(res, result, "Response submitted successfully");
   });
 
-  uploadResponseFile = asyncWrap(async (req: AuthRequest, res: Response) => {
+  uploadResponseFile = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const file = req.file;
     if (!file) throw new BadRequestError("File is required");
 
@@ -254,14 +280,15 @@ export class QuestionnairesController {
   });
 
   uploadResponseFileForStaff = asyncWrap(
-    async (req: AuthRequest, res: Response) => {
+    async (req: Request, res: Response) => {
+      const { organizationId } = getRequestContext();
       const file = req.file;
       if (!file) throw new BadRequestError("File is required");
 
       const { questionId, questionSource } = req.body;
 
       const result = await this.svc.uploadResponseFileByStaff(
-        req.organizationId!,
+        organizationId!,
         {
           responseId: req.params.responseId as string,
           questionId,
@@ -277,9 +304,10 @@ export class QuestionnairesController {
     },
   );
 
-  // ── Lead Document Files ────────────────────────────────────────────────────
+  // Lead Document Files
 
-  getFilesByLeadId = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getFilesByLeadId = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const files = await this.svc.getFilesByLeadId(req.params.leadId as string);
     sendSuccess(res, files, "Lead files retrieved successfully");
   });
