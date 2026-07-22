@@ -62,6 +62,7 @@ import {
   caseWorkflowSteps,
 } from "../../db/schema/workflow";
 import { scenarioDocumentRequirements } from "../../db/schema/document-requirements";
+import { materializeCaseTypeRequirements } from "../document-requirements/document-requirements.service";
 import { relinkLeadDocumentsToCase } from "../documents/document-ingest";
 import {
   cancelQuestionnaireReminder,
@@ -4427,6 +4428,16 @@ const openCase = async (
       .update(scenarioDocumentRequirements)
       .set({ leadId: null, caseId: newCase.id, updatedAt: new Date() })
       .where(eq(scenarioDocumentRequirements.leadId, leadId));
+
+    // Materialize the case type's requirement templates onto the new case
+    // (idempotent; skips any already present from the lead move).
+    if (newCase.caseTypeId) {
+      await materializeCaseTypeRequirements(tx, {
+        organizationId,
+        caseId: newCase.id,
+        caseTypeId: newCase.caseTypeId,
+      });
+    }
 
     /**
      * TODO: Notify assigned team lead of new case. This is commented out for now because the assigned team may not be set at the time of case opening, and we don't want to send notifications to the wrong person. We will revisit this logic once we have a clearer understanding of how team assignments will work in the future.
