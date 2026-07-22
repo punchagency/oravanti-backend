@@ -120,6 +120,13 @@ export const enqueueScenarioScan = async (
 
 /** Spacing between successive full-scan jobs, to spread execution load. */
 const FULL_SCAN_SPACING_MS = 1500;
+/**
+ * Cap on a full-scan job's delay. Beyond this, jobs pile at the cap and the
+ * worker drains them at its own concurrency (BullMQ backpressure). Kept well
+ * under the reconciliation queued-timeout (1h) so a delayed job is never swept
+ * as "never started" just before it fires.
+ */
+const MAX_FULL_SCAN_DELAY_MS = 20 * 60 * 1000; // 20 min
 
 export type FullScanResult = {
   scenarios: number;
@@ -189,7 +196,7 @@ export const enqueueFullScan = async (
       scenarioId: scenario.id,
       trigger: "full_scan",
       requestedByStaffId,
-      debounceMs: index * FULL_SCAN_SPACING_MS,
+      debounceMs: Math.min(index * FULL_SCAN_SPACING_MS, MAX_FULL_SCAN_DELAY_MS),
     });
     if (r.coalesced) result.coalesced += 1;
     else if (r.enqueued) result.enqueued += 1;

@@ -173,6 +173,26 @@ export const buildScanRequest = async (params: {
       !!r.mimeType &&
       SUPPORTED_MIME_TYPES.has(r.mimeType),
   );
+
+  // Mark versions the AI can't process (no checksum / unsupported type) as
+  // 'skipped' so they don't sit at 'pending' forever — otherwise the result
+  // consumer's "any pending ⇒ re-scan" re-check would loop on them.
+  const scannableVersionIds = new Set(scannable.map((r) => r.versionId));
+  const skipVersionIds = rows
+    .map((r) => r.versionId)
+    .filter((id): id is string => !!id && !scannableVersionIds.has(id));
+  if (skipVersionIds.length > 0) {
+    await db
+      .update(documentVersions)
+      .set({ aiScanStatus: "skipped", aiScannedAt: new Date() })
+      .where(
+        and(
+          inArray(documentVersions.id, skipVersionIds),
+          eq(documentVersions.aiScanStatus, "pending"),
+        ),
+      );
+  }
+
   if (scannable.length === 0) return null;
 
   const promptVersion = effectivePromptVersion(DOCUMENT_TYPE_SLUGS);
