@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
-import { db } from "../db/client";
+import { systemDb } from "../db/client";
 import { member, organization } from "../db/schema/auth-schema";
 
 export async function getActiveOrganization(userId: string) {
-  const [memberUser] = await db
+  const [memberUser] = await systemDb
     .select()
     .from(member)
     .where(eq(member.userId, userId));
@@ -12,7 +12,7 @@ export async function getActiveOrganization(userId: string) {
     return null;
   }
 
-  const [activeOrganization] = await db
+  const [activeOrganization] = await systemDb
     .select()
     .from(organization)
     .where(eq(organization.id, memberUser.organizationId));

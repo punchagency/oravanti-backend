@@ -82,6 +82,7 @@ export class DocumentsController {
 
     const result = await this.documentsService.updateDocument(
       req.params.id as string,
+      organizationId!,
       {
         uploadedByUserId: userId!,
         fileBuffer: file.buffer,
@@ -110,6 +111,7 @@ export class DocumentsController {
     const { userId, organizationId } = getRequestContext();
     const result = await this.documentsService.grantUserAccess(
       req.params.id as string,
+      organizationId!,
       userId!,
       {
         targetUserId: req.body.userId,
@@ -126,6 +128,7 @@ export class DocumentsController {
       req.params.id as string,
       userId!,
       req.params.userId as string,
+      organizationId!,
     );
 
     sendSuccess(res, result, "User access revoked successfully");
@@ -161,6 +164,7 @@ export class DocumentsController {
     const result = await this.documentsService.cancelExternalRequest(
       req.params.requestId as string,
       userId!,
+      organizationId!,
     );
 
     sendSuccess(res, result, "External request cancelled successfully");
@@ -175,6 +179,7 @@ export class DocumentsController {
 
     const result = await this.documentsService.submitExternalDocument(
       req.params.token as string,
+      organizationId!,
       {
         uploadedByName: req.body.uploadedByName,
         uploadedByEmail: req.body.uploadedByEmail,
@@ -195,6 +200,7 @@ export class DocumentsController {
       req.params.id as string,
       userId!,
       req.body.status,
+      organizationId!,
     );
 
     if (!result) {
@@ -209,6 +215,7 @@ export class DocumentsController {
     const result = await this.documentsService.archiveDocument(
       req.params.id as string,
       userId!,
+      organizationId!,
     );
 
     sendSuccess(res, result, "Document archived successfully");
@@ -219,6 +226,7 @@ export class DocumentsController {
     const result = await this.documentsService.restoreDocument(
       req.params.id as string,
       userId!,
+      organizationId!,
     );
 
     sendSuccess(res, result, "Document restored successfully");
@@ -229,6 +237,7 @@ export class DocumentsController {
     const url = await this.documentsService.getDownloadUrl(
       req.params.id as string,
       userId!,
+      organizationId!,
     );
 
     sendSuccess(res, { url }, "Download URL generated successfully");
@@ -249,6 +258,7 @@ export class DocumentsController {
     await this.documentsService.deleteDocument(
       req.params.id as string,
       userId!,
+      organizationId!,
     );
 
     sendSuccess(res, null, "Document deleted successfully");

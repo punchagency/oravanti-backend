@@ -72,3 +72,24 @@ export const roleMap = {
   admin,
   member: memberRole,
 } as const;
+
+// ── Client & Contractor permission sets ──────────────────────────────────────
+// These are static permission sets for non-staff user types.
+// They don't use organization-based RBAC — access is controlled by RLS policies
+// (user-ownership checks at the database level).
+
+export const clientPermissions: Record<string, string[]> = {
+  cases: ["read"],
+  clients: ["read"],
+  documents: ["read", "download"],
+};
+
+export const contractorPermissions: Record<string, string[]> = {
+  cases: ["read"],
+  clients: [],
+  documents: ["read", "download"],
+  staffs: [],
+};
+
+export type ClientPermissions = typeof clientPermissions;
+export type ContractorPermissions = typeof contractorPermissions;

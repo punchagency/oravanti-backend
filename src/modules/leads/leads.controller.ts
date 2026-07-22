@@ -923,6 +923,7 @@ export class LeadsController {
     const staffId = _staffId ?? undefined;
     const event = await this.wfSvc.createTimelineEvent({
       leadId: req.params.leadId as string,
+      organizationId: organizationId!,
       eventType: req.body.eventType,
       title: req.body.title,
       description: req.body.description,

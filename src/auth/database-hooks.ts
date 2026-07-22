@@ -3,7 +3,7 @@ import { symmetricDecrypt } from "better-auth/crypto";
 import { desc, eq } from "drizzle-orm";
 import { google } from "googleapis";
 import { env } from "../config/env";
-import { db } from "../db/client";
+import { systemDb } from "../db/client";
 import { staff } from "../db/schema";
 import { member, session } from "../db/schema/auth-schema";
 import { connectedEmailAccount } from "../db/schema/email";
@@ -23,7 +23,7 @@ function extractEmailFromIdToken(idToken: string): string | null {
 }
 
 async function getOrgId(userId: string) {
-  const [latestSession] = await db
+  const [latestSession] = await systemDb
     .select({ activeOrganizationId: session.activeOrganizationId })
     .from(session)
     .where(eq(session.userId, userId))
@@ -34,7 +34,7 @@ async function getOrgId(userId: string) {
     return latestSession.activeOrganizationId;
   }
 
-  const [membership] = await db
+  const [membership] = await systemDb
     .select({ organizationId: member.organizationId })
     .from(member)
     .where(eq(member.userId, userId))
@@ -47,7 +47,7 @@ export const databaseHooks = {
   user: {
     update: {
       after: async (user) => {
-        await db
+        await systemDb
           .update(staff)
           .set({ email: user.email })
           .where(eq(staff.userId, user.id));
@@ -110,7 +110,7 @@ export const databaseHooks = {
           if (!orgId) return;
 
           // 3. Save to connectedEmailAccount
-          await db
+          await systemDb
             .insert(connectedEmailAccount)
             .values({
               userId: account.userId,

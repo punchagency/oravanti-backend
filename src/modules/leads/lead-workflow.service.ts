@@ -554,6 +554,7 @@ export class LeadWorkflowService {
   async createTimelineEvent(
     data: {
       leadId: string;
+      organizationId: string;
       eventType: string;
       title: string;
       description?: string;
@@ -608,7 +609,7 @@ export class LeadWorkflowService {
   ) {
     const [link] = await db
       .insert(leadDocumentLinks)
-      .values({ documentId, leadId, linkedByStaffId })
+      .values({ documentId, leadId, linkedByStaffId, organizationId: organizationId! })
       .returning();
 
     if (organizationId) {

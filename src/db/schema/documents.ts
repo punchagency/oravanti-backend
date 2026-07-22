@@ -9,7 +9,7 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
-import { user } from "./auth-schema";
+import { organization, user } from "./auth-schema";
 import { cases } from "./cases";
 
 export const documentCategoryEnum = pgEnum("document_category", [
@@ -66,6 +66,9 @@ export const documents = pgTable(
   "documents",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id),
     title: text("title").notNull(),
     status: documentStatusEnum("status").notNull().default("active"),
     category: documentCategoryEnum("category"),
@@ -77,6 +80,7 @@ export const documents = pgTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
+    index("documents_organization_idx").on(table.organizationId),
     index("documents_created_by_user_idx").on(table.createdByUserId),
     index("documents_status_idx").on(table.status),
     index("documents_current_version_idx").on(table.currentVersionId),
@@ -87,6 +91,9 @@ export const documentVersions = pgTable(
   "document_versions",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id),
     documentId: uuid("document_id")
       .notNull()
       .references(() => documents.id),
@@ -112,6 +119,7 @@ export const documentVersions = pgTable(
       table.documentId,
       table.versionNumber,
     ),
+    index("document_versions_organization_idx").on(table.organizationId),
     index("document_versions_document_idx").on(table.documentId),
     index("document_versions_uploaded_by_idx").on(table.uploadedByUserId),
     index("document_versions_scan_status_idx").on(table.scanStatus),
@@ -122,6 +130,9 @@ export const documentCaseLinks = pgTable(
   "document_case_links",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id),
     documentId: uuid("document_id")
       .notNull()
       .references(() => documents.id),
@@ -138,6 +149,7 @@ export const documentCaseLinks = pgTable(
       table.documentId,
       table.caseId,
     ),
+    index("document_case_links_organization_idx").on(table.organizationId),
     index("document_case_links_document_idx").on(table.documentId),
     index("document_case_links_case_idx").on(table.caseId),
   ],
@@ -147,6 +159,9 @@ export const documentAccess = pgTable(
   "document_access",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id),
     documentId: uuid("document_id")
       .notNull()
       .references(() => documents.id),
@@ -164,6 +179,7 @@ export const documentAccess = pgTable(
       table.documentId,
       table.userId,
     ),
+    index("document_access_organization_idx").on(table.organizationId),
     index("document_access_document_idx").on(table.documentId),
     index("document_access_user_idx").on(table.userId),
   ],
@@ -173,6 +189,9 @@ export const documentRequests = pgTable(
   "document_requests",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id),
     caseId: uuid("case_id")
       .notNull()
       .references(() => cases.id),
@@ -189,6 +208,7 @@ export const documentRequests = pgTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
+    index("document_requests_organization_idx").on(table.organizationId),
     index("document_requests_case_idx").on(table.caseId),
     index("document_requests_user_idx").on(table.requestedByUserId),
     index("document_requests_status_idx").on(table.status),
@@ -199,6 +219,9 @@ export const externalSubmissions = pgTable(
   "external_submissions",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id),
     requestId: uuid("request_id")
       .notNull()
       .references(() => documentRequests.id),
@@ -219,6 +242,7 @@ export const externalSubmissions = pgTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
+    index("external_submissions_organization_idx").on(table.organizationId),
     index("external_submissions_request_idx").on(table.requestId),
     index("external_submissions_document_idx").on(table.documentId),
     index("external_submissions_version_idx").on(table.documentVersionId),
@@ -229,6 +253,9 @@ export const documentActivityLogs = pgTable(
   "document_activity_logs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id),
     documentId: uuid("document_id").references(() => documents.id),
     actorUserId: text("actor_user_id").references(() => user.id),
     actorEmail: text("actor_email"),
@@ -239,6 +266,7 @@ export const documentActivityLogs = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [
+    index("document_activity_logs_organization_idx").on(table.organizationId),
     index("document_activity_logs_document_idx").on(table.documentId),
     index("document_activity_logs_actor_idx").on(table.actorUserId),
     index("document_activity_logs_action_idx").on(table.action),

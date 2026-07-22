@@ -1128,6 +1128,7 @@ export class WorkflowService {
     const [note] = await db
       .insert(caseNotes)
       .values({
+        organizationId: data.organizationId,
         caseId: data.caseId,
         workflowModuleId: data.workflowModuleId,
         taskId: data.taskId,

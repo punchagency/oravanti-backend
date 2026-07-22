@@ -3,6 +3,7 @@ import { createCipheriv, createHash, randomBytes, randomUUID } from "crypto";
 import { inArray } from "drizzle-orm";
 import { Request } from "express";
 import { auth } from "../../auth";
+import { getRequestContext } from "../../middleware/request-context";
 import { env } from "../../config/env";
 import { db } from "../../db/client";
 import {
@@ -209,6 +210,7 @@ export class AuthService {
     identificationFiles: Express.Multer.File[],
     req: Request,
   ) => {
+    const { organizationId } = getRequestContext();
     const email = normalizeEmail(body.email);
     const specialtyIds = [...new Set(body.specialtyIds)];
     const certificationDocuments = body.certificationDocuments;
@@ -459,6 +461,7 @@ export class AuthService {
               id: identification.documentId,
               title: identification.title,
               category: "identity",
+              organizationId: organizationId!,
               createdByUserId: userId,
             })
             .returning();
@@ -473,6 +476,7 @@ export class AuthService {
               fileSize: identification.fileSize,
               versionNumber: 1,
               uploadedByUserId: userId,
+              organizationId: organizationId!,
               scanStatus: "SKIPPED",
             })
             .returning();
@@ -486,6 +490,7 @@ export class AuthService {
             documentId: document.id,
             userId,
             permission: "ADMIN",
+            organizationId: organizationId!,
             grantedByUserId: userId,
           });
         }
@@ -497,6 +502,7 @@ export class AuthService {
               id: certification.documentId,
               title: certification.title,
               category: "supporting",
+              organizationId: organizationId!,
               createdByUserId: userId,
             })
             .returning();
@@ -511,6 +517,7 @@ export class AuthService {
               fileSize: certification.fileSize,
               versionNumber: 1,
               uploadedByUserId: userId,
+              organizationId: organizationId!,
               scanStatus: "SKIPPED",
             })
             .returning();
@@ -524,6 +531,7 @@ export class AuthService {
             documentId: document.id,
             userId,
             permission: "ADMIN",
+            organizationId: organizationId!,
             grantedByUserId: userId,
           });
         }

@@ -120,6 +120,7 @@ export const caseWorkflowSteps = pgTable('case_workflow_steps', {
 
 export const caseNotes = pgTable('case_notes', {
   id:                uuid('id').primaryKey().defaultRandom(),
+  organizationId:    text('organization_id').notNull().references(() => organization.id),
   caseId:            uuid('case_id').notNull().references(() => cases.id, { onDelete: 'cascade' }),
   workflowModuleId:  uuid('workflow_module_id').references(() => workflowModules.id, { onDelete: 'set null' }),
   taskId:            uuid('task_id').references(() => caseWorkflowSteps.id, { onDelete: 'set null' }),
@@ -137,14 +138,15 @@ export const caseNotes = pgTable('case_notes', {
 // ─── Case Timeline Events ───────────────────────────────────────────────────────
 
 export const caseTimelineEvents = pgTable('case_timeline_events', {
-  id:          uuid('id').primaryKey().defaultRandom(),
-  caseId:      uuid('case_id').notNull().references(() => cases.id, { onDelete: 'cascade' }),
-  eventType:   text('event_type').notNull(),
-  title:       text('title').notNull(),
-  description: text('description'),
-  metadata:    jsonb('metadata'),
-  createdById: uuid('created_by_id').references(() => staff.id),
-  createdAt:   timestamp('created_at').notNull().defaultNow(),
+  id:             uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull().references(() => organization.id),
+  caseId:         uuid('case_id').notNull().references(() => cases.id, { onDelete: 'cascade' }),
+  eventType:      text('event_type').notNull(),
+  title:          text('title').notNull(),
+  description:    text('description'),
+  metadata:       jsonb('metadata'),
+  createdById:    uuid('created_by_id').references(() => staff.id),
+  createdAt:      timestamp('created_at').notNull().defaultNow(),
 });
 
 // ─── Workflow Log (Audit Trail) ──────────────────────────────────────────────────
