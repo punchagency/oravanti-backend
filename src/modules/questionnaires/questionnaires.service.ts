@@ -1423,7 +1423,7 @@ export class QuestionnairesService {
       for (const [questionId, { value, source }] of answerMap.entries()) {
         await tx
           .insert(questionnaireAnswers)
-          .values({ responseId: response.id, questionId, questionSource: source, value: value as any })
+          .values({ responseId: response.id, organizationId: send.organizationId, questionId, questionSource: source, value: value as any })
           .onConflictDoUpdate({
             target: [questionnaireAnswers.responseId, questionnaireAnswers.questionId],
             set: { value: value as any, updatedAt: now },

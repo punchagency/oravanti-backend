@@ -1902,6 +1902,7 @@ const seedDemoData = async (organizationId?: string) => {
           category: pick(documentCategories, index),
           createdByUserId: uploader.userId,
           status: pick(documentStatuses, index),
+          organizationId: firm.id,
         };
       },
     );
@@ -1928,6 +1929,7 @@ const seedDemoData = async (organizationId?: string) => {
           scannedAt: index % 3 !== 0 ? timestampFromNow(-index) : undefined,
           createdAt: document.createdAt,
           updatedAt: document.updatedAt,
+          organizationId: firm.id,
         };
       },
     );
@@ -1951,6 +1953,7 @@ const seedDemoData = async (organizationId?: string) => {
           documentId: document.id,
           caseId: currentCase.id,
           linkedByUserId: uploader.userId,
+          organizationId: firm.id,
         };
       });
     await tx.insert(documentCaseLinks).values(documentCaseLinkValues);
@@ -1964,6 +1967,7 @@ const seedDemoData = async (organizationId?: string) => {
         userId: uploader.userId,
         permission: "ADMIN",
         grantedByUserId: uploader.userId,
+        organizationId: firm.id,
       });
     }
     if (documentAccessValues.length) {
@@ -1972,6 +1976,7 @@ const seedDemoData = async (organizationId?: string) => {
 
     const documentActivityValues: NewDocumentActivityLogRow[] =
       createdDocuments.map((document, index) => ({
+        organizationId: firm.id,
         documentId: document.id,
         actorUserId: pick(createdStaff, index).userId,
         action: "CREATED",
