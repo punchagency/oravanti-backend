@@ -27,6 +27,9 @@ export class LeadWorkflowRouter {
   private initializeRoutes() {
     const { ctrl } = this;
 
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
+
     // My Tasks (must be before /:leadId routes)
 
     this.router.get(
@@ -273,6 +276,9 @@ export class LeadsRouter {
   private initializeRoutes() {
     const { ctrl } = this;
 
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
+
     // Leads CRUD
 
     this.router.post(
@@ -512,6 +518,9 @@ export class AgreementsRouter {
   private initializeRoutes() {
     const { ctrl } = this;
 
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
+
     this.router.get(
       "/:agreementId/preview",
       requireAuth,
@@ -673,6 +682,9 @@ export class CaseWorkflowRouter {
 
   private initializeRoutes() {
     const { ctrl } = this;
+
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
 
     this.router.get(
       "/:caseId/workflow",
