@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { NextFunction, Request, Response } from "express";
 import { db } from "../config/db";
 import { env } from "../config/env";
-import { AuthRequest } from "../middleware/auth.middleware";
+import { getRequestContext, setRequestContext } from "../middleware/request-context";
 import { decryptUserDEK, rotateUserDEK } from "../utils/cryptoUtils";
 import { user } from "./../db/schema/auth-schema";
 
@@ -12,11 +12,13 @@ const OLD_KEY = env.SERVER_MASTER_KEY_OLD
   : null;
 
 export async function injectUserDEK(
-  req: AuthRequest,
+  _req: Request,
   res: Response,
   next: NextFunction,
 ) {
-  if (!req.userId) {
+  const { userId } = getRequestContext();
+
+  if (!userId) {
     return res
       .status(401)
       .json({ error: "Authentication required before key injection." });
@@ -32,7 +34,7 @@ export async function injectUserDEK(
         dekTag: user.dekTag,
       })
       .from(user)
-      .where(eq(user.id, req.userId))
+      .where(eq(user.id, userId))
       .limit(1);
 
     if (!userKeys || !userKeys.encryptedDEK) {
@@ -42,7 +44,7 @@ export async function injectUserDEK(
     }
 
     try {
-      req.rawUserDEK = decryptUserDEK(userKeys, PRIMARY_KEY);
+      setRequestContext({ rawUserDEK: decryptUserDEK(userKeys, PRIMARY_KEY) });
       return next();
     } catch (primaryErr) {
       if (!OLD_KEY) {
@@ -55,7 +57,7 @@ export async function injectUserDEK(
       }
 
       try {
-        req.rawUserDEK = decryptUserDEK(userKeys, OLD_KEY);
+        setRequestContext({ rawUserDEK: decryptUserDEK(userKeys, OLD_KEY) });
 
         console.warn(
           `[LAZY_MIGRATION] Running re-keying background task for: ${userKeys.email}`,
