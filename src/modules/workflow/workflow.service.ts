@@ -361,7 +361,7 @@ export class WorkflowService {
         timeTakenMs,
         updatedAt: now,
       })
-      .where(eq(caseWorkflowSteps.id, stepId));
+      .where(and(eq(caseWorkflowSteps.id, stepId), eq(caseWorkflowSteps.organizationId, organizationId)));
 
     const [moduleName, staffMap] = await Promise.all([
       resolveModuleName(step.templateStepId),
@@ -576,9 +576,18 @@ export class WorkflowService {
 
   async getTimeline(caseId: string, organizationId: string) {
     const events = await db
-      .select()
+      .select({
+        id: caseTimelineEvents.id,
+        eventType: caseTimelineEvents.eventType,
+        title: caseTimelineEvents.title,
+        description: caseTimelineEvents.description,
+        metadata: caseTimelineEvents.metadata,
+        createdById: caseTimelineEvents.createdById,
+        createdAt: caseTimelineEvents.createdAt,
+      })
       .from(caseTimelineEvents)
-      .where(eq(caseTimelineEvents.caseId, caseId))
+      .innerJoin(cases, eq(caseTimelineEvents.caseId, cases.id))
+      .where(and(eq(caseTimelineEvents.caseId, caseId), eq(cases.organizationId, organizationId)))
       .orderBy(asc(caseTimelineEvents.createdAt));
 
     // Fetch step action logs for all steps in this case
@@ -592,7 +601,7 @@ export class WorkflowService {
         caseWorkflowSteps,
         eq(stepActionLogs.stepId, caseWorkflowSteps.id),
       )
-      .where(eq(caseWorkflowSteps.caseId, caseId))
+      .where(and(eq(caseWorkflowSteps.caseId, caseId), eq(stepActionLogs.organizationId, organizationId)))
       .orderBy(asc(stepActionLogs.createdAt));
 
     const ACTION_EVENT_MAP: Record<string, string> = {
@@ -757,7 +766,7 @@ export class WorkflowService {
     await db
       .update(caseWorkflowSteps)
       .set({ status: "in_review", updatedAt: now })
-      .where(eq(caseWorkflowSteps.id, stepId));
+      .where(and(eq(caseWorkflowSteps.id, stepId), eq(caseWorkflowSteps.organizationId, organizationId)));
 
     await logStepAction({
       organizationId,
@@ -846,7 +855,7 @@ export class WorkflowService {
         timeTakenMs,
         updatedAt: now,
       })
-      .where(eq(caseWorkflowSteps.id, stepId));
+      .where(and(eq(caseWorkflowSteps.id, stepId), eq(caseWorkflowSteps.organizationId, organizationId)));
 
     await logStepAction({
       organizationId,
@@ -944,7 +953,7 @@ export class WorkflowService {
         status: "in_progress",
         updatedAt: now,
       })
-      .where(eq(caseWorkflowSteps.id, stepId));
+      .where(and(eq(caseWorkflowSteps.id, stepId), eq(caseWorkflowSteps.organizationId, organizationId)));
 
     await logStepAction({
       organizationId,
@@ -1253,6 +1262,15 @@ export class WorkflowService {
 
     if (!existing) throw new NotFoundError("Note not found");
 
+    if (organizationId) {
+      const [caseRow] = await db
+        .select({ id: cases.id })
+        .from(cases)
+        .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
+        .limit(1);
+      if (!caseRow) throw new NotFoundError("Note not found");
+    }
+
     const newPinnedState = !existing.isPinned;
 
     await db
@@ -1276,6 +1294,15 @@ export class WorkflowService {
   }
 
   async bulkDeleteNotes(noteIds: string[], caseId: string, organizationId?: string, actorId?: string) {
+    if (organizationId) {
+      const [caseRow] = await db
+        .select({ id: cases.id })
+        .from(cases)
+        .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
+        .limit(1);
+      if (!caseRow) throw new NotFoundError("Notes not found");
+    }
+
     await db
       .delete(caseNotes)
       .where(and(inArray(caseNotes.id, noteIds), eq(caseNotes.caseId, caseId)));
@@ -1294,6 +1321,15 @@ export class WorkflowService {
   }
 
   async bulkPinNotes(noteIds: string[], caseId: string, isPinned: boolean, organizationId?: string, actorId?: string) {
+    if (organizationId) {
+      const [caseRow] = await db
+        .select({ id: cases.id })
+        .from(cases)
+        .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
+        .limit(1);
+      if (!caseRow) throw new NotFoundError("Notes not found");
+    }
+
     await db
       .update(caseNotes)
       .set({ isPinned, updatedAt: new Date() })
@@ -1317,6 +1353,7 @@ export class WorkflowService {
     caseId: string,
     data: { content?: string; category?: string; visibility?: string; isPinned?: boolean },
     actorId?: string,
+    organizationId?: string,
   ) {
     const [existing] = await db
       .select({
@@ -1337,6 +1374,10 @@ export class WorkflowService {
       .limit(1);
 
     if (!existing) throw new NotFoundError("Note not found");
+
+    if (organizationId && existing.organizationId !== organizationId) {
+      throw new NotFoundError("Note not found");
+    }
 
     const updateFields: Record<string, unknown> = { updatedAt: new Date() };
     if (data.content !== undefined) {
@@ -1367,7 +1408,7 @@ export class WorkflowService {
     return updated;
   }
 
-  async deleteNote(noteId: string, caseId: string, actorId?: string) {
+  async deleteNote(noteId: string, caseId: string, actorId?: string, organizationId?: string) {
     const [existing] = await db
       .select({
         id: caseNotes.id,
@@ -1381,6 +1422,10 @@ export class WorkflowService {
       .limit(1);
 
     if (!existing) throw new NotFoundError("Note not found");
+
+    if (organizationId && existing.organizationId !== organizationId) {
+      throw new NotFoundError("Note not found");
+    }
 
     // Log note deleted event before deleting
     await logCaseEvent({

@@ -174,7 +174,7 @@ type StoredMatch = {
   caseIds: string[];
 };
 
-const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[]) => {
+const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[], organizationId: string) => {
   if (storedMatches.length === 0) return [];
 
   const allCaseIds = [...new Set(storedMatches.flatMap((m) => m.caseIds))];
@@ -207,7 +207,7 @@ const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[]) => {
       .from(cases)
       .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
       .leftJoin(clients, eq(clients.id, cases.clientId))
-      .where(inArray(cases.id, allCaseIds));
+      .where(and(inArray(cases.id, allCaseIds), eq(cases.organizationId, organizationId)));
 
     for (const row of caseRows) caseMap.set(row.id, row);
   }
@@ -223,7 +223,7 @@ const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[]) => {
         caseId: adverseParties.caseId,
       })
       .from(adverseParties)
-      .where(inArray(adverseParties.id, adverseMatchIds));
+      .where(and(inArray(adverseParties.id, adverseMatchIds), eq(adverseParties.organizationId, organizationId)));
 
     for (const ap of apRows) {
       adverseContextMap.set(ap.id, {
@@ -565,7 +565,7 @@ const getAllLeads = async (
         if (!conflict) return r;
         const { matches } = conflict;
         if (!matches || matches.length === 0) return r;
-        const conflictMatches = await enrichMatchesWithCaseContext(matches);
+        const conflictMatches = await enrichMatchesWithCaseContext(matches, organizationId);
         return { ...r, conflictMatches, conflictCheckStatus: conflict.status };
       }),
     );
@@ -814,7 +814,7 @@ const updateLead = async (
     await tx
       .update(leads)
       .set({ ...patch, updatedAt: new Date() } as any)
-      .where(eq(leads.id, id));
+      .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)));
 
     await logLeadEvent({
       organizationId,
@@ -1627,7 +1627,7 @@ const runConflictCheck = async (
     await db
       .update(leads)
       .set({ conflictCheckId: created.id, updatedAt: now })
-      .where(eq(leads.id, leadId));
+      .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)));
   }
 
   await logLeadEvent({
@@ -1648,7 +1648,7 @@ const runConflictCheck = async (
         await db
           .update(leads)
           .set({ pipelineStage: "questionnaire", updatedAt: now })
-          .where(eq(leads.id, leadId));
+          .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)));
 
         await logStageChange({
           organizationId,
@@ -1664,7 +1664,7 @@ const runConflictCheck = async (
         await db
           .update(leads)
           .set({ pipelineStage: "conflict_check", updatedAt: now })
-          .where(eq(leads.id, leadId));
+          .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)));
 
         await logStageChange({
           organizationId,
@@ -1677,7 +1677,7 @@ const runConflictCheck = async (
     }
   }
 
-  const enrichedMatches = await enrichMatchesWithCaseContext(matches);
+  const enrichedMatches = await enrichMatchesWithCaseContext(matches, organizationId);
   return { ...checkRecord, matches: enrichedMatches };
 };
 
@@ -1700,7 +1700,7 @@ const getConflictCheck = async (leadId: string, organizationId: string) => {
   if (!cc) return null;
 
   const storedMatches = (cc.matches ?? []) as StoredMatch[];
-  const enrichedMatches = await enrichMatchesWithCaseContext(storedMatches);
+  const enrichedMatches = await enrichMatchesWithCaseContext(storedMatches, organizationId);
   return { ...cc, matches: enrichedMatches };
 };
 
@@ -1855,6 +1855,7 @@ const resolveConflictCheck = async (
 
   const enrichedMatches = await enrichMatchesWithCaseContext(
     (updated.matches ?? []) as StoredMatch[],
+    organizationId,
   );
 
   return { ...updated, matches: enrichedMatches };

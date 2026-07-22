@@ -454,7 +454,7 @@ export class EmailAccountService {
     await db
       .update(connectedEmailAccount)
       .set({ isActive: true })
-      .where(eq(connectedEmailAccount.id, id));
+      .where(and(eq(connectedEmailAccount.id, id), eq(connectedEmailAccount.organizationId, organizationId)));
   };
 
   disableEmailAccount = async (id: string, organizationId: string) => {
@@ -476,7 +476,7 @@ export class EmailAccountService {
     await db
       .update(connectedEmailAccount)
       .set({ isActive: false })
-      .where(eq(connectedEmailAccount.id, id));
+      .where(and(eq(connectedEmailAccount.id, id), eq(connectedEmailAccount.organizationId, organizationId)));
   };
 
   findEmailAccount = async (id: string, organizationId: string) => {

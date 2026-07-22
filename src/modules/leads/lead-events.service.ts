@@ -35,13 +35,14 @@ type LogLeadEventInput = {
 const actorNameFor = async (
   conn: typeof db,
   actorId: string | null | undefined,
+  organizationId: string,
 ): Promise<string | null> => {
   if (!actorId) return null;
 
   const [row] = await conn
     .select({ firstName: staff.firstName, lastName: staff.lastName })
     .from(staff)
-    .where(eq(staff.id, actorId))
+    .where(and(eq(staff.id, actorId), eq(staff.organizationId, organizationId)))
     .limit(1);
 
   return row ? `${row.firstName} ${row.lastName}`.trim() : null;
@@ -57,7 +58,7 @@ export const logLeadEvent = async (data: LogLeadEventInput) => {
     leadId: data.leadId,
     type: data.type,
     actorId,
-    actorNameSnapshot: await actorNameFor(conn, actorId),
+    actorNameSnapshot: await actorNameFor(conn, actorId, data.organizationId),
     metadata: (data.metadata as any) ?? null,
     ipAddress: ctx.ipAddress,
   });
