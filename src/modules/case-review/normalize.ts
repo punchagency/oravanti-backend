@@ -71,3 +71,15 @@ export const normalizeValue = (
   const s = String(value);
   return normalizeDate(s) ?? normalizeText(s);
 };
+
+/**
+ * Parse a date-ish string to a `Date` (UTC midnight), or null. Built on
+ * `normalizeDate` so parsing is consistent with fingerprinting. Used by the
+ * deadline rules for comparisons.
+ */
+export const parseDate = (value: string): Date | null => {
+  const iso = normalizeDate(value);
+  if (!iso) return null;
+  const d = new Date(`${iso}T00:00:00.000Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+};
