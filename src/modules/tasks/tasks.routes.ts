@@ -126,10 +126,11 @@
  *                 $ref: "#/components/schemas/MessageResponse"
  */
 import { Router } from "express";
-import { requireAdmin } from "../../middleware/admin.middleware";
+
 import { requireAuth } from "../../middleware/auth.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { CommonValidation } from "../../validation/common.validation";
-import { setFirmContext } from "../../middleware/rls.middleware";
+
 import { validateRequest } from "../../middleware/validate.middleware";
 import { TasksController } from "./tasks.controller";
 
@@ -149,7 +150,8 @@ export class TasksRouter {
   }
 
   private initializeRoutes() {
-    this.router.use(requireAuth, requireAdmin, setFirmContext);
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
 
     this.router.get("/stats", this.tasksController.getTaskStats);
     this.router.get("/", this.tasksController.getAllTasks);

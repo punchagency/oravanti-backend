@@ -1,5 +1,5 @@
-import { Response } from "express";
-import { AuthRequest } from "../../middleware/auth.middleware";
+import { Request, Response } from "express";
+import { getRequestContext } from "../../middleware/request-context";
 import asyncWrap from "../../utils/asyncWrapper";
 import { NotFoundError } from "../../utils/error/app-error";
 import { sendSuccess } from "../../utils/send-success";
@@ -12,7 +12,8 @@ export class CalendarController {
     this.calendarService = calendarService;
   }
 
-  getCalendarEvents = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getCalendarEvents = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const { year, month, teamId, eventTypes } = req.query;
 
     const filters = {
@@ -23,16 +24,17 @@ export class CalendarController {
     };
 
     const result = await this.calendarService.getCalendarEvents(
-      req.organizationId!,
+      organizationId!,
       filters,
     );
     sendSuccess(res, result, "Calendar events retrieved successfully");
   });
 
-  getCalendarEventById = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getCalendarEventById = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const result = await this.calendarService.getCalendarEventById(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Event not found");
@@ -40,18 +42,20 @@ export class CalendarController {
     sendSuccess(res, result, "Calendar event retrieved successfully");
   });
 
-  createCalendarEvent = asyncWrap(async (req: AuthRequest, res: Response) => {
+  createCalendarEvent = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const result = await this.calendarService.createCalendarEvent(
-      req.organizationId!,
+      organizationId!,
       req.body,
     );
     sendSuccess(res, result, "Calendar event created successfully", 201);
   });
 
-  updateCalendarEvent = asyncWrap(async (req: AuthRequest, res: Response) => {
+  updateCalendarEvent = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const result = await this.calendarService.updateCalendarEvent(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
       req.body,
     );
     if (!result) {
@@ -60,25 +64,28 @@ export class CalendarController {
     sendSuccess(res, result, "Calendar event updated successfully");
   });
 
-  deleteCalendarEvent = asyncWrap(async (req: AuthRequest, res: Response) => {
+  deleteCalendarEvent = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     await this.calendarService.deleteCalendarEvent(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, null, "Calendar event deleted successfully");
   });
 
-  getCalendarStrip = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getCalendarStrip = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const teamId = req.query.teamId as string | undefined;
     const result = await this.calendarService.getCalendarStrip(
-      req.organizationId!,
+      organizationId!,
       teamId,
     );
     sendSuccess(res, result, "Calendar strip retrieved successfully");
   });
 
   createServiceRequestEvent = asyncWrap(
-    async (req: AuthRequest, res: Response) => {
+    async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
       const {
         clientId,
         caseId,
@@ -89,7 +96,7 @@ export class CalendarController {
       } = req.body;
 
       const result = await this.calendarService.createServiceRequestEvent(
-        req.organizationId!,
+        organizationId!,
         clientId,
         caseId,
         clientName,
@@ -102,17 +109,19 @@ export class CalendarController {
   );
 
   resolveServiceRequestEvents = asyncWrap(
-    async (req: AuthRequest, res: Response) => {
+    async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
       await this.calendarService.resolveServiceRequestEvents(
         req.params.caseId as string,
-        req.organizationId!,
+        organizationId!,
       );
       sendSuccess(res, null, "Service request events resolved successfully");
     },
   );
 
   scheduleNextServiceRequest = asyncWrap(
-    async (req: AuthRequest, res: Response) => {
+    async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
       const {
         clientId,
         caseId,
@@ -123,7 +132,7 @@ export class CalendarController {
       } = req.body;
 
       const result = await this.calendarService.scheduleNextServiceRequest(
-        req.organizationId!,
+        organizationId!,
         clientId,
         caseId,
         clientName,

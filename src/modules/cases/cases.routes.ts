@@ -5,12 +5,14 @@
  *     description: Case management
  */
 import { Router } from "express";
-import { requireAdmin } from "../../middleware/admin.middleware";
+
 import { requireAuth } from "../../middleware/auth.middleware";
-import { CommonValidation } from "../../validation/common.validation";
-import { setFirmContext } from "../../middleware/rls.middleware";
-import { requireStaffOrAdmin } from "../../middleware/staff-or-admin.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
+import { requirePermission } from "../../middleware/permission.middleware";
+
+
 import { validateRequest } from "../../middleware/validate.middleware";
+import { CommonValidation } from "../../validation/common.validation";
 import { CasesController } from "./cases.controller";
 
 export class CasesRouter {
@@ -58,8 +60,6 @@ export class CasesRouter {
     this.router.get(
       "/generate-number",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       validateRequest({
         query: this.validation.query({
           practiceAreaId: this.validation.uuid,
@@ -109,8 +109,7 @@ export class CasesRouter {
     this.router.get(
       "/",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
+      requirePermission({ cases: ["read"] }),
       this.casesController.getAllCases,
     );
 
@@ -140,8 +139,7 @@ export class CasesRouter {
     this.router.get(
       "/:caseId/documents",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
+      requirePermission({ cases: ["read"] }),
       validateRequest({ params: this.validation.params("caseId") }),
       this.casesController.getCaseDocuments,
     );
@@ -170,8 +168,7 @@ export class CasesRouter {
     this.router.get(
       "/:id",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
+      requirePermission({ cases: ["read"] }),
       validateRequest({ params: this.validation.idParams }),
       this.casesController.getCaseById,
     );
@@ -200,8 +197,6 @@ export class CasesRouter {
     this.router.post(
       "/",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         body: this.validation.requiredBody(
           "clientId",
@@ -244,8 +239,6 @@ export class CasesRouter {
     this.router.patch(
       "/:id",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       validateRequest({
         params: this.validation.idParams,
         body: this.validation.optionalBody(),
@@ -276,10 +269,51 @@ export class CasesRouter {
     this.router.delete(
       "/:id",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       validateRequest({ params: this.validation.idParams }),
       this.casesController.deleteCase,
+    );
+
+    /**
+     * @openapi
+     * /cases/{id}/reassign-team:
+     *   post:
+     *     tags: [Cases]
+     *     summary: Reassign a case to a different team
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: id
+     *         required: true
+     *         schema: { type: string }
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             properties:
+     *               teamId:
+     *                 type: string
+     *     responses:
+     *       200:
+     *         description: Team reassigned successfully
+     *       404: { description: Case not found }
+     */
+    this.router.post(
+      "/:id/reassign-team",
+      requireAuth,
+      validateRequest({
+        params: this.validation.idParams,
+        body: this.validation.requiredBody("teamId"),
+      }),
+      this.casesController.reassignTeam,
+    );
+
+    this.router.get(
+      "/:id/audit-log",
+      requireAuth,
+      validateRequest({ params: this.validation.idParams }),
+      this.casesController.getCaseAuditLog,
     );
   }
 }

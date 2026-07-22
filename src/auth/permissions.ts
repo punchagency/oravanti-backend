@@ -14,6 +14,7 @@ const statement = {
   invitations: ["read", "create", "update", "delete"],
   conflicts: ["review"], // conflict-check resolution (owners + admins only)
   documents: ["read", "download", "create", "update", "delete"], // download gates client docs
+  case_review: ["read", "resolve", "configure"], // AI case review dashboard
 } as const;
 
 export const ac = createAccessControl(statement);
@@ -24,25 +25,28 @@ export const paralegal = ac.newRole({
   staffs: ["read"], // list attorneys for the consultation wizard
   conflicts: [],
   documents: ["read"],
+  case_review: ["read"],
   ...memberAc.statements,
 });
 
 export const attorney = ac.newRole({
-  cases: [],
+  cases: ["read"],
   clients: [],
   staffs: ["read"], // list attorneys for the consultation wizard
   conflicts: [],
   documents: ["read", "download"],
+  case_review: ["read"],
   ...memberAc.statements,
 });
 
 export const owner = ac.newRole({
   clients: [],
-  cases: [],
+  cases: ["read", "create", "update", "delete"],
   staffs: ["read", "create", "update", "delete"],
   invitations: ["read", "create", "update", "delete"],
   conflicts: ["review"],
   documents: ["read", "download", "create", "update", "delete"],
+  case_review: ["read", "resolve", "configure"],
   ...ownerAc.statements,
 });
 
@@ -53,6 +57,7 @@ export const admin = ac.newRole({
   invitations: ["read", "create", "update", "delete"],
   conflicts: ["review"],
   documents: ["read", "download", "create", "update", "delete"],
+  case_review: ["read", "resolve", "configure"],
   ...adminAc.statements,
 });
 
@@ -63,6 +68,7 @@ const memberRole = ac.newRole({
   staffs: [],
   conflicts: [],
   documents: [],
+  case_review: [],
 });
 
 export const roleMap = {
@@ -72,3 +78,24 @@ export const roleMap = {
   admin,
   member: memberRole,
 } as const;
+
+// ── Client & Contractor permission sets ──────────────────────────────────────
+// These are static permission sets for non-staff user types.
+// They don't use organization-based RBAC — access is controlled by RLS policies
+// (user-ownership checks at the database level).
+
+export const clientPermissions: Record<string, string[]> = {
+  cases: ["read"],
+  clients: ["read"],
+  documents: ["read", "download"],
+};
+
+export const contractorPermissions: Record<string, string[]> = {
+  cases: ["read"],
+  clients: [],
+  documents: ["read", "download"],
+  staffs: [],
+};
+
+export type ClientPermissions = typeof clientPermissions;
+export type ContractorPermissions = typeof contractorPermissions;

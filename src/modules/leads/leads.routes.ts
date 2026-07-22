@@ -1,15 +1,16 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import multer from "multer";
-import { requireAdmin } from "../../middleware/admin.middleware";
+
 import { requireAuth } from "../../middleware/auth.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { requirePermission } from "../../middleware/permission.middleware";
-import { setFirmContext } from "../../middleware/rls.middleware";
-import { requireStaffOrAdmin } from "../../middleware/staff-or-admin.middleware";
+
+
 import { validateRequest } from "../../middleware/validate.middleware";
 import { LeadsController } from "./leads.controller";
 import * as v from "./leads.validation";
 
-// ── Lead Workflow router ─────────────────────────────────────────────────────
+// Lead Workflow router
 
 export class LeadWorkflowRouter {
   public router: Router;
@@ -26,33 +27,27 @@ export class LeadWorkflowRouter {
   private initializeRoutes() {
     const { ctrl } = this;
 
-    // ── My Tasks (must be before /:leadId routes) ──────────────────────────
+    // My Tasks (must be before /:leadId routes)
 
     this.router.get(
       "/my-tasks",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       ctrl.getMyLeadTasks,
     );
 
-    // ── Review Queue (must be before /:leadId routes) ──────────────────────
+    // Review Queue (must be before /:leadId routes)
 
     this.router.get(
       "/review-queue",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       ctrl.getLeadReviewQueue,
     );
 
-    // ── Tasks ──────────────────────────────────────────────────────────────
+    // Tasks
 
     this.router.post(
       "/:leadId/initialize-pipeline",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.leadIdParamsSchema }),
       ctrl.initializePipeline,
     );
@@ -60,8 +55,6 @@ export class LeadWorkflowRouter {
     this.router.get(
       "/:leadId/tasks",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.leadIdParamsSchema }),
       ctrl.getLeadTasks,
     );
@@ -69,8 +62,6 @@ export class LeadWorkflowRouter {
     this.router.post(
       "/:leadId/tasks",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.leadIdParamsSchema,
         body: v.createLeadTaskBodySchema,
@@ -81,8 +72,6 @@ export class LeadWorkflowRouter {
     this.router.patch(
       "/:leadId/tasks/:taskId",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.leadTaskIdParamsSchema,
         body: v.updateLeadTaskBodySchema,
@@ -93,8 +82,6 @@ export class LeadWorkflowRouter {
     this.router.patch(
       "/:leadId/tasks/:taskId/status",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.leadTaskIdParamsSchema,
         body: v.updateLeadTaskStatusBodySchema,
@@ -105,8 +92,6 @@ export class LeadWorkflowRouter {
     this.router.patch(
       "/:leadId/tasks/:taskId/assign",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.leadTaskIdParamsSchema,
         body: v.assignLeadTaskBodySchema,
@@ -117,8 +102,6 @@ export class LeadWorkflowRouter {
     this.router.post(
       "/:leadId/tasks/:taskId/complete",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.leadTaskIdParamsSchema }),
       ctrl.completeLeadTask,
     );
@@ -126,8 +109,6 @@ export class LeadWorkflowRouter {
     this.router.post(
       "/:leadId/tasks/:taskId/submit-review",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.leadTaskIdParamsSchema,
         body: v.submitReviewBodySchema,
@@ -138,8 +119,6 @@ export class LeadWorkflowRouter {
     this.router.post(
       "/:leadId/tasks/:taskId/approve",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       validateRequest({
         params: v.leadTaskIdParamsSchema,
         body: v.reviewActionBodySchema,
@@ -150,8 +129,6 @@ export class LeadWorkflowRouter {
     this.router.post(
       "/:leadId/tasks/:taskId/reject",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       validateRequest({
         params: v.leadTaskIdParamsSchema,
         body: v.rejectReviewBodySchema,
@@ -162,19 +139,15 @@ export class LeadWorkflowRouter {
     this.router.delete(
       "/:leadId/tasks/:taskId",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.leadTaskIdParamsSchema }),
       ctrl.deleteLeadTask,
     );
 
-    // ── Timeline ───────────────────────────────────────────────────────────
+    // Timeline
 
     this.router.get(
       "/:leadId/timeline",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.leadIdParamsSchema, query: v.paginationQuerySchema }),
       ctrl.getLeadTimeline,
     );
@@ -182,8 +155,6 @@ export class LeadWorkflowRouter {
     this.router.post(
       "/:leadId/timeline",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.leadIdParamsSchema,
         body: v.createTimelineEventBodySchema,
@@ -191,24 +162,20 @@ export class LeadWorkflowRouter {
       ctrl.createLeadTimelineEvent,
     );
 
-    // ── Audit Log ─────────────────────────────────────────────────────────
+    // Audit Log
 
     this.router.get(
       "/:leadId/audit-log",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.leadIdParamsSchema, query: v.paginationQuerySchema }),
       ctrl.getLeadAuditLog,
     );
 
-    // ── Documents ──────────────────────────────────────────────────────────
+    // Documents
 
     this.router.get(
       "/:leadId/documents",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.leadIdParamsSchema }),
       ctrl.getLeadDocuments,
     );
@@ -216,8 +183,6 @@ export class LeadWorkflowRouter {
     this.router.post(
       "/:leadId/documents",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.leadIdParamsSchema,
         body: v.linkDocumentBodySchema,
@@ -228,19 +193,15 @@ export class LeadWorkflowRouter {
     this.router.delete(
       "/:leadId/documents/:linkId",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.leadDocumentLinkIdParamsSchema }),
       ctrl.unlinkLeadDocument,
     );
 
-    // ── Notes ─────────────────────────────────────────────────────────────
+    // Notes
 
     this.router.get(
       "/:leadId/notes",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.leadIdParamsSchema }),
       ctrl.getLeadNotes,
     );
@@ -248,8 +209,6 @@ export class LeadWorkflowRouter {
     this.router.post(
       "/:leadId/notes",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.leadIdParamsSchema,
         body: v.createLeadNoteBodySchema,
@@ -260,8 +219,6 @@ export class LeadWorkflowRouter {
     this.router.patch(
       "/:leadId/notes/:noteId",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.leadNoteIdParamsSchema,
         body: v.updateLeadNoteBodySchema,
@@ -272,19 +229,15 @@ export class LeadWorkflowRouter {
     this.router.delete(
       "/:leadId/notes/:noteId",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.leadNoteIdParamsSchema }),
       ctrl.deleteLeadNote,
     );
 
-    // ── Bulk operations ─────────────────────────────────────────────────────
+    // Bulk operations
 
     this.router.post(
       "/:leadId/notes/bulk-delete",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.leadIdParamsSchema, body: v.bulkDeleteNotesBodySchema }),
       ctrl.bulkDeleteNotes,
     );
@@ -292,8 +245,6 @@ export class LeadWorkflowRouter {
     this.router.post(
       "/:leadId/notes/bulk-pin",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.leadIdParamsSchema, body: v.bulkPinNotesBodySchema }),
       ctrl.bulkPinNotes,
     );
@@ -301,8 +252,6 @@ export class LeadWorkflowRouter {
     this.router.post(
       "/:leadId/notes/:noteId/toggle-pin",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.leadNoteIdParamsSchema }),
       ctrl.toggleNotePin,
     );
@@ -324,13 +273,11 @@ export class LeadsRouter {
   private initializeRoutes() {
     const { ctrl } = this;
 
-    // ── Leads CRUD ────────────────────────────────────────────────────────────
+    // Leads CRUD
 
     this.router.post(
       "/",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ body: v.createLeadBodySchema }),
       ctrl.createLead,
     );
@@ -338,16 +285,12 @@ export class LeadsRouter {
     this.router.get(
       "/",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       ctrl.getAllLeads,
     );
 
     this.router.get(
       "/stage-counts",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       ctrl.getLeadStageCounts,
     );
 
@@ -355,8 +298,6 @@ export class LeadsRouter {
     this.router.get(
       "/metrics",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ query: v.leadMetricsQuerySchema }),
       ctrl.getLeadMetrics,
     );
@@ -365,16 +306,12 @@ export class LeadsRouter {
     this.router.get(
       "/consultations",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       ctrl.getConsultations,
     );
 
     this.router.get(
       "/:id",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.idParamsSchema }),
       ctrl.getLeadById,
     );
@@ -382,8 +319,6 @@ export class LeadsRouter {
     this.router.patch(
       "/:id",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.idParamsSchema,
         body: v.updateLeadBodySchema,
@@ -394,8 +329,6 @@ export class LeadsRouter {
     this.router.patch(
       "/:id/stage",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.idParamsSchema,
         body: v.advanceStageBodySchema,
@@ -406,8 +339,6 @@ export class LeadsRouter {
     this.router.patch(
       "/:id/status",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.idParamsSchema,
         body: v.updateLeadStatusSchema,
@@ -415,24 +346,20 @@ export class LeadsRouter {
       ctrl.updateLeadStatus,
     );
 
-    // ── Activity trail (read-only; events are append-only by design) ──────────
+    // Activity trail (read-only; events are append-only by design)
 
     this.router.get(
       "/:id/activity",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.idParamsSchema }),
       ctrl.getLeadActivity,
     );
 
-    // ── Archive / restore ─────────────────────────────────────────────────────
+    // Archive / restore
 
     this.router.post(
       "/:id/archive",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.idParamsSchema,
         body: v.archiveLeadBodySchema,
@@ -443,19 +370,15 @@ export class LeadsRouter {
     this.router.post(
       "/:id/restore",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.idParamsSchema }),
       ctrl.restoreLead,
     );
 
-    // ── Conflict Check ────────────────────────────────────────────────────────
+    // Conflict Check
 
     this.router.post(
       "/:id/check-conflict",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.idParamsSchema }),
       ctrl.runConflictCheck,
     );
@@ -463,18 +386,13 @@ export class LeadsRouter {
     this.router.get(
       "/:id/conflict-check",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.idParamsSchema }),
       ctrl.getConflictCheck,
     );
 
     this.router.patch(
       "/:id/conflict-check",
-      requireAuth,
-      requireStaffOrAdmin, // populates req.staffId (audit actor)
-      requirePermission("conflicts", "review"), // owner/admin gate (real enforcement)
-      setFirmContext,
+      requireAuth,      requirePermission("conflicts", "review"), // owner/admin gate (real enforcement)
       validateRequest({
         params: v.idParamsSchema,
         body: v.resolveConflictCheckBodySchema,
@@ -482,13 +400,11 @@ export class LeadsRouter {
       ctrl.resolveConflictCheck,
     );
 
-    // ── Questionnaire ─────────────────────────────────────────────────────────
+    // Questionnaire
 
     this.router.post(
       "/:id/send-questionnaire",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.idParamsSchema,
         body: v.sendQuestionnaireBodySchema,
@@ -499,19 +415,15 @@ export class LeadsRouter {
     this.router.get(
       "/:id/questionnaire",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.idParamsSchema }),
       ctrl.getLeadQuestionnaire,
     );
 
-    // ── Consultation ──────────────────────────────────────────────────────────
+    // Consultation
 
     this.router.post(
       "/:id/consultation",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.idParamsSchema,
         body: v.initiateConsultationBodySchema,
@@ -522,8 +434,6 @@ export class LeadsRouter {
     this.router.get(
       "/:id/consultation",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.idParamsSchema }),
       ctrl.getConsultation,
     );
@@ -531,8 +441,6 @@ export class LeadsRouter {
     this.router.patch(
       "/:id/consultation",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.idParamsSchema,
         body: v.updateConsultationBodySchema,
@@ -543,8 +451,6 @@ export class LeadsRouter {
     this.router.post(
       "/:id/consultation/cancel",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.idParamsSchema,
         body: v.cancelConsultationBodySchema,
@@ -552,13 +458,11 @@ export class LeadsRouter {
       ctrl.cancelConsultation,
     );
 
-    // ── Fee Agreement ─────────────────────────────────────────────────────────
+    // Fee Agreement
 
     this.router.post(
       "/:id/generate-agreement",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.idParamsSchema,
         body: v.generateFeeAgreementBodySchema,
@@ -569,19 +473,15 @@ export class LeadsRouter {
     this.router.get(
       "/:id/agreement",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.idParamsSchema }),
       ctrl.getFeeAgreement,
     );
 
-    // ── Case Opening ──────────────────────────────────────────────────────────
+    // Case Opening
 
     this.router.get(
       "/:id/eligible-teams",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       validateRequest({ params: v.idParamsSchema }),
       ctrl.getEligibleTeamsForLead,
     );
@@ -589,15 +489,13 @@ export class LeadsRouter {
     this.router.post(
       "/:id/open-case",
       requireAuth,
-      requireAdmin,
-      setFirmContext,
       validateRequest({ params: v.idParamsSchema, body: v.openCaseBodySchema }),
       ctrl.openCase,
     );
   }
 }
 
-// ── Agreements router (nudge endpoint lives at /agreements/:agreementId) ──────
+// Agreements router (nudge endpoint lives at /agreements/:agreementId)
 
 export class AgreementsRouter {
   public router: Router;
@@ -617,8 +515,6 @@ export class AgreementsRouter {
     this.router.get(
       "/:agreementId/preview",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.agreementIdParamsSchema }),
       ctrl.getFeeAgreementPreview,
     );
@@ -626,8 +522,6 @@ export class AgreementsRouter {
     this.router.post(
       "/:agreementId/nudge-client",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.agreementIdParamsSchema }),
       ctrl.nudgeClient,
     );
@@ -635,8 +529,6 @@ export class AgreementsRouter {
     this.router.post(
       "/:agreementId/send",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.agreementIdParamsSchema }),
       ctrl.sendFeeAgreement,
     );
@@ -644,8 +536,6 @@ export class AgreementsRouter {
     this.router.post(
       "/:agreementId/mark-received",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.agreementIdParamsSchema }),
       ctrl.markFeeAgreementReceived,
     );
@@ -653,8 +543,6 @@ export class AgreementsRouter {
     this.router.post(
       "/:agreementId/mark-payment-received",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.agreementIdParamsSchema }),
       ctrl.markFeeAgreementPaymentReceived,
     );
@@ -662,15 +550,13 @@ export class AgreementsRouter {
     this.router.post(
       "/:agreementId/discard",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.agreementIdParamsSchema }),
       ctrl.discardDraftFeeAgreement,
     );
   }
 }
 
-// ── Webhook router (public, no auth) ─────────────────────────────────────────
+// Webhook router (public, no auth)
 
 export class WebhooksRouter {
   public router: Router;
@@ -698,7 +584,7 @@ export class WebhooksRouter {
   }
 }
 
-// ── Agreement signing router (public, token-gated client signing page) ───────
+// Agreement signing router (public, token-gated client signing page)
 
 export class AgreementSigningRouter {
   public router: Router;
@@ -771,7 +657,7 @@ export class ConsultationBookingRouter {
   }
 }
 
-// ── Case sub-resource routers (workflow + adverse parties) ────────────────────
+// Case sub-resource routers (workflow + adverse parties)
 
 export class CaseWorkflowRouter {
   public router: Router;
@@ -791,8 +677,6 @@ export class CaseWorkflowRouter {
     this.router.get(
       "/:caseId/workflow",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.caseIdParamsSchema }),
       ctrl.getCaseWorkflowSteps,
     );
@@ -800,8 +684,6 @@ export class CaseWorkflowRouter {
     this.router.patch(
       "/:caseId/workflow/:stepId",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.caseIdStepIdParamsSchema,
         body: v.updateWorkflowStepBodySchema,
@@ -812,8 +694,6 @@ export class CaseWorkflowRouter {
     this.router.get(
       "/:caseId/adverse-parties",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.caseIdParamsSchema }),
       ctrl.getAdverseParties,
     );
@@ -821,8 +701,6 @@ export class CaseWorkflowRouter {
     this.router.post(
       "/:caseId/adverse-parties",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.caseIdParamsSchema,
         body: v.addAdversePartyBodySchema,
@@ -833,8 +711,6 @@ export class CaseWorkflowRouter {
     this.router.patch(
       "/:caseId/adverse-parties/:partyId",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({
         params: v.adversePartyParamsSchema,
         body: v.updateAdversePartyBodySchema,
@@ -845,8 +721,6 @@ export class CaseWorkflowRouter {
     this.router.delete(
       "/:caseId/adverse-parties/:partyId",
       requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
       validateRequest({ params: v.adversePartyParamsSchema }),
       ctrl.deleteAdverseParty,
     );

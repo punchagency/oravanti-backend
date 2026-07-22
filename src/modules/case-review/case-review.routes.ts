@@ -5,10 +5,9 @@
  *     description: AI case review dashboard — issues, stats, resolution log
  */
 import { Router } from "express";
-import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
-import { setFirmContext } from "../../middleware/rls.middleware";
-import { requireStaffOrAdmin } from "../../middleware/staff-or-admin.middleware";
+import { requirePermission } from "../../middleware/permission.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { validateRequest } from "../../middleware/validate.middleware";
 import { CaseReviewController } from "./case-review.controller";
 import {
@@ -31,54 +30,36 @@ export class CaseReviewRouter {
 
   private initializeRoutes() {
     const { controller } = this;
+    // Auth + actor context for the whole dashboard; permission varies per route.
+    this.router.use(requireAuth, resolveActorContext);
 
-    this.router.get(
-      "/stats",
-      requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
-      controller.getStats,
-    );
+    const read = requirePermission({ case_review: ["read"] });
+    const resolve = requirePermission({ case_review: ["resolve"] });
+    const configure = requirePermission({ case_review: ["configure"] });
+
+    this.router.get("/stats", read, controller.getStats);
 
     this.router.get(
       "/issues",
-      requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
+      read,
       validateRequest({ query: listIssuesQuerySchema }),
       controller.getIssues,
     );
 
-    this.router.get(
-      "/issues/:id",
-      requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
-      controller.getIssueById,
-    );
+    this.router.get("/issues/:id", read, controller.getIssueById);
 
     this.router.patch(
       "/issues/:id/status",
-      requireAuth,
-      requireStaffOrAdmin,
-      setFirmContext,
+      resolve,
       validateRequest({ body: updateStatusBodySchema }),
       controller.updateStatus,
     );
 
-    this.router.get(
-      "/config",
-      requireAuth,
-      requireAdmin,
-      setFirmContext,
-      controller.getConfig,
-    );
+    this.router.get("/config", configure, controller.getConfig);
 
     this.router.patch(
       "/config",
-      requireAuth,
-      requireAdmin,
-      setFirmContext,
+      configure,
       validateRequest({ body: updateConfigBodySchema }),
       controller.updateConfig,
     );

@@ -5,10 +5,11 @@
  *     description: Calendar events & service requests
  */
 import { Router } from "express";
-import { requireAdmin } from "../../middleware/admin.middleware";
+
 import { requireAuth } from "../../middleware/auth.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { CommonValidation } from "../../validation/common.validation";
-import { setFirmContext } from "../../middleware/rls.middleware";
+
 import { validateRequest } from "../../middleware/validate.middleware";
 import { CalendarController } from "./calendar.controller";
 
@@ -32,7 +33,8 @@ export class CalendarRouter {
 
   private initializeRoutes() {
     this.router.use(this.path, this.router);
-    this.router.use(requireAuth, requireAdmin, setFirmContext);
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
 
     /**
      * @openapi

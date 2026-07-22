@@ -5,9 +5,9 @@
  *     description: Trigger AI document scans (manual re-run, full scan)
  */
 import { Router } from "express";
-import { requireAdmin } from "../../middleware/admin.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
-import { setFirmContext } from "../../middleware/rls.middleware";
+import { requirePermission } from "../../middleware/permission.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { validateRequest } from "../../middleware/validate.middleware";
 import { AiScanController } from "./ai-scan.controller";
 import { rerunScanBodySchema } from "./ai-scan.validation";
@@ -25,7 +25,13 @@ export class AiScanRouter {
   }
 
   private initializeRoutes() {
-    this.router.use(requireAuth, requireAdmin, setFirmContext);
+    const { controller } = this;
+    // Triggering a scan is a review action.
+    this.router.use(
+      requireAuth,
+      resolveActorContext,
+      requirePermission({ case_review: ["resolve"] }),
+    );
 
     /**
      * @openapi
@@ -34,23 +40,13 @@ export class AiScanRouter {
      *     tags: [AI Scan]
      *     summary: Manually (re-)scan a lead or case
      *     security: [{ bearerAuth: [] }]
-     *     requestBody:
-     *       required: true
-     *       content:
-     *         application/json:
-     *           schema:
-     *             type: object
-     *             required: [scenarioType, scenarioId]
-     *             properties:
-     *               scenarioType: { type: string, enum: [lead, case] }
-     *               scenarioId: { type: string, format: uuid }
      *     responses:
      *       200: { description: Scan requested }
      */
     this.router.post(
       "/rerun",
       validateRequest({ body: rerunScanBodySchema }),
-      this.controller.rerunScenario,
+      controller.rerunScenario,
     );
 
     /**
@@ -63,6 +59,6 @@ export class AiScanRouter {
      *     responses:
      *       200: { description: Full scan started }
      */
-    this.router.post("/full-scan", this.controller.runFullScan);
+    this.router.post("/full-scan", controller.runFullScan);
   }
 }

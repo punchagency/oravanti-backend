@@ -1,19 +1,21 @@
-import { Response } from "express";
-import { AuthRequest } from "../../middleware/auth.middleware";
+import { Request, Response } from "express";
+import { getRequestContext } from "../../middleware/request-context";
 import { sendSuccess } from "../../utils/send-success";
 import { CaseReviewService } from "./case-review.service";
 
 export class CaseReviewController {
   constructor(private readonly svc: CaseReviewService) {}
 
-  getStats = async (req: AuthRequest, res: Response) => {
-    const stats = await this.svc.getStats(req.organizationId!);
+  getStats = async (_req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const stats = await this.svc.getStats(organizationId!);
     sendSuccess(res, stats, "AI review stats retrieved");
   };
 
-  getIssues = async (req: AuthRequest, res: Response) => {
+  getIssues = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { severity, status, page, limit } = req.query;
-    const result = await this.svc.getIssues(req.organizationId!, {
+    const result = await this.svc.getIssues(organizationId!, {
       severity: severity as string | undefined,
       status: status as string | undefined,
       page: page ? Number(page) : undefined,
@@ -24,32 +26,36 @@ export class CaseReviewController {
     });
   };
 
-  getIssueById = async (req: AuthRequest, res: Response) => {
+  getIssueById = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const issue = await this.svc.getIssueById(
-      req.organizationId!,
+      organizationId!,
       req.params.id as string,
     );
     sendSuccess(res, issue, "Issue retrieved");
   };
 
-  updateStatus = async (req: AuthRequest, res: Response) => {
+  updateStatus = async (req: Request, res: Response) => {
+    const { organizationId, staffId } = getRequestContext();
     const issue = await this.svc.updateStatus(
-      req.organizationId!,
+      organizationId!,
       req.params.id as string,
       req.body.action,
-      req.staffId,
+      staffId ?? undefined,
       req.body.note,
     );
     sendSuccess(res, issue, "Issue updated");
   };
 
-  getConfig = async (req: AuthRequest, res: Response) => {
-    const config = await this.svc.getConfig(req.organizationId!);
+  getConfig = async (_req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const config = await this.svc.getConfig(organizationId!);
     sendSuccess(res, config, "Config retrieved");
   };
 
-  updateConfig = async (req: AuthRequest, res: Response) => {
-    const config = await this.svc.updateConfig(req.organizationId!, req.body);
+  updateConfig = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const config = await this.svc.updateConfig(organizationId!, req.body);
     sendSuccess(res, config, "Config updated");
   };
 }

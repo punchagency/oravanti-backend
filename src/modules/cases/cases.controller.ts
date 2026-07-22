@@ -1,10 +1,11 @@
-import { Response } from "express";
-import { AuthRequest } from "../../middleware/auth.middleware";
+import { Request, Response } from "express";
+import { getRequestContext } from "../../middleware/request-context";
 import asyncWrap from "../../utils/asyncWrapper";
 import { NotFoundError } from "../../utils/error/app-error";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { sendSuccess } from "../../utils/send-success";
 import { DocumentsService } from "../documents/documents.service";
+import { logCaseView, getCaseActivityPaginated } from "./case-events.service";
 import { CasesService } from "./cases.service";
 
 export class CasesController {
@@ -16,24 +17,26 @@ export class CasesController {
     this.documentsService = documentsService;
   }
 
-  generateCaseNumber = asyncWrap(async (req: AuthRequest, res: Response) => {
+  generateCaseNumber = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const { practiceAreaId, caseType } = req.query;
 
     const caseNumber = await this.casesService.generateCaseNumber(
-      req.organizationId!,
+      organizationId!,
       practiceAreaId as string,
       caseType as string,
     );
     sendSuccess(res, { caseNumber }, "Case number generated");
   });
 
-  getAllCases = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getAllCases = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const {
       search, status, assigneeId, clientId, practiceAreaId,
       practiceAreaName, caseTypeName, subcategoryName, assigneeName,
       page, limit,
     } = req.query;
-    const result = await this.casesService.getAllCases(req.organizationId!, {
+    const result = await this.casesService.getAllCases(organizationId!, {
       search: search as string,
       status: status as "active" | "pending_review" | "on_hold" | "completed" | "cancelled" | undefined,
       assigneeId: assigneeId as string,
@@ -50,30 +53,42 @@ export class CasesController {
     sendSuccess(res, data, "Cases retrieved successfully", 200, { pagination });
   });
 
-  getCaseById = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getCaseById = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const result = await this.casesService.getCaseById(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Case not found");
     }
+
+    // Log case view
+    await logCaseView(
+      organizationId!,
+      req.params.id as string,
+      staffId ?? undefined,
+    );
+
     sendSuccess(res, result, "Case retrieved successfully");
   });
 
-  createCase = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const result = await this.casesService.createCase(req.organizationId!, req.body, {
-      adminId: req.adminId,
-      staffId: req.staffId,
+  createCase = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    const result = await this.casesService.createCase(organizationId!, req.body, {
+      adminId: staffId ?? undefined,
+      staffId: staffId ?? undefined,
     });
     sendSuccess(res, result, "Case created successfully", 201);
   });
 
-  updateCase = asyncWrap(async (req: AuthRequest, res: Response) => {
+  updateCase = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const result = await this.casesService.updateCase(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
       req.body,
+      staffId ?? undefined,
     );
     if (!result) {
       throw new NotFoundError("Case not found");
@@ -81,21 +96,56 @@ export class CasesController {
     sendSuccess(res, result, "Case updated successfully");
   });
 
-  deleteCase = asyncWrap(async (req: AuthRequest, res: Response) => {
-    await this.casesService.deleteCase(req.params.id as string, req.organizationId!);
+  deleteCase = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    await this.casesService.deleteCase(
+      req.params.id as string,
+      organizationId!,
+      staffId ?? undefined,
+    );
     sendSuccess(res, null, "Case deleted successfully");
   });
 
-  getCaseDocuments = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getCaseDocuments = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const { page, limit } = req.query;
     const queryPagination = parsePaginationQuery({ page, limit });
     const result = await this.documentsService.getCaseDocuments(
       req.params.caseId as string,
-      req.organizationId!,
+      organizationId!,
       queryPagination.page,
       queryPagination.limit,
     );
     const { data, pagination } = result;
     sendSuccess(res, data, "Case documents retrieved successfully", 200, { pagination });
+  });
+
+  reassignTeam = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    const caseId = req.params.id as string;
+    const { teamId } = req.body;
+
+    // Update case with new team
+    await this.casesService.updateCase(caseId, organizationId!, {
+      assignedTeamId: teamId,
+      reassignmentDate: new Date(),
+    }, staffId ?? undefined);
+
+    sendSuccess(res, null, "Team reassigned successfully");
+  });
+
+  getCaseAuditLog = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    const caseId = req.params.id as string;
+    const { page, limit } = req.query;
+    const queryPagination = parsePaginationQuery({ page, limit });
+    const result = await getCaseActivityPaginated({
+      caseId,
+      organizationId: organizationId!,
+      page: queryPagination.page,
+      limit: queryPagination.limit,
+    });
+    const { data, pagination } = result;
+    sendSuccess(res, data, "Case audit log retrieved successfully", 200, { pagination });
   });
 }

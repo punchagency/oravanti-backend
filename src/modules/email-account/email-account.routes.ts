@@ -6,6 +6,7 @@
  */
 import { Router } from "express";
 import { requireAuth } from "../../middleware/auth.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { injectUserDEK } from "../../middleware/injectUserDEK";
 import { validateRequest } from "../../middleware/validate.middleware";
 import { CommonValidation } from "../../validation/common.validation";

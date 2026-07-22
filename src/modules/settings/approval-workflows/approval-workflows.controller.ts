@@ -1,5 +1,5 @@
-import { Response } from "express";
-import { AuthRequest } from "../../../middleware/auth.middleware";
+﻿import { Request, Response } from "express";
+import { getRequestContext } from "../../../middleware/request-context";
 import asyncWrap from "../../../utils/asyncWrapper";
 import { sendSuccess } from "../../../utils/send-success";
 import { PermissionAuditLogService } from "../permission-audit-log/permission-audit-log.service";
@@ -17,19 +17,21 @@ export class ApprovalWorkflowsController {
     this.auditLogService = auditLogService;
   }
 
-  getApprovalWorkflows = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getApprovalWorkflows = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.approvalWorkflowsService.getApprovalWorkflows(
-      req.organizationId!,
+      organizationId!,
     );
     sendSuccess(res, result, "Approval workflows retrieved successfully");
   });
 
   updateApprovalWorkflows = asyncWrap(
-    async (req: AuthRequest, res: Response) => {
+    async (req: Request, res: Response) => {
+    const { userId, organizationId } = getRequestContext();
       const { workflows } = req.body;
 
       await this.approvalWorkflowsService.updateApprovalWorkflows(
-        req.organizationId!,
+        organizationId!,
         workflows,
       );
 
@@ -38,7 +40,7 @@ export class ApprovalWorkflowsController {
           ? `Changed approval workflow for ${workflows[0].workflowType.replace(/_/g, " ")}`
           : "Updated approval workflow configuration";
       this.auditLogService
-        .logPermissionChange(action, req.userId!, req.organizationId!)
+        .logPermissionChange(action, userId!, organizationId!)
         .catch(() => {});
 
       sendSuccess(res, null, "Approval workflows updated");

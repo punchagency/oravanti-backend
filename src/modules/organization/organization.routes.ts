@@ -6,6 +6,7 @@
  */
 import { Router } from "express";
 import { requireAuth } from "../../middleware/auth.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { requirePermission } from "../../middleware/permission.middleware";
 import { OrganizationController } from "./organization.controller";
 

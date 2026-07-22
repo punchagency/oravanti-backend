@@ -1103,7 +1103,7 @@ export class QuestionnairesService {
       await db
         .update(leads)
         .set({ pipelineStage: "consultation", updatedAt: new Date() })
-        .where(eq(leads.id, response.leadId));
+        .where(and(eq(leads.id, response.leadId), eq(leads.organizationId, organizationId)));
 
       await logLeadEvent({
         organizationId,
@@ -1588,7 +1588,7 @@ export class QuestionnairesService {
       for (const [questionId, { value, source }] of answerMap.entries()) {
         await tx
           .insert(questionnaireAnswers)
-          .values({ responseId: response.id, questionId, questionSource: source, value: value as any })
+          .values({ responseId: response.id, organizationId: send.organizationId, questionId, questionSource: source, value: value as any })
           .onConflictDoUpdate({
             target: [questionnaireAnswers.responseId, questionnaireAnswers.questionId],
             set: { value: value as any, updatedAt: now },

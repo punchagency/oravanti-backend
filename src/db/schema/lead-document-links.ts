@@ -3,6 +3,8 @@ import { documents } from "./documents";
 import { leads } from "./leads";
 import { staff } from "./staff";
 
+// Org-agnostic like the document graph it joins — a document is shareable, and
+// this link resolves org via `leads` (see the org-agnostic-documents decision).
 export const leadDocumentLinks = pgTable(
   "lead_document_links",
   {

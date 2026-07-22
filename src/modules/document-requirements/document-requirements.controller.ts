@@ -1,36 +1,40 @@
-import { Response } from "express";
-import { AuthRequest } from "../../middleware/auth.middleware";
+import { Request, Response } from "express";
+import { getRequestContext } from "../../middleware/request-context";
 import { sendSuccess } from "../../utils/send-success";
 import { DocumentRequirementsService } from "./document-requirements.service";
 
 export class DocumentRequirementsController {
   constructor(private readonly svc: DocumentRequirementsService) {}
 
-  list = async (req: AuthRequest, res: Response) => {
+  list = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const rows = await this.svc.listByCaseType(
-      req.organizationId!,
+      organizationId!,
       req.query.caseTypeId as string,
     );
     sendSuccess(res, rows, "Requirement templates retrieved");
   };
 
-  create = async (req: AuthRequest, res: Response) => {
-    const row = await this.svc.create(req.organizationId!, req.body);
+  create = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const row = await this.svc.create(organizationId!, req.body);
     sendSuccess(res, row, "Requirement template created", 201);
   };
 
-  update = async (req: AuthRequest, res: Response) => {
+  update = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const row = await this.svc.update(
-      req.organizationId!,
+      organizationId!,
       req.params.id as string,
       req.body,
     );
     sendSuccess(res, row, "Requirement template updated");
   };
 
-  archive = async (req: AuthRequest, res: Response) => {
+  archive = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.svc.archive(
-      req.organizationId!,
+      organizationId!,
       req.params.id as string,
     );
     sendSuccess(res, result, "Requirement template archived");

@@ -39,6 +39,14 @@ export const noteVisibilityEnum = pgEnum('note_visibility', [
   'admins_only',
 ]);
 
+export const caseNoteContextEnum = pgEnum('case_note_context', [
+  'notes_tab',
+  'workflow_step',
+  'task',
+  'lead_conversion',
+  'system',
+]);
+
 export const moduleActivationTypeEnum = pgEnum('module_activation_type', [
   'auto',
   'conditional',
@@ -112,11 +120,14 @@ export const caseWorkflowSteps = pgTable('case_workflow_steps', {
 
 export const caseNotes = pgTable('case_notes', {
   id:                uuid('id').primaryKey().defaultRandom(),
+  organizationId:    text('organization_id').notNull().references(() => organization.id),
   caseId:            uuid('case_id').notNull().references(() => cases.id, { onDelete: 'cascade' }),
   workflowModuleId:  uuid('workflow_module_id').references(() => workflowModules.id, { onDelete: 'set null' }),
   taskId:            uuid('task_id').references(() => caseWorkflowSteps.id, { onDelete: 'set null' }),
   category:          noteCategoryEnum('category').notNull().default('internal_strategy'),
   visibility:        noteVisibilityEnum('visibility').notNull().default('all_staff'),
+  isPinned:          boolean('is_pinned').notNull().default(false),
+  context:           caseNoteContextEnum('context').notNull().default('notes_tab'),
   content:           text('content').notNull(),
   isEdited:          boolean('is_edited').notNull().default(false),
   createdByUserId:   uuid('created_by_user_id').notNull(),
@@ -127,14 +138,15 @@ export const caseNotes = pgTable('case_notes', {
 // ─── Case Timeline Events ───────────────────────────────────────────────────────
 
 export const caseTimelineEvents = pgTable('case_timeline_events', {
-  id:          uuid('id').primaryKey().defaultRandom(),
-  caseId:      uuid('case_id').notNull().references(() => cases.id, { onDelete: 'cascade' }),
-  eventType:   text('event_type').notNull(),
-  title:       text('title').notNull(),
-  description: text('description'),
-  metadata:    jsonb('metadata'),
-  createdById: uuid('created_by_id').references(() => staff.id),
-  createdAt:   timestamp('created_at').notNull().defaultNow(),
+  id:             uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull().references(() => organization.id),
+  caseId:         uuid('case_id').notNull().references(() => cases.id, { onDelete: 'cascade' }),
+  eventType:      text('event_type').notNull(),
+  title:          text('title').notNull(),
+  description:    text('description'),
+  metadata:       jsonb('metadata'),
+  createdById:    uuid('created_by_id').references(() => staff.id),
+  createdAt:      timestamp('created_at').notNull().defaultNow(),
 });
 
 // ─── Workflow Log (Audit Trail) ──────────────────────────────────────────────────

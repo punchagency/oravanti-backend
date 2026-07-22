@@ -6,7 +6,7 @@ import {
   timestamp,
   uuid,
 } from "drizzle-orm/pg-core";
-import { organization, team } from "./auth-schema";
+import { organization, team, user } from "./auth-schema";
 import { leads } from "./leads";
 import { staff } from "./staff";
 
@@ -48,6 +48,9 @@ export const clients = pgTable("clients", {
   organizationId: text("organization_id")
     .notNull()
     .references(() => organization.id),
+
+  // Link to user account (for client portal access)
+  userId: text("user_id").references(() => user.id, { onDelete: "set null" }),
 
   // Historical conversion audit trail linkage (Safe clean decoupling)
   leadId: uuid("lead_id").references(() => leads.id, { onDelete: "set null" }),

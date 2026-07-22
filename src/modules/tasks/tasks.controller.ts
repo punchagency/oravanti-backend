@@ -1,5 +1,5 @@
-import { Response } from "express";
-import { AuthRequest } from "../../middleware/auth.middleware";
+import { Request, Response } from "express";
+import { getRequestContext } from "../../middleware/request-context";
 import asyncWrap from "../../utils/asyncWrapper";
 import { NotFoundError } from "../../utils/error/app-error";
 import { sendSuccess } from "../../utils/send-success";
@@ -12,15 +12,17 @@ export class TasksController {
     this.tasksService = tasksService;
   }
 
-  getTaskStats = asyncWrap(async (req: AuthRequest, res: Response) => {
-    const stats = await this.tasksService.getTaskStats(req.organizationId!);
+  getTaskStats = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const stats = await this.tasksService.getTaskStats(organizationId!);
     sendSuccess(res, stats, "Task stats retrieved successfully");
   });
 
-  getAllTasks = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getAllTasks = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { search, status, priority, assignedToId } = req.query;
 
-    const result = await this.tasksService.getAllTasks(req.organizationId!, {
+    const result = await this.tasksService.getAllTasks(organizationId!, {
       search: search as string,
       status: status as string,
       priority: priority as string,
@@ -29,10 +31,11 @@ export class TasksController {
     sendSuccess(res, result, "Tasks retrieved successfully");
   });
 
-  getTaskById = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getTaskById = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.tasksService.getTaskById(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
     );
     if (!result) {
       throw new NotFoundError("Task not found");
@@ -40,19 +43,21 @@ export class TasksController {
     sendSuccess(res, result, "Task retrieved successfully");
   });
 
-  createTask = asyncWrap(async (req: AuthRequest, res: Response) => {
+  createTask = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
     const result = await this.tasksService.createTask({
       ...req.body,
-      organizationId: req.organizationId!,
-      assignedById: req.adminId!,
+      organizationId: organizationId!,
+      assignedById: staffId!,
     });
     sendSuccess(res, result, "Task created successfully", 201);
   });
 
-  updateTask = asyncWrap(async (req: AuthRequest, res: Response) => {
+  updateTask = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.tasksService.updateTask(
       req.params.id as string,
-      req.organizationId!,
+      organizationId!,
       req.body,
     );
     if (!result) {
@@ -61,8 +66,9 @@ export class TasksController {
     sendSuccess(res, result, "Task updated successfully");
   });
 
-  deleteTask = asyncWrap(async (req: AuthRequest, res: Response) => {
-    await this.tasksService.deleteTask(req.params.id as string, req.organizationId!);
+  deleteTask = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    await this.tasksService.deleteTask(req.params.id as string, organizationId!);
     sendSuccess(res, null, "Task deleted successfully");
   });
 }

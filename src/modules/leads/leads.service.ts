@@ -169,7 +169,7 @@ type StoredMatch = {
   caseIds: string[];
 };
 
-const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[]) => {
+const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[], organizationId: string) => {
   if (storedMatches.length === 0) return [];
 
   const allCaseIds = [...new Set(storedMatches.flatMap((m) => m.caseIds))];
@@ -202,7 +202,7 @@ const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[]) => {
       .from(cases)
       .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
       .leftJoin(clients, eq(clients.id, cases.clientId))
-      .where(inArray(cases.id, allCaseIds));
+      .where(and(inArray(cases.id, allCaseIds), eq(cases.organizationId, organizationId)));
 
     for (const row of caseRows) caseMap.set(row.id, row);
   }
@@ -218,7 +218,7 @@ const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[]) => {
         caseId: adverseParties.caseId,
       })
       .from(adverseParties)
-      .where(inArray(adverseParties.id, adverseMatchIds));
+      .where(and(inArray(adverseParties.id, adverseMatchIds), eq(adverseParties.organizationId, organizationId)));
 
     for (const ap of apRows) {
       adverseContextMap.set(ap.id, {
@@ -560,7 +560,7 @@ const getAllLeads = async (
         if (!conflict) return r;
         const { matches } = conflict;
         if (!matches || matches.length === 0) return r;
-        const conflictMatches = await enrichMatchesWithCaseContext(matches);
+        const conflictMatches = await enrichMatchesWithCaseContext(matches, organizationId);
         return { ...r, conflictMatches, conflictCheckStatus: conflict.status };
       }),
     );
@@ -695,7 +695,12 @@ const getLeadById = async (id: string, organizationId: string) => {
     await db
       .select()
       .from(consultations)
-      .where(eq(consultations.leadId, id))
+      .where(
+        and(
+          eq(consultations.leadId, id),
+          eq(consultations.organizationId, organizationId),
+        ),
+      )
       .orderBy(desc(consultations.createdAt))
   ).filter((c) => c.id !== lead.consultationId);
 
@@ -809,7 +814,7 @@ const updateLead = async (
     await tx
       .update(leads)
       .set({ ...patch, updatedAt: new Date() } as any)
-      .where(eq(leads.id, id));
+      .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)));
 
     await logLeadEvent({
       organizationId,
@@ -822,7 +827,10 @@ const updateLead = async (
       tx,
     });
 
-    const [row] = await tx.select().from(leads).where(eq(leads.id, id));
+    const [row] = await tx
+      .select()
+      .from(leads)
+      .where(and(eq(leads.id, id), eq(leads.organizationId, organizationId)));
     return row;
   });
 
@@ -954,7 +962,11 @@ const restoreLead = async (
     .select({ metadata: leadEvents.metadata })
     .from(leadEvents)
     .where(
-      and(eq(leadEvents.leadId, id), eq(leadEvents.type, "lead_archived")),
+      and(
+        eq(leadEvents.leadId, id),
+        eq(leadEvents.type, "lead_archived"),
+        eq(leadEvents.organizationId, organizationId),
+      ),
     )
     .orderBy(desc(leadEvents.createdAt))
     .limit(1);
@@ -1622,7 +1634,7 @@ const runConflictCheck = async (
     await db
       .update(leads)
       .set({ conflictCheckId: created.id, updatedAt: now })
-      .where(eq(leads.id, leadId));
+      .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)));
   }
 
   await logLeadEvent({
@@ -1643,7 +1655,7 @@ const runConflictCheck = async (
         await db
           .update(leads)
           .set({ pipelineStage: "questionnaire", updatedAt: now })
-          .where(eq(leads.id, leadId));
+          .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)));
 
         await logStageChange({
           organizationId,
@@ -1659,7 +1671,7 @@ const runConflictCheck = async (
         await db
           .update(leads)
           .set({ pipelineStage: "conflict_check", updatedAt: now })
-          .where(eq(leads.id, leadId));
+          .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)));
 
         await logStageChange({
           organizationId,
@@ -1672,7 +1684,7 @@ const runConflictCheck = async (
     }
   }
 
-  const enrichedMatches = await enrichMatchesWithCaseContext(matches);
+  const enrichedMatches = await enrichMatchesWithCaseContext(matches, organizationId);
   return { ...checkRecord, matches: enrichedMatches };
 };
 
@@ -1695,7 +1707,7 @@ const getConflictCheck = async (leadId: string, organizationId: string) => {
   if (!cc) return null;
 
   const storedMatches = (cc.matches ?? []) as StoredMatch[];
-  const enrichedMatches = await enrichMatchesWithCaseContext(storedMatches);
+  const enrichedMatches = await enrichMatchesWithCaseContext(storedMatches, organizationId);
   return { ...cc, matches: enrichedMatches };
 };
 
@@ -1740,7 +1752,7 @@ const resolveConflictCheck = async (
   const [staffRecord] = await db
     .select({ id: staff.id })
     .from(staff)
-    .where(eq(staff.id, staffId))
+    .where(and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)))
     .limit(1);
 
   if (!staffRecord)
@@ -1850,6 +1862,7 @@ const resolveConflictCheck = async (
 
   const enrichedMatches = await enrichMatchesWithCaseContext(
     (updated.matches ?? []) as StoredMatch[],
+    organizationId,
   );
 
   return { ...updated, matches: enrichedMatches };
@@ -1939,7 +1952,7 @@ const sendQuestionnaire = async (
   const [leadCaseType] = await db
     .select({ caseTypeId: leads.caseTypeId })
     .from(leads)
-    .where(eq(leads.id, leadId))
+    .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)))
     .limit(1);
 
   const caseTypeId = leadCaseType?.caseTypeId;
@@ -2188,11 +2201,16 @@ const sendQuestionnaire = async (
 };
 
 /** Cancel a send's pending auto-reminder, if any (e.g. on submission). */
-export const cancelSendReminder = async (sendId: string) => {
+export const cancelSendReminder = async (sendId: string, organizationId: string) => {
   const [send] = await db
     .select()
     .from(questionnaireSends)
-    .where(eq(questionnaireSends.id, sendId))
+    .where(
+      and(
+        eq(questionnaireSends.id, sendId),
+        eq(questionnaireSends.organizationId, organizationId),
+      ),
+    )
     .limit(1);
   if (send?.reminderJobId) {
     await cancelQuestionnaireReminder(send.reminderJobId).catch(console.error);
@@ -2459,7 +2477,9 @@ const initiateConsultation = async (
         : { pipelineStage: "consultation" as const }),
       updatedAt: new Date(),
     })
-    .where(eq(leads.id, leadId));
+    .where(
+      and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)),
+    );
 
   // Resolve the attorney and any additional attendees to names: the trail has
   // to say who the consultation is *with*, and a uuid says nothing to a reader.
@@ -2476,7 +2496,12 @@ const initiateConsultation = async (
           lastName: staff.lastName,
         })
         .from(staff)
-        .where(inArray(staff.id, attendeeIds))
+        .where(
+          and(
+            inArray(staff.id, attendeeIds),
+            eq(staff.organizationId, organizationId),
+          ),
+        )
     : [];
 
   const nameOf = (id: string) => {
@@ -2775,7 +2800,7 @@ const updateConsultation = async (
       const [leadCaseType] = await db
         .select({ id: leads.caseTypeId })
         .from(leads)
-        .where(eq(leads.id, leadId))
+        .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)))
         .limit(1);
       if (leadCaseType?.id) {
         await sendQuestionnaire(leadId, organizationId, undefined, {
@@ -2980,7 +3005,7 @@ const getLeadTimezone = async (
   const [lead] = await db
     .select({ timezone: leads.timezone })
     .from(leads)
-    .where(eq(leads.id, leadId))
+    .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)))
     .limit(1);
 
   return lead?.timezone ?? getFirmTimezone(organizationId);
@@ -3098,7 +3123,12 @@ const getConsultationRecipients = async (
       email: leads.email,
     })
     .from(leads)
-    .where(eq(leads.id, consultation.leadId))
+    .where(
+      and(
+        eq(leads.id, consultation.leadId),
+        eq(leads.organizationId, consultation.organizationId),
+      ),
+    )
     .limit(1);
 
   let attorney:
@@ -3113,7 +3143,12 @@ const getConsultationRecipients = async (
       })
       .from(staff)
       .leftJoin(user, eq(staff.userId, user.id))
-      .where(eq(staff.id, consultation.leadAttorneyId))
+      .where(
+        and(
+          eq(staff.id, consultation.leadAttorneyId),
+          eq(staff.organizationId, consultation.organizationId),
+        ),
+      )
       .limit(1);
   }
 
@@ -3122,7 +3157,12 @@ const getConsultationRecipients = async (
     .from(consultationParticipants)
     .leftJoin(staff, eq(consultationParticipants.staffId, staff.id))
     .leftJoin(user, eq(staff.userId, user.id))
-    .where(eq(consultationParticipants.consultationId, consultation.id));
+    .where(
+      and(
+        eq(consultationParticipants.consultationId, consultation.id),
+        eq(consultationParticipants.organizationId, consultation.organizationId),
+      ),
+    );
 
   const staffEmails = [
     attorney?.email,
@@ -3763,7 +3803,7 @@ const advanceLeadToCaseOpening = async (
   const [lead] = await db
     .select({ pipelineStage: leads.pipelineStage })
     .from(leads)
-    .where(eq(leads.id, leadId))
+    .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)))
     .limit(1);
 
   await db
@@ -4176,7 +4216,7 @@ const getEligibleTeamsForLead = async (
   const [leadCaseType] = await db
     .select({ caseTypeId: leads.caseTypeId })
     .from(leads)
-    .where(eq(leads.id, leadId))
+    .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)))
     .limit(1);
 
   if (!leadCaseType?.caseTypeId) return [];
@@ -4343,7 +4383,7 @@ const openCase = async (
         practiceAreaId: resolvedPracticeAreaId,
         caseTypeId: resolvedCaseTypeId,
         priority: "medium",
-        assignedTeamId: data.assignedTeamId ?? lead.respondentId ?? null,
+        assignedTeamId: data.assignedTeamId ?? null,
         filingDate: new Date().toISOString().split("T")[0],
         description: lead.situationSummary ?? `Case for ${leadName}`,
         openedById: creatorStaffId,
@@ -4530,7 +4570,7 @@ const updateCaseWorkflowStep = async (
 
   if (!updated) throw new NotFoundError("Workflow step not found");
 
-  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(eq(cases.id, caseId)).limit(1);
+  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId))).limit(1);
   if (caseRow?.leadId) {
     await logLeadEvent({
       organizationId,
@@ -4581,7 +4621,7 @@ const addAdverseParty = async (
     })
     .returning();
 
-  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(eq(cases.id, caseId)).limit(1);
+  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId))).limit(1);
   if (caseRow?.leadId) {
     await logLeadEvent({
       organizationId,
@@ -4625,7 +4665,7 @@ const updateAdverseParty = async (
 
   if (!updated) throw new NotFoundError("Adverse party not found");
 
-  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(eq(cases.id, caseId)).limit(1);
+  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId))).limit(1);
   if (caseRow?.leadId) {
     await logLeadEvent({
       organizationId,
@@ -4653,7 +4693,7 @@ const deleteAdverseParty = async (
       ),
     );
 
-  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(eq(cases.id, caseId)).limit(1);
+  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId))).limit(1);
   if (caseRow?.leadId) {
     await logLeadEvent({
       organizationId,
@@ -4780,7 +4820,12 @@ const getLeadTimeline = async (leadId: string, organizationId: string, page = 1,
         name: sql<string>`concat(${staff.firstName}, ' ', ${staff.lastName})`,
       })
       .from(staff)
-      .where(inArray(staff.id, allActorIds));
+      .where(
+        and(
+          inArray(staff.id, allActorIds),
+          eq(staff.organizationId, organizationId),
+        ),
+      );
     staffMap = Object.fromEntries(staffRows.map((r) => [r.id, r.name]));
   }
 

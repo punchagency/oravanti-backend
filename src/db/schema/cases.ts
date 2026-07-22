@@ -1,15 +1,19 @@
 import {
   boolean,
   date,
+  index,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { organization } from "./auth-schema";
+import { user } from "./auth-schema";
 import { clients } from "./clients";
 import { leads } from "./leads";
 import { practiceAreaCaseTypes } from "./practice-area-case-types";
@@ -73,6 +77,32 @@ export const certificationStatusEnum = pgEnum("certification_status", [
   "not_required",
 ]);
 
+export const caseEventTypeEnum = pgEnum("case_event_type", [
+  "case_created",
+  "case_updated",
+  "case_deleted",
+  "case_viewed",
+  "case_status_changed",
+  "case_priority_changed",
+  "case_team_assigned",
+  "case_team_reassigned",
+  "case_note_created",
+  "case_note_updated",
+  "case_note_deleted",
+  "case_note_pinned",
+  "case_note_unpinned",
+  "case_document_linked",
+  "case_document_unlinked",
+  "case_description_updated",
+  "workflow_initialized",
+  "module_activated",
+  "step_assigned",
+  "step_completed",
+  "step_submitted_for_review",
+  "step_approved",
+  "step_rejected",
+]);
+
 // =========================================================================
 // CASES & CERTIFICATIONS TABLES
 // =========================================================================
@@ -92,6 +122,12 @@ export const cases = pgTable("cases", {
   clientId: uuid("client_id")
     .notNull()
     .references(() => clients.id),
+
+  // Direct link to client's user account (for client portal RLS)
+  clientUserId: text("client_user_id").references(() => user.id, {
+    onDelete: "set null",
+  }),
+
   leadId: uuid("lead_id").references(() => leads.id, { onDelete: "set null" }),
 
   practiceAreaId: uuid("practice_area_id")
@@ -194,7 +230,65 @@ export const casesToCertifications = pgTable(
     dueDate: date("due_date"),
     completedAt: timestamp("completed_at"),
   },
-  (t) => [{ pk: primaryKey({ columns: [t.caseId, t.certificationId] }) }],
+  (t) => [{ pk:primaryKey({ columns: [t.caseId, t.certificationId] }) }],
+);
+
+// =========================================================================
+// CASE EVENTS (Append-Only Audit Trail)
+// =========================================================================
+
+/**
+ * Case Events: append-only audit trail for all case-level actions.
+ * Mirrors the proven `lead_events` pattern for consistency.
+ *
+ * `actorNameSnapshot` is denormalised deliberately: the trail must still read
+ * correctly after a staff member is removed.
+ */
+export const caseEvents = pgTable("case_events", {
+  id:             uuid("id").primaryKey().defaultRandom(),
+  organizationId: text("organization_id").notNull().references(() => organization.id),
+  caseId:         uuid("case_id").notNull().references(() => cases.id, { onDelete: "cascade" }),
+  eventType:      caseEventTypeEnum("event_type").notNull(),
+  title:          text("title").notNull(),
+  description:    text("description"),
+  metadata:       jsonb("metadata"),
+  actorId:        uuid("actor_id").references(() => staff.id),
+  actorNameSnapshot: text("actor_name_snapshot"),
+  ipAddress:      text("ip_address"),
+  createdAt:      timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("case_events_case_id_created_at_idx").on(t.caseId, t.createdAt),
+]);
+
+// =========================================================================
+// CASE ASSIGNMENTS (Client & Contractor Junction)
+// =========================================================================
+
+/**
+ * Case Assignments: Links users (clients/contractors) to cases.
+ * Used for RLS user-ownership policies — a user sees cases they're assigned to.
+ */
+export const caseAssignmentRoleEnum = pgEnum("case_assignment_role", [
+  "client",
+  "contractor",
+]);
+
+export const caseAssignments = pgTable(
+  "case_assignments",
+  {
+    caseId: uuid("case_id")
+      .notNull()
+      .references(() => cases.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    role: caseAssignmentRoleEnum("role").notNull(),
+    assignedAt: timestamp("assigned_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.caseId, t.userId, t.role] }),
+    index("case_assignments_user_idx").on(t.userId),
+  ],
 );
 
 export type Case = typeof cases.$inferSelect;
@@ -204,3 +298,11 @@ export type CaseRecordNote = typeof caseRecordNotes.$inferSelect;
 export type Certification = typeof certifications.$inferSelect;
 export type NewCertification = typeof certifications.$inferInsert;
 export type CaseToCertification = typeof casesToCertifications.$inferSelect;
+
+export type CaseEvent = typeof caseEvents.$inferSelect;
+export type NewCaseEvent = typeof caseEvents.$inferInsert;
+export type CaseEventType = (typeof caseEventTypeEnum.enumValues)[number];
+
+export type CaseAssignment = typeof caseAssignments.$inferSelect;
+export type NewCaseAssignment = typeof caseAssignments.$inferInsert;
+export type CaseAssignmentRole = (typeof caseAssignmentRoleEnum.enumValues)[number];

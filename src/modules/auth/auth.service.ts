@@ -3,6 +3,7 @@ import { createCipheriv, createHash, randomBytes, randomUUID } from "crypto";
 import { inArray } from "drizzle-orm";
 import { Request } from "express";
 import { auth } from "../../auth";
+import { getRequestContext } from "../../middleware/request-context";
 import { env } from "../../config/env";
 import { db } from "../../db/client";
 import {
@@ -209,6 +210,7 @@ export class AuthService {
     identificationFiles: Express.Multer.File[],
     req: Request,
   ) => {
+    const { organizationId } = getRequestContext();
     const email = normalizeEmail(body.email);
     const specialtyIds = [...new Set(body.specialtyIds)];
     const certificationDocuments = body.certificationDocuments;

@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { AuthRequest } from "../../middleware/auth.middleware";
+import { getRequestContext } from "../../middleware/request-context";
 import asyncWrap from "../../utils/asyncWrapper";
 import { sendSuccess } from "../../utils/send-success";
 import { PracticeAreasService } from "./practice-areas.service";
@@ -12,6 +12,7 @@ export class PracticeAreasController {
   }
 
   getAllPracticeAreas = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { search } = req.query;
     const result = await this.practiceAreasService.getAllPracticeAreas({
       search: search as string | undefined,
@@ -19,26 +20,29 @@ export class PracticeAreasController {
     sendSuccess(res, result, "Practice areas retrieved successfully");
   });
 
-  getFirmPracticeAreas = asyncWrap(async (req: AuthRequest, res: Response) => {
+  getFirmPracticeAreas = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const { search } = req.query;
     const result = await this.practiceAreasService.getFirmPracticeAreas(
-      req.organizationId!,
+      organizationId!,
       { search: search as string | undefined },
     );
     sendSuccess(res, result, "Firm practice areas retrieved successfully");
   });
 
-  createSubscriptions = asyncWrap(async (req: AuthRequest, res: Response) => {
+  createSubscriptions = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.practiceAreasService.createSubscriptions(
-      req.organizationId!,
+      organizationId!,
       req.body,
     );
     sendSuccess(res, result, "Subscriptions created successfully", 201);
   });
 
-  cancelSubscriptions = asyncWrap(async (req: AuthRequest, res: Response) => {
+  cancelSubscriptions = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
     const result = await this.practiceAreasService.cancelSubscriptions(
-      req.organizationId!,
+      organizationId!,
       req.body,
     );
     sendSuccess(res, result, "Subscriptions cancelled successfully");

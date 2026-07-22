@@ -555,6 +555,7 @@ export class LeadWorkflowService {
   async createTimelineEvent(
     data: {
       leadId: string;
+      organizationId: string;
       eventType: string;
       title: string;
       description?: string;
@@ -642,18 +643,22 @@ export class LeadWorkflowService {
     return link;
   }
 
-  async unlinkDocument(linkId: string, leadId: string, organizationId?: string) {
+  async unlinkDocument(linkId: string, leadId: string, organizationId: string) {
     const [existing] = await db
-      .select()
+      .select({ id: leadDocumentLinks.id, documentId: leadDocumentLinks.documentId })
       .from(leadDocumentLinks)
+      .innerJoin(leads, eq(leadDocumentLinks.leadId, leads.id))
       .where(
-        and(eq(leadDocumentLinks.id, linkId), eq(leadDocumentLinks.leadId, leadId)),
+        and(eq(leadDocumentLinks.id, linkId), eq(leadDocumentLinks.leadId, leadId), eq(leads.organizationId, organizationId)),
       );
 
     await db
       .delete(leadDocumentLinks)
       .where(
-        and(eq(leadDocumentLinks.id, linkId), eq(leadDocumentLinks.leadId, leadId)),
+        and(
+          eq(leadDocumentLinks.id, linkId),
+          inArray(leadDocumentLinks.leadId, db.select({ id: leads.id }).from(leads).where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)))),
+        ),
       );
 
     if (organizationId && existing) {
