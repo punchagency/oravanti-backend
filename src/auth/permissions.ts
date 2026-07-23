@@ -37,7 +37,7 @@ export const attorney = ac.newRole({
 });
 
 export const owner = ac.newRole({
-  clients: [],
+  clients: ["read", "create", "update", "delete"],
   cases: ["read", "create", "update", "delete"],
   staffs: ["read", "create", "update", "delete"],
   invitations: ["read", "create", "update", "delete"],
@@ -47,8 +47,8 @@ export const owner = ac.newRole({
 });
 
 export const admin = ac.newRole({
-  clients: [],
-  cases: [],
+  clients: ["read", "create", "update", "delete"],
+  cases: ["read", "create", "update", "delete"],
   staffs: ["read", "create", "update", "delete"],
   invitations: ["read", "create", "update", "delete"],
   conflicts: ["review"],
