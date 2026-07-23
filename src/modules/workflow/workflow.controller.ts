@@ -105,7 +105,9 @@ export class WorkflowController {
       caseId,
       stepId,
       assigneeStaffId,
-      actorStaffId!,
+      organizationId!,
+      overrideRationale,
+      actorStaffId,
     );
     sendSuccess(res, result, "Step assigned successfully");
   });
