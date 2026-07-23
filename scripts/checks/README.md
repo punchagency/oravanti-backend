@@ -42,11 +42,14 @@ after a crash.
 | Script | Needs | What it inspects |
 |---|---|---|
 | `01-case-review-logic` | nothing | Fingerprint identity/revision, normalisation, the date-like gate |
-| `02-issue-sync` | Postgres | Diff engine: NEW → UNCHANGED → CHANGED → SUPERSEDED → REOPEN, sweep guard, RLS isolation |
+| `02-issue-sync` | Postgres | Diff engine: NEW → UNCHANGED → CHANGED → SUPERSEDED → REOPEN, sweep guard |
 | `03-wire-contract` | Postgres | Request built from a real scenario; wire parity with the Python service |
 | `04-live-storage` | R2 | Upload/download round trip, presigned URLs, remove, checksum parity with the Python worker |
 | `05-queue` | Postgres + Redis | Producer: job row, coalescing, the payload on the queue. Consumer: cache write, terminal status, idempotency |
 | `06-roundtrip` | Postgres + Redis | The real cross-language seam, end to end |
+| `07-rls` | Postgres | Proves tenant isolation using a role RLS applies to; audits policy coverage |
+| `08-reconcile-sweep` | Postgres | Stuck-job reconciliation and the time-driven deterministic sweep |
+| `09-live-roundtrip` | Everything | The whole system with nothing stubbed |
 
 ## Tier 2 — the queue round trip
 
@@ -106,28 +109,41 @@ Import from `_bootstrap`:
   which bypasses RLS, and the check would pass for the wrong reason.
 - `check` / `checkEqual` / `section` / `report`.
 
-## Known gap
+## RLS
 
-`02-issue-sync` has one **intentionally failing** assertion: `case_issues`,
-`case_issue_documents`, `case_issue_events` and `ai_scan_jobs` have RLS disabled
-and zero policies, so another tenant's connection can read them. `leads`,
-`cases` and `clients` all have policies. Tenant scoping for these tables is
-currently application-level only (the services filter by `organizationId`), so
-the API does not leak — but the defence-in-depth layer dev added is missing
-here. The assertion stays red until policies are added or the model is
-deliberately changed.
+`07-rls` is the authority here, and it is worth reading its header before
+trusting any claim about tenant isolation.
 
-`document_analyses` is excluded from that list on purpose: it is a
-content-addressed cache keyed on `(checksum, prompt_version, model_version)`
-with no organization column, by design.
+Postgres skips row-level security for superusers, for roles with `BYPASSRLS`,
+and for a table's owner unless `FORCE ROW LEVEL SECURITY` is set. The
+application's role is all three, so **no policy engages on the connection the
+app uses** — verified empirically, not assumed. `07-rls` therefore connects as
+`oravanti_rls_probe` (created by `test:db:setup`: NOSUPERUSER, NOBYPASSRLS, not
+the owner) to prove the policies themselves are correct, and separately reports
+that the app role is exempt.
+
+This is why `02-issue-sync` does not assert isolation: on the app connection
+that would measure the role exemption, not the policy.
+
+Policies must be **permissive**, not restrictive. Restrictive policies are AND-ed
+with permissive ones, and a table whose only policy is restrictive matches
+nothing at all. `07-rls` audits this each run and names any restrictive-only
+table.
+
+`document_analyses` is deliberately uncovered: it is a content-addressed cache
+keyed on `(checksum, prompt_version, model_version)` with no organization
+column, by design.
 
 ## Not covered
 
-- **The reconciliation sweep.** `reconcileStuckScans` (jobs that never reported
-  back) and `markScanRunning` off the queue's `active` event are not exercised.
-- **The deterministic sweep on a schedule.** `sweepDeterministicIssues` is
-  covered only through `02-issue-sync`'s `includeScanRules` flag, not as a timed
-  job.
-- **Real AI in the round trip.** `06-roundtrip` stubs the model calls. The live
-  pipeline is covered separately by the AI repo's `07_live_scan.py`; no check
-  runs a real scan all the way through the queue.
+- **Extraction accuracy.** Every check asserts shape and configuration. Whether
+  Gemini reads a given field *correctly* is not asserted and cannot be without a
+  labelled corpus.
+- **Multi-page OCR.** `imageless_mode` raises the ceiling to 30 pages; every
+  sample is single-page.
+- **RLS in production.** `07-rls` proves the policies are correct, but the
+  application connects as a superuser/owner with BYPASSRLS, so none of them
+  engage. See the warning that check prints.
+- **`leads`, `lead_events`, `lead_notes` are restrictive-only** and will deny all
+  access the moment RLS does engage. Reported by `07-rls`, not fixed here — they
+  are dev's policies.
