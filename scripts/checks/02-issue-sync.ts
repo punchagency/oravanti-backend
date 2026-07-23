@@ -212,17 +212,21 @@ const main = async () => {
       });
 
       // ── Tenant isolation ────────────────────────────────────────────────
-      section("RLS — issues are not visible to another tenant");
-      const otherOrgRows = await withOrgContext(
-        "check-org-nonexistent",
-        null,
-        async () =>
-          db
-            .select()
-            .from(caseIssues)
-            .where(eq(caseIssues.organizationId, fx.organizationId)),
+      // Deliberately NOT asserted here. This runs on the application
+      // connection, and `oravanti_admin` is a superuser with BYPASSRLS that
+      // also owns the tables, so RLS never engages for it no matter how
+      // correct the policies are. Asserting isolation here would measure the
+      // role exemption, not the policy. `07-rls` proves isolation properly by
+      // connecting as a role RLS applies to.
+      section("scoping (application-level)");
+
+      const scoped = await withOrgContext(fx.organizationId, fx.userId, async () =>
+        db
+          .select()
+          .from(caseIssues)
+          .where(eq(caseIssues.organizationId, fx.organizationId)),
       );
-      checkEqual("other tenant sees no rows", otherOrgRows.length, 0);
+      checkEqual("the org's issues are retrievable by org filter", scoped.length, 1);
 
       const systemRows = await systemDb
         .select()
@@ -233,7 +237,7 @@ const main = async () => {
             eq(caseIssues.leadId, fx.leadId),
           ),
         );
-      checkEqual("row does exist when RLS is bypassed", systemRows.length, 1);
+      checkEqual("the row exists", systemRows.length, 1);
     },
   );
 

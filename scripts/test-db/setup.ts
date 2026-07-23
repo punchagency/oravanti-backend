@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
+import { RLS_PROBE_PASSWORD, RLS_PROBE_USER } from "./rls-probe";
 import { maskUrl, resolveTestDbTarget } from "./url";
 
 /**
@@ -33,6 +34,35 @@ RETURNS text LANGUAGE sql STABLE SECURITY DEFINER AS $$
 $$;
 `;
 
+/**
+ * A role that RLS actually applies to.
+ *
+ * Postgres skips row-level security entirely for superusers, for roles with
+ * BYPASSRLS, and for a table's owner unless FORCE ROW LEVEL SECURITY is set.
+ * `oravanti_admin` is all three, so policies are inert on the normal
+ * connection — verified empirically, not assumed.
+ *
+ * The `07-rls` check connects as this role instead, which is the only way to
+ * demonstrate that the policies do what they claim. It is created here rather
+ * than by a migration because it is test infrastructure, not schema.
+ */
+const RLS_PROBE_ROLE = `
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${RLS_PROBE_USER}') THEN
+    CREATE ROLE ${RLS_PROBE_USER} LOGIN PASSWORD '${RLS_PROBE_PASSWORD}';
+  END IF;
+END
+$$;
+
+ALTER ROLE ${RLS_PROBE_USER} NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+GRANT USAGE ON SCHEMA public TO ${RLS_PROBE_USER};
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${RLS_PROBE_USER};
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${RLS_PROBE_USER};
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${RLS_PROBE_USER};
+`;
+
 const main = async () => {
   const { testUrl, adminUrl, dbName } = resolveTestDbTarget();
 
@@ -62,6 +92,10 @@ const main = async () => {
     console.log(`[test-db] applying migrations to ${maskUrl(testUrl)}`);
     await migrate(drizzle(client), { migrationsFolder: "./drizzle/migrations" });
     console.log("[test-db] migrations applied");
+
+    // After migrations: the grants need the tables to exist.
+    await client.unsafe(RLS_PROBE_ROLE);
+    console.log(`[test-db] RLS probe role '${RLS_PROBE_USER}' ensured`);
   } finally {
     await client.end();
   }
