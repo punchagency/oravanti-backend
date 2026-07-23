@@ -44,6 +44,28 @@ after a crash.
 | `01-case-review-logic` | nothing | Fingerprint identity/revision, normalisation, the date-like gate |
 | `02-issue-sync` | Postgres | Diff engine: NEW → UNCHANGED → CHANGED → SUPERSEDED → REOPEN, sweep guard, RLS isolation |
 | `03-wire-contract` | Postgres | Request built from a real scenario; wire parity with the Python service |
+| `04-live-storage` | R2 | Upload/download round trip, presigned URLs, remove, checksum parity with the Python worker |
+
+## Tier 3 — live checks
+
+`04-live-storage` calls Cloudflare R2 for real. It is gated: without `--live` (or
+`ORAVANTI_LIVE=1`) it prints a notice and exits 0.
+
+```bash
+npm run check 04-live-storage -- --live
+```
+
+Everything it uploads is removed in a `finally`.
+
+It asserts that `computeChecksum` produces a fixed, out-of-band-verified sha256
+constant. The Python side asserts the same constant in `01_contract.py`. This
+matters because the worker's `read_verified` rejects any document whose bytes do
+not hash to the checksum the backend sent — if the two implementations ever
+diverged, every scan would fail that guard.
+
+The AI service's own Tier 3 checks (live Document AI, Gemini, and the full
+pipeline) live in the `oravanti-ai-detection-server` repo under
+`scripts/checks/`.
 
 ## Writing a check
 
