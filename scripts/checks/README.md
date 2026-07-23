@@ -45,6 +45,34 @@ after a crash.
 | `02-issue-sync` | Postgres | Diff engine: NEW → UNCHANGED → CHANGED → SUPERSEDED → REOPEN, sweep guard, RLS isolation |
 | `03-wire-contract` | Postgres | Request built from a real scenario; wire parity with the Python service |
 | `04-live-storage` | R2 | Upload/download round trip, presigned URLs, remove, checksum parity with the Python worker |
+| `05-queue` | Postgres + Redis | Producer: job row, coalescing, the payload on the queue. Consumer: cache write, terminal status, idempotency |
+| `06-roundtrip` | Postgres + Redis | The real cross-language seam, end to end |
+
+## Tier 2 — the queue round trip
+
+`06-roundtrip` is the only check that crosses the language boundary for real:
+
+```
+backend enqueues on `ai-scan`
+  → Python worker (real build_handler, stubbed AI clients) consumes it
+  → publishes to `ai-scan-results`
+  → backend's real result worker consumes and persists
+```
+
+It spawns the Python bridge as a subprocess, so it is one command rather than a
+three-terminal dance:
+
+```bash
+npm run check 06-roundtrip
+```
+
+Set `ORAVANTI_AI` if the AI service repo is not a sibling directory. No Google
+or R2 calls happen — the bridge stubs the pipeline's three billable
+collaborators. Under test is the transport, the payload contract across
+languages, and the persistence that follows; not extraction quality.
+
+`05-queue` covers each side separately (and more thoroughly) without involving
+Python at all.
 
 ## Tier 3 — live checks
 
@@ -95,5 +123,11 @@ with no organization column, by design.
 
 ## Not covered
 
-- The queue producer/consumer round trip (Redis) has no check yet.
-- Nothing here calls R2, Document AI or Gemini.
+- **The reconciliation sweep.** `reconcileStuckScans` (jobs that never reported
+  back) and `markScanRunning` off the queue's `active` event are not exercised.
+- **The deterministic sweep on a schedule.** `sweepDeterministicIssues` is
+  covered only through `02-issue-sync`'s `includeScanRules` flag, not as a timed
+  job.
+- **Real AI in the round trip.** `06-roundtrip` stubs the model calls. The live
+  pipeline is covered separately by the AI repo's `07_live_scan.py`; no check
+  runs a real scan all the way through the queue.
