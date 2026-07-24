@@ -26,6 +26,44 @@ export class CaseReviewController {
     });
   };
 
+  getByCase = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const { page, limit } = req.query;
+    const result = await this.svc.getByCase(organizationId!, {
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+    sendSuccess(res, result.data, "Matters retrieved", 200, {
+      pagination: result.pagination,
+    });
+  };
+
+  getByDocument = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const { page, limit } = req.query;
+    const result = await this.svc.getByDocument(organizationId!, {
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+    sendSuccess(res, result.data, "Document flags retrieved", 200, {
+      pagination: result.pagination,
+    });
+  };
+
+  getResolutionLog = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const { page, limit, days } = req.query;
+    const result = await this.svc.getResolutionLog(organizationId!, {
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+      days: days ? Number(days) : undefined,
+    });
+    sendSuccess(res, result.data, "Resolution log retrieved", 200, {
+      pagination: result.pagination,
+      summary: result.summary,
+    });
+  };
+
   getIssueById = async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     const issue = await this.svc.getIssueById(

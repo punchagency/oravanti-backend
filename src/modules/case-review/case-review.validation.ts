@@ -9,6 +9,16 @@ export const listIssuesQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).optional(),
 });
 
+export const paginationQuerySchema = z.object({
+  page: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().positive().max(100).optional(),
+});
+
+/** Resolution log additionally accepts a lookback window (defaults to 30d). */
+export const resolutionLogQuerySchema = paginationQuerySchema.extend({
+  days: z.coerce.number().int().positive().max(365).optional(),
+});
+
 export const updateStatusBodySchema = z.object({
   action: z.enum(["resolve", "dismiss", "reopen", "review"]),
   note: z.string().max(2000).optional(),

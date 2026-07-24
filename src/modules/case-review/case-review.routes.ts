@@ -12,6 +12,8 @@ import { validateRequest } from "../../middleware/validate.middleware";
 import { CaseReviewController } from "./case-review.controller";
 import {
   listIssuesQuerySchema,
+  paginationQuerySchema,
+  resolutionLogQuerySchema,
   updateConfigBodySchema,
   updateStatusBodySchema,
 } from "./case-review.validation";
@@ -46,6 +48,29 @@ export class CaseReviewRouter {
       controller.getIssues,
     );
 
+    this.router.get(
+      "/by-case",
+      read,
+      validateRequest({ query: paginationQuerySchema }),
+      controller.getByCase,
+    );
+
+    this.router.get(
+      "/by-document",
+      read,
+      validateRequest({ query: paginationQuerySchema }),
+      controller.getByDocument,
+    );
+
+    this.router.get(
+      "/resolution-log",
+      read,
+      validateRequest({ query: resolutionLogQuerySchema }),
+      controller.getResolutionLog,
+    );
+
+    // Declared after the static paths so "/issues/by-case" can never be
+    // swallowed by the :id param route.
     this.router.get("/issues/:id", read, controller.getIssueById);
 
     this.router.patch(

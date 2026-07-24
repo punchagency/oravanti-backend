@@ -11,7 +11,12 @@ import { randomUUID } from "crypto";
 import { eq } from "drizzle-orm";
 import { systemDb } from "../../src/db/client";
 import { aiScanJobs } from "../../src/db/schema/ai-scan-jobs";
-import { caseIssues } from "../../src/db/schema/case-issues";
+import {
+  caseIssueDocuments,
+  caseIssueEvents,
+  caseIssues,
+} from "../../src/db/schema/case-issues";
+import { scenarioDocumentRequirements } from "../../src/db/schema/document-requirements";
 import { CaseReviewService } from "../../src/modules/case-review/case-review.service";
 import {
   check,
@@ -309,6 +314,204 @@ const main = async () => {
       await systemDb
         .delete(aiScanJobs)
         .where(eq(aiScanJobs.organizationId, fx.organizationId));
+      await systemDb
+        .delete(caseIssues)
+        .where(eq(caseIssues.organizationId, fx.organizationId));
+    }
+  });
+
+  // ── by-case ───────────────────────────────────────────────────────────────
+  await withTempFixture({ docs: [], withCase: true }, async (fx) => {
+    const c = fx.case!;
+    try {
+      // Issue on the lead only; the case stays Clear.
+      await seedIssue(fx.organizationId, fx.leadId, { severity: "high" });
+      await seedIssue(fx.organizationId, fx.leadId, { severity: "low" });
+
+      await withOrgContext(fx.organizationId, fx.userId, async () => {
+        section("by-case — every active matter, including clear ones");
+
+        const page = await service.getByCase(fx.organizationId, {});
+        const rows = page.data as Record<string, unknown>[];
+
+        const lead = rows.find((r) => r.id === fx.leadId);
+        const kase = rows.find((r) => r.id === c.caseId);
+
+        check("leads are listed, not just cases", !!lead, rows.map((r) => r.type));
+        check("the case is listed", !!kase);
+
+        checkEqual("lead counts criticals (critical+high)", lead?.critical, 1);
+        checkEqual("lead counts warnings (medium+low)", lead?.warnings, 1);
+        checkEqual("a matter with criticals is flagged critical", lead?.status, "critical");
+
+        checkEqual("a matter with no issues counts zero", kase?.critical, 0);
+        checkEqual(
+          "a matter with no issues is Clear",
+          kase?.status,
+          "clear",
+        );
+        checkEqual(
+          "the case carries its case number as reference",
+          kase?.reference,
+          c.caseNumber,
+        );
+        checkEqual("a lead has no case number", lead?.reference, null);
+        check(
+          "initials are derived for the avatar chip",
+          typeof kase?.initials === "string" && (kase.initials as string).length > 0,
+          kase?.initials,
+        );
+
+        check(
+          "results are ordered by name",
+          rows.every(
+            (r, i) =>
+              i === 0 ||
+              String(rows[i - 1].name).localeCompare(String(r.name)) <= 0,
+          ),
+          rows.map((r) => r.name),
+        );
+
+        checkEqual("total counts every matter", page.pagination.total, 2);
+      });
+    } finally {
+      await systemDb
+        .delete(caseIssues)
+        .where(eq(caseIssues.organizationId, fx.organizationId));
+    }
+  });
+
+  // ── by-document ───────────────────────────────────────────────────────────
+  await withTempFixture(
+    { docs: [{ title: "Passport" }], withCase: true },
+    async (fx) => {
+      const doc = fx.docs[0];
+      try {
+        const issue = await seedIssue(fx.organizationId, fx.leadId, {
+          issueType: "document_expiry_before_deadline",
+          templateKey: "document_expiry_before_deadline",
+          templateParams: { documentTitle: "Passport", deadline: "2026-06-22" },
+        });
+        await systemDb.insert(caseIssueDocuments).values({
+          issueId: issue.id,
+          documentId: doc.id,
+          documentVersionId: doc.versionId,
+        });
+
+        // A required document that has not arrived — no `documents` row exists.
+        await systemDb.insert(scenarioDocumentRequirements).values({
+          organizationId: fx.organizationId,
+          leadId: fx.leadId,
+          label: "I-693 Medical exam",
+          documentTypeSlug: "medical_exam",
+          isRequired: true,
+          source: "template",
+        });
+
+        await withOrgContext(fx.organizationId, fx.userId, async () => {
+          section("by-document — flagged documents and awaited ones");
+
+          const page = await service.getByDocument(fx.organizationId, {});
+          const rows = page.data as Record<string, unknown>[];
+
+          const flagged = rows.find((r) => r.documentId === doc.id);
+          const missing = rows.find((r) => r.title === "I-693 Medical exam");
+
+          check("the flagged document is listed", !!flagged);
+          checkEqual("it links back to its issue", flagged?.issueId, issue.id);
+          checkEqual(
+            "its flag reuses the issue category",
+            flagged?.flag,
+            "DOCUMENT RISK",
+          );
+          checkEqual("source defaults to firm", flagged?.source, "firm");
+
+          check(
+            "a required-but-absent document is listed even with no document row",
+            !!missing,
+            rows.map((r) => r.title),
+          );
+          checkEqual("it has no document id", missing?.documentId, null);
+          checkEqual(
+            "its source is pending_client",
+            missing?.source,
+            "pending_client",
+          );
+          checkEqual("its flag is MISSING DOCUMENT", missing?.flag, "MISSING DOCUMENT");
+          checkEqual("it has no date yet", missing?.date, null);
+
+          const matter = missing?.matter as Record<string, unknown>;
+          checkEqual("the awaited row names its matter", matter?.id, fx.leadId);
+
+          checkEqual("both rows counted", page.pagination.total, 2);
+        });
+      } finally {
+        await systemDb
+          .delete(scenarioDocumentRequirements)
+          .where(
+            eq(scenarioDocumentRequirements.organizationId, fx.organizationId),
+          );
+        await systemDb
+          .delete(caseIssues)
+          .where(eq(caseIssues.organizationId, fx.organizationId));
+      }
+    },
+  );
+
+  // ── resolution log ────────────────────────────────────────────────────────
+  await withTempFixture({ docs: [] }, async (fx) => {
+    try {
+      const detectedAt = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000);
+      const resolvedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+
+      const resolved = await seedIssue(fx.organizationId, fx.leadId, {
+        status: "resolved",
+        detectedAt,
+        resolvedAt,
+        resolvedById: fx.staffId,
+      });
+      await systemDb.insert(caseIssueEvents).values({
+        issueId: resolved.id,
+        fromStatus: "open",
+        toStatus: "resolved",
+        actorStaffId: fx.staffId,
+        actionKey: "request_reupload",
+      });
+
+      // Still open — must not appear in the log.
+      await seedIssue(fx.organizationId, fx.leadId);
+
+      await withOrgContext(fx.organizationId, fx.userId, async () => {
+        section("resolution log");
+
+        const page = await service.getResolutionLog(fx.organizationId, {});
+        const rows = page.data as Record<string, unknown>[];
+
+        checkEqual("only resolved issues appear", rows.length, 1);
+        const row = rows[0];
+        checkEqual("it is the resolved one", row.id, resolved.id);
+
+        const by = row.resolvedBy as Record<string, unknown> | null;
+        checkEqual("resolver name is joined from staff", by?.name, fx.staffName);
+        checkEqual("resolver role is carried", by?.role, "paralegal");
+
+        checkEqual("action key carried", row.actionKey, "request_reupload");
+        checkEqual(
+          "action taken renders as past tense",
+          row.actionTaken,
+          "Re-upload requested",
+        );
+
+        const summary = page.summary as Record<string, unknown>;
+        checkEqual("summary counts resolved issues", summary.resolved, 1);
+        checkEqual("summary reports the window", summary.windowDays, 30);
+        checkEqual(
+          "average resolution time is in days",
+          summary.averageResolutionDays,
+          2,
+        );
+      });
+    } finally {
       await systemDb
         .delete(caseIssues)
         .where(eq(caseIssues.organizationId, fx.organizationId));
