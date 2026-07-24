@@ -1,5 +1,6 @@
 import { and, count, countDistinct, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { db } from "../../db/client";
+import { aiScanJobs } from "../../db/schema/ai-scan-jobs";
 import { aiSystemConfig } from "../../db/schema/ai-system-config";
 import {
   caseIssueDocuments,
@@ -15,8 +16,9 @@ import {
   buildPaginatedResponse,
   getPaginationOffset,
 } from "../../utils/pagination";
+import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { getFirmLanguage } from "../settings/consultation/consultation-settings.service";
-import { renderIssue, severityBadge } from "./render";
+import { issueCategory, renderIssue, severityBadge } from "./render";
 
 const CRITICAL_SEVERITIES = ["critical", "high"] as const;
 const WARNING_SEVERITIES = ["medium", "low"] as const;
@@ -24,15 +26,67 @@ const ACTIVE_STATUSES = ["open", "under_review"] as const;
 
 type IssueRow = typeof caseIssues.$inferSelect;
 
-const scenarioOf = (row: Pick<IssueRow, "leadId" | "caseId">) =>
-  row.leadId
-    ? { type: "lead" as const, id: row.leadId }
-    : { type: "case" as const, id: row.caseId! };
+/** Extra columns the issue queries join in for presentation. */
+type IssueJoins = {
+  clientName?: string | null;
+  caseTypeId?: string | null;
+  caseTypeName?: string | null;
+  caseNumber?: string | null;
+  leadName?: string | null;
+};
 
-const presentIssue = (
-  row: IssueRow & { clientName?: string | null; caseTypeId?: string | null },
-  language: string,
-) => {
+/**
+ * The matter an issue belongs to. `reference` is what the dashboard prints
+ * beside the client name — a case number for cases, and the lead's own name for
+ * leads, which have no case number until they convert.
+ */
+const scenarioOf = (row: Pick<IssueRow, "leadId" | "caseId"> & IssueJoins) =>
+  row.leadId
+    ? {
+        type: "lead" as const,
+        id: row.leadId,
+        reference: row.leadName ?? null,
+      }
+    : {
+        type: "case" as const,
+        id: row.caseId!,
+        reference: row.caseNumber ?? null,
+      };
+
+/**
+ * Columns every issue query selects. Shared so the list and detail endpoints
+ * cannot drift apart in what they present.
+ *
+ * The joins these depend on are applied by `withIssueJoins`.
+ */
+const ISSUE_SELECT = {
+  issue: caseIssues,
+  clientName: clients.displayName,
+  caseTypeId: cases.caseTypeId,
+  caseTypeName: practiceAreaCaseTypes.name,
+  caseNumber: cases.caseNumber,
+  leadName: sql<string | null>`concat(${leads.firstName}, ' ', ${leads.lastName})`,
+};
+
+type IssueSelectRow = {
+  issue: IssueRow;
+  clientName: string | null;
+  caseTypeId: string | null;
+  caseTypeName: string | null;
+  caseNumber: string | null;
+  leadName: string | null;
+};
+
+const flattenIssueRow = (r: IssueSelectRow): IssueRow & IssueJoins => ({
+  ...r.issue,
+  clientName: r.clientName,
+  caseTypeId: r.caseTypeId,
+  caseTypeName: r.caseTypeName,
+  caseNumber: r.caseNumber,
+  leadName: r.leadName,
+});
+
+const presentIssue = (row: IssueRow & IssueJoins, language: string) => {
   const prose = renderIssue(
     row.templateKey,
     (row.templateParams as Record<string, unknown>) ?? {},
@@ -41,6 +95,7 @@ const presentIssue = (
   return {
     id: row.id,
     issueType: row.issueType,
+    category: issueCategory(row.issueType),
     source: row.source,
     severity: row.severity,
     badge: severityBadge(row.severity),
@@ -50,6 +105,7 @@ const presentIssue = (
     scenario: scenarioOf(row),
     client: row.clientId ? { id: row.clientId, name: row.clientName ?? "" } : null,
     caseTypeId: row.caseTypeId ?? null,
+    caseTypeName: row.caseTypeName ?? null,
     detectedAt: row.detectedAt,
     resolvedAt: row.resolvedAt,
     dismissedAt: row.dismissedAt,
@@ -91,11 +147,94 @@ export class CaseReviewService {
         ),
       );
 
+    // Every active matter, whether or not it has issues — the denominator in
+    // "5 of 22 active matters".
+    const [activeCases] = await db
+      .select({ n: count() })
+      .from(cases)
+      .where(and(eq(cases.organizationId, organizationId), eq(cases.status, "active")));
+
     return {
       criticalIssues: critical.n,
       warnings: warnings.n,
       mattersAffected: affected.n,
       resolvedLast30Days: resolved.n,
+      totalActiveMatters: activeCases.n,
+      lastScan: await this.lastScanSummary(organizationId),
+    };
+  };
+
+  /**
+   * The "Last scan: … · N matters reviewed · N issues found · N resolved since"
+   * strip above the tiles.
+   *
+   * A full scan fans out into one job per matter, so the run is identified by
+   * the `batchId` they share. Falls back to the single most recent completed
+   * job when no batch has run yet (a firm whose only scans came from uploads),
+   * in which case the counts describe that one job.
+   */
+  private lastScanSummary = async (organizationId: string) => {
+    const [latest] = await db
+      .select({
+        batchId: aiScanJobs.batchId,
+        completedAt: aiScanJobs.completedAt,
+      })
+      .from(aiScanJobs)
+      .where(
+        and(
+          eq(aiScanJobs.organizationId, organizationId),
+          eq(aiScanJobs.status, "complete"),
+        ),
+      )
+      .orderBy(desc(aiScanJobs.completedAt))
+      .limit(1);
+
+    if (!latest?.completedAt) {
+      return {
+        at: null,
+        mattersReviewed: 0,
+        issuesFound: 0,
+        resolvedSince: 0,
+      };
+    }
+
+    // Scope to the batch when there is one; otherwise just that job.
+    const scope = latest.batchId
+      ? eq(aiScanJobs.batchId, latest.batchId)
+      : eq(aiScanJobs.completedAt, latest.completedAt);
+
+    const [run] = await db
+      .select({
+        matters: countDistinct(
+          sql`coalesce(${aiScanJobs.caseId}, ${aiScanJobs.leadId})`,
+        ),
+        issues: sql<number>`coalesce(sum(${aiScanJobs.issuesFound}), 0)::int`,
+      })
+      .from(aiScanJobs)
+      .where(
+        and(
+          eq(aiScanJobs.organizationId, organizationId),
+          eq(aiScanJobs.status, "complete"),
+          scope,
+        ),
+      );
+
+    const [resolvedSince] = await db
+      .select({ n: count() })
+      .from(caseIssues)
+      .where(
+        and(
+          eq(caseIssues.organizationId, organizationId),
+          eq(caseIssues.status, "resolved"),
+          gte(caseIssues.resolvedAt, latest.completedAt),
+        ),
+      );
+
+    return {
+      at: latest.completedAt,
+      mattersReviewed: run?.matters ?? 0,
+      issuesFound: Number(run?.issues ?? 0),
+      resolvedSince: resolvedSince.n,
     };
   };
 
@@ -129,14 +268,15 @@ export class CaseReviewService {
       .where(where);
 
     const rows = await db
-      .select({
-        issue: caseIssues,
-        clientName: clients.displayName,
-        caseTypeId: cases.caseTypeId,
-      })
+      .select(ISSUE_SELECT)
       .from(caseIssues)
       .leftJoin(clients, eq(clients.id, caseIssues.clientId))
       .leftJoin(cases, eq(cases.id, caseIssues.caseId))
+      .leftJoin(
+        practiceAreaCaseTypes,
+        eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+      )
+      .leftJoin(leads, eq(leads.id, caseIssues.leadId))
       .where(where)
       // Severity is a text enum, not ordinal — order by status then recency.
       .orderBy(desc(caseIssues.detectedAt))
@@ -144,9 +284,7 @@ export class CaseReviewService {
       .offset(offset);
 
     const language = await getFirmLanguage(organizationId);
-    const items = rows.map((r) =>
-      presentIssue({ ...r.issue, clientName: r.clientName, caseTypeId: r.caseTypeId }, language),
-    );
+    const items = rows.map((r) => presentIssue(flattenIssueRow(r), language));
 
     return buildPaginatedResponse(items, { page, limit, total: Number(total) });
   };
@@ -155,14 +293,15 @@ export class CaseReviewService {
 
   getIssueById = async (organizationId: string, id: string) => {
     const [row] = await db
-      .select({
-        issue: caseIssues,
-        clientName: clients.displayName,
-        caseTypeId: cases.caseTypeId,
-      })
+      .select(ISSUE_SELECT)
       .from(caseIssues)
       .leftJoin(clients, eq(clients.id, caseIssues.clientId))
       .leftJoin(cases, eq(cases.id, caseIssues.caseId))
+      .leftJoin(
+        practiceAreaCaseTypes,
+        eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+      )
+      .leftJoin(leads, eq(leads.id, caseIssues.leadId))
       .where(and(eq(caseIssues.id, id), eq(caseIssues.organizationId, organizationId)))
       .limit(1);
     if (!row) throw new NotFoundError("Issue not found");
@@ -186,10 +325,7 @@ export class CaseReviewService {
       .orderBy(caseIssueEvents.createdAt);
 
     return {
-      ...presentIssue(
-        { ...row.issue, clientName: row.clientName, caseTypeId: row.caseTypeId },
-        language,
-      ),
+      ...presentIssue(flattenIssueRow(row), language),
       documents: docs,
       events,
     };

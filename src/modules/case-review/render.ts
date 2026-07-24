@@ -148,3 +148,25 @@ export const renderIssue = (
 /** Dashboard badge for a severity: {critical, high} → Critical, else Warning. */
 export const severityBadge = (severity: string): "critical" | "warning" =>
   severity === "critical" || severity === "high" ? "critical" : "warning";
+
+/**
+ * The uppercase kicker shown above an issue's title on the dashboard card
+ * ("MISSING DOCUMENT", "DEADLINE RISK", …).
+ *
+ * Lives here rather than in the UI for the same reason the prose does: the
+ * backend owns presentation, so a new rule ships its label with it instead of
+ * waiting on a matching frontend release.
+ */
+const CATEGORIES: Record<string, string> = {
+  missing_required_document: "MISSING DOCUMENT",
+  document_expiry_before_deadline: "DOCUMENT RISK",
+  document_authenticity_suspect: "DOCUMENT RISK",
+  deadline_approaching_incomplete: "DEADLINE RISK",
+  filing_not_marked_submitted: "FILING RISK",
+  field_conflict_across_documents: "DATA CONFLICT",
+  field_conflict_with_scenario_record: "DATA CONFLICT",
+  photo_mismatch: "IDENTITY RISK",
+};
+
+export const issueCategory = (issueType: string): string =>
+  CATEGORIES[issueType] ?? issueType.replace(/_/g, " ").toUpperCase();

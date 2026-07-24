@@ -3,10 +3,16 @@ import { eq, inArray } from "drizzle-orm";
 import { closeDb, systemDb } from "../../src/db/client";
 import { organization, user } from "../../src/db/schema/auth-schema";
 import { caseIssues } from "../../src/db/schema/case-issues";
+import { cases } from "../../src/db/schema/cases";
+import { clients } from "../../src/db/schema/clients";
+import { practiceAreaCaseTypes } from "../../src/db/schema/practice-area-case-types";
+import { practiceAreaSubcategories } from "../../src/db/schema/practice-area-subcategories";
+import { practiceAreas } from "../../src/db/schema/practice-areas";
 import { documentAnalyses } from "../../src/db/schema/document-analyses";
 import { documents, documentVersions } from "../../src/db/schema/documents";
 import { leadDocumentLinks } from "../../src/db/schema/lead-document-links";
 import { leads } from "../../src/db/schema/leads";
+import { staff } from "../../src/db/schema/staff";
 import {
   initializeTenantContext,
   requestContextStore,
@@ -103,12 +109,35 @@ export type DocumentSpec = {
   };
 };
 
+/**
+ * An optional converted-case scenario, seeded alongside the lead.
+ *
+ * Cases sit behind a chain of required foreign keys (client, practice area,
+ * subcategory, case type) that the test database does not carry any seed data
+ * for, so the whole chain is created and torn down per run.
+ */
+export type CaseFixture = {
+  caseId: string;
+  caseNumber: string;
+  clientId: string;
+  clientName: string;
+  caseTypeId: string;
+  caseTypeName: string;
+  practiceAreaId: string;
+  subcategoryId: string;
+};
+
 export type Fixture = {
   organizationId: string;
   userId: string;
   leadId: string;
+  /** Staff member used as actor for case opening and issue resolution. */
+  staffId: string;
+  staffName: string;
   /** documentId + versionId + checksum, in the order given by the spec. */
   docs: { id: string; versionId: string; checksum: string; title: string }[];
+  /** Present only when the spec asked for a case. */
+  case?: CaseFixture;
 };
 
 /**
@@ -121,7 +150,7 @@ export type Fixture = {
  * bypass is unscoped — and it is bounded to ids this function created.
  */
 export const withTempFixture = async <T>(
-  spec: { docs?: DocumentSpec[] },
+  spec: { docs?: DocumentSpec[]; withCase?: boolean },
   fn: (fixture: Fixture) => Promise<T>,
 ): Promise<T> => {
   const suffix = randomUUID().slice(0, 8);
@@ -133,6 +162,8 @@ export const withTempFixture = async <T>(
     organizationId,
     userId,
     leadId: "",
+    staffId: "",
+    staffName: "",
     docs: [],
   };
 
@@ -153,6 +184,22 @@ export const withTempFixture = async <T>(
       createdAt: now,
     });
 
+    // Always seeded: cases require an opener, and the resolution log renders
+    // the resolving staff member's name and role.
+    const [staffRow] = await systemDb
+      .insert(staff)
+      .values({
+        organizationId,
+        userId,
+        firstName: "Check",
+        lastName: `Staff ${suffix}`,
+        email: `staff-${suffix}@example.test`,
+        role: "paralegal",
+      })
+      .returning();
+    fixture.staffId = staffRow.id;
+    fixture.staffName = `Check Staff ${suffix}`;
+
     const [lead] = await systemDb
       .insert(leads)
       .values({
@@ -164,6 +211,71 @@ export const withTempFixture = async <T>(
       })
       .returning();
     fixture.leadId = lead.id;
+
+    if (spec.withCase) {
+      const [area] = await systemDb
+        .insert(practiceAreas)
+        .values({ name: `Check Immigration ${suffix}` })
+        .returning();
+
+      const [subcategory] = await systemDb
+        .insert(practiceAreaSubcategories)
+        .values({
+          practiceAreaId: area.id,
+          code: `check-sub-${suffix}`,
+          name: `Check Subcategory ${suffix}`,
+        })
+        .returning();
+
+      const [caseType] = await systemDb
+        .insert(practiceAreaCaseTypes)
+        .values({
+          subcategoryId: subcategory.id,
+          code: `check-type-${suffix}`,
+          name: "Immigration",
+          caseNumberPrefix: "ORV",
+          jurisdiction: "federal",
+        })
+        .returning();
+
+      const [client] = await systemDb
+        .insert(clients)
+        .values({
+          organizationId,
+          leadId: lead.id,
+          firstName: "Check",
+          lastName: `Client ${suffix}`,
+          displayName: `Check Client ${suffix}`,
+          email: `client-${suffix}@example.test`,
+        })
+        .returning();
+
+      const caseNumber = `ORV-CHECK-${suffix}`;
+      const [row] = await systemDb
+        .insert(cases)
+        .values({
+          organizationId,
+          caseNumber,
+          description: "Check fixture case",
+          clientId: client.id,
+          leadId: lead.id,
+          practiceAreaId: area.id,
+          caseTypeId: caseType.id,
+          openedById: fixture.staffId,
+        })
+        .returning();
+
+      fixture.case = {
+        caseId: row.id,
+        caseNumber,
+        clientId: client.id,
+        clientName: client.displayName,
+        caseTypeId: caseType.id,
+        caseTypeName: caseType.name,
+        practiceAreaId: area.id,
+        subcategoryId: subcategory.id,
+      };
+    }
 
     const promptVersion = effectivePromptVersion();
 
@@ -259,8 +371,28 @@ const teardown = async (fixture: Fixture) => {
         .delete(documentAnalyses)
         .where(inArray(documentAnalyses.checksum, checksums));
     }
+    // The case chain unwinds in FK order: case → client → case type →
+    // subcategory → practice area. The lead must outlive the case, which
+    // references it.
+    if (fixture.case) {
+      const c = fixture.case;
+      await systemDb.delete(cases).where(eq(cases.id, c.caseId));
+      await systemDb.delete(clients).where(eq(clients.id, c.clientId));
+      await systemDb
+        .delete(practiceAreaCaseTypes)
+        .where(eq(practiceAreaCaseTypes.id, c.caseTypeId));
+      await systemDb
+        .delete(practiceAreaSubcategories)
+        .where(eq(practiceAreaSubcategories.id, c.subcategoryId));
+      await systemDb
+        .delete(practiceAreas)
+        .where(eq(practiceAreas.id, c.practiceAreaId));
+    }
     if (fixture.leadId) {
       await systemDb.delete(leads).where(eq(leads.id, fixture.leadId));
+    }
+    if (fixture.staffId) {
+      await systemDb.delete(staff).where(eq(staff.id, fixture.staffId));
     }
     await systemDb
       .delete(organization)
