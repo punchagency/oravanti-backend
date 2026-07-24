@@ -390,6 +390,13 @@ export class LeadsRouter {
     );
 
     this.router.get(
+      "/:id/layout",
+      requireAuth,
+      validateRequest({ params: v.idParamsSchema }),
+      ctrl.getLeadLayout,
+    );
+
+    this.router.get(
       "/:id/conflict-check",
       requireAuth,
       validateRequest({ params: v.idParamsSchema }),

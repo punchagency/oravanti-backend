@@ -319,6 +319,15 @@ export class LeadsController {
     sendSuccess(res, result, "Conflict check completed successfully");
   };
 
+  getLeadLayout = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.svc.getLeadLayout(
+      req.params.id as string,
+      organizationId!,
+    );
+    sendSuccess(res, result, "Lead layout retrieved successfully");
+  };
+
   getConflictCheck = async (req: Request, res: Response) => {
     const { staffId: _staffId, organizationId } = getRequestContext();
     const staffId = _staffId ?? undefined;
