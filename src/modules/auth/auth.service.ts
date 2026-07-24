@@ -461,7 +461,6 @@ export class AuthService {
               id: identification.documentId,
               title: identification.title,
               category: "identity",
-              organizationId: organizationId!,
               createdByUserId: userId,
             })
             .returning();
@@ -476,8 +475,7 @@ export class AuthService {
               fileSize: identification.fileSize,
               versionNumber: 1,
               uploadedByUserId: userId,
-              organizationId: organizationId!,
-              scanStatus: "SKIPPED",
+              virusScanStatus: "SKIPPED",
             })
             .returning();
 
@@ -490,7 +488,6 @@ export class AuthService {
             documentId: document.id,
             userId,
             permission: "ADMIN",
-            organizationId: organizationId!,
             grantedByUserId: userId,
           });
         }
@@ -502,7 +499,6 @@ export class AuthService {
               id: certification.documentId,
               title: certification.title,
               category: "supporting",
-              organizationId: organizationId!,
               createdByUserId: userId,
             })
             .returning();
@@ -517,8 +513,7 @@ export class AuthService {
               fileSize: certification.fileSize,
               versionNumber: 1,
               uploadedByUserId: userId,
-              organizationId: organizationId!,
-              scanStatus: "SKIPPED",
+              virusScanStatus: "SKIPPED",
             })
             .returning();
 
@@ -531,7 +526,6 @@ export class AuthService {
             documentId: document.id,
             userId,
             permission: "ADMIN",
-            organizationId: organizationId!,
             grantedByUserId: userId,
           });
         }

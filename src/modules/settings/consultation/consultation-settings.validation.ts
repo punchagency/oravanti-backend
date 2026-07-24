@@ -12,6 +12,17 @@ export const timezoneSchema = z
   .string()
   .refine(isValidTimezone, { message: "Invalid IANA timezone" });
 
+/**
+ * BCP-47 language tag, e.g. "en", "fr", "es-MX". Loose by design — the value is
+ * a display preference, so an unrecognised-but-well-formed tag should not block
+ * saving the rest of a firm's settings.
+ */
+export const languageSchema = z
+  .string()
+  .regex(/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/, {
+    message: "Invalid BCP-47 language tag (e.g. \"en\", \"fr\", \"es-MX\")",
+  });
+
 export const upsertConsultationSettingsSchema = z
   .object({
     chargesFee: z.boolean(),
@@ -19,6 +30,7 @@ export const upsertConsultationSettingsSchema = z
     feeStructure: z.enum(consultationFeeStructures).nullish(),
     waiverWindowDays: z.number().int().positive().nullish(),
     timezone: timezoneSchema.optional(),
+    language: languageSchema.optional(),
     smsEnabled: z.boolean().optional(),
   })
   .superRefine((val, ctx) => {

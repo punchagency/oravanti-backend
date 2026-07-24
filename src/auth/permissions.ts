@@ -14,6 +14,7 @@ const statement = {
   invitations: ["read", "create", "update", "delete"],
   conflicts: ["review"], // conflict-check resolution (owners + admins only)
   documents: ["read", "download", "create", "update", "delete"], // download gates client docs
+  case_review: ["read", "resolve", "configure"], // AI case review dashboard
 } as const;
 
 export const ac = createAccessControl(statement);
@@ -24,6 +25,7 @@ export const paralegal = ac.newRole({
   staffs: ["read"], // list attorneys for the consultation wizard
   conflicts: [],
   documents: ["read"],
+  case_review: ["read"],
   ...memberAc.statements,
 });
 
@@ -33,6 +35,7 @@ export const attorney = ac.newRole({
   staffs: ["read"], // list attorneys for the consultation wizard
   conflicts: [],
   documents: ["read", "download"],
+  case_review: ["read"],
   ...memberAc.statements,
 });
 
@@ -43,6 +46,7 @@ export const owner = ac.newRole({
   invitations: ["read", "create", "update", "delete"],
   conflicts: ["review"],
   documents: ["read", "download", "create", "update", "delete"],
+  case_review: ["read", "resolve", "configure"],
   ...ownerAc.statements,
 });
 
@@ -53,6 +57,7 @@ export const admin = ac.newRole({
   invitations: ["read", "create", "update", "delete"],
   conflicts: ["review"],
   documents: ["read", "download", "create", "update", "delete"],
+  case_review: ["read", "resolve", "configure"],
   ...adminAc.statements,
 });
 
@@ -63,6 +68,7 @@ const memberRole = ac.newRole({
   staffs: [],
   conflicts: [],
   documents: [],
+  case_review: [],
 });
 
 export const roleMap = {

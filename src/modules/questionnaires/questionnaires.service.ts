@@ -6,6 +6,9 @@ import { formatWithZone } from "../../utils/date";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 import { cases } from "../../db/schema/cases";
 import { conflictChecks } from "../../db/schema/conflict-checks";
+import { scenarioDocumentRequirements } from "../../db/schema/document-requirements";
+import { documents, documentVersions } from "../../db/schema/documents";
+import { leadDocumentLinks } from "../../db/schema/lead-document-links";
 import { leads } from "../../db/schema/leads";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import {
@@ -20,10 +23,7 @@ import {
   questionnaireResponses,
   questionnaireSends,
 } from "../../db/schema/questionnaires";
-import {
-  cancelQuestionnaireReminder,
-  enqueueDocumentScan,
-} from "../../queue/queues";
+import { cancelQuestionnaireReminder } from "../../queue/queues";
 import { sendQuestionnaireReminder } from "../../queue/workers/reminder.worker";
 import { emailService } from "../../utils/email/email.service";
 import { logLeadEvent } from "../leads/lead-events.service";
@@ -38,6 +38,12 @@ import {
   PaginationParams,
 } from "../../utils/pagination";
 import { storageService } from "../../utils/storage/storage.service";
+import {
+  addDocumentVersion,
+  computeChecksum,
+  ingestDocument,
+} from "../documents/document-ingest";
+import { triggerScenarioScan } from "../ai-scan/scan-triggers";
 
 type JsonObject = Record<string, unknown>;
 type AnswerInput = { questionId: string; value: unknown };
@@ -78,6 +84,42 @@ const buildResponseFileStoragePath = (
   questionId: string,
   filename: string,
 ) => `questionnaire-responses/${organizationId}/${responseId}/${questionId}/${filename}`;
+
+/**
+ * Response files are now a join row plus a document version. This projects the
+ * pair back into the flat shape callers (and the API) already expect, so the
+ * normalization stays invisible above this layer.
+ */
+const responseFileColumns = {
+  id: questionnaireResponseFiles.id,
+  organizationId: questionnaireResponseFiles.organizationId,
+  responseId: questionnaireResponseFiles.responseId,
+  questionId: questionnaireResponseFiles.questionId,
+  questionSource: questionnaireResponseFiles.questionSource,
+  documentId: questionnaireResponseFiles.documentId,
+  createdAt: questionnaireResponseFiles.createdAt,
+  storagePath: documentVersions.filePath,
+  originalFilename: documentVersions.originalFileName,
+  mimeType: documentVersions.mimeType,
+  fileSize: documentVersions.fileSize,
+  checksum: documentVersions.checksum,
+  versionNumber: documentVersions.versionNumber,
+  aiScanStatus: documentVersions.aiScanStatus,
+};
+
+/** Join a response file to its document's CURRENT version. */
+const responseFilesQuery = (database: typeof db = db) =>
+  database
+    .select(responseFileColumns)
+    .from(questionnaireResponseFiles)
+    .innerJoin(
+      documents,
+      eq(documents.id, questionnaireResponseFiles.documentId),
+    )
+    .innerJoin(
+      documentVersions,
+      eq(documentVersions.id, documents.currentVersionId),
+    );
 
 /**
  * Response files store the storage object key (not a permanent URL). Replace
@@ -617,24 +659,18 @@ export class QuestionnairesService {
       contentType: data.mimeType,
     });
 
-    const [file] = await db
-      .insert(questionnaireResponseFiles)
-      .values({
-        organizationId: send.organizationId,
-        responseId: response.id,
-        leadId: send.leadId,
-        questionId: data.questionId,
-        questionSource,
-        storagePath,
-        fileUrl: storagePath,
-        mimeType: data.mimeType,
-        fileSize: data.fileSize,
-        originalFilename: data.originalFilename,
-      })
-      .returning();
-
-    // Kick off the (stubbed) AI document scan asynchronously.
-    await enqueueDocumentScan(file.id).catch(console.error);
+    const file = await this.persistResponseFile({
+      organizationId: send.organizationId,
+      responseId: response.id,
+      leadId: send.leadId ?? null,
+      questionId: data.questionId,
+      questionSource,
+      storagePath,
+      fileBuffer: data.fileBuffer,
+      mimeType: data.mimeType,
+      fileSize: data.fileSize,
+      originalFilename: data.originalFilename,
+    });
 
     if (send.leadId) {
       await logLeadEvent({
@@ -646,6 +682,8 @@ export class QuestionnairesService {
           responseId: response.id,
           questionId: data.questionId,
           filename: data.originalFilename,
+          documentId: file.documentId,
+          versionNumber: file.versionNumber,
         },
       });
     }
@@ -706,25 +744,139 @@ export class QuestionnairesService {
       contentType: data.mimeType,
     });
 
-    const [file] = await db
-      .insert(questionnaireResponseFiles)
-      .values({
-        organizationId,
-        responseId: response.id,
-        leadId: send?.leadId ?? null,
-        questionId: data.questionId,
-        questionSource,
-        storagePath,
-        fileUrl: storagePath,
-        mimeType: data.mimeType,
-        fileSize: data.fileSize,
-        originalFilename: data.originalFilename,
-      })
-      .returning();
+    return this.persistResponseFile({
+      organizationId,
+      responseId: response.id,
+      leadId: send?.leadId ?? null,
+      questionId: data.questionId,
+      questionSource,
+      storagePath,
+      fileBuffer: data.fileBuffer,
+      mimeType: data.mimeType,
+      fileSize: data.fileSize,
+      originalFilename: data.originalFilename,
+    });
+  };
 
-    await enqueueDocumentScan(file.id).catch(console.error);
+  /**
+   * Persist an uploaded response file as a first-class document.
+   *
+   * The bytes are already in storage by this point. Here the file becomes a
+   * `documents` + `document_versions` pair (checksummed, so the AI analysis
+   * cache can key on it), gets linked to the lead, and is joined back to the
+   * question that asked for it. Re-answering the same question appends a
+   * VERSION to the existing document rather than minting a second document —
+   * which is what makes "re-uploaded ⇒ re-run the AI" work without a flag.
+   */
+  private persistResponseFile = async (input: {
+    organizationId: string;
+    responseId: string;
+    leadId: string | null;
+    questionId: string;
+    questionSource: "system" | "firm";
+    storagePath: string;
+    fileBuffer: Buffer;
+    mimeType: string;
+    fileSize: number;
+    originalFilename: string;
+  }) => {
+    const checksum = computeChecksum(input.fileBuffer);
 
-    return file;
+    const result = await db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({
+          id: questionnaireResponseFiles.id,
+          documentId: questionnaireResponseFiles.documentId,
+        })
+        .from(questionnaireResponseFiles)
+        .where(
+          and(
+            eq(questionnaireResponseFiles.responseId, input.responseId),
+            eq(questionnaireResponseFiles.questionId, input.questionId),
+          ),
+        )
+        .limit(1);
+
+      const ingestInput = {
+        organizationId: input.organizationId,
+        storagePath: input.storagePath,
+        originalFileName: input.originalFilename,
+        mimeType: input.mimeType,
+        fileSize: input.fileSize,
+        checksum,
+        category:
+          input.questionSource === "system"
+            ? ("identity" as const)
+            : ("supporting" as const),
+      };
+
+      // Re-answer → new version on the same document; first answer → new document.
+      const ingested = existing
+        ? await addDocumentVersion(tx, existing.documentId, ingestInput)
+        : await ingestDocument(tx, { ...ingestInput, leadId: input.leadId });
+
+      const [joinRow] = existing
+        ? [{ ...existing, questionId: input.questionId }]
+        : await tx
+            .insert(questionnaireResponseFiles)
+            .values({
+              organizationId: input.organizationId,
+              responseId: input.responseId,
+              documentId: ingested.documentId,
+              questionId: input.questionId,
+              questionSource: input.questionSource,
+            })
+            .returning();
+
+      // Satisfy the matching requirement, if this question produced one.
+      if (input.leadId) {
+        await tx
+          .update(scenarioDocumentRequirements)
+          .set({
+            satisfiedByDocumentId: ingested.documentId,
+            satisfiedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(scenarioDocumentRequirements.leadId, input.leadId),
+              eq(
+                scenarioDocumentRequirements.questionnaireQuestionId,
+                input.questionId,
+              ),
+            ),
+          );
+      }
+
+      return { joinRow, ingested };
+    });
+
+    // Scan the lead once the upload is committed. Fire-and-forget: a scan is a
+    // side effect, never a precondition for the upload succeeding. Coalescing
+    // collapses a burst of question uploads into one scan.
+    if (input.leadId) {
+      triggerScenarioScan({
+        organizationId: input.organizationId,
+        scenarioType: "lead",
+        scenarioId: input.leadId,
+        trigger: "upload",
+      });
+    }
+
+    return {
+      id: result.joinRow.id,
+      responseId: input.responseId,
+      questionId: input.questionId,
+      questionSource: input.questionSource,
+      documentId: result.ingested.documentId,
+      documentVersionId: result.ingested.documentVersionId,
+      versionNumber: result.ingested.versionNumber,
+      storagePath: input.storagePath,
+      originalFilename: input.originalFilename,
+      mimeType: input.mimeType,
+      fileSize: input.fileSize,
+      checksum,
+    };
   };
 
   /**
@@ -732,10 +884,28 @@ export class QuestionnairesService {
    * Used by the lead documents tab to show files collected during intake.
    */
   getFilesByLeadId = async (leadId: string) => {
+    // Lead linkage now lives on lead_document_links rather than on the join row.
     const files = await db
-      .select()
+      .select(responseFileColumns)
       .from(questionnaireResponseFiles)
-      .where(eq(questionnaireResponseFiles.leadId, leadId))
+      .innerJoin(
+        documents,
+        eq(documents.id, questionnaireResponseFiles.documentId),
+      )
+      .innerJoin(
+        documentVersions,
+        eq(documentVersions.id, documents.currentVersionId),
+      )
+      .innerJoin(
+        leadDocumentLinks,
+        eq(leadDocumentLinks.documentId, questionnaireResponseFiles.documentId),
+      )
+      .where(
+        and(
+          eq(leadDocumentLinks.leadId, leadId),
+          isNull(leadDocumentLinks.archivedAt),
+        ),
+      )
       .orderBy(desc(questionnaireResponseFiles.createdAt));
 
     return presignResponseFiles(files);
@@ -873,10 +1043,9 @@ export class QuestionnairesService {
       .from(questionnaireAnswers)
       .where(eq(questionnaireAnswers.responseId, response.id));
 
-    const files = await db
-      .select()
-      .from(questionnaireResponseFiles)
-      .where(eq(questionnaireResponseFiles.responseId, response.id));
+    const files = await responseFilesQuery().where(
+      eq(questionnaireResponseFiles.responseId, response.id),
+    );
 
     const completion = computeCompletion(send?.schemaSnapshot, answers, files);
 
@@ -919,10 +1088,9 @@ export class QuestionnairesService {
       .select()
       .from(questionnaireAnswers)
       .where(eq(questionnaireAnswers.responseId, response.id));
-    const files = await db
-      .select()
-      .from(questionnaireResponseFiles)
-      .where(eq(questionnaireResponseFiles.responseId, response.id));
+    const files = await responseFilesQuery().where(
+      eq(questionnaireResponseFiles.responseId, response.id),
+    );
 
     // File-upload questions are "answered" by an uploaded file.
     const merged = [
@@ -1022,9 +1190,7 @@ export class QuestionnairesService {
     organizationId: string,
     fileId: string,
   ): Promise<{ buffer: Buffer; mimeType: string; filename: string }> => {
-    const [file] = await db
-      .select()
-      .from(questionnaireResponseFiles)
+    const [file] = await responseFilesQuery()
       .where(
         and(
           eq(questionnaireResponseFiles.id, fileId),
@@ -1324,10 +1490,9 @@ export class QuestionnairesService {
       .from(questionnaireAnswers)
       .where(eq(questionnaireAnswers.responseId, response.id));
 
-    const files = await database
-      .select()
-      .from(questionnaireResponseFiles)
-      .where(eq(questionnaireResponseFiles.responseId, response.id));
+    const files = await responseFilesQuery(database).where(
+      eq(questionnaireResponseFiles.responseId, response.id),
+    );
 
     return { ...response, answers, files: await presignResponseFiles(files) };
   };

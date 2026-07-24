@@ -1,4 +1,3 @@
-import { AIErrorDetectionModule } from "./ai-error-detection/ai-error-detection.module";
 import { AuthModule } from "./auth/auth.module";
 import { CalendarModule } from "./calendar/calendar.module";
 import { CasesModule } from "./cases/cases.module";
@@ -12,6 +11,9 @@ import { TeamsModule } from "./hr-management/teams/teams.module";
 import { OnboardingModule } from "./onboarding/onboarding.module";
 import { OrganizationModule } from "./organization/organization.module";
 import { PracticeAreasModule } from "./practice-areas/practice-areas.module";
+import { AiScanModule } from "./ai-scan/ai-scan.module";
+import { CaseReviewModule } from "./case-review/case-review.module";
+import { DocumentRequirementsModule } from "./document-requirements/document-requirements.module";
 import { QuestionnairesModule } from "./questionnaires/questionnaires.module";
 import { RevenueAnalyticsModule } from "./revenue-analytics/revenue-analytics.module";
 import { AccessControlModule } from "./settings/access-control/access-control.module";
@@ -44,9 +46,11 @@ export const modules: Module[] = [
   new DocumentsModule(),
   new EmailAccountModule(),
   new QuestionnairesModule(),
+  new AiScanModule(),
+  new CaseReviewModule(),
+  new DocumentRequirementsModule(),
   new TasksModule(),
   new WorkflowModule(),
-  new AIErrorDetectionModule(),
   new CalendarModule(),
   new CasesModule(),
   new PracticeAreasModule(),
