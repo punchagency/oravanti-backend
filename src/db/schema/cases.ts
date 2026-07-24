@@ -121,14 +121,14 @@ export const cases = pgTable("cases", {
 
   clientId: uuid("client_id")
     .notNull()
-    .references(() => clients.id),
+    .references(() => clients.id, { onDelete: "cascade" }),
 
   // Direct link to client's user account (for client portal RLS)
   clientUserId: text("client_user_id").references(() => user.id, {
     onDelete: "set null",
   }),
 
-  leadId: uuid("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  leadId: uuid("lead_id").references(() => leads.id, { onDelete: "cascade" }),
 
   practiceAreaId: uuid("practice_area_id")
     .notNull()

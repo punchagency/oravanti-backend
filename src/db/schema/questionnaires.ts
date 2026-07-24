@@ -273,7 +273,7 @@ export const questionnaireAnswers = pgTable(
   {
     id:             uuid("id").primaryKey().defaultRandom(),
     organizationId: text("organization_id").notNull().references(() => organization.id),
-    responseId:     uuid("response_id").notNull().references(() => questionnaireResponses.id),
+    responseId:     uuid("response_id").notNull().references(() => questionnaireResponses.id, { onDelete: "cascade" }),
     // questionId references caseTypeQuestionnaireQuestions OR firmQuestionnaireQuestions
     // based on questionSource — no FK constraint to allow dual-table reference
     questionId:     uuid("question_id").notNull(),
@@ -297,8 +297,8 @@ export const questionnaireResponseFiles = pgTable(
   {
     id:             uuid("id").primaryKey().defaultRandom(),
     organizationId: text("organization_id").notNull().references(() => organization.id),
-    responseId:     uuid("response_id").notNull().references(() => questionnaireResponses.id),
-    leadId:         uuid("lead_id").references(() => leads.id, { onDelete: "set null" }),
+    responseId:     uuid("response_id").notNull().references(() => questionnaireResponses.id, { onDelete: "cascade" }),
+    leadId:         uuid("lead_id").references(() => leads.id, { onDelete: "cascade" }),
     questionId:     uuid("question_id").notNull(),
     questionSource: questionSourceEnum("question_source").notNull(),
     storagePath:    text("storage_path").notNull(),
