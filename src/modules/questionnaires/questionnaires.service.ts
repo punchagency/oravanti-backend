@@ -1,9 +1,8 @@
 import { createHash, randomBytes } from "crypto";
-import PDFDocument from "pdfkit";
 import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
+import PDFDocument from "pdfkit";
 import { db } from "../../db/client";
-import { formatWithZone } from "../../utils/date";
-import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
+import { withTransaction } from "../../db/transaction-context";
 import { cases } from "../../db/schema/cases";
 import { conflictChecks } from "../../db/schema/conflict-checks";
 import { scenarioDocumentRequirements } from "../../db/schema/document-requirements";
@@ -12,12 +11,12 @@ import { leadDocumentLinks } from "../../db/schema/lead-document-links";
 import { leads } from "../../db/schema/leads";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import {
+  caseTypeQuestionnaireLogicRules,
+  caseTypeQuestionnaireQuestions,
   caseTypeQuestionnaires,
   caseTypeQuestionnaireSections,
-  caseTypeQuestionnaireQuestions,
-  caseTypeQuestionnaireLogicRules,
-  firmQuestionnaireSections,
   firmQuestionnaireQuestions,
+  firmQuestionnaireSections,
   questionnaireAnswers,
   questionnaireResponseFiles,
   questionnaireResponses,
@@ -25,8 +24,8 @@ import {
 } from "../../db/schema/questionnaires";
 import { cancelQuestionnaireReminder } from "../../queue/queues";
 import { sendQuestionnaireReminder } from "../../queue/workers/reminder.worker";
+import { formatWithZone } from "../../utils/date";
 import { emailService } from "../../utils/email/email.service";
-import { logLeadEvent } from "../leads/lead-events.service";
 import {
   BadRequestError,
   ConflictError,
@@ -38,12 +37,14 @@ import {
   PaginationParams,
 } from "../../utils/pagination";
 import { storageService } from "../../utils/storage/storage.service";
+import { triggerScenarioScan } from "../ai-scan/scan-triggers";
 import {
   addDocumentVersion,
   computeChecksum,
   ingestDocument,
 } from "../documents/document-ingest";
-import { triggerScenarioScan } from "../ai-scan/scan-triggers";
+import { logLeadEvent } from "../leads/lead-events.service";
+import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 
 type JsonObject = Record<string, unknown>;
 type AnswerInput = { questionId: string; value: unknown };
@@ -52,9 +53,21 @@ type QuestionInput = {
   label: string;
   description?: string | null;
   type:
-    | "short_text" | "long_text" | "number" | "email" | "phone"
-    | "date" | "time" | "single_choice" | "multiple_choice" | "dropdown"
-    | "rating_scale" | "file_upload" | "yes_no" | "matrix_grid" | "signature";
+    | "short_text"
+    | "long_text"
+    | "number"
+    | "email"
+    | "phone"
+    | "date"
+    | "time"
+    | "single_choice"
+    | "multiple_choice"
+    | "dropdown"
+    | "rating_scale"
+    | "file_upload"
+    | "yes_no"
+    | "matrix_grid"
+    | "signature";
   isRequired?: boolean;
   config?: JsonObject;
 };
@@ -74,7 +87,8 @@ const isEmptyAnswer = (value: unknown) => {
   if (value === null || value === undefined) return true;
   if (typeof value === "string") return value.trim() === "";
   if (Array.isArray(value)) return value.length === 0;
-  if (typeof value === "object") return Object.keys(value as object).length === 0;
+  if (typeof value === "object")
+    return Object.keys(value as object).length === 0;
   return false;
 };
 
@@ -83,7 +97,8 @@ const buildResponseFileStoragePath = (
   responseId: string,
   questionId: string,
   filename: string,
-) => `questionnaire-responses/${organizationId}/${responseId}/${questionId}/${filename}`;
+) =>
+  `questionnaire-responses/${organizationId}/${responseId}/${questionId}/${filename}`;
 
 /**
  * Response files are now a join row plus a document version. This projects the
@@ -108,8 +123,8 @@ const responseFileColumns = {
 };
 
 /** Join a response file to its document's CURRENT version. */
-const responseFilesQuery = (database: typeof db = db) =>
-  database
+const responseFilesQuery = () =>
+  db
     .select(responseFileColumns)
     .from(questionnaireResponseFiles)
     .innerJoin(
@@ -143,16 +158,22 @@ const getQuestionSourceFromSnapshot = (
   };
   for (const section of s.sections ?? []) {
     for (const q of section.questions ?? []) {
-      if (q.id === questionId) return (q.source as "system" | "firm") ?? "system";
+      if (q.id === questionId)
+        return (q.source as "system" | "firm") ?? "system";
     }
   }
   return "system";
 };
 
-const validateSubmissionAnswers = (snapshot: unknown, answers: AnswerInput[]) => {
+const validateSubmissionAnswers = (
+  snapshot: unknown,
+  answers: AnswerInput[],
+) => {
   if (!snapshot || typeof snapshot !== "object") return;
   const s = snapshot as {
-    sections?: Array<{ questions?: Array<{ id: string; isRequired?: boolean }> }>;
+    sections?: Array<{
+      questions?: Array<{ id: string; isRequired?: boolean }>;
+    }>;
   };
   const allQuestions = (s.sections ?? []).flatMap((sec) => sec.questions ?? []);
   const answerMap = new Map(answers.map((a) => [a.questionId, a.value]));
@@ -192,7 +213,10 @@ export class QuestionnairesService {
   // ── System Questionnaire Read ──────────────────────────────────────────────
 
   getSystemQuestionnaires = async () => {
-    return db.select().from(caseTypeQuestionnaires).orderBy(asc(caseTypeQuestionnaires.createdAt));
+    return db
+      .select()
+      .from(caseTypeQuestionnaires)
+      .orderBy(asc(caseTypeQuestionnaires.createdAt));
   };
 
   getSystemQuestionnaireByCaseType = async (caseTypeId: string) => {
@@ -225,30 +249,36 @@ export class QuestionnairesService {
     description?: string | null;
     sections?: SectionInput[];
   }) => {
-    return db.transaction(async (tx) => {
-      const [ct] = await tx
+    return withTransaction(db, async () => {
+      const [ct] = await db
         .select()
         .from(practiceAreaCaseTypes)
         .where(eq(practiceAreaCaseTypes.id, data.caseTypeId))
         .limit(1);
       if (!ct) throw new BadRequestError("Case type not found");
 
-      const [existing] = await tx
+      const [existing] = await db
         .select()
         .from(caseTypeQuestionnaires)
         .where(eq(caseTypeQuestionnaires.caseTypeId, data.caseTypeId))
         .limit(1);
       if (existing) {
-        throw new ConflictError("A questionnaire already exists for this case type");
+        throw new ConflictError(
+          "A questionnaire already exists for this case type",
+        );
       }
 
-      const [questionnaire] = await tx
+      const [questionnaire] = await db
         .insert(caseTypeQuestionnaires)
-        .values({ caseTypeId: data.caseTypeId, title: data.title, description: data.description })
+        .values({
+          caseTypeId: data.caseTypeId,
+          title: data.title,
+          description: data.description,
+        })
         .returning();
 
       for (const [i, section] of (data.sections ?? []).entries()) {
-        const [s] = await tx
+        const [s] = await db
           .insert(caseTypeQuestionnaireSections)
           .values({
             questionnaireId: questionnaire.id,
@@ -259,7 +289,7 @@ export class QuestionnairesService {
           .returning();
 
         for (const [j, question] of (section.questions ?? []).entries()) {
-          await tx.insert(caseTypeQuestionnaireQuestions).values({
+          await db.insert(caseTypeQuestionnaireQuestions).values({
             questionnaireId: questionnaire.id,
             sectionId: s.id,
             label: question.label,
@@ -272,7 +302,7 @@ export class QuestionnairesService {
         }
       }
 
-      return this.buildSystemQuestionnaireStructure(questionnaire.id, tx);
+      return this.buildSystemQuestionnaireStructure(questionnaire.id);
     });
   };
 
@@ -282,11 +312,19 @@ export class QuestionnairesService {
   ) => {
     const orderIndex =
       data.orderIndex ??
-      (await this.getNextSectionOrderIndex(caseTypeQuestionnaireSections, questionnaireId));
+      (await this.getNextSectionOrderIndex(
+        caseTypeQuestionnaireSections,
+        questionnaireId,
+      ));
 
     const [created] = await db
       .insert(caseTypeQuestionnaireSections)
-      .values({ questionnaireId, title: data.title, description: data.description, orderIndex })
+      .values({
+        questionnaireId,
+        title: data.title,
+        description: data.description,
+        orderIndex,
+      })
       .returning();
 
     return created;
@@ -324,7 +362,10 @@ export class QuestionnairesService {
 
   // ── Firm Questionnaire Additions ────────────────────────────────────────────
 
-  getMergedQuestionnaire = async (organizationId: string, caseTypeId: string) => {
+  getMergedQuestionnaire = async (
+    organizationId: string,
+    caseTypeId: string,
+  ) => {
     const systemQ = await this.getSystemQuestionnaireByCaseType(caseTypeId);
 
     const firmSections = await db
@@ -353,7 +394,11 @@ export class QuestionnairesService {
       ...section,
       source: "system" as const,
       questions: [
-        ...section.questions.map((q: any) => ({ ...q, source: "system" as const, isLocked: true })),
+        ...section.questions.map((q: any) => ({
+          ...q,
+          source: "system" as const,
+          isLocked: true,
+        })),
         ...firmQuestions
           .filter((fq) => fq.systemSectionId === section.id)
           .map((fq) => ({ ...fq, source: "firm" as const, isLocked: false })),
@@ -382,11 +427,18 @@ export class QuestionnairesService {
     await this.ensureCaseTypeExists(caseTypeId);
 
     const orderIndex =
-      data.orderIndex ?? (await this.getNextFirmSectionOrderIndex(organizationId, caseTypeId));
+      data.orderIndex ??
+      (await this.getNextFirmSectionOrderIndex(organizationId, caseTypeId));
 
     const [created] = await db
       .insert(firmQuestionnaireSections)
-      .values({ organizationId, caseTypeId, title: data.title, description: data.description, orderIndex })
+      .values({
+        organizationId,
+        caseTypeId,
+        title: data.title,
+        description: data.description,
+        orderIndex,
+      })
       .returning();
 
     return created;
@@ -442,7 +494,9 @@ export class QuestionnairesService {
     },
   ) => {
     if (!data.systemSectionId && !data.firmSectionId) {
-      throw new BadRequestError("Either systemSectionId or firmSectionId must be provided");
+      throw new BadRequestError(
+        "Either systemSectionId or firmSectionId must be provided",
+      );
     }
 
     const orderIndex =
@@ -516,11 +570,16 @@ export class QuestionnairesService {
     const offset = getPaginationOffset({ page, limit });
     const conditions = [
       eq(questionnaireResponses.organizationId, organizationId),
-      eq(questionnaireResponses.caseTypeQuestionnaireId, caseTypeQuestionnaireId),
+      eq(
+        questionnaireResponses.caseTypeQuestionnaireId,
+        caseTypeQuestionnaireId,
+      ),
     ];
 
     if (filters.caseTypeId) {
-      conditions.push(eq(questionnaireResponses.caseTypeId, filters.caseTypeId));
+      conditions.push(
+        eq(questionnaireResponses.caseTypeId, filters.caseTypeId),
+      );
     }
 
     const where = and(...conditions);
@@ -540,11 +599,16 @@ export class QuestionnairesService {
     return buildPaginatedResponse(rows, { page, limit, total: Number(total) });
   };
 
-  getEligibleQuestionnairesForCase = async (organizationId: string, caseId: string) => {
+  getEligibleQuestionnairesForCase = async (
+    organizationId: string,
+    caseId: string,
+  ) => {
     const [caseRow] = await db
       .select()
       .from(cases)
-      .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
+      .where(
+        and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)),
+      )
       .limit(1);
 
     if (!caseRow) throw new NotFoundError("Case not found");
@@ -608,7 +672,9 @@ export class QuestionnairesService {
 
     // Response is in — cancel the pending auto-reminder so it never fires.
     if (send.reminderJobId) {
-      await cancelQuestionnaireReminder(send.reminderJobId).catch(console.error);
+      await cancelQuestionnaireReminder(send.reminderJobId).catch(
+        console.error,
+      );
     }
 
     if (send.leadId) {
@@ -616,7 +682,7 @@ export class QuestionnairesService {
         organizationId: send.organizationId,
         leadId: send.leadId,
         type: "questionnaire_response_received",
-        metadata: { sendId: send.id, responseId: result.id },
+        metadata: { sendId: send.id, responseId: result!.id },
       });
     }
 
@@ -636,14 +702,19 @@ export class QuestionnairesService {
     },
   ) => {
     const send = await this.getActiveSendByToken(accessToken);
-    const response = await this.ensureResponseForSend(data.responseId, send.id, send.organizationId);
+    const response = await this.ensureResponseForSend(
+      data.responseId,
+      send.id,
+      send.organizationId,
+    );
 
     if (response.status === "submitted") {
       throw new ConflictError("Submitted responses cannot be changed");
     }
 
     const questionSource =
-      data.questionSource ?? getQuestionSourceFromSnapshot(send.schemaSnapshot, data.questionId);
+      data.questionSource ??
+      getQuestionSourceFromSnapshot(send.schemaSnapshot, data.questionId);
 
     const safeFilename = `${Date.now()}-${data.originalFilename.replace(/\s+/g, "_")}`;
     const storagePath = buildResponseFileStoragePath(
@@ -782,8 +853,8 @@ export class QuestionnairesService {
   }) => {
     const checksum = computeChecksum(input.fileBuffer);
 
-    const result = await db.transaction(async (tx) => {
-      const [existing] = await tx
+    const result = await withTransaction(db, async () => {
+      const [existing] = await db
         .select({
           id: questionnaireResponseFiles.id,
           documentId: questionnaireResponseFiles.documentId,
@@ -817,7 +888,7 @@ export class QuestionnairesService {
 
       const [joinRow] = existing
         ? [{ ...existing, questionId: input.questionId }]
-        : await tx
+        : await db
             .insert(questionnaireResponseFiles)
             .values({
               organizationId: input.organizationId,
@@ -830,7 +901,7 @@ export class QuestionnairesService {
 
       // Satisfy the matching requirement, if this question produced one.
       if (input.leadId) {
-        await tx
+        await db
           .update(scenarioDocumentRequirements)
           .set({
             satisfiedByDocumentId: ingested.documentId,
@@ -995,7 +1066,11 @@ export class QuestionnairesService {
       {
         caseTypeId: string;
         caseTypeName: string | null;
-        questions: { label: string; type: string; description: string | null }[];
+        questions: {
+          label: string;
+          type: string;
+          description: string | null;
+        }[];
       }
     >();
     for (const r of rows) {
@@ -1019,7 +1094,10 @@ export class QuestionnairesService {
    * Full response detail for the admin review modal: send (with snapshot),
    * response, answers, files (incl. scan results) and a completion summary.
    */
-  getResponseDetailById = async (organizationId: string, responseId: string) => {
+  getResponseDetailById = async (
+    organizationId: string,
+    responseId: string,
+  ) => {
     const [response] = await db
       .select()
       .from(questionnaireResponses)
@@ -1103,7 +1181,12 @@ export class QuestionnairesService {
       await db
         .update(leads)
         .set({ pipelineStage: "consultation", updatedAt: new Date() })
-        .where(and(eq(leads.id, response.leadId), eq(leads.organizationId, organizationId)));
+        .where(
+          and(
+            eq(leads.id, response.leadId),
+            eq(leads.organizationId, organizationId),
+          ),
+        );
 
       await logLeadEvent({
         organizationId,
@@ -1160,7 +1243,11 @@ export class QuestionnairesService {
       .fillColor("#000");
 
     for (const section of snapshot.sections ?? []) {
-      doc.moveDown(0.5).fontSize(13).fillColor("#1a1a1a").text(section.title ?? "Section");
+      doc
+        .moveDown(0.5)
+        .fontSize(13)
+        .fillColor("#1a1a1a")
+        .text(section.title ?? "Section");
       doc.moveDown(0.25);
       for (const q of section.questions ?? []) {
         if (q.type === "file_upload") continue; // documents excluded from PDF
@@ -1333,8 +1420,10 @@ export class QuestionnairesService {
 
   // ── Private Helpers ────────────────────────────────────────────────────────
 
-  private buildSystemQuestionnaireStructure = async (id: string, database: any = db) => {
-    const [questionnaire] = await database
+  private buildSystemQuestionnaireStructure = async (
+    id: string,
+  ) => {
+    const [questionnaire] = await db
       .select()
       .from(caseTypeQuestionnaires)
       .where(eq(caseTypeQuestionnaires.id, id))
@@ -1342,19 +1431,19 @@ export class QuestionnairesService {
 
     if (!questionnaire) return null;
 
-    const sections = await database
+    const sections = await db
       .select()
       .from(caseTypeQuestionnaireSections)
       .where(eq(caseTypeQuestionnaireSections.questionnaireId, id))
       .orderBy(asc(caseTypeQuestionnaireSections.orderIndex));
 
-    const questions = await database
+    const questions = await db
       .select()
       .from(caseTypeQuestionnaireQuestions)
       .where(eq(caseTypeQuestionnaireQuestions.questionnaireId, id))
       .orderBy(asc(caseTypeQuestionnaireQuestions.orderIndex));
 
-    const logicRules = await database
+    const logicRules = await db
       .select()
       .from(caseTypeQuestionnaireLogicRules)
       .where(eq(caseTypeQuestionnaireLogicRules.questionnaireId, id))
@@ -1377,8 +1466,10 @@ export class QuestionnairesService {
     };
   };
 
-  private ensureCaseTypeExists = async (caseTypeId: string, database: any = db) => {
-    const [ct] = await database
+  private ensureCaseTypeExists = async (
+    caseTypeId: string,
+  ) => {
+    const [ct] = await db
       .select()
       .from(practiceAreaCaseTypes)
       .where(eq(practiceAreaCaseTypes.id, caseTypeId))
@@ -1387,8 +1478,11 @@ export class QuestionnairesService {
     return ct;
   };
 
-  private getNextSectionOrderIndex = async (table: any, questionnaireId: string, database: any = db) => {
-    const [{ total }] = await database
+  private getNextSectionOrderIndex = async (
+    table: any,
+    questionnaireId: string,
+  ) => {
+    const [{ total }] = await db
       .select({ total: count() })
       .from(table)
       .where(eq(table.questionnaireId, questionnaireId));
@@ -1399,21 +1493,24 @@ export class QuestionnairesService {
     table: any,
     questionnaireId: string,
     sectionId: string,
-    database: any = db,
   ) => {
-    const [{ total }] = await database
+    const [{ total }] = await db
       .select({ total: count() })
       .from(table)
-      .where(and(eq(table.questionnaireId, questionnaireId), eq(table.sectionId, sectionId)));
+      .where(
+        and(
+          eq(table.questionnaireId, questionnaireId),
+          eq(table.sectionId, sectionId),
+        ),
+      );
     return Number(total);
   };
 
   private getNextFirmSectionOrderIndex = async (
     organizationId: string,
     caseTypeId: string,
-    database: any = db,
   ) => {
-    const [{ total }] = await database
+    const [{ total }] = await db
       .select({ total: count() })
       .from(firmQuestionnaireSections)
       .where(
@@ -1430,16 +1527,21 @@ export class QuestionnairesService {
     caseTypeId: string,
     systemSectionId: string | null,
     firmSectionId: string | null,
-    database: any = db,
   ) => {
     const conditions: any[] = [
       eq(firmQuestionnaireQuestions.organizationId, organizationId),
       eq(firmQuestionnaireQuestions.caseTypeId, caseTypeId),
     ];
-    if (systemSectionId) conditions.push(eq(firmQuestionnaireQuestions.systemSectionId, systemSectionId));
-    if (firmSectionId) conditions.push(eq(firmQuestionnaireQuestions.firmSectionId, firmSectionId));
+    if (systemSectionId)
+      conditions.push(
+        eq(firmQuestionnaireQuestions.systemSectionId, systemSectionId),
+      );
+    if (firmSectionId)
+      conditions.push(
+        eq(firmQuestionnaireQuestions.firmSectionId, firmSectionId),
+      );
 
-    const [{ total }] = await database
+    const [{ total }] = await db
       .select({ total: count() })
       .from(firmQuestionnaireQuestions)
       .where(and(...conditions));
@@ -1447,7 +1549,10 @@ export class QuestionnairesService {
     return Number(total);
   };
 
-  private getActiveSendByToken = async (accessToken: string, markOpened = false) => {
+  private getActiveSendByToken = async (
+    accessToken: string,
+    markOpened = false,
+  ) => {
     const [send] = await db
       .select()
       .from(questionnaireSends)
@@ -1455,7 +1560,8 @@ export class QuestionnairesService {
       .limit(1);
 
     if (!send) throw new NotFoundError("Questionnaire send not found");
-    if (send.status === "revoked") throw new ConflictError("Questionnaire send has been revoked");
+    if (send.status === "revoked")
+      throw new ConflictError("Questionnaire send has been revoked");
     if (send.expiresAt && send.expiresAt.getTime() < Date.now()) {
       await db
         .update(questionnaireSends)
@@ -1476,8 +1582,8 @@ export class QuestionnairesService {
     return send;
   };
 
-  private getResponseForSend = async (sendId: string, database: any = db) => {
-    const [response] = await database
+  private getResponseForSend = async (sendId: string) => {
+    const [response] = await db
       .select()
       .from(questionnaireResponses)
       .where(eq(questionnaireResponses.questionnaireSendId, sendId))
@@ -1485,12 +1591,12 @@ export class QuestionnairesService {
 
     if (!response) return null;
 
-    const answers = await database
+    const answers = await db
       .select()
       .from(questionnaireAnswers)
       .where(eq(questionnaireAnswers.responseId, response.id));
 
-    const files = await responseFilesQuery(database).where(
+    const files = await responseFilesQuery().where(
       eq(questionnaireResponseFiles.responseId, response.id),
     );
 
@@ -1501,9 +1607,8 @@ export class QuestionnairesService {
     responseId: string,
     sendId: string,
     organizationId: string,
-    database: any = db,
   ) => {
-    const [response] = await database
+    const [response] = await db
       .select()
       .from(questionnaireResponses)
       .where(
@@ -1527,14 +1632,17 @@ export class QuestionnairesService {
       answers: AnswerInput[];
     },
   ) => {
-    return db.transaction(async (tx) => {
-      const existing = await this.getResponseForSend(send.id, tx);
+    return withTransaction(db, async () => {
+      const existing = await this.getResponseForSend(send.id);
       if (existing?.status === "submitted") {
         throw new ConflictError("Client has already submitted a response");
       }
 
       // Merge answers: existing base + incoming updates
-      const answerMap = new Map<string, { value: unknown; source: "system" | "firm" }>();
+      const answerMap = new Map<
+        string,
+        { value: unknown; source: "system" | "firm" }
+      >();
       for (const answer of existing?.answers ?? []) {
         answerMap.set(answer.questionId, {
           value: answer.value,
@@ -1542,14 +1650,19 @@ export class QuestionnairesService {
         });
       }
       for (const answer of data.answers) {
-        const source = getQuestionSourceFromSnapshot(send.schemaSnapshot, answer.questionId);
+        const source = getQuestionSourceFromSnapshot(
+          send.schemaSnapshot,
+          answer.questionId,
+        );
         answerMap.set(answer.questionId, { value: answer.value, source });
       }
 
-      const mergedAnswers = Array.from(answerMap.entries()).map(([questionId, a]) => ({
-        questionId,
-        value: a.value,
-      }));
+      const mergedAnswers = Array.from(answerMap.entries()).map(
+        ([questionId, a]) => ({
+          questionId,
+          value: a.value,
+        }),
+      );
 
       if (data.status === "submitted") {
         validateSubmissionAnswers(send.schemaSnapshot, mergedAnswers);
@@ -1557,7 +1670,7 @@ export class QuestionnairesService {
 
       const now = new Date();
       const [response] = existing
-        ? await tx
+        ? await db
             .update(questionnaireResponses)
             .set({
               status: data.status,
@@ -1568,7 +1681,7 @@ export class QuestionnairesService {
             })
             .where(eq(questionnaireResponses.id, existing.id))
             .returning()
-        : await tx
+        : await db
             .insert(questionnaireResponses)
             .values({
               organizationId: send.organizationId,
@@ -1586,16 +1699,25 @@ export class QuestionnairesService {
             .returning();
 
       for (const [questionId, { value, source }] of answerMap.entries()) {
-        await tx
+        await db
           .insert(questionnaireAnswers)
-          .values({ responseId: response.id, organizationId: send.organizationId, questionId, questionSource: source, value: value as any })
+          .values({
+            responseId: response.id,
+            organizationId: send.organizationId,
+            questionId,
+            questionSource: source,
+            value: value as any,
+          })
           .onConflictDoUpdate({
-            target: [questionnaireAnswers.responseId, questionnaireAnswers.questionId],
+            target: [
+              questionnaireAnswers.responseId,
+              questionnaireAnswers.questionId,
+            ],
             set: { value: value as any, updatedAt: now },
           });
       }
 
-      await tx
+      await db
         .update(questionnaireSends)
         .set({
           status: data.status === "submitted" ? "submitted" : "draft_response",
@@ -1604,7 +1726,7 @@ export class QuestionnairesService {
         })
         .where(eq(questionnaireSends.id, send.id));
 
-      return this.getResponseForSend(send.id, tx);
+      return this.getResponseForSend(send.id);
     });
   };
 }
