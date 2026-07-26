@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../../db/client";
+import { withTransaction } from "../../db/transaction-context";
 import { leadNotes, leads } from "../../db/schema/leads";
 import type { LeadNoteType, LeadNoteContext, LeadNoteVisibility } from "../../db/schema/leads";
 import { staff } from "../../db/schema/staff";
@@ -171,8 +172,8 @@ export const addLeadNote = async (
   const isPinned = data.isPinned ?? false;
   const contentPreview = data.content.slice(0, 200);
 
-  const note = await db.transaction(async (tx) => {
-    const [created] = await tx
+  const note = await withTransaction(db, async () => {
+    const [created] = await db
       .insert(leadNotes)
       .values({ leadId, authorId, type, context, visibility, isPinned, content: data.content })
       .returning();
