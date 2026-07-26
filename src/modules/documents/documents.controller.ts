@@ -14,11 +14,10 @@ export class DocumentsController {
   }
 
   getAllDocuments = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const { search, category, caseId, status, page, limit } = req.query;
     const queryPagination = parsePaginationQuery({ page, limit });
 
-    const result = await this.documentsService.getAllDocuments(userId!, {
+    const result = await this.documentsService.getAllDocuments(getRequestContext().userId!, {
       search: search as string,
       category: category as string,
       caseId: caseId as string,
@@ -31,16 +30,14 @@ export class DocumentsController {
   });
 
   getDocumentStats = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
-    const result = await this.documentsService.getDocumentStats(userId!);
+    const result = await this.documentsService.getDocumentStats(getRequestContext().userId!);
     sendSuccess(res, result, "Document stats retrieved successfully");
   });
 
   getDocumentById = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const result = await this.documentsService.getDocumentById(
       req.params.id as string,
-      userId!,
+      getRequestContext().userId!,
     );
 
     if (!result) {
@@ -51,7 +48,6 @@ export class DocumentsController {
   });
 
   uploadDocument = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const file = req.file;
     if (!file) {
       throw new BadRequestError("File is required");
@@ -59,9 +55,9 @@ export class DocumentsController {
 
     const { caseId, title, name, category } = req.body;
 
-    const result = await this.documentsService.uploadDocument(organizationId!, {
+    const result = await this.documentsService.uploadDocument(getRequestContext().organizationId!, {
       caseId,
-      uploadedByUserId: userId!,
+      uploadedByUserId: getRequestContext().userId!,
       title: title ?? name,
       category,
       fileBuffer: file.buffer,
@@ -74,7 +70,6 @@ export class DocumentsController {
   });
 
   updateDocument = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const file = req.file;
     if (!file) {
       throw new BadRequestError("File is required");
@@ -82,9 +77,8 @@ export class DocumentsController {
 
     const result = await this.documentsService.updateDocument(
       req.params.id as string,
-      organizationId!,
       {
-        uploadedByUserId: userId!,
+        uploadedByUserId: getRequestContext().userId!,
         fileBuffer: file.buffer,
         mimeType: file.mimetype,
         fileSize: file.size,
@@ -96,11 +90,10 @@ export class DocumentsController {
   });
 
   linkDocumentToCase = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const result = await this.documentsService.linkDocumentToCase(
       req.params.id as string,
-      organizationId!,
-      userId!,
+      getRequestContext().organizationId!,
+      getRequestContext().userId!,
       req.body.caseId,
     );
 
@@ -108,11 +101,9 @@ export class DocumentsController {
   });
 
   grantUserAccess = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const result = await this.documentsService.grantUserAccess(
       req.params.id as string,
-      organizationId!,
-      userId!,
+      getRequestContext().userId!,
       {
         targetUserId: req.body.userId,
         permission: req.body.permission,
@@ -123,22 +114,19 @@ export class DocumentsController {
   });
 
   revokeUserAccess = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const result = await this.documentsService.revokeUserAccess(
       req.params.id as string,
-      userId!,
+      getRequestContext().userId!,
       req.params.userId as string,
-      organizationId!,
     );
 
     sendSuccess(res, result, "User access revoked successfully");
   });
 
   createExternalRequest = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const result = await this.documentsService.createExternalRequest(
-      organizationId!,
-      userId!,
+      getRequestContext().organizationId!,
+      getRequestContext().userId!,
       {
         caseId: req.body.caseId,
         recipientEmail: req.body.recipientEmail,
@@ -152,26 +140,22 @@ export class DocumentsController {
   });
 
   getExternalRequests = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const result = await this.documentsService.getExternalRequests(
-      userId!,
+      getRequestContext().userId!,
     );
     sendSuccess(res, result, "External requests retrieved successfully");
   });
 
   cancelExternalRequest = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const result = await this.documentsService.cancelExternalRequest(
       req.params.requestId as string,
-      userId!,
-      organizationId!,
+      getRequestContext().userId!,
     );
 
     sendSuccess(res, result, "External request cancelled successfully");
   });
 
   submitExternalDocument = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const file = req.file;
     if (!file) {
       throw new BadRequestError("File is required");
@@ -179,7 +163,6 @@ export class DocumentsController {
 
     const result = await this.documentsService.submitExternalDocument(
       req.params.token as string,
-      organizationId!,
       {
         uploadedByName: req.body.uploadedByName,
         uploadedByEmail: req.body.uploadedByEmail,
@@ -195,12 +178,10 @@ export class DocumentsController {
   });
 
   updateDocumentStatus = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const result = await this.documentsService.updateDocumentStatus(
       req.params.id as string,
-      userId!,
+      getRequestContext().userId!,
       req.body.status,
-      organizationId!,
     );
 
     if (!result) {
@@ -211,54 +192,45 @@ export class DocumentsController {
   });
 
   archiveDocument = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const result = await this.documentsService.archiveDocument(
       req.params.id as string,
-      userId!,
-      organizationId!,
+      getRequestContext().userId!,
     );
 
     sendSuccess(res, result, "Document archived successfully");
   });
 
   restoreDocument = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const result = await this.documentsService.restoreDocument(
       req.params.id as string,
-      userId!,
-      organizationId!,
+      getRequestContext().userId!,
     );
 
     sendSuccess(res, result, "Document restored successfully");
   });
 
   getDownloadUrl = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const url = await this.documentsService.getDownloadUrl(
       req.params.id as string,
-      userId!,
-      organizationId!,
+      getRequestContext().userId!,
     );
 
     sendSuccess(res, { url }, "Download URL generated successfully");
   });
 
   getActivityLogs = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const result = await this.documentsService.getActivityLogs(
       req.params.id as string,
-      userId!,
+      getRequestContext().userId!,
     );
 
     sendSuccess(res, result, "Activity logs retrieved successfully");
   });
 
   deleteDocument = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     await this.documentsService.deleteDocument(
       req.params.id as string,
-      userId!,
-      organizationId!,
+      getRequestContext().userId!,
     );
 
     sendSuccess(res, null, "Document deleted successfully");

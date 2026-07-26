@@ -33,6 +33,10 @@ import {
   getPaginationOffset,
 } from "../../utils/pagination";
 import { storageService } from "../../utils/storage/storage.service";
+import {
+  triggerScanForDocument,
+  triggerScenarioScan,
+} from "../ai-scan/scan-triggers";
 
 type DocumentPermission = "VIEW" | "COMMENT" | "EDIT" | "ADMIN";
 type DocumentStatus = "active" | "archived" | "deleted";
@@ -77,7 +81,6 @@ const hashToken = (token: string) =>
 
 export class DocumentsService {
   private logActivity = async (data: {
-    organizationId: string;
     documentId?: string;
     actorUserId?: string;
     actorEmail?: string;
@@ -98,7 +101,6 @@ export class DocumentsService {
     userAgent?: string;
   }) => {
     await db.insert(documentActivityLogs).values({
-      organizationId: data.organizationId,
       documentId: data.documentId,
       actorUserId: data.actorUserId,
       actorEmail: data.actorEmail,
@@ -214,12 +216,11 @@ export class DocumentsService {
     });
 
     try {
-      return await db.transaction(async (tx) => {
+      const created = await db.transaction(async (tx) => {
         const [doc] = await tx
           .insert(documents)
           .values({
             id: documentId,
-            organizationId,
             title: data.title,
             category: data.category,
             createdByUserId: data.uploadedByUserId,
@@ -230,14 +231,13 @@ export class DocumentsService {
           .insert(documentVersions)
           .values({
             documentId: doc.id,
-            organizationId,
             filePath: storagePath,
             originalFileName: data.originalFilename,
             mimeType: data.mimeType,
             fileSize: data.fileSize,
             versionNumber,
             uploadedByUserId: data.uploadedByUserId,
-            scanStatus: "SKIPPED",
+            virusScanStatus: "SKIPPED",
           })
           .returning();
 
@@ -249,21 +249,18 @@ export class DocumentsService {
 
         await tx.insert(documentCaseLinks).values({
           documentId: doc.id,
-          organizationId,
           caseId: data.caseId,
           linkedByUserId: data.uploadedByUserId,
         });
 
         await tx.insert(documentAccess).values({
           documentId: doc.id,
-          organizationId,
           userId: data.uploadedByUserId,
           permission: "ADMIN",
           grantedByUserId: data.uploadedByUserId,
         });
 
         await tx.insert(documentActivityLogs).values({
-          organizationId,
           documentId: doc.id,
           actorUserId: data.uploadedByUserId,
           action: "CREATED",
@@ -272,6 +269,16 @@ export class DocumentsService {
 
         return { ...updatedDocument, currentVersion: version };
       });
+
+      // Scan the case once the upload is committed (fire-and-forget).
+      triggerScenarioScan({
+        organizationId,
+        scenarioType: "case",
+        scenarioId: data.caseId,
+        trigger: "upload",
+      });
+
+      return created;
     } catch (error) {
       await this.removeFromStorage(storagePath).catch(() => undefined);
       throw error;
@@ -356,7 +363,7 @@ export class DocumentsService {
         mimeType: documentVersions.mimeType,
         originalFileName: documentVersions.originalFileName,
         versionNumber: documentVersions.versionNumber,
-        scanStatus: documentVersions.scanStatus,
+        virusScanStatus: documentVersions.virusScanStatus,
         caseId: cases.id,
         caseTypeId: cases.caseTypeId,
         clientId: clients.id,
@@ -399,7 +406,7 @@ export class DocumentsService {
               fileSize: row.fileSize,
               mimeType: row.mimeType,
               originalFileName: row.originalFileName,
-              scanStatus: row.scanStatus,
+              virusScanStatus: row.virusScanStatus,
             }
           : null,
         case: row.caseId
@@ -513,7 +520,6 @@ export class DocumentsService {
     id: string,
     userId: string,
     status: DocumentStatus,
-    organizationId: string,
   ) => {
     await this.ensurePermission(id, userId, "ADMIN");
 
@@ -533,7 +539,6 @@ export class DocumentsService {
       if (!updated) return null;
 
       await tx.insert(documentActivityLogs).values({
-        organizationId,
         documentId: id,
         actorUserId: userId,
         action:
@@ -551,7 +556,6 @@ export class DocumentsService {
 
   updateDocument = async (
     id: string,
-    organizationId: string,
     data: {
       uploadedByUserId: string;
       fileBuffer: Buffer;
@@ -581,19 +585,18 @@ export class DocumentsService {
     });
 
     try {
-      return await db.transaction(async (tx) => {
+      const created = await db.transaction(async (tx) => {
         const [version] = await tx
           .insert(documentVersions)
           .values({
             documentId: id,
-            organizationId,
             filePath: storagePath,
             originalFileName: data.originalFilename,
             mimeType: data.mimeType,
             fileSize: data.fileSize,
             versionNumber,
             uploadedByUserId: data.uploadedByUserId,
-            scanStatus: "SKIPPED",
+            virusScanStatus: "SKIPPED",
           })
           .returning();
 
@@ -603,7 +606,6 @@ export class DocumentsService {
           .where(eq(documents.id, id));
 
         await tx.insert(documentActivityLogs).values({
-          organizationId,
           documentId: id,
           actorUserId: data.uploadedByUserId,
           action: "VERSION_UPLOADED",
@@ -612,6 +614,12 @@ export class DocumentsService {
 
         return version;
       });
+
+      // A new version invalidates prior analysis (new checksum) — re-scan every
+      // scenario this document belongs to. Resolves scenario + org internally.
+      void triggerScanForDocument(id, "upload");
+
+      return created;
     } catch (error) {
       await this.removeFromStorage(storagePath).catch(() => undefined);
       throw error;
@@ -627,10 +635,10 @@ export class DocumentsService {
     await this.ensurePermission(id, userId, "EDIT");
     await this.getCaseForFirm(caseId, organizationId);
 
-    return db.transaction(async (tx) => {
-      const [link] = await tx
+    const link = await db.transaction(async (tx) => {
+      const [row] = await tx
         .insert(documentCaseLinks)
-        .values({ documentId: id, organizationId, caseId, linkedByUserId: userId })
+        .values({ documentId: id, caseId, linkedByUserId: userId })
         .onConflictDoUpdate({
           target: [documentCaseLinks.documentId, documentCaseLinks.caseId],
           set: { archivedAt: null, updatedAt: new Date() },
@@ -638,20 +646,28 @@ export class DocumentsService {
         .returning();
 
       await tx.insert(documentActivityLogs).values({
-        organizationId,
         documentId: id,
         actorUserId: userId,
         action: "ACCESS_GRANTED",
         metadata: { caseId, scope: "case_link" },
       });
 
-      return link;
+      return row;
     });
+
+    // A newly-linked document is now in the case's scan set.
+    triggerScenarioScan({
+      organizationId,
+      scenarioType: "case",
+      scenarioId: caseId,
+      trigger: "upload",
+    });
+
+    return link;
   };
 
   grantUserAccess = async (
     id: string,
-    organizationId: string,
     userId: string,
     data: { targetUserId: string; permission: DocumentPermission },
   ) => {
@@ -669,7 +685,6 @@ export class DocumentsService {
         .insert(documentAccess)
         .values({
           documentId: id,
-          organizationId,
           userId: data.targetUserId,
           permission: data.permission,
           grantedByUserId: userId,
@@ -686,7 +701,6 @@ export class DocumentsService {
         .returning();
 
       await tx.insert(documentActivityLogs).values({
-        organizationId,
         documentId: id,
         actorUserId: userId,
         action: "ACCESS_GRANTED",
@@ -701,7 +715,6 @@ export class DocumentsService {
     id: string,
     userId: string,
     targetUserId: string,
-    organizationId: string,
   ) => {
     await this.ensurePermission(id, userId, "ADMIN");
 
@@ -720,7 +733,6 @@ export class DocumentsService {
       if (!grant) throw new NotFoundError("Document access not found");
 
       await tx.insert(documentActivityLogs).values({
-        organizationId,
         documentId: id,
         actorUserId: userId,
         action: "ACCESS_REVOKED",
@@ -749,7 +761,6 @@ export class DocumentsService {
       const [createdRequest] = await tx
         .insert(documentRequests)
         .values({
-          organizationId,
           caseId: data.caseId,
           requestedByUserId: userId,
           recipientEmail: data.recipientEmail,
@@ -761,7 +772,6 @@ export class DocumentsService {
         .returning();
 
       await tx.insert(documentActivityLogs).values({
-        organizationId,
         actorUserId: userId,
         action: "EXTERNAL_REQUEST_CREATED",
         metadata: {
@@ -779,7 +789,6 @@ export class DocumentsService {
 
   submitExternalDocument = async (
     token: string,
-    organizationId: string,
     data: {
       uploadedByName: string;
       uploadedByEmail: string;
@@ -821,12 +830,11 @@ export class DocumentsService {
     });
 
     try {
-      return await db.transaction(async (tx) => {
+      const result = await db.transaction(async (tx) => {
         const [doc] = await tx
           .insert(documents)
           .values({
             id: documentId,
-            organizationId,
             title,
             createdByUserId: request.requestedByUserId,
           })
@@ -836,13 +844,12 @@ export class DocumentsService {
           .insert(documentVersions)
           .values({
             documentId: doc.id,
-            organizationId,
             filePath: storagePath,
             originalFileName: data.originalFilename,
             mimeType: data.mimeType,
             fileSize: data.fileSize,
             versionNumber: 1,
-            scanStatus: "SKIPPED",
+            virusScanStatus: "SKIPPED",
           })
           .returning();
 
@@ -855,7 +862,6 @@ export class DocumentsService {
         const [submission] = await tx
           .insert(externalSubmissions)
           .values({
-            organizationId,
             requestId: request.id,
             documentId: doc.id,
             documentVersionId: version.id,
@@ -865,19 +871,17 @@ export class DocumentsService {
             filePath: storagePath,
             mimeType: data.mimeType,
             fileSize: data.fileSize,
-            scanStatus: "SKIPPED",
+            virusScanStatus: "SKIPPED",
           })
           .returning();
 
         await tx.insert(documentCaseLinks).values({
           documentId: doc.id,
-          organizationId,
           caseId: request.caseId,
         });
 
         await tx.insert(documentAccess).values({
           documentId: doc.id,
-          organizationId,
           userId: request.requestedByUserId,
           permission: "ADMIN",
           grantedByUserId: request.requestedByUserId,
@@ -889,7 +893,6 @@ export class DocumentsService {
           .where(eq(documentRequests.id, request.id));
 
         await tx.insert(documentActivityLogs).values({
-          organizationId,
           documentId: doc.id,
           actorEmail: data.uploadedByEmail,
           action: "EXTERNAL_SUBMISSION_UPLOADED",
@@ -902,22 +905,27 @@ export class DocumentsService {
 
         return { document: updatedDocument, version, submission };
       });
+
+      // External submission adds a document to the request's case — scan it.
+      void triggerScanForDocument(result.document.id, "upload");
+
+      return result;
     } catch (error) {
       await this.removeFromStorage(storagePath).catch(() => undefined);
       throw error;
     }
   };
 
-  archiveDocument = async (id: string, userId: string, organizationId: string) =>
-    this.updateDocumentStatus(id, userId, "archived", organizationId);
+  archiveDocument = async (id: string, userId: string) =>
+    this.updateDocumentStatus(id, userId, "archived");
 
-  restoreDocument = async (id: string, userId: string, organizationId: string) =>
-    this.updateDocumentStatus(id, userId, "active", organizationId);
+  restoreDocument = async (id: string, userId: string) =>
+    this.updateDocumentStatus(id, userId, "active");
 
-  deleteDocument = async (id: string, userId: string, organizationId: string) =>
-    this.updateDocumentStatus(id, userId, "deleted", organizationId);
+  deleteDocument = async (id: string, userId: string) =>
+    this.updateDocumentStatus(id, userId, "deleted");
 
-  getDownloadUrl = async (id: string, userId: string, organizationId: string) => {
+  getDownloadUrl = async (id: string, userId: string) => {
     await this.ensurePermission(id, userId, "VIEW");
 
     const [doc] = await db
@@ -930,13 +938,7 @@ export class DocumentsService {
         documentVersions,
         eq(documentVersions.id, documents.currentVersionId),
       )
-      .where(
-        and(
-          eq(documents.id, id),
-          eq(documents.status, "active"),
-          eq(documents.organizationId, organizationId),
-        ),
-      )
+      .where(and(eq(documents.id, id), eq(documents.status, "active")))
       .limit(1);
 
     if (!doc) throw new NotFoundError("Document not found");
@@ -944,7 +946,6 @@ export class DocumentsService {
     const signedUrl = await storageService.getSignedDownloadUrl(doc.filePath);
 
     await this.logActivity({
-      organizationId,
       documentId: id,
       actorUserId: userId,
       action: "DOWNLOADED",
@@ -979,7 +980,6 @@ export class DocumentsService {
       eq(documentCaseLinks.caseId, caseId),
       isNull(documentCaseLinks.archivedAt),
       eq(documents.status, "active"),
-      eq(documents.organizationId, organizationId),
     ];
 
     const where = and(...conditions);
@@ -1017,7 +1017,7 @@ export class DocumentsService {
         mimeType: documentVersions.mimeType,
         originalFileName: documentVersions.originalFileName,
         versionNumber: documentVersions.versionNumber,
-        scanStatus: documentVersions.scanStatus,
+        virusScanStatus: documentVersions.virusScanStatus,
         caseId: cases.id,
         caseTypeId: cases.caseTypeId,
         clientId: clients.id,
@@ -1063,7 +1063,7 @@ export class DocumentsService {
               fileSize: row.fileSize,
               mimeType: row.mimeType,
               originalFileName: row.originalFileName,
-              scanStatus: row.scanStatus,
+              virusScanStatus: row.virusScanStatus,
             }
           : null,
         case: row.caseId
@@ -1095,7 +1095,7 @@ export class DocumentsService {
       .where(eq(documentRequests.requestedByUserId, userId))
       .orderBy(desc(documentRequests.createdAt));
 
-  cancelExternalRequest = async (id: string, userId: string, organizationId: string) => {
+  cancelExternalRequest = async (id: string, userId: string) => {
     return db.transaction(async (tx) => {
       const [request] = await tx
         .update(documentRequests)
@@ -1115,7 +1115,6 @@ export class DocumentsService {
       if (!request) throw new NotFoundError("Open document request not found");
 
       await tx.insert(documentActivityLogs).values({
-        organizationId,
         actorUserId: userId,
         action: "ACCESS_REVOKED",
         metadata: { requestId: id, scope: "external_request" },

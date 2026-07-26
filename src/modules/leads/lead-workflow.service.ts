@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import {
   leadDocumentLinks,
@@ -7,6 +7,7 @@ import {
   leads,
 } from "../../db/schema";
 import type { LeadEventType } from "../../db/schema/leads";
+import { triggerScenarioScan } from "../ai-scan/scan-triggers";
 import { logLeadEvent } from "./lead-events.service";
 import { documents, documentVersions } from "../../db/schema/documents";
 import { staff } from "../../db/schema/staff";
@@ -588,6 +589,9 @@ export class LeadWorkflowService {
         mimeType: documentVersions.mimeType,
         fileSize: documentVersions.fileSize,
         versionNumber: documentVersions.versionNumber,
+        // Two independent axes: malware vs. AI document review.
+        virusScanStatus: documentVersions.virusScanStatus,
+        aiScanStatus: documentVersions.aiScanStatus,
       })
       .from(leadDocumentLinks)
       .innerJoin(documents, eq(leadDocumentLinks.documentId, documents.id))
@@ -597,7 +601,12 @@ export class LeadWorkflowService {
         eq(documents.currentVersionId, documentVersions.id),
       )
       .where(
-        and(eq(leadDocumentLinks.leadId, leadId), eq(leads.organizationId, organizationId)),
+        and(
+          eq(leadDocumentLinks.leadId, leadId),
+          eq(leads.organizationId, organizationId),
+          // Unlinked documents keep their row for audit; don't surface them.
+          isNull(leadDocumentLinks.archivedAt),
+        ),
       );
   }
 
@@ -609,7 +618,7 @@ export class LeadWorkflowService {
   ) {
     const [link] = await db
       .insert(leadDocumentLinks)
-      .values({ documentId, leadId, linkedByStaffId, organizationId: organizationId! })
+      .values({ documentId, leadId, linkedByStaffId })
       .returning();
 
     if (organizationId) {
@@ -619,6 +628,15 @@ export class LeadWorkflowService {
         type: "document_linked" as LeadEventType,
         actorId: linkedByStaffId,
         metadata: { documentId, linkId: link.id },
+      });
+
+      // A newly-linked document is now in the lead's scan set.
+      triggerScenarioScan({
+        organizationId,
+        scenarioType: "lead",
+        scenarioId: leadId,
+        trigger: "upload",
+        requestedByStaffId: linkedByStaffId,
       });
     }
 

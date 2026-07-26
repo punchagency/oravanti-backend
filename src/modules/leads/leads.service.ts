@@ -34,11 +34,7 @@ import {
   consultationParticipants,
   consultations,
 } from "../../db/schema/consultations";
-import {
-  documentCaseLinks,
-  documents,
-  documentVersions,
-} from "../../db/schema/documents";
+import { scenarioDocumentRequirements } from "../../db/schema/document-requirements";
 import {
   feeAgreements,
   type FeeAgreementDetails,
@@ -56,7 +52,6 @@ import {
   firmQuestionnaireLogicRules,
   firmQuestionnaireQuestions,
   firmQuestionnaireSections,
-  questionnaireResponseFiles,
   questionnaireResponses,
   questionnaireSends,
 } from "../../db/schema/questionnaires";
@@ -84,6 +79,8 @@ import {
 } from "../../utils/pagination";
 import { storageService } from "../../utils/storage/storage.service";
 import { generateCaseNumber } from "../cases/cases.service";
+import { materializeCaseTypeRequirements } from "../document-requirements/document-requirements.service";
+import { relinkLeadDocumentsToCase } from "../documents/document-ingest";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 import { hydrateCaseWorkflow } from "../workflow/workflow.service";
 import { generateConsultationSlots } from "./consultation-slots.service";
@@ -2154,6 +2151,33 @@ const sendQuestionnaire = async (
       autoReminderDays,
     })
     .returning();
+
+  // Snapshot every file_upload question as a document requirement.
+  //
+  // Materialized rather than derived at query time so that later edits to the
+  // questionnaire template cannot retroactively rewrite what this matter was
+  // asked for — the audit trail has to reflect what the client actually saw.
+  const fileUploadQuestions = (finalSnapshot.sections ?? []).flatMap(
+    (section: any) =>
+      (section.questions ?? []).filter((q: any) => q.type === "file_upload"),
+  );
+
+  if (fileUploadQuestions.length) {
+    await db
+      .insert(scenarioDocumentRequirements)
+      .values(
+        fileUploadQuestions.map((q: any, index: number) => ({
+          organizationId,
+          leadId,
+          label: q.label as string,
+          isRequired: Boolean(q.isRequired),
+          orderIndex: index,
+          source: "questionnaire" as const,
+          questionnaireQuestionId: q.id as string,
+        })),
+      )
+      .onConflictDoNothing();
+  }
 
   // Schedule the auto-reminder as a delayed job; remember its id so we can cancel
   // it when the response is submitted.
@@ -4568,52 +4592,30 @@ const openCase = async (
         );
     }
 
-    // 7. Copy questionnaire response files to documents system
-    const qFiles = await db
-      .select()
-      .from(questionnaireResponseFiles)
-      .where(eq(questionnaireResponseFiles.leadId, leadId));
+    // 7. Carry the lead's documents onto the case.
+    //
+    // These are RE-LINKED, not copied. Questionnaire uploads are already
+    // first-class `documents` rows, so adding a case link preserves document
+    // identity — and with it the checksum, the cached AI analysis, and any
+    // findings or resolved issues attached to the document during intake.
+    // Copying would mint a second identity for the same bytes and strand all
+    // of that at exactly the point the firm cares most.
+    await relinkLeadDocumentsToCase(leadId, newCase.id);
 
-    for (const qFile of qFiles) {
-      // Create document record
-      const [doc] = await db
-        .insert(documents)
-        .values({
-          title: qFile.originalFilename,
-          status: "active",
-          category:
-            qFile.questionSource === "system" ? "identity" : "supporting",
-          organizationId,
-        })
-        .returning();
+    // Requirements MOVE from the lead to the case (single row, identity and
+    // satisfaction preserved) rather than being duplicated.
+    await db
+      .update(scenarioDocumentRequirements)
+      .set({ leadId: null, caseId: newCase.id, updatedAt: new Date() })
+      .where(eq(scenarioDocumentRequirements.leadId, leadId));
 
-      // Create document version
-      const [version] = await db
-        .insert(documentVersions)
-        .values({
-          documentId: doc.id,
-          filePath: qFile.storagePath,
-          fileUrl: qFile.fileUrl,
-          originalFileName: qFile.originalFilename,
-          mimeType: qFile.mimeType,
-          fileSize: qFile.fileSize,
-          versionNumber: 1,
-          scanStatus: "SKIPPED",
-          organizationId,
-        })
-        .returning();
-
-      // Update document with current version
-      await db
-        .update(documents)
-        .set({ currentVersionId: version.id })
-        .where(eq(documents.id, doc.id));
-
-      // Link document to case
-      await db.insert(documentCaseLinks).values({
-        documentId: doc.id,
-        caseId: newCase.id,
+    // Materialize the case type's requirement templates onto the new case
+    // (idempotent; skips any already present from the lead move).
+    if (newCase.caseTypeId) {
+      await materializeCaseTypeRequirements({
         organizationId,
+        caseId: newCase.id,
+        caseTypeId: newCase.caseTypeId,
       });
     }
 

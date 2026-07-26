@@ -71,6 +71,12 @@ import {
   caseEvents,
   caseRecordNotes,
 } from "./cases";
+import { aiScanJobs } from "./ai-scan-jobs";
+import {
+  caseIssueDocuments,
+  caseIssueEvents,
+  caseIssues,
+} from "./case-issues";
 import { clients } from "./clients";
 import { leads, leadEvents, leadNotes } from "./leads";
 
@@ -489,3 +495,85 @@ export const rlsLeadNotesStaff = pgPolicy("rls_lead_notes_staff", {
     SELECT l.id FROM leads l WHERE l.organization_id = ${currentOrgId}
   )`,
 }).link(leadNotes);
+
+
+// =============================================================================
+// case_issues table
+// =============================================================================
+// Staff only. The AI case-review dashboard is firm-internal: an issue names a
+// document's shortcomings, so it must never reach the client or a contractor.
+//
+// PERMISSIVE, not restrictive. Restrictive policies are AND-ed with permissive
+// ones, and a table whose only policy is restrictive matches nothing at all —
+// Postgres defaults to deny when no permissive policy grants access. A
+// staff-only table therefore needs its org rule to be the permissive grant.
+
+export const rlsCaseIssuesOrg = pgPolicy("rls_case_issues_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(caseIssues);
+
+
+// =============================================================================
+// case_issue_documents table
+// =============================================================================
+// No organization column of its own — scope is inherited from the parent issue,
+// the same way case_events inherits from cases. Adding an organization column
+// here would duplicate (and could contradict) the parent's.
+
+export const rlsCaseIssueDocumentsOrg = pgPolicy("rls_case_issue_documents_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`issue_id IN (
+    SELECT i.id FROM case_issues i WHERE i.organization_id = ${currentOrgId}
+  )`,
+  withCheck: sql`issue_id IN (
+    SELECT i.id FROM case_issues i WHERE i.organization_id = ${currentOrgId}
+  )`,
+}).link(caseIssueDocuments);
+
+
+// =============================================================================
+// case_issue_events table
+// =============================================================================
+// Inherited from the parent issue, as above. This is the resolution log, so it
+// is at least as sensitive as the issue itself.
+
+export const rlsCaseIssueEventsOrg = pgPolicy("rls_case_issue_events_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`issue_id IN (
+    SELECT i.id FROM case_issues i WHERE i.organization_id = ${currentOrgId}
+  )`,
+  withCheck: sql`issue_id IN (
+    SELECT i.id FROM case_issues i WHERE i.organization_id = ${currentOrgId}
+  )`,
+}).link(caseIssueEvents);
+
+
+// =============================================================================
+// ai_scan_jobs table
+// =============================================================================
+// Staff only. Job rows carry no document content, but they do reveal which
+// scenarios a firm is scanning and when.
+
+export const rlsAiScanJobsOrg = pgPolicy("rls_ai_scan_jobs_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(aiScanJobs);
+
+
+// =============================================================================
+// document_analyses / document_photo_comparisons — deliberately NOT covered
+// =============================================================================
+// These are content-addressed caches keyed on (checksum, prompt_version,
+// model_version) with no organization column by design: an extraction is a pure
+// function of the bytes, so identical bytes resolve to one row regardless of
+// which firm uploaded them. There is nothing tenant-scoped to filter on, and
+// adding a scope would defeat the cache. Reaching a row requires already
+// knowing the checksum, which is only obtainable via a document the caller can
+// already see.

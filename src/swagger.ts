@@ -620,58 +620,12 @@ const options: swaggerJsdoc.Options = {
           },
         },
 
-        AiErrorFlag: {
-          type: "object",
-          properties: {
-            id: { type: "string", format: "uuid" },
-            clientId: { type: "string", format: "uuid" },
-            caseId: { type: "string", format: "uuid" },
-            documentId: { type: "string", format: "uuid" },
-            title: { type: "string" },
-            description: { type: "string" },
-            severity: { type: "string", enum: ["critical", "high", "medium", "low"] },
-            status: { type: "string", enum: ["pending_review", "under_review", "resolved"] },
-            affectedField: { type: "string" },
-            documentRef: { type: "string" },
-            resolvedById: { type: "string", format: "uuid" },
-            resolvedAt: { type: "string", format: "date-time" },
-            createdAt: { type: "string", format: "date-time" },
-            updatedAt: { type: "string", format: "date-time" },
-          },
-        },
-        CreateAiErrorFlagRequest: {
-          type: "object",
-          required: ["clientId", "caseId", "title", "description", "severity"],
-          properties: {
-            clientId: { type: "string", format: "uuid" },
-            caseId: { type: "string", format: "uuid" },
-            title: { type: "string" },
-            description: { type: "string" },
-            severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
-          },
-        },
-        UpdateFlagStatusRequest: {
-          type: "object",
-          required: ["status"],
-          properties: {
-            status: { type: "string" },
-          },
-        },
-        AiErrorDetectionStats: {
-          type: "object",
-          properties: {
-            errorsDetectedThisMonth: { type: "integer" },
-            errorsPrevented: { type: "integer" },
-            avgDetectionTime: { type: "string" },
-            errorRateReduction: { type: "string" },
-          },
-        },
         AiSystemConfig: {
           type: "object",
           properties: {
             isActive: { type: "boolean" },
             crossCheckingEnabled: { type: "boolean" },
-            inaValidationActive: { type: "boolean" },
+            photoComparisonEnabled: { type: "boolean" },
             realtimeAnalysis: { type: "boolean" },
           },
         },
