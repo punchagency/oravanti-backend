@@ -53,7 +53,7 @@ export const clients = pgTable("clients", {
   userId: text("user_id").references(() => user.id, { onDelete: "set null" }),
 
   // Historical conversion audit trail linkage (Safe clean decoupling)
-  leadId: uuid("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  leadId: uuid("lead_id").references(() => leads.id, { onDelete: "cascade" }),
 
   entityType: clientEntityTypeEnum("entity_type")
     .notNull()

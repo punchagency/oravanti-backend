@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { env } from "../config/env";
 import { requestContextStore } from "../middleware/request-context";
+import { getTx } from "./transaction-context";
 
 // ── System-level connection pool (bypasses RLS) ─────────────────────────────
 // Used for: module initialization, auth checks, DEK injection, and any query
@@ -70,7 +71,12 @@ export async function createTenantDb(
 
 // ── Context-aware db export ──────────────────────────────────────────────────
 // This Proxy delegates drizzle method calls (select, insert, update, delete, etc.)
-// to the tenant-scoped connection when an AsyncLocalStorage context is active.
+// to the correct underlying drizzle instance using this priority:
+//
+//   1. Active transaction (getTx()) — when inside db.transaction() + runInTransaction()
+//   2. Tenant context (tenantDb) — when an AsyncLocalStorage request context is active
+//   3. System fallback (systemDb) — when no context exists
+//
 // Query builders capture the session at construction time via closures, so the
 // builder must be created on the correct drizzle instance — we cannot swap the
 // session after the fact.
@@ -83,15 +89,19 @@ export const db = new Proxy(systemDb, {
 
     if (typeof originalValue === "function") {
       return function (...args: any[]) {
-        const store = requestContextStore.getStore();
+        // 1. Inside a transaction — all queries must go through tx
+        const tx = getTx();
+        if (tx && typeof tx[prop] === "function") {
+          return tx[prop](...args);
+        }
 
-        // When tenant context is available, build the query on tenantDb so the
-        // query builder is constructed with the tenant session from the start.
+        // 2. Tenant context available — delegate to tenant-scoped connection
+        const store = requestContextStore.getStore();
         if (store?.tenantDb && typeof store.tenantDb[prop] === "function") {
           return store.tenantDb[prop](...args);
         }
 
-        // Fallback: use systemDb
+        // 3. Fallback: use systemDb
         return originalValue.apply(target, args);
       };
     }

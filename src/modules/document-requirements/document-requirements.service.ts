@@ -5,7 +5,6 @@ import {
   scenarioDocumentRequirements,
 } from "../../db/schema/document-requirements";
 import { NotFoundError } from "../../utils/error/app-error";
-import type { DBTransaction } from "../../types/db.types";
 
 type TemplateInsert = typeof caseTypeDocumentRequirements.$inferInsert;
 
@@ -17,11 +16,12 @@ type TemplateInsert = typeof caseTypeDocumentRequirements.$inferInsert;
  * ignores archived templates. Due dates are left null: they're derived live
  * from the template's anchor/offset by the rules engine (Q3).
  */
-export const materializeCaseTypeRequirements = async (
-  tx: DBTransaction,
-  params: { organizationId: string; caseId: string; caseTypeId: string },
-): Promise<number> => {
-  const templates = await tx
+export const materializeCaseTypeRequirements = async (params: {
+  organizationId: string;
+  caseId: string;
+  caseTypeId: string;
+}): Promise<number> => {
+  const templates = await db
     .select()
     .from(caseTypeDocumentRequirements)
     .where(
@@ -33,7 +33,7 @@ export const materializeCaseTypeRequirements = async (
     );
   if (templates.length === 0) return 0;
 
-  const already = await tx
+  const already = await db
     .select({ ref: scenarioDocumentRequirements.caseTypeRequirementId })
     .from(scenarioDocumentRequirements)
     .where(eq(scenarioDocumentRequirements.caseId, params.caseId));
@@ -52,7 +52,7 @@ export const materializeCaseTypeRequirements = async (
       caseTypeRequirementId: t.id,
     }));
   if (rows.length === 0) return 0;
-  await tx.insert(scenarioDocumentRequirements).values(rows);
+  await db.insert(scenarioDocumentRequirements).values(rows);
   return rows.length;
 };
 

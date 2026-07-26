@@ -1,12 +1,12 @@
-import { createHash } from "node:crypto";
 import { and, desc, eq, isNull } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { db } from "../../db/client";
 import {
   documentCaseLinks,
   documents,
   documentVersions,
 } from "../../db/schema/documents";
 import { leadDocumentLinks } from "../../db/schema/lead-document-links";
-import type { DBTransaction } from "../../types/db.types";
 
 /**
  * SHA-256 of the file bytes. This is the AI analysis cache key — identical
@@ -52,10 +52,9 @@ export type IngestDocumentResult = {
  * tables. Callers must run this inside a transaction.
  */
 export const ingestDocument = async (
-  tx: DBTransaction,
   input: IngestDocumentInput,
 ): Promise<IngestDocumentResult> => {
-  const [document] = await tx
+  const [document] = await db
     .insert(documents)
     .values({
       title: input.title ?? input.originalFileName,
@@ -64,7 +63,7 @@ export const ingestDocument = async (
     })
     .returning();
 
-  const [version] = await tx
+  const [version] = await db
     .insert(documentVersions)
     .values({
       documentId: document.id,
@@ -83,13 +82,13 @@ export const ingestDocument = async (
     })
     .returning();
 
-  await tx
+  await db
     .update(documents)
     .set({ currentVersionId: version.id, updatedAt: new Date() })
     .where(eq(documents.id, document.id));
 
   if (input.leadId) {
-    await tx.insert(leadDocumentLinks).values({
+    await db.insert(leadDocumentLinks).values({
       documentId: document.id,
       leadId: input.leadId,
       linkedByStaffId: input.linkedByStaffId ?? null,
@@ -97,7 +96,7 @@ export const ingestDocument = async (
   }
 
   if (input.caseId) {
-    await tx.insert(documentCaseLinks).values({
+    await db.insert(documentCaseLinks).values({
       documentId: document.id,
       caseId: input.caseId,
       linkedByUserId: input.uploadedByUserId ?? null,
@@ -121,11 +120,10 @@ export const ingestDocument = async (
  * which misses the analysis cache, while the old version's history survives.
  */
 export const addDocumentVersion = async (
-  tx: DBTransaction,
   documentId: string,
   input: Omit<IngestDocumentInput, "leadId" | "caseId" | "linkedByStaffId">,
 ): Promise<IngestDocumentResult> => {
-  const [latest] = await tx
+  const [latest] = await db
     .select({ versionNumber: documentVersions.versionNumber })
     .from(documentVersions)
     .where(eq(documentVersions.documentId, documentId))
@@ -134,7 +132,7 @@ export const addDocumentVersion = async (
 
   const nextVersion = (latest?.versionNumber ?? 0) + 1;
 
-  const [version] = await tx
+  const [version] = await db
     .insert(documentVersions)
     .values({
       documentId,
@@ -151,7 +149,7 @@ export const addDocumentVersion = async (
     })
     .returning();
 
-  await tx
+  await db
     .update(documents)
     .set({ currentVersionId: version.id, updatedAt: new Date() })
     .where(eq(documents.id, documentId));
@@ -172,12 +170,11 @@ export const addDocumentVersion = async (
  * lead-stage document at exactly the moment the firm cares most.
  */
 export const relinkLeadDocumentsToCase = async (
-  tx: DBTransaction,
   leadId: string,
   caseId: string,
   linkedByUserId?: string | null,
 ): Promise<number> => {
-  const links = await tx
+  const links = await db
     .select({ documentId: leadDocumentLinks.documentId })
     .from(leadDocumentLinks)
     .where(
@@ -189,7 +186,7 @@ export const relinkLeadDocumentsToCase = async (
 
   if (links.length === 0) return 0;
 
-  await tx
+  await db
     .insert(documentCaseLinks)
     .values(
       links.map((link) => ({

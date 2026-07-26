@@ -44,7 +44,7 @@ export const clientContacts = pgTable(
     
     // Identity linkages
     clientId:       uuid("client_id").references(() => clients.id, { onDelete: "cascade" }),
-    leadId:         uuid("lead_id").references(() => leads.id, { onDelete: "set null" }),
+    leadId:         uuid("lead_id").references(() => leads.id, { onDelete: "cascade" }),
     
     // Explicit system status identifier (e.g. tracks who is the primary target)
     type:           contactTypeEnum("type").notNull().default("primary_client"),
