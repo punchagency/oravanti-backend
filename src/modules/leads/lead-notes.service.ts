@@ -183,7 +183,6 @@ export const addLeadNote = async (
       type: "note_added",
       actorId: authorId,
       metadata: { noteId: created.id, noteType: type, context, contentPreview },
-      tx,
     });
 
     return created;

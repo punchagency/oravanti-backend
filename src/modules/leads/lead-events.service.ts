@@ -24,8 +24,6 @@ type LogLeadEventInput = {
    */
   actorId?: string | null;
   metadata?: Record<string, unknown>;
-  /** Pass the enclosing transaction so the event commits with the action. */
-  tx?: any;
 };
 
 /**
@@ -33,13 +31,12 @@ type LogLeadEventInput = {
  * removed from the firm.
  */
 const actorNameFor = async (
-  conn: typeof db,
   actorId: string | null | undefined,
   organizationId: string,
 ): Promise<string | null> => {
   if (!actorId) return null;
 
-  const [row] = await conn
+  const [row] = await db
     .select({ firstName: staff.firstName, lastName: staff.lastName })
     .from(staff)
     .where(and(eq(staff.id, actorId), eq(staff.organizationId, organizationId)))
@@ -49,16 +46,15 @@ const actorNameFor = async (
 };
 
 export const logLeadEvent = async (data: LogLeadEventInput) => {
-  const conn = (data.tx ?? db) as typeof db;
   const actorId = data.actorId ?? null;
   const ctx = getRequestContext();
 
-  await conn.insert(leadEvents).values({
+  await db.insert(leadEvents).values({
     organizationId: data.organizationId,
     leadId: data.leadId,
     type: data.type,
     actorId,
-    actorNameSnapshot: await actorNameFor(conn, actorId, data.organizationId),
+    actorNameSnapshot: await actorNameFor(actorId, data.organizationId),
     metadata: (data.metadata as any) ?? null,
     ipAddress: ctx.ipAddress,
   });

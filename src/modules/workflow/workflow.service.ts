@@ -1714,11 +1714,9 @@ export async function pickBestStaff(
   organizationId: string,
   templateStepId?: string | null,
   excludeStaffId?: string,
-  tx?: any,
 ): Promise<{ id: string; firstName: string; lastName: string } | null> {
-  const conn = (tx ?? db) as typeof db;
 
-  let candidates = await conn
+  let candidates = await db
     .select()
     .from(staff)
     .where(
@@ -1730,7 +1728,7 @@ export async function pickBestStaff(
     );
 
   if (candidates.length === 0) {
-    candidates = await conn
+    candidates = await db
       .select()
       .from(staff)
       .where(
@@ -1745,7 +1743,7 @@ export async function pickBestStaff(
   if (candidates.length === 0) return null;
 
   if (templateStepId) {
-    const [templateStep] = await conn
+    const [templateStep] = await db
       .select()
       .from(workflowTemplateSteps)
       .where(eq(workflowTemplateSteps.id, templateStepId))
@@ -1753,7 +1751,7 @@ export async function pickBestStaff(
 
     const requiredCert = templateStep?.requiredCertification;
     if (requiredCert) {
-      const certifiedStaffIds = await conn
+      const certifiedStaffIds = await db
         .select({ staffId: staffCertifications.staffId })
         .from(staffCertifications)
         .innerJoin(certifications, eq(certifications.id, staffCertifications.certificationId))
@@ -1774,7 +1772,7 @@ export async function pickBestStaff(
   }
 
   const todayStr = new Date().toISOString().split("T")[0];
-  const staffOnLeave = await conn
+  const staffOnLeave = await db
     .select({ staffId: leaveRequests.staffId })
     .from(leaveRequests)
     .where(
@@ -1791,7 +1789,7 @@ export async function pickBestStaff(
   const pool = availableStaff.length > 0 ? availableStaff : candidates;
 
   const staffIds = pool.map((s) => s.id);
-  const loadRows = await conn
+  const loadRows = await db
     .select({
       staffId: caseWorkflowSteps.assignedToId,
       taskCount: count(),
@@ -1810,7 +1808,7 @@ export async function pickBestStaff(
     if (row.staffId) loadMap.set(row.staffId, row.taskCount);
   }
 
-  const recentAssignments = await conn
+  const recentAssignments = await db
     .select({
       staffId: caseWorkflowSteps.assignedToId,
       lastAssigned: sql<string>`MAX(${caseWorkflowSteps.assignedAt})`.as("last_assigned"),
@@ -1859,14 +1857,11 @@ export async function hydrateCaseWorkflow(data: {
   organizationId: string;
   caseId: string;
   practiceAreaId: string;
-  tx?: any;
 }): Promise<{
   workflowSteps: (typeof caseWorkflowSteps.$inferSelect)[];
   template: (typeof workflowTemplates.$inferSelect) | null;
 }> {
-  const conn = (data.tx ?? db) as typeof db;
-
-  const [template] = await conn
+  const [template] = await db
     .select()
     .from(workflowTemplates)
     .where(eq(workflowTemplates.practiceAreaId, data.practiceAreaId))
@@ -1874,13 +1869,13 @@ export async function hydrateCaseWorkflow(data: {
 
   if (!template) return { workflowSteps: [], template: null };
 
-  const modules = await conn
+  const modules = await db
     .select()
     .from(workflowModules)
     .where(eq(workflowModules.templateId, template.id))
     .orderBy(asc(workflowModules.orderIndex));
 
-  const allTemplateSteps = await conn
+  const allTemplateSteps = await db
     .select()
     .from(workflowTemplateSteps)
     .where(
@@ -1925,7 +1920,7 @@ export async function hydrateCaseWorkflow(data: {
 
   if (stepInserts.length === 0) return { workflowSteps: [], template };
 
-  const workflowSteps = await conn
+  const workflowSteps = await db
     .insert(caseWorkflowSteps)
     .values(stepInserts)
     .returning();
@@ -1936,12 +1931,11 @@ export async function hydrateCaseWorkflow(data: {
       data.organizationId,
       firstStep.templateStepId,
       undefined,
-      data.tx,
     );
 
     if (picked) {
       const now = new Date();
-      await conn
+      await db
         .update(caseWorkflowSteps)
         .set({
           assignedToId: picked.id,
@@ -1962,7 +1956,6 @@ export async function hydrateCaseWorkflow(data: {
         action: "ASSIGNED",
         title: `Step auto-assigned: ${firstStep.title}`,
         assigneeId: picked.id,
-        tx: data.tx,
       });
 
       await logEvent({
@@ -1983,7 +1976,6 @@ export async function hydrateCaseWorkflow(data: {
           timestamp: now.toISOString(),
         },
         performedById: null,
-        tx: data.tx,
       });
     }
   }
@@ -2001,7 +1993,6 @@ export async function hydrateCaseWorkflow(data: {
       timestamp: new Date().toISOString(),
     },
     performedById: null,
-    tx: data.tx,
   });
 
   return { workflowSteps, template };
@@ -2017,10 +2008,8 @@ export async function logEvent(data: {
   description?: string;
   metadata?: Record<string, unknown>;
   performedById: string | null;
-  tx?: any;
 }) {
-  const conn = (data.tx ?? db) as typeof db;
-  await conn.insert(workflowLog).values({
+  await db.insert(workflowLog).values({
     organizationId: data.organizationId,
     caseId: data.caseId,
     stepId: data.stepId,
@@ -2044,23 +2033,19 @@ export async function logEvent(data: {
   };
   const caseEventType = workflowToCaseEventMap[data.eventType];
   if (caseEventType) {
-    try {
-      await logCaseEvent({
-        organizationId: data.organizationId,
-        caseId: data.caseId,
-        eventType: caseEventType,
-        title: data.title,
-        description: data.description,
-        metadata: {
-          ...data.metadata,
-          stepId: data.stepId,
-          moduleId: data.moduleId,
-        },
-        actorId: data.performedById,
-      });
-    } catch {
-      // Non-critical: don't break workflow operations if case_events insert fails
-    }
+    await logCaseEvent({
+      organizationId: data.organizationId,
+      caseId: data.caseId,
+      eventType: caseEventType,
+      title: data.title,
+      description: data.description,
+      metadata: {
+        ...data.metadata,
+        stepId: data.stepId,
+        moduleId: data.moduleId,
+      },
+      actorId: data.performedById,
+    });
   }
 }
 
@@ -2076,16 +2061,13 @@ export async function logStepAction(data: {
   note?: string | null;
   timeTakenMs?: number | null;
   metadata?: Record<string, unknown> | null;
-  tx?: any;
 }) {
-  const conn = (data.tx ?? db) as typeof db;
-
   const staffIds = [data.actorId, data.assigneeId].filter(
     (id): id is string => id != null,
   );
   const nameMap = new Map<string, string>();
   if (staffIds.length > 0) {
-    const rows = await conn
+    const rows = await db
       .select({
         id: staff.id,
         firstName: staff.firstName,
@@ -2098,7 +2080,7 @@ export async function logStepAction(data: {
     }
   }
 
-  await conn.insert(stepActionLogs).values({
+  await db.insert(stepActionLogs).values({
     organizationId: data.organizationId,
     caseId: data.caseId,
     stepId: data.stepId,

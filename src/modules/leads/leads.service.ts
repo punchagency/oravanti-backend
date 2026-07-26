@@ -63,6 +63,7 @@ import {
 import { staff } from "../../db/schema/staff";
 import { teamPracticeAreaCaseTypes } from "../../db/schema/team-practice-area-case-types";
 import { caseWorkflowSteps } from "../../db/schema/workflow";
+import { withTransaction } from "../../db/transaction-context";
 import {
   cancelQuestionnaireReminder,
   scheduleQuestionnaireReminder,
@@ -857,7 +858,6 @@ const updateLead = async (
       // The changed fields with their before and after values, so the activity
       // trail can say what changed rather than only that something did.
       metadata: { changes },
-      tx,
     });
 
     const [row] = await tx
@@ -1088,7 +1088,6 @@ const logStageChange = async (data: {
   from: string;
   to: string;
   actorId?: string | null;
-  tx?: any;
 }) => {
   if (data.from === data.to) return;
 
@@ -1098,7 +1097,6 @@ const logStageChange = async (data: {
     type: "stage_changed",
     actorId: data.actorId,
     metadata: { from: data.from, to: data.to },
-    tx: data.tx,
   });
 };
 
@@ -1873,7 +1871,6 @@ const resolveConflictCheck = async (
           : "conflict_check_approved",
         actorId: staffId,
         metadata: { reviewNotes: data.reviewNotes, priorStatus: cc.status },
-        tx,
       });
 
       if (lead.pipelineStage === "conflict_check") {
@@ -1883,7 +1880,6 @@ const resolveConflictCheck = async (
           from: lead.pipelineStage,
           to: "questionnaire",
           actorId: staffId,
-          tx,
         });
       }
 
@@ -1914,7 +1910,6 @@ const resolveConflictCheck = async (
       type: "conflict_check_declined",
       actorId: staffId,
       metadata: { reviewNotes: data.reviewNotes },
-      tx,
     });
 
     return u;
@@ -4428,10 +4423,10 @@ const openCase = async (
     }
   }
 
-  return db.transaction(async (tx) => {
+  return withTransaction(db, async () => {
     // 1. Create client entity
     const leadName = `${lead.firstName} ${lead.lastName}`;
-    const [client] = await tx
+    const [client] = await db
       .insert(clients)
       .values({
         organizationId,
@@ -4446,7 +4441,7 @@ const openCase = async (
       .returning();
 
     // 2. Create primary contact from lead data
-    await tx.insert(clientContacts).values({
+    await db.insert(clientContacts).values({
       organizationId,
       clientId: client.id,
       type: "primary_client",
@@ -4457,7 +4452,7 @@ const openCase = async (
     });
 
     // 3. Resolve practice area and case type from junction tables
-    const [leadPracticeArea] = await tx
+    const [leadPracticeArea] = await db
       .select({
         practiceAreaId: leads.practiceAreaId,
         caseTypeId: leads.caseTypeId,
@@ -4477,13 +4472,13 @@ const openCase = async (
       );
     }
 
-    const [practiceArea] = await tx
+    const [practiceArea] = await db
       .select({ id: practiceAreas.id })
       .from(practiceAreas)
       .where(eq(practiceAreas.id, resolvedPracticeAreaId))
       .limit(1);
 
-    const [caseType] = await tx
+    const [caseType] = await db
       .select()
       .from(practiceAreaCaseTypes)
       .where(eq(practiceAreaCaseTypes.id, resolvedCaseTypeId))
@@ -4497,7 +4492,7 @@ const openCase = async (
       caseType.code,
     );
 
-    const [newCase] = await tx
+    const [newCase] = await db
       .insert(cases)
       .values({
         organizationId,
@@ -4519,12 +4514,11 @@ const openCase = async (
       organizationId,
       caseId: newCase.id,
       practiceAreaId: resolvedPracticeAreaId,
-      tx,
     });
 
     // 5. Update lead with conversion data
     const now = new Date();
-    await tx
+    await db
       .update(leads)
       .set({
         clientId: client.id,
@@ -4542,7 +4536,6 @@ const openCase = async (
       from: lead.pipelineStage,
       to: "case_opening",
       actorId: creatorStaffId,
-      tx,
     });
 
     await logLeadEvent({
@@ -4555,17 +4548,16 @@ const openCase = async (
         caseNumber: newCase.caseNumber,
         clientId: client.id,
       },
-      tx,
     });
 
     // 6. Link questionnaire responses to the new client and case
     if (lead.questionnaireSendId) {
-      await tx
+      await db
         .update(questionnaireSends)
         .set({ clientId: client.id, caseId: newCase.id, updatedAt: now })
         .where(eq(questionnaireSends.id, lead.questionnaireSendId));
 
-      await tx
+      await db
         .update(questionnaireResponses)
         .set({ clientId: client.id, caseId: newCase.id, updatedAt: now })
         .where(
@@ -4577,14 +4569,14 @@ const openCase = async (
     }
 
     // 7. Copy questionnaire response files to documents system
-    const qFiles = await tx
+    const qFiles = await db
       .select()
       .from(questionnaireResponseFiles)
       .where(eq(questionnaireResponseFiles.leadId, leadId));
 
     for (const qFile of qFiles) {
       // Create document record
-      const [doc] = await tx
+      const [doc] = await db
         .insert(documents)
         .values({
           title: qFile.originalFilename,
@@ -4596,7 +4588,7 @@ const openCase = async (
         .returning();
 
       // Create document version
-      const [version] = await tx
+      const [version] = await db
         .insert(documentVersions)
         .values({
           documentId: doc.id,
@@ -4612,13 +4604,13 @@ const openCase = async (
         .returning();
 
       // Update document with current version
-      await tx
+      await db
         .update(documents)
         .set({ currentVersionId: version.id })
         .where(eq(documents.id, doc.id));
 
       // Link document to case
-      await tx.insert(documentCaseLinks).values({
+      await db.insert(documentCaseLinks).values({
         documentId: doc.id,
         caseId: newCase.id,
         organizationId,
@@ -4631,7 +4623,7 @@ const openCase = async (
     // 7. Notify
     // const assignedStaffId = data.assignedTeamId ?? lead.respondentId;
     //     if (assignedStaffId) {
-    //       const [assignedStaff] = await tx
+    //       const [assignedStaff] = await db
     //         .select({ email: user.email, firstName: staff.firstName })
     //         .from(staff)
     //         .leftJoin(user, eq(staff.userId, user.id))
