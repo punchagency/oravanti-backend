@@ -11,6 +11,7 @@ import {
 import { organization, team } from "./auth-schema";
 import { cases } from "./cases";
 import { clients } from "./clients";
+import { leads } from "./leads";
 import { staff } from "./staff";
 
 export const calendarEventTypeEnum = pgEnum("calendar_event_type", [
@@ -48,6 +49,7 @@ export const calendarEvents = pgTable("calendar_events", {
   endTime: timestamp("end_time"),
   clientId: uuid("client_id").references(() => clients.id),
   caseId: uuid("case_id").references(() => cases.id, { onDelete: "cascade" }),
+  leadId: uuid("lead_id").references(() => leads.id, { onDelete: "set null" }),
   assignedStaffId: uuid("assigned_staff_id").references(() => staff.id),
   teamId: text("team_id").references(() => team.id),
   location: text("location"),
