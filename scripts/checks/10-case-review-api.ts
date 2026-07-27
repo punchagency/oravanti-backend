@@ -211,6 +211,24 @@ const main = async () => {
           item.caseTypeName,
           c.caseTypeName,
         );
+
+        section("issues filtered to one matter");
+        const byCase = await service.getIssues(fx.organizationId, {
+          caseId: c.caseId,
+        });
+        check(
+          "the case's issue is returned when filtered by caseId",
+          byCase.data.some((i: { id: string }) => i.id === issue.id),
+          byCase.data.map((i: { id: string }) => i.id),
+        );
+        const byLead = await service.getIssues(fx.organizationId, {
+          leadId: fx.leadId,
+        });
+        check(
+          "a case issue is not returned when filtered by an unrelated leadId",
+          !byLead.data.some((i: { id: string }) => i.id === issue.id),
+          byLead.data.length,
+        );
       });
     } finally {
       await systemDb

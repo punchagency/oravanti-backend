@@ -5,6 +5,8 @@ export const listIssuesQuerySchema = z.object({
   status: z
     .enum(["open", "under_review", "resolved", "dismissed", "superseded"])
     .optional(),
+  leadId: z.string().uuid().optional(),
+  caseId: z.string().uuid().optional(),
   page: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().positive().max(100).optional(),
 });

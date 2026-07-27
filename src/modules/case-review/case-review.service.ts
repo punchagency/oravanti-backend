@@ -312,6 +312,8 @@ export class CaseReviewService {
     filters: {
       severity?: string;
       status?: string;
+      leadId?: string;
+      caseId?: string;
       page?: number;
       limit?: number;
     },
@@ -327,6 +329,9 @@ export class CaseReviewService {
       conditions.push(eq(caseIssues.status, filters.status as IssueRow["status"]));
     else
       conditions.push(inArray(caseIssues.status, [...ACTIVE_STATUSES]));
+    // Scope to one matter, for the per-matter tab.
+    if (filters.leadId) conditions.push(eq(caseIssues.leadId, filters.leadId));
+    if (filters.caseId) conditions.push(eq(caseIssues.caseId, filters.caseId));
     const where = and(...conditions);
 
     const [{ total }] = await db

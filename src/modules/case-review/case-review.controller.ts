@@ -15,10 +15,12 @@ export class CaseReviewController {
 
   getIssues = async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
-    const { severity, status, page, limit } = req.query;
+    const { severity, status, leadId, caseId, page, limit } = req.query;
     const result = await this.svc.getIssues(organizationId!, {
       severity: severity as string | undefined,
       status: status as string | undefined,
+      leadId: leadId as string | undefined,
+      caseId: caseId as string | undefined,
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined,
     });
