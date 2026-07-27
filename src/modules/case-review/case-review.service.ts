@@ -1,5 +1,6 @@
 import { and, count, countDistinct, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { db } from "../../db/client";
+import { withTransaction } from "../../db/transaction-context";
 import { aiScanJobs } from "../../db/schema/ai-scan-jobs";
 import { aiSystemConfig } from "../../db/schema/ai-system-config";
 import {
@@ -847,14 +848,14 @@ export class CaseReviewService {
     // (resolved / dismissed / superseded) is left as-is — acting on it should
     // not silently reopen it.
     const active = issue.status === "open" || issue.status === "under_review";
-    await db.transaction(async (tx) => {
+    await withTransaction(db, async () => {
       if (active && issue.status !== "under_review") {
-        await tx
+        await db
           .update(caseIssues)
           .set({ status: "under_review", updatedAt: new Date() })
           .where(eq(caseIssues.id, id));
       }
-      await tx.insert(caseIssueEvents).values({
+      await db.insert(caseIssueEvents).values({
         issueId: id,
         fromStatus: issue.status,
         toStatus: active ? "under_review" : issue.status,
@@ -929,13 +930,13 @@ export class CaseReviewService {
         break;
     }
 
-    const updated = await db.transaction(async (tx) => {
-      const [row] = await tx
+    const updated = await withTransaction(db, async () => {
+      const [row] = await db
         .update(caseIssues)
         .set(patch)
         .where(eq(caseIssues.id, id))
         .returning();
-      await tx.insert(caseIssueEvents).values({
+      await db.insert(caseIssueEvents).values({
         issueId: id,
         fromStatus: existing.status,
         toStatus,

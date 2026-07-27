@@ -1,5 +1,6 @@
 import { and, eq, inArray, lt } from "drizzle-orm";
 import { db } from "../../db/client";
+import { withTransaction } from "../../db/transaction-context";
 import { aiScanJobs } from "../../db/schema/ai-scan-jobs";
 import {
   documentAnalyses,
@@ -97,10 +98,10 @@ export const persistScanResult = async (
 
   const idToChecksum = new Map(result.documents.map((d) => [d.id, d.checksum]));
 
-  await db.transaction(async (tx) => {
+  await withTransaction(db, async () => {
     // 1. Facts — one row per analysed document (content-addressed cache).
     for (const doc of result.documents) {
-      await tx
+      await db
         .insert(documentAnalyses)
         .values({
           checksum: doc.checksum,
@@ -134,7 +135,7 @@ export const persistScanResult = async (
         });
 
       // Mirror onto the scanned version(s) of this document.
-      await tx
+      await db
         .update(documentVersions)
         .set({ aiScanStatus: "complete", aiScannedAt: new Date() })
         .where(
@@ -151,7 +152,7 @@ export const persistScanResult = async (
       const cb = idToChecksum.get(cmp.document_b);
       if (!ca || !cb || ca === cb) continue;
       const [checksumA, checksumB] = ca < cb ? [ca, cb] : [cb, ca];
-      await tx
+      await db
         .insert(documentPhotoComparisons)
         .values({
           checksumA,
@@ -184,7 +185,7 @@ export const persistScanResult = async (
       ),
     ];
     if (failedDocIds.length > 0) {
-      await tx
+      await db
         .update(documentVersions)
         .set({ aiScanStatus: "failed", aiScannedAt: new Date() })
         .where(
@@ -204,7 +205,7 @@ export const persistScanResult = async (
       .filter((e) => !e.document_id)
       .map((e) => `${e.stage}: ${e.message}`)
       .join("; ");
-    await tx
+    await db
       .update(aiScanJobs)
       .set({
         status: result.status === "failed" ? "failed" : "complete",
