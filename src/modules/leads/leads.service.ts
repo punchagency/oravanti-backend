@@ -13,7 +13,7 @@ import {
   isNull,
   ne,
   or,
-  sql
+  sql,
 } from "drizzle-orm";
 import { env } from "../../config/env";
 import { db } from "../../db/client";
@@ -34,15 +34,14 @@ import {
   consultationParticipants,
   consultations,
 } from "../../db/schema/consultations";
+import { scenarioDocumentRequirements } from "../../db/schema/document-requirements";
 import {
   feeAgreements,
   type FeeAgreementDetails,
 } from "../../db/schema/fee-agreements";
-import {
-  leadEvents,
-  leads,
-} from "../../db/schema/leads";
+import { leadTasks } from "../../db/schema/lead-tasks";
 import { leadTimelineEvents } from "../../db/schema/lead-timeline-events";
+import { leadEvents, leads } from "../../db/schema/leads";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import {
@@ -58,19 +57,12 @@ import {
 } from "../../db/schema/questionnaires";
 import { staff } from "../../db/schema/staff";
 import { teamPracticeAreaCaseTypes } from "../../db/schema/team-practice-area-case-types";
-import {
-  caseWorkflowSteps,
-} from "../../db/schema/workflow";
-import { scenarioDocumentRequirements } from "../../db/schema/document-requirements";
-import { materializeCaseTypeRequirements } from "../document-requirements/document-requirements.service";
-import { relinkLeadDocumentsToCase } from "../documents/document-ingest";
+import { caseWorkflowSteps } from "../../db/schema/workflow";
+import { withTransaction } from "../../db/transaction-context";
 import {
   cancelQuestionnaireReminder,
   scheduleQuestionnaireReminder,
 } from "../../queue/queues";
-import { getLeadActivity, logLeadEvent } from "./lead-events.service";
-import { getLeadMetrics } from "./lead-metrics.service";
-import { addLeadNote, bulkDeleteNotes, bulkPinNotes, deleteLeadNote, getLeadNotes, toggleNotePin, updateLeadNote } from "./lead-notes.service";
 import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
 import { emailService } from "../../utils/email/email.service";
 import {
@@ -87,12 +79,26 @@ import {
 } from "../../utils/pagination";
 import { storageService } from "../../utils/storage/storage.service";
 import { generateCaseNumber } from "../cases/cases.service";
+import { materializeCaseTypeRequirements } from "../document-requirements/document-requirements.service";
+import { relinkLeadDocumentsToCase } from "../documents/document-ingest";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
-import { hydrateCaseWorkflow, logEvent, logStepAction, pickBestStaff } from "../workflow/workflow.service";
+import { hydrateCaseWorkflow } from "../workflow/workflow.service";
 import { generateConsultationSlots } from "./consultation-slots.service";
 import { getESignatureProvider } from "./dropbox-sign.provider";
 import { assembleFeeAgreementDocument } from "./fee-agreement-document";
 import { renderFeeAgreementPdf } from "./fee-agreement-pdf";
+import { getLeadActivity, logLeadEvent } from "./lead-events.service";
+import { getLeadMetrics } from "./lead-metrics.service";
+import {
+  addLeadNote,
+  bulkDeleteNotes,
+  bulkPinNotes,
+  deleteLeadNote,
+  getLeadNotes,
+  toggleNotePin,
+  updateLeadNote,
+} from "./lead-notes.service";
+import { LeadWorkflowService } from "./lead-workflow.service";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -169,7 +175,10 @@ type StoredMatch = {
   caseIds: string[];
 };
 
-const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[], organizationId: string) => {
+const enrichMatchesWithCaseContext = async (
+  storedMatches: StoredMatch[],
+  organizationId: string,
+) => {
   if (storedMatches.length === 0) return [];
 
   const allCaseIds = [...new Set(storedMatches.flatMap((m) => m.caseIds))];
@@ -202,7 +211,12 @@ const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[], organi
       .from(cases)
       .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
       .leftJoin(clients, eq(clients.id, cases.clientId))
-      .where(and(inArray(cases.id, allCaseIds), eq(cases.organizationId, organizationId)));
+      .where(
+        and(
+          inArray(cases.id, allCaseIds),
+          eq(cases.organizationId, organizationId),
+        ),
+      );
 
     for (const row of caseRows) caseMap.set(row.id, row);
   }
@@ -218,7 +232,12 @@ const enrichMatchesWithCaseContext = async (storedMatches: StoredMatch[], organi
         caseId: adverseParties.caseId,
       })
       .from(adverseParties)
-      .where(and(inArray(adverseParties.id, adverseMatchIds), eq(adverseParties.organizationId, organizationId)));
+      .where(
+        and(
+          inArray(adverseParties.id, adverseMatchIds),
+          eq(adverseParties.organizationId, organizationId),
+        ),
+      );
 
     for (const ap of apRows) {
       adverseContextMap.set(ap.id, {
@@ -470,6 +489,11 @@ const createLead = async (
     metadata: { source: data.source },
   });
 
+  // Auto-initialize the intake pipeline tasks so the pipeline tab is
+  // immediately populated without requiring a manual init click.
+  const wfSvc = new LeadWorkflowService();
+  await wfSvc.initializePipelineSteps(lead.id, organizationId);
+
   return lead;
 };
 
@@ -558,10 +582,14 @@ const getAllLeads = async (
         const conflict = matchesById.get(r.conflictCheckId) as
           { matches: StoredMatch[]; status: string } | undefined;
         if (!conflict) return r;
-        const { matches } = conflict;
-        if (!matches || matches.length === 0) return r;
-        const conflictMatches = await enrichMatchesWithCaseContext(matches, organizationId);
-        return { ...r, conflictMatches, conflictCheckStatus: conflict.status };
+        const { matches, status } = conflict;
+        if (!matches || matches.length === 0)
+          return { ...r, conflictCheckStatus: status };
+        const conflictMatches = await enrichMatchesWithCaseContext(
+          matches,
+          organizationId,
+        );
+        return { ...r, conflictMatches, conflictCheckStatus: status };
       }),
     );
 
@@ -652,40 +680,39 @@ const getLeadById = async (id: string, organizationId: string) => {
 
   const [conflictCheck, questionnaireSend, consultation, feeAgreement] =
     await Promise.all([
-
-    lead.conflictCheckId
-      ? db
-          .select()
-          .from(conflictChecks)
-          .where(eq(conflictChecks.id, lead.conflictCheckId))
-          .limit(1)
-          .then(([r]) => r ?? null)
-      : Promise.resolve(null),
-    lead.questionnaireSendId
-      ? db
-          .select()
-          .from(questionnaireSends)
-          .where(eq(questionnaireSends.id, lead.questionnaireSendId))
-          .limit(1)
-          .then(([r]) => r ?? null)
-      : Promise.resolve(null),
-    lead.consultationId
-      ? db
-          .select()
-          .from(consultations)
-          .where(eq(consultations.id, lead.consultationId))
-          .limit(1)
-          .then(([r]) => r ?? null)
-      : Promise.resolve(null),
-    lead.feeAgreementId
-      ? db
-          .select()
-          .from(feeAgreements)
-          .where(eq(feeAgreements.id, lead.feeAgreementId))
-          .limit(1)
-          .then(([r]) => r ?? null)
-      : Promise.resolve(null),
-  ]);
+      lead.conflictCheckId
+        ? db
+            .select()
+            .from(conflictChecks)
+            .where(eq(conflictChecks.id, lead.conflictCheckId))
+            .limit(1)
+            .then(([r]) => r ?? null)
+        : Promise.resolve(null),
+      lead.questionnaireSendId
+        ? db
+            .select()
+            .from(questionnaireSends)
+            .where(eq(questionnaireSends.id, lead.questionnaireSendId))
+            .limit(1)
+            .then(([r]) => r ?? null)
+        : Promise.resolve(null),
+      lead.consultationId
+        ? db
+            .select()
+            .from(consultations)
+            .where(eq(consultations.id, lead.consultationId))
+            .limit(1)
+            .then(([r]) => r ?? null)
+        : Promise.resolve(null),
+      lead.feeAgreementId
+        ? db
+            .select()
+            .from(feeAgreements)
+            .where(eq(feeAgreements.id, lead.feeAgreementId))
+            .limit(1)
+            .then(([r]) => r ?? null)
+        : Promise.resolve(null),
+    ]);
 
   // Prior consultations for this lead (follow-ups / re-schedules / cancelled),
   // newest first. The current one (if any) lives on `consultation`; everything
@@ -760,7 +787,11 @@ const updateLead = async (
     await addLeadNote(
       id,
       organizationId,
-      { type: "general", content: data.notes.trim(), context: (data.noteContext as any) ?? "lead_update" },
+      {
+        type: "general",
+        content: data.notes.trim(),
+        context: (data.noteContext as any) ?? "lead_update",
+      },
       actorId,
     ).catch((err) => console.error("Failed to save lead note", err));
   }
@@ -824,7 +855,6 @@ const updateLead = async (
       // The changed fields with their before and after values, so the activity
       // trail can say what changed rather than only that something did.
       metadata: { changes },
-      tx,
     });
 
     const [row] = await tx
@@ -1055,7 +1085,6 @@ const logStageChange = async (data: {
   from: string;
   to: string;
   actorId?: string | null;
-  tx?: any;
 }) => {
   if (data.from === data.to) return;
 
@@ -1065,7 +1094,6 @@ const logStageChange = async (data: {
     type: "stage_changed",
     actorId: data.actorId,
     metadata: { from: data.from, to: data.to },
-    tx: data.tx,
   });
 };
 
@@ -1634,7 +1662,9 @@ const runConflictCheck = async (
     await db
       .update(leads)
       .set({ conflictCheckId: created.id, updatedAt: now })
-      .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)));
+      .where(
+        and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)),
+      );
   }
 
   await logLeadEvent({
@@ -1655,7 +1685,9 @@ const runConflictCheck = async (
         await db
           .update(leads)
           .set({ pipelineStage: "questionnaire", updatedAt: now })
-          .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)));
+          .where(
+            and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)),
+          );
 
         await logStageChange({
           organizationId,
@@ -1671,7 +1703,9 @@ const runConflictCheck = async (
         await db
           .update(leads)
           .set({ pipelineStage: "conflict_check", updatedAt: now })
-          .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)));
+          .where(
+            and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)),
+          );
 
         await logStageChange({
           organizationId,
@@ -1684,8 +1718,31 @@ const runConflictCheck = async (
     }
   }
 
-  const enrichedMatches = await enrichMatchesWithCaseContext(matches, organizationId);
+  const enrichedMatches = await enrichMatchesWithCaseContext(
+    matches,
+    organizationId,
+  );
   return { ...checkRecord, matches: enrichedMatches };
+};
+
+const getLeadLayout = async (leadId: string, organizationId: string) => {
+  const [lead] = await db
+    .select({
+      id: leads.id,
+      name: sql<string>`concat(${leads.firstName}, ' ', ${leads.lastName})`,
+      pipelineStage: leads.pipelineStage,
+      receivedAt: leads.createdAt,
+      situationSummary: leads.situationSummary,
+      intakeAdversePartyName: leads.intakeAdversePartyName,
+      intakeAdversePartyEmail: leads.intakeAdversePartyEmail,
+      convertedCaseId: leads.convertedCaseId,
+    })
+    .from(leads)
+    .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)))
+    .limit(1);
+
+  if (!lead) throw new NotFoundError("Lead not found");
+  return lead;
 };
 
 const getConflictCheck = async (leadId: string, organizationId: string) => {
@@ -1707,7 +1764,10 @@ const getConflictCheck = async (leadId: string, organizationId: string) => {
   if (!cc) return null;
 
   const storedMatches = (cc.matches ?? []) as StoredMatch[];
-  const enrichedMatches = await enrichMatchesWithCaseContext(storedMatches, organizationId);
+  const enrichedMatches = await enrichMatchesWithCaseContext(
+    storedMatches,
+    organizationId,
+  );
   return { ...cc, matches: enrichedMatches };
 };
 
@@ -1808,7 +1868,6 @@ const resolveConflictCheck = async (
           : "conflict_check_approved",
         actorId: staffId,
         metadata: { reviewNotes: data.reviewNotes, priorStatus: cc.status },
-        tx,
       });
 
       if (lead.pipelineStage === "conflict_check") {
@@ -1818,7 +1877,6 @@ const resolveConflictCheck = async (
           from: lead.pipelineStage,
           to: "questionnaire",
           actorId: staffId,
-          tx,
         });
       }
 
@@ -1849,7 +1907,6 @@ const resolveConflictCheck = async (
       type: "conflict_check_declined",
       actorId: staffId,
       metadata: { reviewNotes: data.reviewNotes },
-      tx,
     });
 
     return u;
@@ -2201,7 +2258,10 @@ const sendQuestionnaire = async (
 };
 
 /** Cancel a send's pending auto-reminder, if any (e.g. on submission). */
-export const cancelSendReminder = async (sendId: string, organizationId: string) => {
+export const cancelSendReminder = async (
+  sendId: string,
+  organizationId: string,
+) => {
   const [send] = await db
     .select()
     .from(questionnaireSends)
@@ -2371,7 +2431,7 @@ const initiateConsultation = async (
     // regardless of the firm's fee structure.
     const resolved =
       urgent || settings.feeStructure === "custom_per_case_type"
-        ? data.feeAmount ?? defaultAmount
+        ? (data.feeAmount ?? defaultAmount)
         : defaultAmount;
     if (resolved != null) {
       feeStatus = "unpaid";
@@ -2418,7 +2478,7 @@ const initiateConsultation = async (
       scheduledAt,
       isUrgent: urgent,
       isInstant: startNow,
-      paymentTiming: startNow ? data.paymentTiming ?? null : null,
+      paymentTiming: startNow ? (data.paymentTiming ?? null) : null,
       isEmergency: Boolean(startNow && data.isEmergency),
       emergencyMultiplier:
         startNow && data.isEmergency && data.emergencyMultiplier != null
@@ -2477,9 +2537,52 @@ const initiateConsultation = async (
         : { pipelineStage: "consultation" as const }),
       updatedAt: new Date(),
     })
-    .where(
-      and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)),
+    .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)));
+
+  // Update intake pipeline tasks for the consultation stage:
+  // 1. Mark "Schedule consultation" as completed
+  // 2. Assign "Conduct consultation" to the selected attorney (pending)
+  if (!data.parentConsultationId) {
+    const consultTasks = await db
+      .select()
+      .from(leadTasks)
+      .where(
+        and(
+          eq(leadTasks.leadId, leadId),
+          eq(leadTasks.organizationId, organizationId),
+          eq(leadTasks.pipelineStage, "consultation"),
+        ),
+      );
+
+    const scheduleTask = consultTasks.find(
+      (t) => t.title === "Schedule consultation",
     );
+    if (scheduleTask && scheduleTask.status !== "completed") {
+      await db
+        .update(leadTasks)
+        .set({
+          status: "completed",
+          completedById: scheduledById ?? null,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(leadTasks.id, scheduleTask.id));
+    }
+
+    const conductTask = consultTasks.find(
+      (t) => t.title === "Conduct consultation",
+    );
+    if (conductTask && data.leadAttorneyId) {
+      await db
+        .update(leadTasks)
+        .set({
+          assignedToId: data.leadAttorneyId,
+          assignedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(leadTasks.id, conductTask.id));
+    }
+  }
 
   // Resolve the attorney and any additional attendees to names: the trail has
   // to say who the consultation is *with*, and a uuid says nothing to a reader.
@@ -2646,7 +2749,20 @@ const getConsultation = async (leadId: string, organizationId: string) => {
     .leftJoin(staff, eq(consultationParticipants.staffId, staff.id))
     .where(eq(consultationParticipants.consultationId, consultation.id));
 
-  return { ...consultation, participants };
+  const consultationHistory = (
+    await db
+      .select()
+      .from(consultations)
+      .where(
+        and(
+          eq(consultations.leadId, leadId),
+          eq(consultations.organizationId, organizationId),
+        ),
+      )
+      .orderBy(desc(consultations.createdAt))
+  ).filter((c) => c.id !== consultation.id);
+
+  return { ...consultation, participants, consultationHistory };
 };
 
 const updateConsultation = async (
@@ -2715,7 +2831,10 @@ const updateConsultation = async (
       actorId,
       metadata: { consultationId: updated.id, outcome: data.outcome ?? null },
     });
-  } else if (data.scheduledAt && existing.scheduledAt?.getTime() !== data.scheduledAt.getTime()) {
+  } else if (
+    data.scheduledAt &&
+    existing.scheduledAt?.getTime() !== data.scheduledAt.getTime()
+  ) {
     await logLeadEvent({
       organizationId,
       leadId,
@@ -2800,7 +2919,9 @@ const updateConsultation = async (
       const [leadCaseType] = await db
         .select({ id: leads.caseTypeId })
         .from(leads)
-        .where(and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)))
+        .where(
+          and(eq(leads.id, leadId), eq(leads.organizationId, organizationId)),
+        )
         .limit(1);
       if (leadCaseType?.id) {
         await sendQuestionnaire(leadId, organizationId, undefined, {
@@ -3037,7 +3158,11 @@ const payConsultationFee = async (token: string) => {
       organizationId: consultation.organizationId,
       leadId: consultation.leadId,
       type: "payment_received",
-      metadata: { consultationId: consultation.id, amount: Number(consultation.feeAmount), instant: true },
+      metadata: {
+        consultationId: consultation.id,
+        amount: Number(consultation.feeAmount),
+        instant: true,
+      },
     });
 
     return { success: true };
@@ -3070,7 +3195,11 @@ const payConsultationFee = async (token: string) => {
       organizationId: consultation.organizationId,
       leadId: consultation.leadId,
       type: "payment_received",
-      metadata: { consultationId: consultation.id, amount: Number(consultation.feeAmount), urgent: true },
+      metadata: {
+        consultationId: consultation.id,
+        amount: Number(consultation.feeAmount),
+        urgent: true,
+      },
     });
 
     return { success: true };
@@ -3104,7 +3233,10 @@ const payConsultationFee = async (token: string) => {
     organizationId: consultation.organizationId,
     leadId: consultation.leadId,
     type: "payment_received",
-    metadata: { consultationId: consultation.id, amount: Number(consultation.feeAmount) },
+    metadata: {
+      consultationId: consultation.id,
+      amount: Number(consultation.feeAmount),
+    },
   });
 
   return { success: true };
@@ -3160,7 +3292,10 @@ const getConsultationRecipients = async (
     .where(
       and(
         eq(consultationParticipants.consultationId, consultation.id),
-        eq(consultationParticipants.organizationId, consultation.organizationId),
+        eq(
+          consultationParticipants.organizationId,
+          consultation.organizationId,
+        ),
       ),
     );
 
@@ -3872,7 +4007,12 @@ const markFeeAgreementReceived = async (
   // stays in the consultation stage, whose agreement card offers the
   // "Mark payment received" action.
   if (feeAgreementPaymentSatisfied(agreement.details)) {
-    await advanceLeadToCaseOpening(agreement.leadId, organizationId, now, actorId);
+    await advanceLeadToCaseOpening(
+      agreement.leadId,
+      organizationId,
+      now,
+      actorId,
+    );
   }
 
   return { received: true, agreementId, leadId: agreement.leadId };
@@ -3930,7 +4070,12 @@ const markFeeAgreementPaymentReceived = async (
 
   // Payment was the last missing gate condition once signed.
   if (agreement.status === "signed") {
-    await advanceLeadToCaseOpening(agreement.leadId, organizationId, now, actorId);
+    await advanceLeadToCaseOpening(
+      agreement.leadId,
+      organizationId,
+      now,
+      actorId,
+    );
   }
 
   return {
@@ -4298,16 +4443,14 @@ const openCase = async (
       );
     }
     if (!feeAgreementPaymentSatisfied(fa.details)) {
-      throw new ConflictError(
-        "Payment must be received before opening a case",
-      );
+      throw new ConflictError("Payment must be received before opening a case");
     }
   }
 
-  return db.transaction(async (tx) => {
+  return withTransaction(db, async () => {
     // 1. Create client entity
     const leadName = `${lead.firstName} ${lead.lastName}`;
-    const [client] = await tx
+    const [client] = await db
       .insert(clients)
       .values({
         organizationId,
@@ -4322,7 +4465,7 @@ const openCase = async (
       .returning();
 
     // 2. Create primary contact from lead data
-    await tx.insert(clientContacts).values({
+    await db.insert(clientContacts).values({
       organizationId,
       clientId: client.id,
       type: "primary_client",
@@ -4333,7 +4476,7 @@ const openCase = async (
     });
 
     // 3. Resolve practice area and case type from junction tables
-    const [leadPracticeArea] = await tx
+    const [leadPracticeArea] = await db
       .select({
         practiceAreaId: leads.practiceAreaId,
         caseTypeId: leads.caseTypeId,
@@ -4353,13 +4496,13 @@ const openCase = async (
       );
     }
 
-    const [practiceArea] = await tx
+    const [practiceArea] = await db
       .select({ id: practiceAreas.id })
       .from(practiceAreas)
       .where(eq(practiceAreas.id, resolvedPracticeAreaId))
       .limit(1);
 
-    const [caseType] = await tx
+    const [caseType] = await db
       .select()
       .from(practiceAreaCaseTypes)
       .where(eq(practiceAreaCaseTypes.id, resolvedCaseTypeId))
@@ -4373,7 +4516,7 @@ const openCase = async (
       caseType.code,
     );
 
-    const [newCase] = await tx
+    const [newCase] = await db
       .insert(cases)
       .values({
         organizationId,
@@ -4395,12 +4538,11 @@ const openCase = async (
       organizationId,
       caseId: newCase.id,
       practiceAreaId: resolvedPracticeAreaId,
-      tx,
     });
 
     // 5. Update lead with conversion data
     const now = new Date();
-    await tx
+    await db
       .update(leads)
       .set({
         clientId: client.id,
@@ -4418,7 +4560,6 @@ const openCase = async (
       from: lead.pipelineStage,
       to: "case_opening",
       actorId: creatorStaffId,
-      tx,
     });
 
     await logLeadEvent({
@@ -4431,17 +4572,16 @@ const openCase = async (
         caseNumber: newCase.caseNumber,
         clientId: client.id,
       },
-      tx,
     });
 
     // 6. Link questionnaire responses to the new client and case
     if (lead.questionnaireSendId) {
-      await tx
+      await db
         .update(questionnaireSends)
         .set({ clientId: client.id, caseId: newCase.id, updatedAt: now })
         .where(eq(questionnaireSends.id, lead.questionnaireSendId));
 
-      await tx
+      await db
         .update(questionnaireResponses)
         .set({ clientId: client.id, caseId: newCase.id, updatedAt: now })
         .where(
@@ -4460,11 +4600,11 @@ const openCase = async (
     // findings or resolved issues attached to the document during intake.
     // Copying would mint a second identity for the same bytes and strand all
     // of that at exactly the point the firm cares most.
-    await relinkLeadDocumentsToCase(tx, leadId, newCase.id);
+    await relinkLeadDocumentsToCase(leadId, newCase.id);
 
     // Requirements MOVE from the lead to the case (single row, identity and
     // satisfaction preserved) rather than being duplicated.
-    await tx
+    await db
       .update(scenarioDocumentRequirements)
       .set({ leadId: null, caseId: newCase.id, updatedAt: new Date() })
       .where(eq(scenarioDocumentRequirements.leadId, leadId));
@@ -4472,7 +4612,7 @@ const openCase = async (
     // Materialize the case type's requirement templates onto the new case
     // (idempotent; skips any already present from the lead move).
     if (newCase.caseTypeId) {
-      await materializeCaseTypeRequirements(tx, {
+      await materializeCaseTypeRequirements({
         organizationId,
         caseId: newCase.id,
         caseTypeId: newCase.caseTypeId,
@@ -4485,7 +4625,7 @@ const openCase = async (
     // 7. Notify
     // const assignedStaffId = data.assignedTeamId ?? lead.respondentId;
     //     if (assignedStaffId) {
-    //       const [assignedStaff] = await tx
+    //       const [assignedStaff] = await db
     //         .select({ email: user.email, firstName: staff.firstName })
     //         .from(staff)
     //         .leftJoin(user, eq(staff.userId, user.id))
@@ -4570,7 +4710,11 @@ const updateCaseWorkflowStep = async (
 
   if (!updated) throw new NotFoundError("Workflow step not found");
 
-  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId))).limit(1);
+  const [caseRow] = await db
+    .select({ leadId: cases.leadId })
+    .from(cases)
+    .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
+    .limit(1);
   if (caseRow?.leadId) {
     await logLeadEvent({
       organizationId,
@@ -4621,13 +4765,22 @@ const addAdverseParty = async (
     })
     .returning();
 
-  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId))).limit(1);
+  const [caseRow] = await db
+    .select({ leadId: cases.leadId })
+    .from(cases)
+    .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
+    .limit(1);
   if (caseRow?.leadId) {
     await logLeadEvent({
       organizationId,
       leadId: caseRow.leadId,
       type: "adverse_party_added",
-      metadata: { caseId, partyId: created.id, name: data.name, relationship: data.relationship },
+      metadata: {
+        caseId,
+        partyId: created.id,
+        name: data.name,
+        relationship: data.relationship,
+      },
     });
   }
 
@@ -4665,7 +4818,11 @@ const updateAdverseParty = async (
 
   if (!updated) throw new NotFoundError("Adverse party not found");
 
-  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId))).limit(1);
+  const [caseRow] = await db
+    .select({ leadId: cases.leadId })
+    .from(cases)
+    .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
+    .limit(1);
   if (caseRow?.leadId) {
     await logLeadEvent({
       organizationId,
@@ -4693,7 +4850,11 @@ const deleteAdverseParty = async (
       ),
     );
 
-  const [caseRow] = await db.select({ leadId: cases.leadId }).from(cases).where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId))).limit(1);
+  const [caseRow] = await db
+    .select({ leadId: cases.leadId })
+    .from(cases)
+    .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
+    .limit(1);
   if (caseRow?.leadId) {
     await logLeadEvent({
       organizationId,
@@ -4764,7 +4925,12 @@ const EVENT_TITLE_MAP: Record<string, string> = {
   reminder_sent: "Reminder sent",
 };
 
-const getLeadTimeline = async (leadId: string, organizationId: string, page = 1, limit = 20) => {
+const getLeadTimeline = async (
+  leadId: string,
+  organizationId: string,
+  page = 1,
+  limit = 20,
+) => {
   const [events, timelineEvents] = await Promise.all([
     db
       .select({
@@ -4807,8 +4973,8 @@ const getLeadTimeline = async (leadId: string, organizationId: string, page = 1,
   // Resolve staff names for both sources
   const allActorIds = [
     ...new Set([
-      ...events.map((e) => e.createdById).filter(Boolean) as string[],
-      ...timelineEvents.map((e) => e.createdById).filter(Boolean) as string[],
+      ...(events.map((e) => e.createdById).filter(Boolean) as string[]),
+      ...(timelineEvents.map((e) => e.createdById).filter(Boolean) as string[]),
     ]),
   ];
 
@@ -4865,7 +5031,10 @@ const getLeadTimeline = async (leadId: string, organizationId: string, page = 1,
   const offset = (page - 1) * limit;
   const data = merged.slice(offset, offset + limit);
 
-  return { data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+  return {
+    data,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  };
 };
 
 // ─── Audit Log ─────────────────────────────────────────────────────────────
@@ -4928,7 +5097,12 @@ const AUDIT_EVENT_TYPE_MAP: Record<string, string> = {
   reminder_sent: "REMINDER_SENT",
 };
 
-const getLeadAuditLog = async (leadId: string, organizationId: string, page = 1, limit = 20) => {
+const getLeadAuditLog = async (
+  leadId: string,
+  organizationId: string,
+  page = 1,
+  limit = 20,
+) => {
   const rows = await db
     .select({
       id: leadEvents.id,
@@ -4967,13 +5141,16 @@ const getLeadAuditLog = async (leadId: string, organizationId: string, page = 1,
           id: r.actorId,
           name: r.firstName
             ? `${r.firstName} ${r.lastName}`.trim()
-            : r.actorNameSnapshot ?? "Unknown",
+            : (r.actorNameSnapshot ?? "Unknown"),
         }
       : null,
     createdAt: r.createdAt,
   }));
 
-  return { data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+  return {
+    data,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  };
 };
 
 export class LeadsService {
@@ -5029,4 +5206,5 @@ export class LeadsService {
   deleteAdverseParty = deleteAdverseParty;
   getLeadTimeline = getLeadTimeline;
   getLeadAuditLog = getLeadAuditLog;
+  getLeadLayout = getLeadLayout;
 }

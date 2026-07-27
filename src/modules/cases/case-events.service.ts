@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import { caseEvents } from "../../db/schema/cases";
 import { staff } from "../../db/schema/staff";
@@ -13,8 +13,8 @@ import { getRequestContext } from "../../middleware/request-context";
  * is a new event, never an edit.
  */
 
-/** Well-known UUID for system-initiated events (no human actor). */
-export const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-000000000000";
+/** Well-known sentinel for system-initiated events (no human actor). */
+const SYSTEM_ACTOR_NAME = "System";
 
 type LogCaseEventInput = {
   organizationId: string;
@@ -33,13 +33,12 @@ type LogCaseEventInput = {
  * removed from the firm.
  */
 const actorNameFor = async (
-  conn: typeof db,
   actorId: string | null | undefined,
   organizationId: string,
 ): Promise<string | null> => {
   if (!actorId) return null;
 
-  const [row] = await conn
+  const [row] = await db
     .select({ firstName: staff.firstName, lastName: staff.lastName })
     .from(staff)
     .where(and(eq(staff.id, actorId), eq(staff.organizationId, organizationId)))
@@ -49,21 +48,22 @@ const actorNameFor = async (
 };
 
 export const logCaseEvent = async (data: LogCaseEventInput) => {
-  const conn = db;
   const ctx = getRequestContext();
   const hasActor = data.actorId != null && data.actorId !== "";
-  const effectiveActorId = hasActor ? data.actorId! : SYSTEM_ACTOR_ID;
+  const effectiveActorId = hasActor ? data.actorId! : null;
 
   let actorNameSnapshot = data.actorNameSnapshot ?? null;
   if (!actorNameSnapshot) {
     if (hasActor) {
-      actorNameSnapshot = await actorNameFor(conn, effectiveActorId, data.organizationId);
+      actorNameSnapshot = await actorNameFor(
+        effectiveActorId!,
+        data.organizationId,
+      );
     } else {
-      actorNameSnapshot = "System";
+      actorNameSnapshot = SYSTEM_ACTOR_NAME;
     }
   }
-
-  await conn.insert(caseEvents).values({
+  await db.insert(caseEvents).values({
     organizationId: data.organizationId,
     caseId: data.caseId,
     eventType: data.eventType as any,
@@ -147,7 +147,12 @@ export const getCaseActivityPaginated = async (params: {
   const [{ count }] = await db
     .select({ count: sql<number>`COUNT(*)::int` })
     .from(caseEvents)
-    .where(and(eq(caseEvents.caseId, params.caseId), eq(caseEvents.organizationId, params.organizationId)));
+    .where(
+      and(
+        eq(caseEvents.caseId, params.caseId),
+        eq(caseEvents.organizationId, params.organizationId),
+      ),
+    );
 
   const rows = await db
     .select({
@@ -165,7 +170,12 @@ export const getCaseActivityPaginated = async (params: {
     })
     .from(caseEvents)
     .leftJoin(staff, eq(caseEvents.actorId, staff.id))
-    .where(and(eq(caseEvents.caseId, params.caseId), eq(caseEvents.organizationId, params.organizationId)))
+    .where(
+      and(
+        eq(caseEvents.caseId, params.caseId),
+        eq(caseEvents.organizationId, params.organizationId),
+      ),
+    )
     .orderBy(desc(caseEvents.createdAt))
     .limit(limit)
     .offset(offset);
