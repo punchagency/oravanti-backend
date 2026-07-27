@@ -64,6 +64,17 @@ export class CaseReviewController {
     });
   };
 
+  runAction = async (req: Request, res: Response) => {
+    const { organizationId, staffId } = getRequestContext();
+    const result = await this.svc.runAction(
+      organizationId!,
+      req.params.id as string,
+      req.params.actionKey as string,
+      staffId ?? undefined,
+    );
+    sendSuccess(res, result, "Action performed");
+  };
+
   getIssueById = async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     const issue = await this.svc.getIssueById(

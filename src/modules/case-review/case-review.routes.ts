@@ -11,6 +11,7 @@ import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { validateRequest } from "../../middleware/validate.middleware";
 import { CaseReviewController } from "./case-review.controller";
 import {
+  actionParamsSchema,
   listIssuesQuerySchema,
   paginationQuerySchema,
   resolutionLogQuerySchema,
@@ -72,6 +73,13 @@ export class CaseReviewRouter {
     // Declared after the static paths so "/issues/by-case" can never be
     // swallowed by the :id param route.
     this.router.get("/issues/:id", read, controller.getIssueById);
+
+    this.router.post(
+      "/issues/:id/actions/:actionKey",
+      resolve,
+      validateRequest({ params: actionParamsSchema }),
+      controller.runAction,
+    );
 
     this.router.patch(
       "/issues/:id/status",

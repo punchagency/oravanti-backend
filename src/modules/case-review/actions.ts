@@ -12,6 +12,7 @@
 
 export type ActionVariant = "primary" | "secondary";
 export type ActionKind = "mutation" | "navigate";
+export type ScenarioType = "lead" | "case";
 
 export type ActionDef = {
   key: string;
@@ -24,9 +25,19 @@ export type ActionDef = {
   pastLabel: string;
   variant: ActionVariant;
   kind: ActionKind;
+  /**
+   * Which matter types this action can actually run against. The dispatch
+   * targets are not uniform — email works for leads and cases, calendar events
+   * are case-scoped, and tasks are lead-scoped — so an action is only offered
+   * where its effect can genuinely be performed. This is what keeps the UI from
+   * showing a button that would silently do nothing.
+   */
+  scenarios: ScenarioType[];
   /** Where a `navigate` action points, relative to the issue's scenario. */
   target?: "case" | "document";
 };
+
+const BOTH: ScenarioType[] = ["lead", "case"];
 
 const A = (def: ActionDef) => def;
 
@@ -38,6 +49,7 @@ const REQUEST_REUPLOAD = A({
   pastLabel: "Re-upload requested",
   variant: "primary",
   kind: "mutation",
+  scenarios: BOTH,
 });
 
 const SEND_CLIENT_REMINDER = A({
@@ -46,6 +58,7 @@ const SEND_CLIENT_REMINDER = A({
   pastLabel: "Reminder sent",
   variant: "primary",
   kind: "mutation",
+  scenarios: BOTH,
 });
 
 const SEND_URGENT_REMINDER = A({
@@ -54,6 +67,7 @@ const SEND_URGENT_REMINDER = A({
   pastLabel: "Urgent reminder sent",
   variant: "primary",
   kind: "mutation",
+  scenarios: BOTH,
 });
 
 const ESCALATE_TO_ATTORNEY = A({
@@ -62,6 +76,7 @@ const ESCALATE_TO_ATTORNEY = A({
   pastLabel: "Escalated to attorney",
   variant: "secondary",
   kind: "mutation",
+  scenarios: ["lead"],
 });
 
 const ASSIGN_TO_ATTORNEY = A({
@@ -70,6 +85,7 @@ const ASSIGN_TO_ATTORNEY = A({
   pastLabel: "Assigned to attorney",
   variant: "primary",
   kind: "mutation",
+  scenarios: ["lead"],
 });
 
 const FLAG_FOR_ATTORNEY = A({
@@ -78,6 +94,7 @@ const FLAG_FOR_ATTORNEY = A({
   pastLabel: "Flagged for attorney",
   variant: "secondary",
   kind: "mutation",
+  scenarios: ["lead"],
 });
 
 const REQUEST_POSTPONEMENT = A({
@@ -86,6 +103,7 @@ const REQUEST_POSTPONEMENT = A({
   pastLabel: "Postponement requested",
   variant: "secondary",
   kind: "mutation",
+  scenarios: ["lead"],
 });
 
 const SET_CALENDAR_ALERT = A({
@@ -94,15 +112,13 @@ const SET_CALENDAR_ALERT = A({
   pastLabel: "Calendar alert set",
   variant: "secondary",
   kind: "mutation",
+  scenarios: ["case"],
 });
 
-const MARK_AS_FILED = A({
-  key: "mark_as_filed",
-  label: "Mark as filed",
-  pastLabel: "Marked as filed",
-  variant: "primary",
-  kind: "mutation",
-});
+// "Mark as filed" is intentionally absent: the documents schema has no filed
+// state (status is active / archived / deleted), so there is nothing to write.
+// It returns once a filing field exists — see the filing_not_marked_submitted
+// entry in the registry.
 
 const VIEW_CASE = A({
   key: "view_case",
@@ -110,6 +126,7 @@ const VIEW_CASE = A({
   pastLabel: "Case opened",
   variant: "secondary",
   kind: "navigate",
+  scenarios: BOTH,
   target: "case",
 });
 
@@ -119,6 +136,7 @@ const VIEW_DOCUMENT = A({
   pastLabel: "Document opened",
   variant: "secondary",
   kind: "navigate",
+  scenarios: BOTH,
   target: "document",
 });
 
@@ -131,7 +149,6 @@ export const ALL_ACTIONS: ActionDef[] = [
   FLAG_FOR_ATTORNEY,
   REQUEST_POSTPONEMENT,
   SET_CALENDAR_ALERT,
-  MARK_AS_FILED,
   VIEW_CASE,
   VIEW_DOCUMENT,
 ];
@@ -161,7 +178,8 @@ const REGISTRY: Record<string, ActionDef[]> = {
     SET_CALENDAR_ALERT,
     VIEW_CASE,
   ],
-  filing_not_marked_submitted: [MARK_AS_FILED, VIEW_DOCUMENT, VIEW_CASE],
+  // Would carry MARK_AS_FILED once documents have a filed state.
+  filing_not_marked_submitted: [VIEW_DOCUMENT, VIEW_CASE],
   field_conflict_across_documents: [
     REQUEST_REUPLOAD,
     FLAG_FOR_ATTORNEY,
@@ -177,14 +195,27 @@ const REGISTRY: Record<string, ActionDef[]> = {
 };
 
 /**
- * Actions for an issue type. An unrecognised type still gets "View case" so a
- * rule added ahead of its registry entry is never a dead end.
+ * Actions for an issue on a matter of `scenarioType`.
+ *
+ * Filtered to actions whose effect can actually run against that matter type —
+ * a lead issue is not offered "Set calendar alert" (calendar events are
+ * case-scoped) and a case issue is not offered the attorney-task actions (tasks
+ * are lead-scoped). An unrecognised issue type still gets "View case" so a rule
+ * added ahead of its registry entry is never a dead end.
  */
-export const actionsFor = (issueType: string): ActionDef[] =>
-  REGISTRY[issueType] ?? [VIEW_CASE];
+export const actionsFor = (
+  issueType: string,
+  scenarioType: ScenarioType,
+): ActionDef[] =>
+  (REGISTRY[issueType] ?? [VIEW_CASE]).filter((a) =>
+    a.scenarios.includes(scenarioType),
+  );
 
-export const isActionAllowed = (issueType: string, key: string): boolean =>
-  actionsFor(issueType).some((a) => a.key === key);
+export const isActionAllowed = (
+  issueType: string,
+  scenarioType: ScenarioType,
+  key: string,
+): boolean => actionsFor(issueType, scenarioType).some((a) => a.key === key);
 
 export const findAction = (key: string): ActionDef | undefined => BY_KEY.get(key);
 

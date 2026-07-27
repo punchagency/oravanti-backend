@@ -34,3 +34,8 @@ export const updateConfigBodySchema = z
   .refine((v) => Object.keys(v).length > 0, {
     message: "At least one setting is required",
   });
+
+export const actionParamsSchema = z.object({
+  id: z.string().uuid(),
+  actionKey: z.string().min(1).max(64),
+});

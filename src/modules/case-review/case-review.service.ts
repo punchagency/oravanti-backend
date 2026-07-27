@@ -17,14 +17,20 @@ import {
 } from "../../db/schema/documents";
 import { leads } from "../../db/schema/leads";
 import { staff } from "../../db/schema/staff";
-import { NotFoundError } from "../../utils/error/app-error";
+import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import {
   buildPaginatedResponse,
   getPaginationOffset,
 } from "../../utils/pagination";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { getFirmLanguage } from "../settings/consultation/consultation-settings.service";
-import { actionLabel, actionsFor } from "./actions";
+import { actionLabel, actionsFor, findAction, isActionAllowed } from "./actions";
+import {
+  defaultActionDeps,
+  dispatchAction,
+  loadIssueForAction,
+  type ActionDeps,
+} from "./action-dispatch";
 import { issueCategory, renderIssue, severityBadge } from "./render";
 
 const CRITICAL_SEVERITIES = ["critical", "high"] as const;
@@ -142,7 +148,7 @@ const presentIssue = (row: IssueRow & IssueJoins, language: string) => {
     status: row.status,
     ...prose,
     affectedField: row.affectedField,
-    actions: actionsFor(row.issueType),
+    actions: actionsFor(row.issueType, row.leadId ? "lead" : "case"),
     scenario: scenarioOf(row),
     client: row.clientId ? { id: row.clientId, name: row.clientName ?? "" } : null,
     caseTypeId: row.caseTypeId ?? null,
@@ -687,6 +693,79 @@ export class CaseReviewService {
       ...presentIssue(flattenIssueRow(row), language),
       documents: docs,
       events,
+    };
+  };
+
+  // ── Contextual actions ──────────────────────────────────────────────────────
+
+  /**
+   * Run a contextual action against an issue: check it is one the issue offers,
+   * perform its effect, then record a `case_issue_events` row carrying the
+   * action key (what the resolution log reads) and move the issue to
+   * `under_review` so a mutation shows up as being worked.
+   *
+   * Navigate actions return where to go and change nothing.
+   */
+  runAction = async (
+    organizationId: string,
+    id: string,
+    actionKey: string,
+    staffId: string | undefined,
+    deps: ActionDeps = defaultActionDeps,
+  ) => {
+    const issue = await loadIssueForAction(organizationId, id);
+    if (!issue) throw new NotFoundError("Issue not found");
+
+    const scenarioType: "lead" | "case" = issue.leadId ? "lead" : "case";
+    if (!isActionAllowed(issue.issueType, scenarioType, actionKey)) {
+      throw new BadRequestError(
+        `Action '${actionKey}' is not available for this issue`,
+      );
+    }
+    const action = findAction(actionKey)!;
+
+    const result = await dispatchAction(deps, issue, action, staffId);
+
+    if (result.kind === "navigate") {
+      return result;
+    }
+
+    // Record the action and mark the issue as being worked. A terminal issue
+    // (resolved / dismissed / superseded) is left as-is — acting on it should
+    // not silently reopen it.
+    const active = issue.status === "open" || issue.status === "under_review";
+    await db.transaction(async (tx) => {
+      if (active && issue.status !== "under_review") {
+        await tx
+          .update(caseIssues)
+          .set({ status: "under_review", updatedAt: new Date() })
+          .where(eq(caseIssues.id, id));
+      }
+      await tx.insert(caseIssueEvents).values({
+        issueId: id,
+        fromStatus: issue.status,
+        toStatus: active ? "under_review" : issue.status,
+        actorStaffId: staffId ?? null,
+        actionKey,
+      });
+    });
+
+    const language = await getFirmLanguage(organizationId);
+    const [refreshed] = await db
+      .select(ISSUE_SELECT)
+      .from(caseIssues)
+      .leftJoin(clients, eq(clients.id, caseIssues.clientId))
+      .leftJoin(cases, eq(cases.id, caseIssues.caseId))
+      .leftJoin(
+        practiceAreaCaseTypes,
+        eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+      )
+      .leftJoin(leads, eq(leads.id, caseIssues.leadId))
+      .where(eq(caseIssues.id, id));
+
+    return {
+      kind: "mutation" as const,
+      issue: presentIssue(flattenIssueRow(refreshed), language),
     };
   };
 

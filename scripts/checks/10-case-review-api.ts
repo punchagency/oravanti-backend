@@ -17,6 +17,8 @@ import {
   caseIssues,
 } from "../../src/db/schema/case-issues";
 import { scenarioDocumentRequirements } from "../../src/db/schema/document-requirements";
+import { calendarEvents } from "../../src/db/schema/calendar-events";
+import { leadTasks } from "../../src/db/schema/lead-tasks";
 import { CaseReviewService } from "../../src/modules/case-review/case-review.service";
 import {
   check,
@@ -512,6 +514,180 @@ const main = async () => {
         );
       });
     } finally {
+      await systemDb
+        .delete(caseIssues)
+        .where(eq(caseIssues.organizationId, fx.organizationId));
+    }
+  });
+
+  // ── contextual actions ──────────────────────────────────────────────────────
+  await withTempFixture({ docs: [], withCase: true }, async (fx) => {
+    const c = fx.case!;
+    const sent: { to: string; subject: string }[] = [];
+    const deps = {
+      sendEmail: async (o: { to: string; subject: string; html: string }) => {
+        sent.push({ to: o.to, subject: o.subject });
+      },
+    };
+
+    try {
+      section("actions — scenario-aware availability");
+
+      // A lead issue offers email + attorney task; a case issue offers calendar.
+      const leadIssue = await seedIssue(fx.organizationId, fx.leadId, {
+        issueType: "document_expiry_before_deadline",
+        templateKey: "document_expiry_before_deadline",
+        templateParams: { documentTitle: "Passport", deadline: "2026-06-22" },
+      });
+      const caseIssue = await seedIssue(fx.organizationId, fx.leadId, {
+        leadId: null,
+        caseId: c.caseId,
+        clientId: c.clientId,
+        issueType: "deadline_approaching_incomplete",
+        templateKey: "deadline_approaching_incomplete",
+        templateParams: { deadline: "2026-06-22" },
+      });
+
+      await withOrgContext(fx.organizationId, fx.userId, async () => {
+        const leadDetail = (await service.getIssueById(
+          fx.organizationId,
+          leadIssue.id,
+        )) as Record<string, unknown>;
+        const leadActions = (leadDetail.actions as { key: string }[]).map(
+          (a) => a.key,
+        );
+        check(
+          "a lead expiry issue offers the attorney-task action",
+          leadActions.includes("flag_for_attorney"),
+          leadActions,
+        );
+        check(
+          "it does not offer the case-only calendar action",
+          !leadActions.includes("set_calendar_alert"),
+          leadActions,
+        );
+
+        const caseDetail = (await service.getIssueById(
+          fx.organizationId,
+          caseIssue.id,
+        )) as Record<string, unknown>;
+        const caseActions = (caseDetail.actions as { key: string }[]).map(
+          (a) => a.key,
+        );
+        check(
+          "a case deadline issue offers the calendar action",
+          caseActions.includes("set_calendar_alert"),
+          caseActions,
+        );
+        check(
+          "it does not offer the lead-only attorney-task action",
+          !caseActions.includes("assign_to_attorney"),
+          caseActions,
+        );
+
+        section("actions — email dispatch (lead)");
+
+        const emailRes = (await service.runAction(
+          fx.organizationId,
+          leadIssue.id,
+          "request_reupload",
+          fx.staffId,
+          deps,
+        )) as Record<string, unknown>;
+        checkEqual("a mutation was reported", emailRes.kind, "mutation");
+        checkEqual("one email was sent", sent.length, 1);
+        check(
+          "it went to the lead's address",
+          sent[0]?.to.includes("lead-"),
+          sent[0]?.to,
+        );
+
+        const [afterEmail] = await systemDb
+          .select()
+          .from(caseIssues)
+          .where(eq(caseIssues.id, leadIssue.id));
+        checkEqual(
+          "the issue moved to under_review",
+          afterEmail?.status,
+          "under_review",
+        );
+
+        const emailEvents = await systemDb
+          .select()
+          .from(caseIssueEvents)
+          .where(eq(caseIssueEvents.issueId, leadIssue.id));
+        check(
+          "an event recorded the action key",
+          emailEvents.some((e) => e.actionKey === "request_reupload"),
+          emailEvents.map((e) => e.actionKey),
+        );
+
+        section("actions — task dispatch (lead)");
+
+        await service.runAction(
+          fx.organizationId,
+          leadIssue.id,
+          "flag_for_attorney",
+          fx.staffId,
+          deps,
+        );
+        const tasks = await systemDb
+          .select()
+          .from(leadTasks)
+          .where(eq(leadTasks.leadId, fx.leadId));
+        check("a lead task was created", tasks.length >= 1, tasks.length);
+
+        section("actions — calendar dispatch (case)");
+
+        await service.runAction(
+          fx.organizationId,
+          caseIssue.id,
+          "set_calendar_alert",
+          fx.staffId,
+          deps,
+        );
+        const events = await systemDb
+          .select()
+          .from(calendarEvents)
+          .where(eq(calendarEvents.caseId, c.caseId));
+        check("a calendar event was created", events.length >= 1, events.length);
+
+        section("actions — navigate performs no effect");
+
+        const nav = (await service.runAction(
+          fx.organizationId,
+          caseIssue.id,
+          "view_case",
+          fx.staffId,
+          deps,
+        )) as Record<string, unknown>;
+        checkEqual("navigate is reported as such", nav.kind, "navigate");
+        checkEqual("it targets the case", nav.target, "case");
+
+        section("actions — an illegal action is rejected");
+
+        let rejected = false;
+        try {
+          // Calendar alert is case-only; not valid on the lead issue.
+          await service.runAction(
+            fx.organizationId,
+            leadIssue.id,
+            "set_calendar_alert",
+            fx.staffId,
+            deps,
+          );
+        } catch {
+          rejected = true;
+        }
+        check("an action the issue does not offer is rejected", rejected);
+      });
+    } finally {
+      await systemDb
+        .delete(calendarEvents)
+        .where(eq(calendarEvents.organizationId, fx.organizationId));
+      await systemDb
+        .delete(leadTasks)
+        .where(eq(leadTasks.organizationId, fx.organizationId));
       await systemDb
         .delete(caseIssues)
         .where(eq(caseIssues.organizationId, fx.organizationId));
