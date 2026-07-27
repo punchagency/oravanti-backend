@@ -42,6 +42,7 @@ import {
   type ActionDeps,
 } from "./action-dispatch";
 import { issueCategory, renderIssue, severityBadge } from "./render";
+import { toCsv } from "../../utils/csv";
 
 const CRITICAL_SEVERITIES = ["critical", "high"] as const;
 const WARNING_SEVERITIES = ["medium", "low"] as const;
@@ -704,6 +705,64 @@ export class CaseReviewService {
       documents: docs,
       events,
     };
+  };
+
+  // ── Exports ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Upper bound on rows an export returns. Exports are a spreadsheet dump, not a
+   * data feed — a firm with more active issues than this has a bigger problem
+   * than pagination, and an unbounded query would risk the process.
+   */
+  private static readonly EXPORT_MAX = 5000;
+
+  /** The active issues list as CSV, honouring the same filters as `getIssues`. */
+  exportIssues = async (
+    organizationId: string,
+    filters: { severity?: string; status?: string },
+  ) => {
+    const page = await this.getIssues(organizationId, {
+      ...filters,
+      page: 1,
+      limit: CaseReviewService.EXPORT_MAX,
+    });
+
+    const csv = toCsv(page.data, [
+      { header: "Severity", value: (i) => i.severity },
+      { header: "Category", value: (i) => i.category },
+      { header: "Title", value: (i) => i.title },
+      { header: "Status", value: (i) => i.status },
+      { header: "Client", value: (i) => i.client?.name ?? "" },
+      { header: "Matter", value: (i) => i.scenario.reference ?? "" },
+      { header: "Matter type", value: (i) => i.scenario.type },
+      { header: "Detected", value: (i) => i.detectedAt },
+    ]);
+
+    return { filename: "ai-review-issues.csv", csv };
+  };
+
+  /** The resolution log as CSV, honouring the same window as `getResolutionLog`. */
+  exportResolutionLog = async (
+    organizationId: string,
+    filters: { days?: number },
+  ) => {
+    const page = await this.getResolutionLog(organizationId, {
+      ...filters,
+      page: 1,
+      limit: CaseReviewService.EXPORT_MAX,
+    });
+
+    const csv = toCsv(page.data, [
+      { header: "Issue", value: (r) => r.title },
+      { header: "Client", value: (r) => r.client?.name ?? "" },
+      { header: "Matter", value: (r) => r.scenario.reference ?? "" },
+      { header: "Resolved by", value: (r) => r.resolvedBy?.name ?? "" },
+      { header: "Role", value: (r) => r.resolvedBy?.role ?? "" },
+      { header: "Resolved date", value: (r) => r.resolvedAt },
+      { header: "Action taken", value: (r) => r.actionTaken ?? "" },
+    ]);
+
+    return { filename: "ai-review-resolution-log.csv", csv };
   };
 
   // ── Contextual actions ──────────────────────────────────────────────────────

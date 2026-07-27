@@ -64,6 +64,35 @@ export class CaseReviewController {
     });
   };
 
+  exportIssues = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const { severity, status } = req.query;
+    const { filename, csv } = await this.svc.exportIssues(organizationId!, {
+      severity: severity as string | undefined,
+      status: status as string | undefined,
+    });
+    this.sendCsv(res, filename, csv);
+  };
+
+  exportResolutionLog = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const { days } = req.query;
+    const { filename, csv } = await this.svc.exportResolutionLog(
+      organizationId!,
+      { days: days ? Number(days) : undefined },
+    );
+    this.sendCsv(res, filename, csv);
+  };
+
+  private sendCsv = (res: Response, filename: string, csv: string) => {
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${filename}"`,
+    );
+    res.send(csv);
+  };
+
   runAction = async (req: Request, res: Response) => {
     const { organizationId, staffId } = getRequestContext();
     const result = await this.svc.runAction(

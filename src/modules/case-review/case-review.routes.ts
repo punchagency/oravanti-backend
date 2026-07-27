@@ -70,6 +70,20 @@ export class CaseReviewRouter {
       controller.getResolutionLog,
     );
 
+    this.router.get(
+      "/issues/export",
+      read,
+      validateRequest({ query: listIssuesQuerySchema }),
+      controller.exportIssues,
+    );
+
+    this.router.get(
+      "/resolution-log/export",
+      read,
+      validateRequest({ query: resolutionLogQuerySchema }),
+      controller.exportResolutionLog,
+    );
+
     // Declared after the static paths so "/issues/by-case" can never be
     // swallowed by the :id param route.
     this.router.get("/issues/:id", read, controller.getIssueById);

@@ -20,6 +20,7 @@ import { scenarioDocumentRequirements } from "../../src/db/schema/document-requi
 import { calendarEvents } from "../../src/db/schema/calendar-events";
 import { leadTasks } from "../../src/db/schema/lead-tasks";
 import { CaseReviewService } from "../../src/modules/case-review/case-review.service";
+import { toCsv } from "../../src/utils/csv";
 import {
   check,
   checkEqual,
@@ -758,6 +759,133 @@ const main = async () => {
       await systemDb
         .delete(leadTasks)
         .where(eq(leadTasks.organizationId, fx.organizationId));
+      await systemDb
+        .delete(caseIssues)
+        .where(eq(caseIssues.organizationId, fx.organizationId));
+    }
+  });
+
+  // ── CSV util ────────────────────────────────────────────────────────────────
+  section("csv — RFC 4180 quoting");
+
+  {
+    const csv = toCsv(
+      [
+        { a: "plain", b: "has,comma" },
+        { a: 'has"quote', b: "has\nnewline" },
+        { a: null, b: 42 },
+      ],
+      [
+        { header: "Col A", value: (r) => r.a },
+        { header: "Col B", value: (r) => r.b },
+      ],
+    );
+    // The newline inside field b is a bare \n, not \r\n, so it does not split a
+    // record — a correct reader keeps the quoted field whole.
+    const lines = csv.replace(/^﻿/, "").split("\r\n");
+    checkEqual("header row", lines[0], "Col A,Col B");
+    checkEqual("a comma forces quoting", lines[1], 'plain,"has,comma"');
+    checkEqual(
+      "embedded quotes are doubled and the field quoted",
+      lines[2],
+      '"has""quote","has\nnewline"',
+    );
+    checkEqual("null renders empty, numbers stringify", lines[3], ",42");
+    check("starts with a UTF-8 BOM for Excel", csv.charCodeAt(0) === 0xfeff);
+  }
+
+  // ── export endpoints ──────────────────────────────────────────────────────
+  await withTempFixture({ docs: [], withCase: true }, async (fx) => {
+    const c = fx.case!;
+    try {
+      await seedIssue(fx.organizationId, fx.leadId, {
+        leadId: null,
+        caseId: c.caseId,
+        clientId: c.clientId,
+        severity: "critical",
+      });
+
+      const resolvedAt = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const resolved = await seedIssue(fx.organizationId, fx.leadId, {
+        status: "resolved",
+        detectedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000),
+        resolvedAt,
+        resolvedById: fx.staffId,
+      });
+      await systemDb.insert(caseIssueEvents).values({
+        issueId: resolved.id,
+        fromStatus: "open",
+        toStatus: "resolved",
+        actorStaffId: fx.staffId,
+        actionKey: "send_client_reminder",
+      });
+
+      await withOrgContext(fx.organizationId, fx.userId, async () => {
+        section("export — issues CSV");
+
+        const issuesExport = await service.exportIssues(fx.organizationId, {});
+        checkEqual(
+          "filename is set",
+          issuesExport.filename,
+          "ai-review-issues.csv",
+        );
+        const issueLines = issuesExport.csv
+          .replace(/^﻿/, "")
+          .trim()
+          .split("\r\n");
+        checkEqual(
+          "header lists the issue columns",
+          issueLines[0],
+          "Severity,Category,Title,Status,Client,Matter,Matter type,Detected",
+        );
+        check(
+          "the active issue is a data row",
+          issueLines.length === 2,
+          issueLines.length,
+        );
+        check(
+          "the row carries the case number",
+          issueLines[1].includes(c.caseNumber),
+          issueLines[1],
+        );
+
+        section("export — resolution log CSV");
+
+        const logExport = await service.exportResolutionLog(
+          fx.organizationId,
+          {},
+        );
+        checkEqual(
+          "filename is set",
+          logExport.filename,
+          "ai-review-resolution-log.csv",
+        );
+        const logLines = logExport.csv
+          .replace(/^﻿/, "")
+          .trim()
+          .split("\r\n");
+        checkEqual(
+          "header lists the log columns",
+          logLines[0],
+          "Issue,Client,Matter,Resolved by,Role,Resolved date,Action taken",
+        );
+        check(
+          "only the resolved issue is exported",
+          logLines.length === 2,
+          logLines.length,
+        );
+        check(
+          "the resolver name is present",
+          logLines[1].includes(fx.staffName),
+          logLines[1],
+        );
+        check(
+          "the action taken renders past-tense",
+          logLines[1].includes("Reminder sent"),
+          logLines[1],
+        );
+      });
+    } finally {
       await systemDb
         .delete(caseIssues)
         .where(eq(caseIssues.organizationId, fx.organizationId));
