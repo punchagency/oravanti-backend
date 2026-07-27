@@ -12,7 +12,7 @@ import {
 } from "@clack/prompts";
 import { Command } from "commander";
 import { createHash, randomUUID } from "crypto";
-import { and, asc, desc, eq, ilike, inArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, like, or } from "drizzle-orm";
 import { env } from "./config/env";
 import { closeDb, db } from "./db/client";
 import { admins } from "./db/schema/admins";
@@ -27,6 +27,13 @@ import {
   teamMember,
   user,
 } from "./db/schema/auth-schema";
+import { aiScanJobs } from "./db/schema/ai-scan-jobs";
+import {
+  caseIssueDocuments,
+  caseIssueEvents,
+  caseIssues,
+} from "./db/schema/case-issues";
+import { scenarioDocumentRequirements } from "./db/schema/document-requirements";
 import { calendarEvents } from "./db/schema/calendar-events";
 import { cases } from "./db/schema/cases";
 import { certifications } from "./db/schema/cases";
@@ -631,41 +638,6 @@ const createCaseTypes = async (
       `Skipped existing case types: ${skipped.map((item) => item.code).join(", ")}`,
     );
   }
-};
-
-const createDefaultImmigrationCaseTypes = async (practiceAreaId?: string) => {
-  const area = practiceAreaId
-    ? await resolvePracticeArea(practiceAreaId)
-    : await resolvePracticeAreaByName("Immigration");
-
-  if (!area) {
-    note(
-      "Immigration practice area not found. Create it first or pass its id.",
-    );
-    return;
-  }
-
-  const [subcategory] = await db
-    .insert(practiceAreaSubcategories)
-    .values({
-      practiceAreaId: area.id,
-      code: "general",
-      name: "General",
-    })
-    .onConflictDoUpdate({
-      target: [
-        practiceAreaSubcategories.practiceAreaId,
-        practiceAreaSubcategories.code,
-      ],
-      set: { name: "General", updatedAt: new Date() },
-    })
-    .returning();
-
-  await createCaseTypes(
-    area.id,
-    subcategory.id,
-    DEFAULT_IMMIGRATION_CASE_TYPES,
-  );
 };
 
 const resolveCaseType = async (
@@ -2648,6 +2620,300 @@ const dropDemoData = async (organizationId?: string) => {
   printDemoDropResult(result);
 };
 
+// ── AI review demo data ──────────────────────────────────────────────────────
+// Seeds the case-review tables (issues, a completed scan run, document flags and
+// outstanding requirements) for an already-seeded firm, so the AI review
+// dashboard has something to show. Run after `demo-data seed`. Re-runnable: it
+// clears the firm's existing AI-review demo rows first.
+
+/** Issue templates → valid templateKey/templateParams so prose renders. */
+const AI_ISSUE_SPECS = [
+  {
+    issueType: "document_expiry_before_deadline",
+    severity: "critical" as const,
+    source: "rule" as const,
+    field: null as string | null,
+    linkDoc: true,
+    templateParams: {
+      documentTitle: "Passport",
+      expiryDate: "2026-12-15",
+      interviewDate: "2026-06-22",
+    },
+  },
+  {
+    issueType: "missing_required_document",
+    severity: "critical" as const,
+    source: "rule" as const,
+    field: null,
+    linkDoc: false,
+    templateParams: { label: "I-693 Medical exam", daysUntil: 3, dueDate: "2026-06-22" },
+  },
+  {
+    issueType: "deadline_approaching_incomplete",
+    severity: "high" as const,
+    source: "rule" as const,
+    field: null,
+    linkDoc: false,
+    templateParams: {
+      missingCount: 2,
+      deadline: "2026-07-15",
+      missingLabels: ["Affidavit of support", "I-864"],
+    },
+  },
+  {
+    issueType: "filing_not_marked_submitted",
+    severity: "medium" as const,
+    source: "rule" as const,
+    field: null,
+    linkDoc: true,
+    templateParams: { deadline: "2026-06-28" },
+  },
+  {
+    issueType: "field_conflict_across_documents",
+    severity: "critical" as const,
+    source: "ai" as const,
+    field: "date_of_birth",
+    linkDoc: true,
+    templateParams: {
+      field: "date_of_birth",
+      values: { Passport: "1990-04-17", "Birth certificate": "1991-04-17" },
+      explanation: "Dates of birth disagree across documents.",
+    },
+  },
+  {
+    issueType: "photo_mismatch",
+    severity: "medium" as const,
+    source: "ai" as const,
+    field: "photo",
+    linkDoc: true,
+    templateParams: {},
+  },
+  {
+    issueType: "document_authenticity_suspect",
+    severity: "medium" as const,
+    source: "ai" as const,
+    field: null,
+    linkDoc: true,
+    templateParams: { documentTitle: "Passport" },
+  },
+];
+
+/** Action keys used on resolved demo issues → nice "Action taken" pills. */
+const DEMO_ACTION_KEYS = [
+  "request_reupload",
+  "send_client_reminder",
+  "send_urgent_reminder",
+  "flag_for_attorney",
+  "set_calendar_alert",
+] as const;
+
+const seedAiReviewDemo = async (organizationId?: string) => {
+  assertDevelopment();
+
+  const firm = await resolveFirm(organizationId);
+  if (!firm) return;
+
+  note(
+    [
+      `This adds AI case-review demo data (issues, a scan run, document flags and`,
+      `outstanding requirements) for ${firm.firmName}.`,
+      `The firm's existing AI-review demo rows are replaced.`,
+    ].join("\n"),
+    "Development-only AI review demo seed",
+  );
+
+  const shouldSeed = abortIfCancelled(
+    await confirm({ message: "Seed AI review demo data?", initialValue: true }),
+  );
+  if (!shouldSeed) {
+    note("Nothing seeded.");
+    return;
+  }
+
+  const caseRows = await db
+    .select({ id: cases.id, clientId: cases.clientId })
+    .from(cases)
+    .where(eq(cases.organizationId, firm.id))
+    .limit(12);
+  const leadRows = await db
+    .select({ id: leads.id })
+    .from(leads)
+    .where(eq(leads.organizationId, firm.id))
+    .limit(8);
+  const staffRows = await db
+    .select({ id: staff.id })
+    .from(staff)
+    .where(eq(staff.organizationId, firm.id))
+    .limit(10);
+  const docLinks = await db
+    .select({ documentId: documentCaseLinks.documentId, caseId: documentCaseLinks.caseId })
+    .from(documentCaseLinks)
+    .innerJoin(cases, eq(cases.id, documentCaseLinks.caseId))
+    .where(eq(cases.organizationId, firm.id));
+
+  if (!caseRows.length && !leadRows.length) {
+    note("No cases or leads found for this firm. Run `demo-data seed` first.");
+    return;
+  }
+
+  const docsByCase = new Map<string, string[]>();
+  for (const link of docLinks) {
+    if (!link.caseId) continue;
+    const arr = docsByCase.get(link.caseId) ?? [];
+    arr.push(link.documentId);
+    docsByCase.set(link.caseId, arr);
+  }
+
+  type Scenario = { type: "case" | "lead"; id: string; clientId: string | null };
+  const scenarios: Scenario[] = [
+    ...caseRows.map((c) => ({ type: "case" as const, id: c.id, clientId: c.clientId })),
+    ...leadRows.map((l) => ({ type: "lead" as const, id: l.id, clientId: null })),
+  ];
+
+  // Idempotent: clear this firm's AI-review demo rows first. case_issues
+  // cascades to its documents and events; requirements are matched by the
+  // "Demo:" label so real requirements are untouched.
+  await db.delete(caseIssues).where(eq(caseIssues.organizationId, firm.id));
+  await db.delete(aiScanJobs).where(eq(aiScanJobs.organizationId, firm.id));
+  await db
+    .delete(scenarioDocumentRequirements)
+    .where(
+      and(
+        eq(scenarioDocumentRequirements.organizationId, firm.id),
+        like(scenarioDocumentRequirements.label, "Demo:%"),
+      ),
+    );
+
+  const now = Date.now();
+  const day = 24 * 60 * 60 * 1000;
+  const batchId = randomUUID();
+  let created = 0;
+  let resolvedCount = 0;
+  let flaggedDocs = 0;
+
+  const scanJobs: (typeof aiScanJobs.$inferInsert)[] = [];
+
+  await db.transaction(async (tx) => {
+    for (const [sIndex, scenario] of scenarios.entries()) {
+      // Leave roughly a quarter of matters clear.
+      const issueCount = sIndex % 4 === 0 ? 0 : (sIndex % 3) + 1;
+      let matterIssues = 0;
+
+      for (let i = 0; i < issueCount; i += 1) {
+        const spec = pick(AI_ISSUE_SPECS, sIndex + i);
+        const roll = (sIndex + i) % 5;
+        const status =
+          roll === 0 ? "resolved" : roll === 1 ? "under_review" : "open";
+        const isResolved = status === "resolved";
+        const actor = staffRows.length ? pick(staffRows, sIndex + i).id : null;
+
+        const [issue] = await tx
+          .insert(caseIssues)
+          .values({
+            organizationId: firm.id,
+            leadId: scenario.type === "lead" ? scenario.id : null,
+            caseId: scenario.type === "case" ? scenario.id : null,
+            clientId: scenario.clientId,
+            issueKey: `demo-${scenario.id}-${spec.issueType}-${i}`,
+            contentHash: hashSuffix(`${scenario.id}${spec.issueType}${i}`, 16),
+            issueType: spec.issueType,
+            source: spec.source,
+            ruleVersion: "1",
+            severity: spec.severity,
+            status,
+            affectedField: spec.field,
+            templateKey: spec.issueType,
+            templateParams: spec.templateParams,
+            detectedAt: new Date(now - (sIndex + i + 2) * day),
+            resolvedById: isResolved ? actor : null,
+            resolvedAt: isResolved ? new Date(now - ((sIndex % 20) + 1) * day) : null,
+          })
+          .returning();
+
+        created += 1;
+        matterIssues += 1;
+
+        // Detection event, plus a resolution event carrying the action.
+        await tx
+          .insert(caseIssueEvents)
+          .values({ issueId: issue.id, toStatus: "open" });
+        if (isResolved) {
+          await tx.insert(caseIssueEvents).values({
+            issueId: issue.id,
+            fromStatus: "open",
+            toStatus: "resolved",
+            actorStaffId: actor,
+            actionKey: pick(DEMO_ACTION_KEYS, sIndex + i),
+          });
+          resolvedCount += 1;
+        }
+
+        // Flag a document on the matter when one exists.
+        if (spec.linkDoc && scenario.type === "case") {
+          const docs = docsByCase.get(scenario.id);
+          if (docs?.length) {
+            await tx.insert(caseIssueDocuments).values({
+              issueId: issue.id,
+              documentId: pick(docs, i),
+              role: "subject",
+            });
+            flaggedDocs += 1;
+          }
+        }
+      }
+
+      // Every matter is part of the one scan run.
+      scanJobs.push({
+        organizationId: firm.id,
+        leadId: scenario.type === "lead" ? scenario.id : null,
+        caseId: scenario.type === "case" ? scenario.id : null,
+        status: "complete",
+        trigger: "full_scan",
+        batchId,
+        documentCount:
+          scenario.type === "case" ? (docsByCase.get(scenario.id)?.length ?? 0) : 0,
+        issuesFound: matterIssues,
+        startedAt: new Date(now - 5 * 60 * 1000),
+        completedAt: new Date(now - 2 * 60 * 1000),
+      });
+    }
+
+    // A few outstanding required documents drive the "Missing" rows in By
+    // document (they have no document row to join to).
+    const reqLabels = [
+      "Demo: I-864 Affidavit of support",
+      "Demo: I-693 Medical exam",
+      "Demo: Passport biographic page",
+    ];
+    let requirements = 0;
+    for (const [i, scenario] of scenarios.slice(0, 4).entries()) {
+      await tx.insert(scenarioDocumentRequirements).values({
+        organizationId: firm.id,
+        leadId: scenario.type === "lead" ? scenario.id : null,
+        caseId: scenario.type === "case" ? scenario.id : null,
+        label: pick(reqLabels, i),
+        documentTypeSlug: "supporting",
+        isRequired: true,
+        source: "template",
+      });
+      requirements += 1;
+    }
+
+    if (scanJobs.length) await tx.insert(aiScanJobs).values(scanJobs);
+
+    note(
+      [
+        `Seeded AI review demo data for ${firm.firmName}:`,
+        `- ${created} issue(s), ${resolvedCount} resolved`,
+        `- ${flaggedDocs} flagged document(s)`,
+        `- ${requirements} outstanding requirement(s)`,
+        `- ${scanJobs.length} matter(s) in one scan run`,
+      ].join("\n"),
+      "Done",
+    );
+  });
+};
+
 const editPracticeArea = async (id?: string, name?: string) => {
   const area = await resolvePracticeArea(id);
 
@@ -3478,10 +3744,6 @@ const runInteractive = async () => {
         { value: "delete", label: "Delete practice areas" },
         { value: "case-types-list", label: "Fetch case types" },
         { value: "case-types-create", label: "Create case types" },
-        {
-          value: "case-types-defaults",
-          label: "Create Immigration case types",
-        },
         { value: "case-types-edit", label: "Edit a case type" },
         { value: "case-types-delete", label: "Delete case types" },
         {
@@ -3497,6 +3759,10 @@ const runInteractive = async () => {
         {
           value: "demo-data-drop",
           label: "Drop demo data for an organization",
+        },
+        {
+          value: "demo-data-ai-review",
+          label: "Seed AI case-review demo data for an organization",
         },
         {
           value: "seed-staff-teams",
@@ -3561,10 +3827,6 @@ const runInteractive = async () => {
         }
       }
 
-      if (action === "case-types-defaults") {
-        await createDefaultImmigrationCaseTypes();
-      }
-
       if (action === "case-types-edit") {
         await editCaseType();
       }
@@ -3587,6 +3849,10 @@ const runInteractive = async () => {
 
       if (action === "demo-data-drop") {
         await dropDemoData();
+      }
+
+      if (action === "demo-data-ai-review") {
+        await seedAiReviewDemo();
       }
 
       if (action === "browse-cases") {
@@ -3718,14 +3984,6 @@ caseTypesCommand
   );
 
 caseTypesCommand
-  .command("add-immigration-defaults")
-  .description(
-    "Add the existing immigration case types to Immigration or a practice area id",
-  )
-  .argument("[practiceAreaId]", "Practice area id")
-  .action(createDefaultImmigrationCaseTypes);
-
-caseTypesCommand
   .command("edit")
   .description("Edit a case type")
   .argument("[practiceAreaId]", "Practice area id")
@@ -3760,6 +4018,12 @@ demoDataCommand
   .description("Select an organization and delete tenant-scoped demo data")
   .argument("[organizationId]", "Organization id")
   .action(dropDemoData);
+
+demoDataCommand
+  .command("seed-ai-review")
+  .description("Seed AI case-review demo data (issues, scan run, flags) for a firm")
+  .argument("[organizationId]", "Organization id")
+  .action(seedAiReviewDemo);
 
 const casesCommand = program
   .command("cases")

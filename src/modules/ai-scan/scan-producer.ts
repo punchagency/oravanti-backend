@@ -21,6 +21,8 @@ export type EnqueueScenarioScanParams = {
   requestedByStaffId?: string;
   /** Override the debounce window (0 for immediate — e.g. a manual re-run). */
   debounceMs?: number;
+  /** Set by a full scan so its fan-out jobs can be counted as one run. */
+  batchId?: string;
 };
 
 export type EnqueueScenarioScanResult = {
@@ -67,6 +69,7 @@ export const enqueueScenarioScan = async (
     trigger,
     requestedByStaffId,
     debounceMs = DEFAULT_DEBOUNCE_MS,
+    batchId,
   } = params;
 
   // 1. Coalesce: already scanning this scenario?
@@ -95,6 +98,7 @@ export const enqueueScenarioScan = async (
       status: "queued",
       trigger,
       requestedByStaffId: requestedByStaffId ?? null,
+      batchId: batchId ?? null,
       documentCount: built.documentCount,
       cachedCount: built.cachedCount,
       runMetadata: {
@@ -129,6 +133,8 @@ const FULL_SCAN_SPACING_MS = 1500;
 const MAX_FULL_SCAN_DELAY_MS = 20 * 60 * 1000; // 20 min
 
 export type FullScanResult = {
+  /** Shared id for the jobs this run fanned out into. */
+  batchId?: string;
   scenarios: number;
   enqueued: number;
   coalesced: number;
@@ -188,6 +194,11 @@ export const enqueueFullScan = async (
     skipped: 0,
   };
 
+  // One id shared by every job this scan fans out into, so the dashboard can
+  // report what "the last scan" actually covered.
+  const batchId = randomUUID();
+  result.batchId = batchId;
+
   let index = 0;
   for (const scenario of scenarios) {
     const r = await enqueueScenarioScan({
@@ -196,6 +207,7 @@ export const enqueueFullScan = async (
       scenarioId: scenario.id,
       trigger: "full_scan",
       requestedByStaffId,
+      batchId,
       debounceMs: Math.min(index * FULL_SCAN_SPACING_MS, MAX_FULL_SCAN_DELAY_MS),
     });
     if (r.coalesced) result.coalesced += 1;

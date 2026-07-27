@@ -173,6 +173,16 @@ export const caseIssueEvents = pgTable(
     toStatus: issueStatusEnum("to_status").notNull(),
     /** Null for system transitions (e.g. a rerun superseding an issue). */
     actorStaffId: uuid("actor_staff_id").references(() => staff.id),
+    /**
+     * Which contextual action produced this event ("request_reupload",
+     * "mark_as_filed", …), when one did.
+     *
+     * The resolution log renders this as its "Action taken" pill. Kept as a key
+     * rather than free text so the label is derived at read time in the firm's
+     * language, the same way issue prose is — `note` remains for anything a
+     * human typed.
+     */
+    actionKey: text("action_key"),
     note: text("note"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
