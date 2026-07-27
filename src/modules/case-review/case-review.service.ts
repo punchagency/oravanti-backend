@@ -17,14 +17,24 @@ import {
 } from "../../db/schema/documents";
 import { leads } from "../../db/schema/leads";
 import { staff } from "../../db/schema/staff";
-import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import {
+  BadRequestError,
+  NotFoundError,
+  NotImplementedError,
+} from "../../utils/error/app-error";
 import {
   buildPaginatedResponse,
   getPaginationOffset,
 } from "../../utils/pagination";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { getFirmLanguage } from "../settings/consultation/consultation-settings.service";
-import { actionLabel, actionsFor, findAction, isActionAllowed } from "./actions";
+import {
+  actionLabel,
+  findAction,
+  isActionAllowed,
+  isStubAction,
+  presentActions,
+} from "./actions";
 import {
   defaultActionDeps,
   dispatchAction,
@@ -148,7 +158,7 @@ const presentIssue = (row: IssueRow & IssueJoins, language: string) => {
     status: row.status,
     ...prose,
     affectedField: row.affectedField,
-    actions: actionsFor(row.issueType, row.leadId ? "lead" : "case"),
+    actions: presentActions(row.issueType, row.leadId ? "lead" : "case"),
     scenario: scenarioOf(row),
     client: row.clientId ? { id: row.clientId, name: row.clientName ?? "" } : null,
     caseTypeId: row.caseTypeId ?? null,
@@ -723,6 +733,14 @@ export class CaseReviewService {
       );
     }
     const action = findAction(actionKey)!;
+
+    // An offered-but-unbuilt action: the UI shows it disabled, but refuse it
+    // here too rather than record an event for something that did not happen.
+    if (isStubAction(action, scenarioType)) {
+      throw new NotImplementedError(
+        `'${action.label}' is not yet available for this matter type`,
+      );
+    }
 
     const result = await dispatchAction(deps, issue, action, staffId);
 

@@ -26,13 +26,21 @@ export type ActionDef = {
   variant: ActionVariant;
   kind: ActionKind;
   /**
-   * Which matter types this action can actually run against. The dispatch
-   * targets are not uniform — email works for leads and cases, calendar events
-   * are case-scoped, and tasks are lead-scoped — so an action is only offered
-   * where its effect can genuinely be performed. This is what keeps the UI from
-   * showing a button that would silently do nothing.
+   * Which matter types this action is offered on.
+   *
+   * The dispatch targets are not uniform — email works for leads and cases,
+   * calendar events are case-scoped, tasks are lead-scoped — so most actions
+   * are only offered where their effect can run. A few (see `stubScenarios`)
+   * are offered ahead of their implementation because the product wants the
+   * button visible.
    */
   scenarios: ScenarioType[];
+  /**
+   * The subset of `scenarios` where the effect is not built yet. The action is
+   * still offered there, but flagged `stub` so the UI can render it as
+   * "not yet available", and dispatch refuses to fake it.
+   */
+  stubScenarios?: ScenarioType[];
   /** Where a `navigate` action points, relative to the issue's scenario. */
   target?: "case" | "document";
 };
@@ -94,7 +102,10 @@ const FLAG_FOR_ATTORNEY = A({
   pastLabel: "Flagged for attorney",
   variant: "secondary",
   kind: "mutation",
-  scenarios: ["lead"],
+  // Implemented for leads (creates a lead task); offered on cases too but not
+  // yet wired, since there is no case task table.
+  scenarios: ["lead", "case"],
+  stubScenarios: ["case"],
 });
 
 const REQUEST_POSTPONEMENT = A({
@@ -115,10 +126,19 @@ const SET_CALENDAR_ALERT = A({
   scenarios: ["case"],
 });
 
-// "Mark as filed" is intentionally absent: the documents schema has no filed
-// state (status is active / archived / deleted), so there is nothing to write.
-// It returns once a filing field exists — see the filing_not_marked_submitted
-// entry in the registry.
+// Offered but a stub everywhere: the documents schema has no filed state
+// (status is active / archived / deleted), so there is nothing to write yet.
+// Ships visible per product decision; dispatch refuses it until a filing field
+// exists.
+const MARK_AS_FILED = A({
+  key: "mark_as_filed",
+  label: "Mark as filed",
+  pastLabel: "Marked as filed",
+  variant: "primary",
+  kind: "mutation",
+  scenarios: BOTH,
+  stubScenarios: BOTH,
+});
 
 const VIEW_CASE = A({
   key: "view_case",
@@ -149,6 +169,7 @@ export const ALL_ACTIONS: ActionDef[] = [
   FLAG_FOR_ATTORNEY,
   REQUEST_POSTPONEMENT,
   SET_CALENDAR_ALERT,
+  MARK_AS_FILED,
   VIEW_CASE,
   VIEW_DOCUMENT,
 ];
@@ -178,8 +199,7 @@ const REGISTRY: Record<string, ActionDef[]> = {
     SET_CALENDAR_ALERT,
     VIEW_CASE,
   ],
-  // Would carry MARK_AS_FILED once documents have a filed state.
-  filing_not_marked_submitted: [VIEW_DOCUMENT, VIEW_CASE],
+  filing_not_marked_submitted: [MARK_AS_FILED, VIEW_DOCUMENT, VIEW_CASE],
   field_conflict_across_documents: [
     REQUEST_REUPLOAD,
     FLAG_FOR_ATTORNEY,
@@ -217,7 +237,40 @@ export const isActionAllowed = (
   key: string,
 ): boolean => actionsFor(issueType, scenarioType).some((a) => a.key === key);
 
+/** True when this action is offered on the scenario but not yet implemented. */
+export const isStubAction = (
+  action: ActionDef,
+  scenarioType: ScenarioType,
+): boolean => action.stubScenarios?.includes(scenarioType) ?? false;
+
 export const findAction = (key: string): ActionDef | undefined => BY_KEY.get(key);
+
+/**
+ * The action shape sent to the client — button essentials plus a `stub` flag so
+ * the UI can render an unbuilt action as "not yet available". Deliberately omits
+ * `pastLabel`, `scenarios` and `stubScenarios`, which are server-side concerns.
+ */
+export type PresentedAction = {
+  key: string;
+  label: string;
+  variant: ActionVariant;
+  kind: ActionKind;
+  target?: "case" | "document";
+  stub: boolean;
+};
+
+export const presentActions = (
+  issueType: string,
+  scenarioType: ScenarioType,
+): PresentedAction[] =>
+  actionsFor(issueType, scenarioType).map((a) => ({
+    key: a.key,
+    label: a.label,
+    variant: a.variant,
+    kind: a.kind,
+    target: a.target,
+    stub: isStubAction(a, scenarioType),
+  }));
 
 /**
  * Label for the resolution log's "Action taken" pill.

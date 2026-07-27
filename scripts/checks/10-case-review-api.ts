@@ -553,36 +553,106 @@ const main = async () => {
           fx.organizationId,
           leadIssue.id,
         )) as Record<string, unknown>;
-        const leadActions = (leadDetail.actions as { key: string }[]).map(
-          (a) => a.key,
-        );
+        const leadActions = leadDetail.actions as {
+          key: string;
+          stub: boolean;
+        }[];
+        const leadFlag = leadActions.find((a) => a.key === "flag_for_attorney");
         check(
           "a lead expiry issue offers the attorney-task action",
-          leadActions.includes("flag_for_attorney"),
-          leadActions,
+          !!leadFlag,
+          leadActions.map((a) => a.key),
         );
+        checkEqual("it is implemented for leads (not a stub)", leadFlag?.stub, false);
         check(
           "it does not offer the case-only calendar action",
-          !leadActions.includes("set_calendar_alert"),
-          leadActions,
+          !leadActions.some((a) => a.key === "set_calendar_alert"),
+          leadActions.map((a) => a.key),
         );
 
         const caseDetail = (await service.getIssueById(
           fx.organizationId,
           caseIssue.id,
         )) as Record<string, unknown>;
-        const caseActions = (caseDetail.actions as { key: string }[]).map(
-          (a) => a.key,
-        );
+        const caseActions = caseDetail.actions as {
+          key: string;
+          stub: boolean;
+        }[];
         check(
           "a case deadline issue offers the calendar action",
-          caseActions.includes("set_calendar_alert"),
-          caseActions,
+          caseActions.some((a) => a.key === "set_calendar_alert"),
+          caseActions.map((a) => a.key),
         );
-        check(
-          "it does not offer the lead-only attorney-task action",
-          !caseActions.includes("assign_to_attorney"),
-          caseActions,
+
+        section("actions — stubs are offered but flagged");
+
+        // flag_for_attorney is offered on cases per product, but not wired.
+        const caseFlagIssue = await seedIssue(fx.organizationId, fx.leadId, {
+          leadId: null,
+          caseId: c.caseId,
+          clientId: c.clientId,
+          issueType: "photo_mismatch",
+          templateKey: "photo_mismatch",
+          templateParams: {},
+        });
+        const caseFlagDetail = (await service.getIssueById(
+          fx.organizationId,
+          caseFlagIssue.id,
+        )) as Record<string, unknown>;
+        const caseFlag = (
+          caseFlagDetail.actions as { key: string; stub: boolean }[]
+        ).find((a) => a.key === "flag_for_attorney");
+        check("flag_for_attorney is offered on a case issue", !!caseFlag, caseFlagDetail.actions);
+        checkEqual("but flagged as a stub on cases", caseFlag?.stub, true);
+
+        // mark_as_filed is offered on a filing issue but always a stub.
+        const filingIssue = await seedIssue(fx.organizationId, fx.leadId, {
+          leadId: null,
+          caseId: c.caseId,
+          clientId: c.clientId,
+          issueType: "filing_not_marked_submitted",
+          templateKey: "filing_not_marked_submitted",
+          templateParams: {},
+        });
+        const filingDetail = (await service.getIssueById(
+          fx.organizationId,
+          filingIssue.id,
+        )) as Record<string, unknown>;
+        const markFiled = (
+          filingDetail.actions as { key: string; stub: boolean }[]
+        ).find((a) => a.key === "mark_as_filed");
+        check("mark_as_filed is offered on a filing issue", !!markFiled, filingDetail.actions);
+        checkEqual("and flagged as a stub", markFiled?.stub, true);
+
+        section("actions — dispatching a stub is refused");
+
+        let stubRejected = false;
+        try {
+          await service.runAction(
+            fx.organizationId,
+            filingIssue.id,
+            "mark_as_filed",
+            fx.staffId,
+            deps,
+          );
+        } catch (err) {
+          stubRejected = true;
+          check(
+            "the refusal is a 501 Not Implemented",
+            (err as { statusCode?: number }).statusCode === 501,
+            (err as { statusCode?: number }).statusCode,
+          );
+        }
+        check("a stub action is not executed", stubRejected);
+
+        const stubEvents = await systemDb
+          .select()
+          .from(caseIssueEvents)
+          .where(eq(caseIssueEvents.issueId, filingIssue.id));
+        checkEqual(
+          "no event is recorded for a refused stub",
+          stubEvents.length,
+          0,
         );
 
         section("actions — email dispatch (lead)");
