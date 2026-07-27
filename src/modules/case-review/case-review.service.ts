@@ -41,7 +41,12 @@ import {
   loadIssueForAction,
   type ActionDeps,
 } from "./action-dispatch";
-import { issueCategory, renderIssue, severityBadge } from "./render";
+import {
+  documentFlagLabel,
+  issueCategory,
+  renderIssue,
+  severityBadge,
+} from "./render";
 import {
   renderReport,
   type ExportFormat,
@@ -537,9 +542,9 @@ export class CaseReviewService {
       },
       source: r.source,
       date: r.date,
-      // The short pill in the AI FLAG column — the issue's category, reused so
-      // this view and the dashboard cards cannot disagree about naming.
-      flag: issueCategory(r.issue_type),
+      issueType: r.issue_type,
+      // Short label for the AI FLAG column ("Expiry risk", "Missing", …).
+      flag: documentFlagLabel(r.issue_type),
       badge: severityBadge(r.severity),
     }));
 

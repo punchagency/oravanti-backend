@@ -170,3 +170,25 @@ const CATEGORIES: Record<string, string> = {
 
 export const issueCategory = (issueType: string): string =>
   CATEGORIES[issueType] ?? issueType.replace(/_/g, " ").toUpperCase();
+
+/**
+ * Short, friendly label for the "AI flag" column in the by-document view —
+ * "Expiry risk", "Missing", "Unfiled" — as drawn in the mockup, distinct from
+ * the uppercase card category.
+ */
+const DOCUMENT_FLAGS: Record<string, string> = {
+  missing_required_document: "Missing",
+  document_expiry_before_deadline: "Expiry risk",
+  deadline_approaching_incomplete: "Deadline risk",
+  filing_not_marked_submitted: "Unfiled",
+  field_conflict_across_documents: "Conflict",
+  field_conflict_with_scenario_record: "Conflict",
+  photo_mismatch: "Photo mismatch",
+  document_authenticity_suspect: "Authenticity",
+};
+
+export const documentFlagLabel = (issueType: string): string =>
+  DOCUMENT_FLAGS[issueType] ??
+  issueType
+    .replace(/_/g, " ")
+    .replace(/^\w/, (c) => c.toUpperCase());

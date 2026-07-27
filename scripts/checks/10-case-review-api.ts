@@ -423,10 +423,11 @@ const main = async () => {
           check("the flagged document is listed", !!flagged);
           checkEqual("it links back to its issue", flagged?.issueId, issue.id);
           checkEqual(
-            "its flag reuses the issue category",
+            "its flag is the friendly document label",
             flagged?.flag,
-            "DOCUMENT RISK",
+            "Expiry risk",
           );
+          checkEqual("it exposes the issue type", flagged?.issueType, "document_expiry_before_deadline");
           checkEqual("source defaults to firm", flagged?.source, "firm");
 
           check(
@@ -440,7 +441,7 @@ const main = async () => {
             missing?.source,
             "pending_client",
           );
-          checkEqual("its flag is MISSING DOCUMENT", missing?.flag, "MISSING DOCUMENT");
+          checkEqual("its flag is Missing", missing?.flag, "Missing");
           checkEqual("it has no date yet", missing?.date, null);
 
           const matter = missing?.matter as Record<string, unknown>;
