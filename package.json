@@ -57,6 +57,7 @@
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
+    "fast-csv": "^5.0.7",
     "geoip-lite": "^2.0.2",
     "googleapis": "^173.0.0",
     "imap-simple": "^5.1.0",

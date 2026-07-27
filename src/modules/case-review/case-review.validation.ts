@@ -39,3 +39,12 @@ export const actionParamsSchema = z.object({
   id: z.string().uuid(),
   actionKey: z.string().min(1).max(64),
 });
+
+/** Export accepts a format alongside the list/log filters. */
+export const exportFormatSchema = z.object({
+  format: z.enum(["csv", "pdf"]).optional(),
+});
+
+export const exportIssuesQuerySchema = listIssuesQuerySchema.merge(exportFormatSchema);
+export const exportResolutionLogQuerySchema =
+  resolutionLogQuerySchema.merge(exportFormatSchema);

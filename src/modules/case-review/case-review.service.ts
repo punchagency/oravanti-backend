@@ -42,7 +42,11 @@ import {
   type ActionDeps,
 } from "./action-dispatch";
 import { issueCategory, renderIssue, severityBadge } from "./render";
-import { toCsv } from "../../utils/csv";
+import {
+  renderReport,
+  type ExportFormat,
+  type ReportColumn,
+} from "../../utils/report-export";
 
 const CRITICAL_SEVERITIES = ["critical", "high"] as const;
 const WARNING_SEVERITIES = ["medium", "low"] as const;
@@ -716,10 +720,11 @@ export class CaseReviewService {
    */
   private static readonly EXPORT_MAX = 5000;
 
-  /** The active issues list as CSV, honouring the same filters as `getIssues`. */
+  /** The active issues list, honouring the same filters as `getIssues`. */
   exportIssues = async (
     organizationId: string,
     filters: { severity?: string; status?: string },
+    format: ExportFormat,
   ) => {
     const page = await this.getIssues(organizationId, {
       ...filters,
@@ -727,24 +732,35 @@ export class CaseReviewService {
       limit: CaseReviewService.EXPORT_MAX,
     });
 
-    const csv = toCsv(page.data, [
-      { header: "Severity", value: (i) => i.severity },
+    type Issue = (typeof page.data)[number];
+    const columns: ReportColumn<Issue>[] = [
+      { header: "Severity", value: (i) => i.severity, weight: 0.8 },
       { header: "Category", value: (i) => i.category },
-      { header: "Title", value: (i) => i.title },
+      { header: "Title", value: (i) => i.title, weight: 2.5 },
       { header: "Status", value: (i) => i.status },
-      { header: "Client", value: (i) => i.client?.name ?? "" },
+      { header: "Client", value: (i) => i.client?.name ?? "", weight: 1.4 },
       { header: "Matter", value: (i) => i.scenario.reference ?? "" },
-      { header: "Matter type", value: (i) => i.scenario.type },
+      { header: "Matter type", value: (i) => i.scenario.type, weight: 0.8 },
       { header: "Detected", value: (i) => i.detectedAt },
-    ]);
+    ];
 
-    return { filename: "ai-review-issues.csv", csv };
+    const report = await renderReport(format, page.data, columns, {
+      title: "AI case review — active issues",
+      subtitle: `${page.data.length} issue(s) · exported ${new Date().toISOString().slice(0, 10)}`,
+    });
+
+    return {
+      filename: `ai-review-issues.${report.extension}`,
+      mime: report.mime,
+      body: report.body,
+    };
   };
 
-  /** The resolution log as CSV, honouring the same window as `getResolutionLog`. */
+  /** The resolution log, honouring the same window as `getResolutionLog`. */
   exportResolutionLog = async (
     organizationId: string,
     filters: { days?: number },
+    format: ExportFormat,
   ) => {
     const page = await this.getResolutionLog(organizationId, {
       ...filters,
@@ -752,17 +768,27 @@ export class CaseReviewService {
       limit: CaseReviewService.EXPORT_MAX,
     });
 
-    const csv = toCsv(page.data, [
-      { header: "Issue", value: (r) => r.title },
-      { header: "Client", value: (r) => r.client?.name ?? "" },
+    type LogRow = (typeof page.data)[number];
+    const columns: ReportColumn<LogRow>[] = [
+      { header: "Issue", value: (r) => r.title, weight: 2.5 },
+      { header: "Client", value: (r) => r.client?.name ?? "", weight: 1.4 },
       { header: "Matter", value: (r) => r.scenario.reference ?? "" },
-      { header: "Resolved by", value: (r) => r.resolvedBy?.name ?? "" },
+      { header: "Resolved by", value: (r) => r.resolvedBy?.name ?? "", weight: 1.4 },
       { header: "Role", value: (r) => r.resolvedBy?.role ?? "" },
       { header: "Resolved date", value: (r) => r.resolvedAt },
-      { header: "Action taken", value: (r) => r.actionTaken ?? "" },
-    ]);
+      { header: "Action taken", value: (r) => r.actionTaken ?? "", weight: 1.4 },
+    ];
 
-    return { filename: "ai-review-resolution-log.csv", csv };
+    const report = await renderReport(format, page.data, columns, {
+      title: "AI case review — resolution log",
+      subtitle: `${page.summary.resolved} resolved · avg ${page.summary.averageResolutionDays ?? "—"} day(s)`,
+    });
+
+    return {
+      filename: `ai-review-resolution-log.${report.extension}`,
+      mime: report.mime,
+      body: report.body,
+    };
   };
 
   // ── Contextual actions ──────────────────────────────────────────────────────

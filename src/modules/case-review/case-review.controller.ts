@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { getRequestContext } from "../../middleware/request-context";
+import type { ExportFormat } from "../../utils/report-export";
 import { sendSuccess } from "../../utils/send-success";
 import { CaseReviewService } from "./case-review.service";
 
@@ -66,31 +67,39 @@ export class CaseReviewController {
 
   exportIssues = async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
-    const { severity, status } = req.query;
-    const { filename, csv } = await this.svc.exportIssues(organizationId!, {
-      severity: severity as string | undefined,
-      status: status as string | undefined,
-    });
-    this.sendCsv(res, filename, csv);
+    const { severity, status, format } = req.query;
+    const result = await this.svc.exportIssues(
+      organizationId!,
+      {
+        severity: severity as string | undefined,
+        status: status as string | undefined,
+      },
+      (format as ExportFormat) ?? "csv",
+    );
+    this.sendDownload(res, result);
   };
 
   exportResolutionLog = async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
-    const { days } = req.query;
-    const { filename, csv } = await this.svc.exportResolutionLog(
+    const { days, format } = req.query;
+    const result = await this.svc.exportResolutionLog(
       organizationId!,
       { days: days ? Number(days) : undefined },
+      (format as ExportFormat) ?? "csv",
     );
-    this.sendCsv(res, filename, csv);
+    this.sendDownload(res, result);
   };
 
-  private sendCsv = (res: Response, filename: string, csv: string) => {
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  private sendDownload = (
+    res: Response,
+    file: { filename: string; mime: string; body: string | Buffer },
+  ) => {
+    res.setHeader("Content-Type", file.mime);
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="${filename}"`,
+      `attachment; filename="${file.filename}"`,
     );
-    res.send(csv);
+    res.send(file.body);
   };
 
   runAction = async (req: Request, res: Response) => {

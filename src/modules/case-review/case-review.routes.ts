@@ -12,6 +12,8 @@ import { validateRequest } from "../../middleware/validate.middleware";
 import { CaseReviewController } from "./case-review.controller";
 import {
   actionParamsSchema,
+  exportIssuesQuerySchema,
+  exportResolutionLogQuerySchema,
   listIssuesQuerySchema,
   paginationQuerySchema,
   resolutionLogQuerySchema,
@@ -73,14 +75,14 @@ export class CaseReviewRouter {
     this.router.get(
       "/issues/export",
       read,
-      validateRequest({ query: listIssuesQuerySchema }),
+      validateRequest({ query: exportIssuesQuerySchema }),
       controller.exportIssues,
     );
 
     this.router.get(
       "/resolution-log/export",
       read,
-      validateRequest({ query: resolutionLogQuerySchema }),
+      validateRequest({ query: exportResolutionLogQuerySchema }),
       controller.exportResolutionLog,
     );
 

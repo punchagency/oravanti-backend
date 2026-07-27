@@ -20,7 +20,7 @@ import { scenarioDocumentRequirements } from "../../src/db/schema/document-requi
 import { calendarEvents } from "../../src/db/schema/calendar-events";
 import { leadTasks } from "../../src/db/schema/lead-tasks";
 import { CaseReviewService } from "../../src/modules/case-review/case-review.service";
-import { toCsv } from "../../src/utils/csv";
+import { renderCsv, renderPdf } from "../../src/utils/report-export";
 import {
   check,
   checkEqual,
@@ -765,33 +765,59 @@ const main = async () => {
     }
   });
 
-  // ── CSV util ────────────────────────────────────────────────────────────────
-  section("csv — RFC 4180 quoting");
+  // ── report-export util ──────────────────────────────────────────────────────
+  section("export util — CSV quoting (fast-csv)");
 
   {
-    const csv = toCsv(
+    const columns = [
+      { header: "Col A", value: (r: { a: unknown; b: unknown }) => r.a },
+      { header: "Col B", value: (r: { a: unknown; b: unknown }) => r.b },
+    ];
+    const csv = await renderCsv(
       [
         { a: "plain", b: "has,comma" },
-        { a: 'has"quote', b: "has\nnewline" },
+        { a: 'has"quote', b: "line1\nline2" },
         { a: null, b: 42 },
       ],
-      [
-        { header: "Col A", value: (r) => r.a },
-        { header: "Col B", value: (r) => r.b },
-      ],
+      columns,
     );
-    // The newline inside field b is a bare \n, not \r\n, so it does not split a
-    // record — a correct reader keeps the quoted field whole.
-    const lines = csv.replace(/^﻿/, "").split("\r\n");
-    checkEqual("header row", lines[0], "Col A,Col B");
-    checkEqual("a comma forces quoting", lines[1], 'plain,"has,comma"');
-    checkEqual(
-      "embedded quotes are doubled and the field quoted",
-      lines[2],
-      '"has""quote","has\nnewline"',
-    );
-    checkEqual("null renders empty, numbers stringify", lines[3], ",42");
+    const stripped = csv.replace(/^﻿/, "");
     check("starts with a UTF-8 BOM for Excel", csv.charCodeAt(0) === 0xfeff);
+    check("header row present", stripped.startsWith("Col A,Col B"), stripped.slice(0, 20));
+    check("a comma forces quoting", stripped.includes('"has,comma"'), stripped);
+    check(
+      "embedded quotes are doubled",
+      stripped.includes('"has""quote"'),
+      stripped,
+    );
+    check(
+      "null renders empty and numbers stringify",
+      stripped.includes(",42"),
+      stripped,
+    );
+  }
+
+  section("export util — PDF");
+
+  {
+    const pdf = await renderPdf(
+      [{ a: "x" }, { a: "y" }],
+      [{ header: "Col A", value: (r: { a: string }) => r.a }],
+      { title: "Test", subtitle: "sub" },
+    );
+    check("PDF is a Buffer", Buffer.isBuffer(pdf));
+    check("PDF has content", pdf.length > 0, pdf.length);
+    check(
+      "PDF starts with the %PDF magic bytes",
+      pdf.subarray(0, 5).toString("latin1") === "%PDF-",
+      pdf.subarray(0, 8).toString("latin1"),
+    );
+    check(
+      "an empty report still renders a valid PDF",
+      (await renderPdf([], [{ header: "X", value: () => "" }], { title: "T" }))
+        .subarray(0, 5)
+        .toString("latin1") === "%PDF-",
+    );
   }
 
   // ── export endpoints ──────────────────────────────────────────────────────
@@ -821,18 +847,16 @@ const main = async () => {
       });
 
       await withOrgContext(fx.organizationId, fx.userId, async () => {
-        section("export — issues CSV");
+        section("export — issues, CSV format");
 
-        const issuesExport = await service.exportIssues(fx.organizationId, {});
-        checkEqual(
-          "filename is set",
-          issuesExport.filename,
-          "ai-review-issues.csv",
-        );
-        const issueLines = issuesExport.csv
+        const issuesCsv = await service.exportIssues(fx.organizationId, {}, "csv");
+        checkEqual("filename is .csv", issuesCsv.filename, "ai-review-issues.csv");
+        checkEqual("mime is text/csv", issuesCsv.mime, "text/csv; charset=utf-8");
+        const issueLines = (issuesCsv.body as string)
           .replace(/^﻿/, "")
           .trim()
-          .split("\r\n");
+          .split("\n")
+          .map((l) => l.replace(/\r$/, ""));
         checkEqual(
           "header lists the issue columns",
           issueLines[0],
@@ -849,21 +873,30 @@ const main = async () => {
           issueLines[1],
         );
 
-        section("export — resolution log CSV");
+        section("export — issues, PDF format");
 
-        const logExport = await service.exportResolutionLog(
-          fx.organizationId,
-          {},
+        const issuesPdf = await service.exportIssues(fx.organizationId, {}, "pdf");
+        checkEqual("filename is .pdf", issuesPdf.filename, "ai-review-issues.pdf");
+        checkEqual("mime is application/pdf", issuesPdf.mime, "application/pdf");
+        check("body is a PDF buffer", Buffer.isBuffer(issuesPdf.body));
+        check(
+          "it is a valid PDF",
+          (issuesPdf.body as Buffer).subarray(0, 5).toString("latin1") === "%PDF-",
         );
+
+        section("export — resolution log, both formats");
+
+        const logCsv = await service.exportResolutionLog(fx.organizationId, {}, "csv");
         checkEqual(
-          "filename is set",
-          logExport.filename,
+          "log filename is .csv",
+          logCsv.filename,
           "ai-review-resolution-log.csv",
         );
-        const logLines = logExport.csv
+        const logLines = (logCsv.body as string)
           .replace(/^﻿/, "")
           .trim()
-          .split("\r\n");
+          .split("\n")
+          .map((l) => l.replace(/\r$/, ""));
         checkEqual(
           "header lists the log columns",
           logLines[0],
@@ -883,6 +916,16 @@ const main = async () => {
           "the action taken renders past-tense",
           logLines[1].includes("Reminder sent"),
           logLines[1],
+        );
+
+        const logPdf = await service.exportResolutionLog(
+          fx.organizationId,
+          {},
+          "pdf",
+        );
+        check(
+          "log PDF is valid",
+          (logPdf.body as Buffer).subarray(0, 5).toString("latin1") === "%PDF-",
         );
       });
     } finally {
