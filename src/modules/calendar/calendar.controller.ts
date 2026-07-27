@@ -44,19 +44,27 @@ export class CalendarController {
 
   createCalendarEvent = asyncWrap(async (req: Request, res: Response) => {
     const { staffId, organizationId } = getRequestContext();
+    const body = {
+      ...req.body,
+      startTime: new Date(req.body.startTime),
+      endTime: req.body.endTime ? new Date(req.body.endTime) : undefined,
+    };
     const result = await this.calendarService.createCalendarEvent(
       organizationId!,
-      req.body,
+      body,
     );
     sendSuccess(res, result, "Calendar event created successfully", 201);
   });
 
   updateCalendarEvent = asyncWrap(async (req: Request, res: Response) => {
     const { staffId, organizationId } = getRequestContext();
+    const body = { ...req.body };
+    if (body.startTime) body.startTime = new Date(body.startTime);
+    if (body.endTime) body.endTime = new Date(body.endTime);
     const result = await this.calendarService.updateCalendarEvent(
       req.params.id as string,
       organizationId!,
-      req.body,
+      body,
     );
     if (!result) {
       throw new NotFoundError("Event not found");
