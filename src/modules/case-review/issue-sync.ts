@@ -1,5 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../../db/client";
+import { withTransaction } from "../../db/transaction-context";
 import type { AiScanResultJob } from "../ai-scan/contract";
 import {
   caseIssueDocuments,
@@ -110,10 +111,10 @@ export const syncScenarioIssues = async (
   };
   const now = new Date();
 
-  await db.transaction(async (tx) => {
+  await withTransaction(db, async () => {
     // All existing issues for the scenario, any status — a resolved issue whose
     // key reappears unchanged must keep its resolution.
-    const existing = await tx
+    const existing = await db
       .select()
       .from(caseIssues)
       .where(and(eq(caseIssues.organizationId, params.organizationId), scenarioMatch));
@@ -127,7 +128,7 @@ export const syncScenarioIssues = async (
     const validDocs = new Set(
       referenced.length
         ? (
-            await tx
+            await db
               .select({ id: documents.id })
               .from(documents)
               .where(inArray(documents.id, referenced))
@@ -139,7 +140,7 @@ export const syncScenarioIssues = async (
       const ex = existingByKey.get(issueKey);
 
       if (!ex) {
-        const [inserted] = await tx
+        const [inserted] = await db
           .insert(caseIssues)
           .values({
             organizationId: params.organizationId,
@@ -160,7 +161,7 @@ export const syncScenarioIssues = async (
             detectedAt: now,
           })
           .returning({ id: caseIssues.id });
-        await tx.insert(caseIssueEvents).values({
+        await db.insert(caseIssueEvents).values({
           issueId: inserted.id,
           fromStatus: null,
           toStatus: "open",
@@ -171,7 +172,7 @@ export const syncScenarioIssues = async (
         const docRows = candidate.documentIds
           .filter((docId) => validDocs.has(docId))
           .map((docId) => ({ issueId: inserted.id, documentId: docId }));
-        if (docRows.length) await tx.insert(caseIssueDocuments).values(docRows);
+        if (docRows.length) await db.insert(caseIssueDocuments).values(docRows);
         summary.created += 1;
         continue;
       }
@@ -186,14 +187,14 @@ export const syncScenarioIssues = async (
 
       if (ex.contentHash === contentHash) {
         // Unchanged: refresh presentation only; never touch status/resolution.
-        await tx.update(caseIssues).set(common).where(eq(caseIssues.id, ex.id));
+        await db.update(caseIssues).set(common).where(eq(caseIssues.id, ex.id));
         summary.unchanged += 1;
         continue;
       }
 
       // Content changed: the prior resolution no longer applies.
       const reopening = TERMINAL.has(ex.status);
-      await tx
+      await db
         .update(caseIssues)
         .set({
           ...common,
@@ -210,7 +211,7 @@ export const syncScenarioIssues = async (
             : {}),
         })
         .where(eq(caseIssues.id, ex.id));
-      await tx.insert(caseIssueEvents).values({
+      await db.insert(caseIssueEvents).values({
         issueId: ex.id,
         fromStatus: ex.status,
         toStatus: reopening ? "open" : ex.status,
@@ -227,11 +228,11 @@ export const syncScenarioIssues = async (
       if (!includeScanRules && SCAN_DEPENDENT_ISSUE_TYPES.has(ex.issueType))
         continue;
       if (ex.status !== "open" && ex.status !== "under_review") continue;
-      await tx
+      await db
         .update(caseIssues)
         .set({ status: "superseded", supersededAt: now, updatedAt: now })
         .where(eq(caseIssues.id, ex.id));
-      await tx.insert(caseIssueEvents).values({
+      await db.insert(caseIssueEvents).values({
         issueId: ex.id,
         fromStatus: ex.status,
         toStatus: "superseded",
@@ -240,7 +241,7 @@ export const syncScenarioIssues = async (
       summary.superseded += 1;
     }
 
-    const activeRows = await tx
+    const activeRows = await db
       .select({ id: caseIssues.id })
       .from(caseIssues)
       .where(

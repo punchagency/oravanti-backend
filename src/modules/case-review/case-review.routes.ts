@@ -11,7 +11,12 @@ import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { validateRequest } from "../../middleware/validate.middleware";
 import { CaseReviewController } from "./case-review.controller";
 import {
+  actionParamsSchema,
+  exportIssuesQuerySchema,
+  exportResolutionLogQuerySchema,
   listIssuesQuerySchema,
+  paginationQuerySchema,
+  resolutionLogQuerySchema,
   updateConfigBodySchema,
   updateStatusBodySchema,
 } from "./case-review.validation";
@@ -46,7 +51,51 @@ export class CaseReviewRouter {
       controller.getIssues,
     );
 
+    this.router.get(
+      "/by-case",
+      read,
+      validateRequest({ query: paginationQuerySchema }),
+      controller.getByCase,
+    );
+
+    this.router.get(
+      "/by-document",
+      read,
+      validateRequest({ query: paginationQuerySchema }),
+      controller.getByDocument,
+    );
+
+    this.router.get(
+      "/resolution-log",
+      read,
+      validateRequest({ query: resolutionLogQuerySchema }),
+      controller.getResolutionLog,
+    );
+
+    this.router.get(
+      "/issues/export",
+      read,
+      validateRequest({ query: exportIssuesQuerySchema }),
+      controller.exportIssues,
+    );
+
+    this.router.get(
+      "/resolution-log/export",
+      read,
+      validateRequest({ query: exportResolutionLogQuerySchema }),
+      controller.exportResolutionLog,
+    );
+
+    // Declared after the static paths so "/issues/by-case" can never be
+    // swallowed by the :id param route.
     this.router.get("/issues/:id", read, controller.getIssueById);
+
+    this.router.post(
+      "/issues/:id/actions/:actionKey",
+      resolve,
+      validateRequest({ params: actionParamsSchema }),
+      controller.runAction,
+    );
 
     this.router.patch(
       "/issues/:id/status",

@@ -75,3 +75,9 @@ export class InternalServerError extends AppError {
     super(message, 500, "INTERNAL_SERVER_ERROR", details, false);
   }
 }
+
+export class NotImplementedError extends AppError {
+  constructor(message = "This feature is not yet available", details?: ErrorDetails) {
+    super(message, 501, "NOT_IMPLEMENTED", details);
+  }
+}

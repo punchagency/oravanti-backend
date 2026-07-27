@@ -62,6 +62,17 @@ export const aiScanJobs = pgTable(
     cachedCount: integer("cached_count").notNull().default(0),
     issuesFound: integer("issues_found").notNull().default(0),
 
+    /**
+     * Ties together the jobs a single full scan fans out into.
+     *
+     * A full scan enqueues one independent job per matter, so without this
+     * there is no way to say what "the last scan" covered — the dashboard's
+     * "N matters reviewed · N issues found" strip would have to guess from a
+     * time window. Null for jobs triggered by an upload or a single re-run,
+     * which are not part of a batch.
+     */
+    batchId: uuid("batch_id"),
+
     startedAt: timestamp("started_at"),
     completedAt: timestamp("completed_at"),
     error: text("error"),
@@ -85,6 +96,7 @@ export const aiScanJobs = pgTable(
       .on(table.caseId)
       .where(sql`${table.status} IN ('queued', 'running') AND ${table.caseId} IS NOT NULL`),
     index("ai_scan_jobs_organization_idx").on(table.organizationId),
+    index("ai_scan_jobs_batch_idx").on(table.batchId),
     index("ai_scan_jobs_status_idx").on(table.status),
     // Drives the reconciliation sweep for jobs stuck in `running`.
     index("ai_scan_jobs_started_at_idx").on(table.startedAt),

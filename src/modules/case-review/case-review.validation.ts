@@ -5,8 +5,20 @@ export const listIssuesQuerySchema = z.object({
   status: z
     .enum(["open", "under_review", "resolved", "dismissed", "superseded"])
     .optional(),
+  leadId: z.string().uuid().optional(),
+  caseId: z.string().uuid().optional(),
   page: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().positive().max(100).optional(),
+});
+
+export const paginationQuerySchema = z.object({
+  page: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().positive().max(100).optional(),
+});
+
+/** Resolution log additionally accepts a lookback window (defaults to 30d). */
+export const resolutionLogQuerySchema = paginationQuerySchema.extend({
+  days: z.coerce.number().int().positive().max(365).optional(),
 });
 
 export const updateStatusBodySchema = z.object({
@@ -24,3 +36,17 @@ export const updateConfigBodySchema = z
   .refine((v) => Object.keys(v).length > 0, {
     message: "At least one setting is required",
   });
+
+export const actionParamsSchema = z.object({
+  id: z.string().uuid(),
+  actionKey: z.string().min(1).max(64),
+});
+
+/** Export accepts a format alongside the list/log filters. */
+export const exportFormatSchema = z.object({
+  format: z.enum(["csv", "pdf"]).optional(),
+});
+
+export const exportIssuesQuerySchema = listIssuesQuerySchema.merge(exportFormatSchema);
+export const exportResolutionLogQuerySchema =
+  resolutionLogQuerySchema.merge(exportFormatSchema);
