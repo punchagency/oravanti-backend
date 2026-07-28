@@ -42,6 +42,16 @@ export const actionParamsSchema = z.object({
   actionKey: z.string().min(1).max(64),
 });
 
+/**
+ * Optional because most actions take no assignee, and because a firm with a
+ * single attorney has nothing to choose — the service resolves that case.
+ */
+export const actionBodySchema = z.object({
+  assigneeStaffId: z.string().uuid().optional(),
+});
+
+export const issueParamsSchema = z.object({ id: z.string().uuid() });
+
 /** Export accepts a format alongside the list/log filters. */
 export const exportFormatSchema = z.object({
   format: z.enum(["csv", "pdf"]).optional(),

@@ -104,6 +104,15 @@ export class CaseReviewController {
     res.send(file.body);
   };
 
+  getEligibleAssignees = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const assignees = await this.svc.getEligibleAssignees(
+      organizationId!,
+      req.params.id as string,
+    );
+    sendSuccess(res, assignees, "Eligible assignees retrieved");
+  };
+
   runAction = async (req: Request, res: Response) => {
     const { organizationId, staffId } = getRequestContext();
     const result = await this.svc.runAction(
@@ -111,6 +120,7 @@ export class CaseReviewController {
       req.params.id as string,
       req.params.actionKey as string,
       staffId ?? undefined,
+      req.body?.assigneeStaffId,
     );
     sendSuccess(res, result, "Action performed");
   };

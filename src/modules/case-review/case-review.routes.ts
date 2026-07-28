@@ -11,9 +11,11 @@ import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { validateRequest } from "../../middleware/validate.middleware";
 import { CaseReviewController } from "./case-review.controller";
 import {
+  actionBodySchema,
   actionParamsSchema,
   exportIssuesQuerySchema,
   exportResolutionLogQuerySchema,
+  issueParamsSchema,
   listIssuesQuerySchema,
   paginationQuerySchema,
   resolutionLogQuerySchema,
@@ -90,10 +92,17 @@ export class CaseReviewRouter {
     // swallowed by the :id param route.
     this.router.get("/issues/:id", read, controller.getIssueById);
 
+    this.router.get(
+      "/issues/:id/eligible-assignees",
+      read,
+      validateRequest({ params: issueParamsSchema }),
+      controller.getEligibleAssignees,
+    );
+
     this.router.post(
       "/issues/:id/actions/:actionKey",
       resolve,
-      validateRequest({ params: actionParamsSchema }),
+      validateRequest({ params: actionParamsSchema, body: actionBodySchema }),
       controller.runAction,
     );
 
