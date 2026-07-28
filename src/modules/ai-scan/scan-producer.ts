@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../../db/client";
 import { aiScanJobs } from "../../db/schema/ai-scan-jobs";
+import { aiSystemConfig } from "../../db/schema/ai-system-config";
 import { cases } from "../../db/schema/cases";
 import { documentCaseLinks, documents } from "../../db/schema/documents";
 import { leadDocumentLinks } from "../../db/schema/lead-document-links";
@@ -12,6 +13,27 @@ import { buildScanRequest, type ScenarioType } from "./scan-payload";
 
 /** Time a scenario's scan waits before running, so a burst of uploads coalesces. */
 const DEFAULT_DEBOUNCE_MS = 3000;
+
+/**
+ * Whether upload-triggered (real-time) scanning is on for a firm.
+ *
+ * A missing config row means enabled, matching the schema defaults — a firm that
+ * has never opened the settings still gets real-time scanning. Only `"upload"`
+ * scans consult this; a manual re-run or full scan is an explicit user action
+ * and always runs.
+ */
+const realtimeEnabled = async (organizationId: string): Promise<boolean> => {
+  const [row] = await db
+    .select({
+      isActive: aiSystemConfig.isActive,
+      realtimeAnalysis: aiSystemConfig.realtimeAnalysis,
+    })
+    .from(aiSystemConfig)
+    .where(eq(aiSystemConfig.organizationId, organizationId))
+    .limit(1);
+  if (!row) return true;
+  return row.isActive && row.realtimeAnalysis;
+};
 
 export type EnqueueScenarioScanParams = {
   organizationId: string;
@@ -71,6 +93,13 @@ export const enqueueScenarioScan = async (
     debounceMs = DEFAULT_DEBOUNCE_MS,
     batchId,
   } = params;
+
+  // 0. Real-time gate: upload-triggered scans only run when the firm has
+  //    real-time analysis enabled. Manual re-runs and full scans bypass this —
+  //    they are explicit user actions.
+  if (trigger === "upload" && !(await realtimeEnabled(organizationId))) {
+    return { jobId: "", coalesced: false, enqueued: false };
+  }
 
   // 1. Coalesce: already scanning this scenario?
   const existing = await inFlightJob(scenarioType, scenarioId);
