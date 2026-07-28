@@ -12,8 +12,9 @@
  * enqueues, Python consumes, backend persists — see `roundtrip.sh`.
  */
 import { and, eq } from "drizzle-orm";
-import { db } from "../../src/db/client";
+import { db, systemDb } from "../../src/db/client";
 import { aiScanJobs } from "../../src/db/schema/ai-scan-jobs";
+import { aiSystemConfig } from "../../src/db/schema/ai-system-config";
 import { caseIssues } from "../../src/db/schema/case-issues";
 import { documentAnalyses } from "../../src/db/schema/document-analyses";
 import type { AiScanResultJob } from "../../src/modules/ai-scan/contract";
@@ -251,6 +252,58 @@ const main = async () => {
       }
     },
   );
+
+  // ── real-time gate ──────────────────────────────────────────────────────────
+  await withTempFixture({ docs: [{ title: "Passport" }] }, async (fx) => {
+    try {
+      await systemDb.insert(aiSystemConfig).values({
+        organizationId: fx.organizationId,
+        realtimeAnalysis: false,
+      });
+
+      await withOrgContext(fx.organizationId, fx.userId, async () => {
+        section("real-time gate — upload scan skipped when realtime is off");
+
+        const upload = await enqueueScenarioScan({
+          organizationId: fx.organizationId,
+          scenarioType: "lead",
+          scenarioId: fx.leadId,
+          trigger: "upload",
+          debounceMs: 0,
+        });
+        checkEqual("an upload trigger does not enqueue", upload.enqueued, false);
+        checkEqual("and is not coalesced", upload.coalesced, false);
+
+        const rows = await db
+          .select()
+          .from(aiScanJobs)
+          .where(eq(aiScanJobs.organizationId, fx.organizationId));
+        checkEqual("no job row was written", rows.length, 0);
+
+        section("real-time gate — a manual re-run still runs");
+
+        const manual = await enqueueScenarioScan({
+          organizationId: fx.organizationId,
+          scenarioType: "lead",
+          scenarioId: fx.leadId,
+          trigger: "manual",
+          debounceMs: 0,
+        });
+        check("a manual scan bypasses the gate", manual.enqueued, manual);
+        check("it has a job id", !!manual.jobId, manual.jobId);
+        await aiScanQueue
+          .getJob(manual.jobId)
+          .then((j) => j?.remove())
+          .catch(() => {});
+      });
+    } finally {
+      await db.delete(aiScanJobs).where(eq(aiScanJobs.organizationId, fx.organizationId));
+      await systemDb
+        .delete(aiSystemConfig)
+        .where(eq(aiSystemConfig.organizationId, fx.organizationId));
+      await aiScanQueue.close().catch(() => {});
+    }
+  });
 
   await report();
 };
