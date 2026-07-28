@@ -38,6 +38,7 @@ import {
 } from "../../utils/pagination";
 import { storageService } from "../../utils/storage/storage.service";
 import { triggerScenarioScan } from "../ai-scan/scan-triggers";
+import { flagsByDocument } from "../case-review/document-flags";
 import {
   addDocumentVersion,
   computeChecksum,
@@ -1127,11 +1128,26 @@ export class QuestionnairesService {
 
     const completion = computeCompletion(send?.schemaSnapshot, answers, files);
 
+    // What AI review makes of each uploaded document. `aiScanStatus` alone
+    // cannot say whether a scanned document was fine or was never looked at, so
+    // both travel together.
+    const flags = await flagsByDocument(
+      organizationId,
+      files.map((f) => f.documentId),
+    );
+    const presigned = await presignResponseFiles(files);
+
     return {
       response,
       send,
       answers,
-      files: await presignResponseFiles(files),
+      files: presigned.map((file) => ({
+        ...file,
+        aiReview: {
+          status: file.aiScanStatus,
+          flags: flags.get(file.documentId) ?? [],
+        },
+      })),
       completion,
     };
   };
