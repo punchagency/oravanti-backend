@@ -13,10 +13,12 @@
 import { and, count, eq } from "drizzle-orm";
 import { db } from "../../db/client";
 import { calendarEvents } from "../../db/schema/calendar-events";
-import { caseIssues } from "../../db/schema/case-issues";
+import { caseIssueDocuments, caseIssues } from "../../db/schema/case-issues";
 import { clients } from "../../db/schema/clients";
+import { scenarioDocumentRequirements } from "../../db/schema/document-requirements";
 import { leadTasks } from "../../db/schema/lead-tasks";
 import { leads } from "../../db/schema/leads";
+import { questionnaireResponseFiles } from "../../db/schema/questionnaires";
 import { BadRequestError } from "../../utils/error/app-error";
 import { emailService } from "../../utils/email/email.service";
 import type { ActionDef } from "./actions";
@@ -80,21 +82,98 @@ const notify = async (
   });
 };
 
+/**
+ * The stages a lead task may sit under.
+ *
+ * The DB enum has six values, but the task-creation surface accepts five —
+ * `lead_inbox` is rejected by the leads validation schema and by
+ * `LeadWorkflowService.createTask`. Anything derived here must land in these.
+ */
+type TaskStage =
+  | "conflict_check"
+  | "questionnaire"
+  | "consultation"
+  | "fee_agreement"
+  | "case_opening";
+
+/**
+ * Which stage a task raised from `issue` belongs under.
+ *
+ * `pipelineStage` is a bucket for what the work is *about*, not where the lead
+ * currently is — `initializePipelineSteps` stamps all ten intake tasks up front
+ * while the lead still sits at `conflict_check`, and the consultation flow reads
+ * tasks back by stage. So an issue over documents that arrived through a
+ * questionnaire belongs on `questionnaire`, whatever the lead is doing now.
+ *
+ * Derived here rather than at detection time so the rules engine and every
+ * already-detected issue stay untouched.
+ */
+const deriveTaskStage = async (issue: IssueRow): Promise<TaskStage> => {
+  // 1. Requirement-driven issues (missing document, deadline approaching) name
+  //    the requirement that raised them, which records where it came from.
+  const requirementId = (issue.facts as Record<string, unknown> | null)
+    ?.requirementId;
+  if (typeof requirementId === "string") {
+    const [requirement] = await db
+      .select({ source: scenarioDocumentRequirements.source })
+      .from(scenarioDocumentRequirements)
+      .where(eq(scenarioDocumentRequirements.id, requirementId))
+      .limit(1);
+    if (requirement?.source === "questionnaire") return "questionnaire";
+  }
+
+  // 2. Document-driven issues: did any of the documents arrive via a
+  //    questionnaire? (Indexed on document_id, so this is a cheap lookup.)
+  const [viaQuestionnaire] = await db
+    .select({ id: questionnaireResponseFiles.id })
+    .from(caseIssueDocuments)
+    .innerJoin(
+      questionnaireResponseFiles,
+      eq(questionnaireResponseFiles.documentId, caseIssueDocuments.documentId),
+    )
+    .where(eq(caseIssueDocuments.issueId, issue.id))
+    .limit(1);
+  if (viaQuestionnaire) return "questionnaire";
+
+  // 3. Nothing tied it to a stage — put it where the lead is, clamping the one
+  //    DB value the task surface will not accept.
+  const [lead] = await db
+    .select({ stage: leads.pipelineStage })
+    .from(leads)
+    .where(eq(leads.id, issue.leadId!))
+    .limit(1);
+  return lead?.stage && lead.stage !== "lead_inbox"
+    ? lead.stage
+    : "conflict_check";
+};
+
 /** Create a lead task carrying the issue, for the attorney-routing actions. */
 const createLeadTask = async (
   issue: IssueRow,
-  staffId: string | undefined,
+  assigneeStaffId: string | undefined,
   title: string,
 ) => {
   if (!issue.leadId) {
     // Should be unreachable: the registry only offers these on lead issues.
+    //
+    // TODO(ai-review): the case equivalent needs the case-level `tasks` table
+    // and must restrict the assignee to the case's assigned team — see the TODO
+    // on FLAG_FOR_ATTORNEY in ./actions.ts.
     throw new BadRequestError("Task actions apply to lead-stage matters only");
   }
-  // Append after the lead's existing tasks.
+  const pipelineStage = await deriveTaskStage(issue);
+
+  // Append within the stage: orderIndex is a per-stage ordinal, not a global
+  // one (initializePipelineSteps restarts it at 0 for each stage).
   const [{ n }] = await db
     .select({ n: count() })
     .from(leadTasks)
-    .where(eq(leadTasks.leadId, issue.leadId));
+    .where(
+      and(
+        eq(leadTasks.leadId, issue.leadId),
+        eq(leadTasks.pipelineStage, pipelineStage),
+      ),
+    );
 
   await db.insert(leadTasks).values({
     organizationId: issue.organizationId,
@@ -102,8 +181,9 @@ const createLeadTask = async (
     title,
     description: "Raised by AI case review.",
     orderIndex: Number(n),
-    pipelineStage: "conflict_check",
-    assignedToId: staffId ?? null,
+    pipelineStage,
+    assignedToId: assigneeStaffId ?? null,
+    assignedAt: assigneeStaffId ? new Date() : null,
   });
 };
 
@@ -130,12 +210,16 @@ const createCalendarAlert = async (issue: IssueRow, title: string) => {
  * Run the effect for `action` against `issue`. Navigate actions return where to
  * go and touch nothing. The caller records the event and moves the issue to
  * under_review.
+ *
+ * `assigneeStaffId` is the attorney the caller chose (already validated as
+ * eligible), not the staff member performing the action — assigning work to
+ * whoever happened to click the button was the bug this replaced.
  */
 export const dispatchAction = async (
   deps: ActionDeps,
   issue: IssueRow,
   action: ActionDef,
-  staffId: string | undefined,
+  assigneeStaffId: string | undefined,
 ): Promise<DispatchResult> => {
   if (action.kind === "navigate") {
     return {
@@ -175,10 +259,18 @@ export const dispatchAction = async (
     case "assign_to_attorney":
     case "escalate_to_attorney":
     case "flag_for_attorney":
-      await createLeadTask(issue, staffId, `Attorney review: ${action.label}`);
+      await createLeadTask(
+        issue,
+        assigneeStaffId,
+        `Attorney review: ${action.label}`,
+      );
       break;
     case "request_postponement":
-      await createLeadTask(issue, staffId, "Request deadline postponement");
+      await createLeadTask(
+        issue,
+        assigneeStaffId,
+        "Request deadline postponement",
+      );
       break;
     case "set_calendar_alert":
       await createCalendarAlert(issue, "AI review: deadline alert");
