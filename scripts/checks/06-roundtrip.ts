@@ -38,6 +38,7 @@ import {
   withOrgContext,
   withTempFixture,
 } from "./_bootstrap";
+import { skipIfExternalAiScanConsumer } from "./_queue-guard";
 
 const AI_REPO =
   process.env.ORAVANTI_AI ??
@@ -96,6 +97,9 @@ const main = async () => {
     );
     process.exit(1);
   }
+
+  // This check spawns its own ai-scan consumer and needs the queue to itself.
+  await skipIfExternalAiScanConsumer("06-roundtrip");
 
   await withTempFixture({ docs: [{ title: "Passport" }] }, async (fx) => {
     const doc = fx.docs[0];

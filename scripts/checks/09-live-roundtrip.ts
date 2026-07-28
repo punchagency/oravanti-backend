@@ -41,6 +41,7 @@ import {
   withOrgContext,
   withTempFixture,
 } from "./_bootstrap";
+import { skipIfExternalAiScanConsumer } from "./_queue-guard";
 
 const AI_REPO =
   process.env.ORAVANTI_AI ?? join(__dirname, "..", "..", "..", "oravanti-AI");
@@ -89,6 +90,9 @@ const main = async () => {
     console.error(`Sample document not found: ${SAMPLE}\nSet ORAVANTI_AI.`);
     process.exit(1);
   }
+
+  // This check spawns the real worker and needs the ai-scan queue to itself.
+  await skipIfExternalAiScanConsumer("09-live-roundtrip");
 
   const bytes = readFileSync(SAMPLE);
   const checksum = createHash("sha256").update(bytes).digest("hex");
