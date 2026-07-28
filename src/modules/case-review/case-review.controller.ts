@@ -119,9 +119,11 @@ export class CaseReviewController {
       organizationId!,
       req.params.id as string,
       req.params.actionKey as string,
-      staffId ?? undefined,
-      req.body?.assigneeStaffId,
-      userId ?? undefined,
+      {
+        staffId: staffId ?? undefined,
+        assigneeStaffId: req.body?.assigneeStaffId,
+        actorUserId: userId ?? undefined,
+      },
     );
     sendSuccess(res, result, "Action performed");
   };

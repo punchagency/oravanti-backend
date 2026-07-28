@@ -138,11 +138,11 @@ const resolveRecipient = async (issue: IssueRow) => {
     name = row?.first ?? null;
   } else if (issue.clientId) {
     const [row] = await db
-      .select({ name: clients.name })
+      .select({ first: clients.firstName })
       .from(clients)
       .where(eq(clients.id, issue.clientId))
       .limit(1);
-    name = row?.name ?? null;
+    name = row?.first ?? null;
   }
   return { recipientName: name, firmName: org?.name ?? "Your legal team" };
 };

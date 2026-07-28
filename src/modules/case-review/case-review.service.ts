@@ -827,15 +827,25 @@ export class CaseReviewService {
     return eligibleAssignees(organizationId);
   };
 
+  /**
+   * `ctx` is an object rather than trailing positional arguments: the mix of
+   * "who acted", "who it is for" and the injected deps is too easy to transpose.
+   */
   runAction = async (
     organizationId: string,
     id: string,
     actionKey: string,
-    staffId: string | undefined,
-    assigneeStaffId?: string,
-    actorUserId?: string,
-    deps: ActionDeps = defaultActionDeps,
+    ctx: {
+      /** The staff member performing the action, for the event trail. */
+      staffId?: string;
+      /** The attorney chosen to receive the work. */
+      assigneeStaffId?: string;
+      /** The signed-in user, recorded as a document request's requester. */
+      actorUserId?: string;
+      deps?: ActionDeps;
+    } = {},
   ) => {
+    const { staffId, assigneeStaffId, actorUserId, deps = defaultActionDeps } = ctx;
     const issue = await loadIssueForAction(organizationId, id);
     if (!issue) throw new NotFoundError("Issue not found");
 
