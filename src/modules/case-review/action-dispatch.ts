@@ -11,7 +11,9 @@
  * branching to the caller.
  */
 import { and, count, eq } from "drizzle-orm";
+import { env } from "../../config/env";
 import { db } from "../../db/client";
+import { organization } from "../../db/schema/auth-schema";
 import { calendarEvents } from "../../db/schema/calendar-events";
 import { caseIssueDocuments, caseIssues } from "../../db/schema/case-issues";
 import { clients } from "../../db/schema/clients";
@@ -21,7 +23,11 @@ import { leads } from "../../db/schema/leads";
 import { questionnaireResponseFiles } from "../../db/schema/questionnaires";
 import { BadRequestError } from "../../utils/error/app-error";
 import { emailService } from "../../utils/email/email.service";
+import { generateDocumentRequestEmailTemplate } from "../../utils/email/email.types";
+import { DocumentsService } from "../documents/documents.service";
+import { getFirmLanguage } from "../settings/consultation/consultation-settings.service";
 import type { ActionDef } from "./actions";
+import { renderIssue } from "./render";
 
 type IssueRow = typeof caseIssues.$inferSelect;
 
@@ -29,13 +35,45 @@ type IssueRow = typeof caseIssues.$inferSelect;
  * Collaborators the dispatch depends on, injected so a check can drive the real
  * handlers with a fake mailer instead of sending mail.
  */
+export type DocumentRequestInput = {
+  organizationId: string;
+  actorUserId: string;
+  leadId?: string;
+  caseId?: string;
+  recipientEmail: string;
+  recipientName?: string;
+  requestedLabel: string;
+  expiresAt: Date;
+};
+
 export type ActionDeps = {
   sendEmail: (opts: { to: string; subject: string; html: string }) => Promise<void>;
+  /** Creates the tracked request and returns the raw upload token. */
+  createDocumentRequest: (
+    input: DocumentRequestInput,
+  ) => Promise<{ token: string }>;
 };
+
+const documentsService = new DocumentsService();
 
 export const defaultActionDeps: ActionDeps = {
   sendEmail: (opts) => emailService.sendEmail(opts),
+  createDocumentRequest: (input) =>
+    documentsService.createExternalRequest(input.organizationId, input.actorUserId, {
+      leadId: input.leadId,
+      caseId: input.caseId,
+      recipientEmail: input.recipientEmail,
+      recipientName: input.recipientName,
+      requestedLabel: input.requestedLabel,
+      expiresAt: input.expiresAt,
+    }),
 };
+
+/**
+ * How long a client has to act on a requested document. Long enough that a
+ * reminder does not expire before someone gets to their post.
+ */
+const REQUEST_EXPIRY_DAYS = 14;
 
 /** Where a navigate action should take the user; no effect is performed. */
 export type NavigateResult = {
@@ -79,6 +117,100 @@ const notify = async (
     to,
     subject,
     html: `<p>${body}</p>`,
+  });
+};
+
+/** The recipient's name and the firm's, for addressing an outbound email. */
+const resolveRecipient = async (issue: IssueRow) => {
+  const [org] = await db
+    .select({ name: organization.name })
+    .from(organization)
+    .where(eq(organization.id, issue.organizationId))
+    .limit(1);
+
+  let name: string | null = null;
+  if (issue.leadId) {
+    const [row] = await db
+      .select({ first: leads.firstName })
+      .from(leads)
+      .where(eq(leads.id, issue.leadId))
+      .limit(1);
+    name = row?.first ?? null;
+  } else if (issue.clientId) {
+    const [row] = await db
+      .select({ name: clients.name })
+      .from(clients)
+      .where(eq(clients.id, issue.clientId))
+      .limit(1);
+    name = row?.name ?? null;
+  }
+  return { recipientName: name, firmName: org?.name ?? "Your legal team" };
+};
+
+/**
+ * What the issue is asking the client for, in their words.
+ *
+ * Both come off the issue itself — the rules snapshot the document title (or the
+ * requirement's label, for a document that was never uploaded) into
+ * `templateParams`, and `renderIssue` already produces localised prose. Writing
+ * fresh copy here would mean two descriptions of the same finding drifting apart.
+ */
+const requestSubject = (issue: IssueRow, language: string) => {
+  const params = (issue.templateParams ?? {}) as Record<string, unknown>;
+  const label =
+    typeof params.documentTitle === "string"
+      ? params.documentTitle
+      : typeof params.label === "string"
+        ? params.label
+        : "A document for your matter";
+  const rendered = renderIssue(issue.templateKey, params as never, language);
+  return { label, reason: rendered.description || rendered.title };
+};
+
+/**
+ * Ask the client for a document: a tracked request plus an email carrying the
+ * upload link. Without the request there is nothing for the client to act on and
+ * nothing for the firm to chase.
+ */
+const requestDocument = async (
+  deps: ActionDeps,
+  issue: IssueRow,
+  actorUserId: string | undefined,
+  subject: string,
+) => {
+  if (!actorUserId) {
+    throw new BadRequestError("Only a signed-in user can request a document");
+  }
+  const to = await resolveRecipientEmail(issue);
+  const language = await getFirmLanguage(issue.organizationId);
+  const { recipientName, firmName } = await resolveRecipient(issue);
+  const { label, reason } = requestSubject(issue, language);
+
+  const expiresAt = new Date(
+    Date.now() + REQUEST_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
+  );
+  const { token } = await deps.createDocumentRequest({
+    organizationId: issue.organizationId,
+    actorUserId,
+    leadId: issue.leadId ?? undefined,
+    caseId: issue.leadId ? undefined : (issue.caseId ?? undefined),
+    recipientEmail: to,
+    recipientName: recipientName ?? undefined,
+    requestedLabel: label,
+    expiresAt,
+  });
+
+  await deps.sendEmail({
+    to,
+    subject,
+    html: generateDocumentRequestEmailTemplate({
+      recipientName,
+      firmName,
+      requestedLabel: label,
+      reason,
+      uploadLink: `${env.FRONTEND_APP_URL}/document-upload/${token}`,
+      expiresAt,
+    }),
   });
 };
 
@@ -215,11 +347,18 @@ const createCalendarAlert = async (issue: IssueRow, title: string) => {
  * eligible), not the staff member performing the action — assigning work to
  * whoever happened to click the button was the bug this replaced.
  */
+export type DispatchContext = {
+  /** The chosen attorney, for actions that route work. */
+  assigneeStaffId?: string;
+  /** Who is acting — a document request records its requester. */
+  actorUserId?: string;
+};
+
 export const dispatchAction = async (
   deps: ActionDeps,
   issue: IssueRow,
   action: ActionDef,
-  assigneeStaffId: string | undefined,
+  ctx: DispatchContext,
 ): Promise<DispatchResult> => {
   if (action.kind === "navigate") {
     return {
@@ -233,42 +372,47 @@ export const dispatchAction = async (
 
   switch (action.key) {
     case "request_reupload":
-      await notify(
+      await requestDocument(
         deps,
         issue,
+        ctx.actorUserId,
         "A document needs to be re-uploaded",
-        "Please re-upload the document your legal team flagged for review.",
       );
       break;
     case "send_client_reminder":
-      await notify(
+      await requestDocument(
         deps,
         issue,
-        "Reminder from your legal team",
-        "Your legal team is waiting on an outstanding item for your matter.",
+        ctx.actorUserId,
+        "Reminder: a document is still needed",
       );
       break;
-    case "send_urgent_reminder":
+    case "send_urgent_reminder": {
+      // A nudge, not a new request — the client already has a link from
+      // whichever action opened the request.
+      const language = await getFirmLanguage(issue.organizationId);
+      const { label } = requestSubject(issue, language);
       await notify(
         deps,
         issue,
         "Urgent: action needed on your matter",
-        "An item on your matter is time-sensitive. Please act as soon as possible.",
+        `${label} is still outstanding and is now time-sensitive. Please use the upload link we sent you as soon as possible.`,
       );
       break;
+    }
     case "assign_to_attorney":
     case "escalate_to_attorney":
     case "flag_for_attorney":
       await createLeadTask(
         issue,
-        assigneeStaffId,
+        ctx.assigneeStaffId,
         `Attorney review: ${action.label}`,
       );
       break;
     case "request_postponement":
       await createLeadTask(
         issue,
-        assigneeStaffId,
+        ctx.assigneeStaffId,
         "Request deadline postponement",
       );
       break;

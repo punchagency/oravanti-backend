@@ -833,6 +833,7 @@ export class CaseReviewService {
     actionKey: string,
     staffId: string | undefined,
     assigneeStaffId?: string,
+    actorUserId?: string,
     deps: ActionDeps = defaultActionDeps,
   ) => {
     const issue = await loadIssueForAction(organizationId, id);
@@ -864,7 +865,10 @@ export class CaseReviewService {
       assignee = resolved.staffId;
     }
 
-    const result = await dispatchAction(deps, issue, action, assignee);
+    const result = await dispatchAction(deps, issue, action, {
+      assigneeStaffId: assignee,
+      actorUserId,
+    });
 
     if (result.kind === "navigate") {
       return result;
