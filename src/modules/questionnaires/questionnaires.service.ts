@@ -952,10 +952,10 @@ export class QuestionnairesService {
   };
 
   /**
-   * Get all questionnaire response files linked to a lead.
-   * Used by the lead documents tab to show files collected during intake.
+   * Get all questionnaire response files linked to a lead, with what AI review
+   * makes of each. Used by the lead documents tab.
    */
-  getFilesByLeadId = async (leadId: string) => {
+  getFilesByLeadId = async (leadId: string, organizationId: string) => {
     // Lead linkage now lives on lead_document_links rather than on the join row.
     const files = await db
       .select(responseFileColumns)
@@ -972,15 +972,31 @@ export class QuestionnairesService {
         leadDocumentLinks,
         eq(leadDocumentLinks.documentId, questionnaireResponseFiles.documentId),
       )
+      .innerJoin(leads, eq(leads.id, leadDocumentLinks.leadId))
       .where(
         and(
           eq(leadDocumentLinks.leadId, leadId),
+          // This query previously had no tenancy predicate: any signed-in staff
+          // member could read another firm's intake documents by lead id.
+          eq(leads.organizationId, organizationId),
           isNull(leadDocumentLinks.archivedAt),
         ),
       )
       .orderBy(desc(questionnaireResponseFiles.createdAt));
 
-    return presignResponseFiles(files);
+    const flags = await flagsByDocument(
+      organizationId,
+      files.map((f) => f.documentId),
+    );
+    const presigned = await presignResponseFiles(files);
+
+    return presigned.map((file) => ({
+      ...file,
+      aiReview: {
+        status: file.aiScanStatus,
+        flags: flags.get(file.documentId) ?? [],
+      },
+    }));
   };
 
   // ── Intake: eligible leads, question bank, response review ──────────────────
