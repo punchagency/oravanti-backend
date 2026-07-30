@@ -4,6 +4,7 @@ import { stepActionLogs } from "../../db/schema";
 import { cases } from "../../db/schema/cases";
 import { leaveRequests } from "../../db/schema/leave-requests";
 import { staff } from "../../db/schema/staff";
+import { assertAssignableStaff } from "../../utils/assignable-staff";
 import { certifications } from "../../db/schema/cases";
 import { staffCertifications } from "../../db/schema/staff-certifications";
 import {
@@ -442,10 +443,17 @@ export class WorkflowService {
 
     if (!step) throw new NotFoundError("Step not found");
 
+    await assertAssignableStaff(staffId, organizationId);
+
     const [staffMember] = await db
       .select()
       .from(staff)
-      .where(eq(staff.id, staffId))
+      .where(
+        and(
+          eq(staff.id, staffId),
+          eq(staff.organizationId, organizationId),
+        ),
+      )
       .limit(1);
 
     if (!staffMember) throw new NotFoundError("Staff not found");

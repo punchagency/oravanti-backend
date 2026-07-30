@@ -1,4 +1,6 @@
+import { sql } from "drizzle-orm";
 import {
+  check,
   index,
   integer,
   jsonb,
@@ -9,8 +11,9 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
-import { user } from "./auth-schema";
+import { organization, user } from "./auth-schema";
 import { cases } from "./cases";
+import { leads } from "./leads";
 
 export const documentCategoryEnum = pgEnum("document_category", [
   "application",
@@ -197,13 +200,24 @@ export const documentAccess = pgTable(
   ],
 );
 
+/**
+ * An outstanding ask for a document from someone outside the firm.
+ *
+ * Scoped to exactly one matter — a case OR a lead. Lead support exists because
+ * most AI-review findings are raised during intake, before a case is opened;
+ * requests were case-only when the table only served the case documents tab.
+ * `organizationId` is stored rather than derived through the case for the same
+ * reason: with `caseId` nullable there is no longer a guaranteed join to an org.
+ */
 export const documentRequests = pgTable(
   "document_requests",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    caseId: uuid("case_id")
+    organizationId: text("organization_id")
       .notNull()
-      .references(() => cases.id),
+      .references(() => organization.id, { onDelete: "cascade" }),
+    caseId: uuid("case_id").references(() => cases.id),
+    leadId: uuid("lead_id").references(() => leads.id, { onDelete: "cascade" }),
     requestedByUserId: text("requested_by_user_id")
       .notNull()
       .references(() => user.id),
@@ -212,12 +226,20 @@ export const documentRequests = pgTable(
     tokenHash: text("token_hash").notNull().unique(),
     expiresAt: timestamp("expires_at").notNull(),
     status: documentRequestStatusEnum("status").notNull().default("PENDING"),
+    /** What was asked for, e.g. "Birth Certificate" — shown to the recipient. */
+    requestedLabel: text("requested_label"),
     message: text("message"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
+    check(
+      "dr_exactly_one_scenario",
+      sql`(${table.leadId} IS NOT NULL)::int + (${table.caseId} IS NOT NULL)::int = 1`,
+    ),
+    index("document_requests_organization_idx").on(table.organizationId),
     index("document_requests_case_idx").on(table.caseId),
+    index("document_requests_lead_idx").on(table.leadId),
     index("document_requests_user_idx").on(table.requestedByUserId),
     index("document_requests_status_idx").on(table.status),
   ],

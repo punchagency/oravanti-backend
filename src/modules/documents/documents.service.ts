@@ -23,8 +23,11 @@ import {
   documentVersions,
   externalSubmissions,
 } from "../../db/schema/documents";
+import { leadDocumentLinks } from "../../db/schema/lead-document-links";
+import { leads } from "../../db/schema/leads";
 import {
   AuthorizationError,
+  BadRequestError,
   ConflictError,
   NotFoundError,
 } from "../../utils/error/app-error";
@@ -743,28 +746,62 @@ export class DocumentsService {
     });
   };
 
+  /**
+   * Create an outstanding request for a document from someone outside the firm.
+   *
+   * The matter is a case or a lead, never both — AI case review raises most of
+   * its findings during intake, before a case exists. The raw token is returned
+   * to the caller and only its hash is stored, so the link can be sent but never
+   * recovered afterwards.
+   */
   createExternalRequest = async (
     organizationId: string,
     userId: string,
     data: {
-      caseId: string;
+      caseId?: string;
+      leadId?: string;
       recipientEmail: string;
       recipientName?: string;
+      requestedLabel?: string;
       message?: string;
       expiresAt: Date;
     },
   ) => {
-    await this.getCaseForFirm(data.caseId, organizationId);
+    if (!data.caseId === !data.leadId) {
+      throw new BadRequestError(
+        "A document request belongs to exactly one case or lead",
+      );
+    }
+    // Both paths must prove the matter belongs to this firm — the request grants
+    // an unauthenticated upload against it.
+    if (data.caseId) {
+      await this.getCaseForFirm(data.caseId, organizationId);
+    } else {
+      const [lead] = await db
+        .select({ id: leads.id })
+        .from(leads)
+        .where(
+          and(
+            eq(leads.id, data.leadId!),
+            eq(leads.organizationId, organizationId),
+          ),
+        )
+        .limit(1);
+      if (!lead) throw new NotFoundError("Lead not found");
+    }
 
     const token = randomBytes(32).toString("hex");
     const request = await db.transaction(async (tx) => {
       const [createdRequest] = await tx
         .insert(documentRequests)
         .values({
-          caseId: data.caseId,
+          organizationId,
+          caseId: data.caseId ?? null,
+          leadId: data.leadId ?? null,
           requestedByUserId: userId,
           recipientEmail: data.recipientEmail,
           recipientName: data.recipientName,
+          requestedLabel: data.requestedLabel,
           message: data.message,
           tokenHash: hashToken(token),
           expiresAt: data.expiresAt,
@@ -776,7 +813,8 @@ export class DocumentsService {
         action: "EXTERNAL_REQUEST_CREATED",
         metadata: {
           requestId: createdRequest.id,
-          caseId: data.caseId,
+          caseId: data.caseId ?? null,
+          leadId: data.leadId ?? null,
           recipientEmail: data.recipientEmail,
         },
       });
@@ -875,10 +913,18 @@ export class DocumentsService {
           })
           .returning();
 
-        await tx.insert(documentCaseLinks).values({
-          documentId: doc.id,
-          caseId: request.caseId,
-        });
+        // Link to whichever matter the request was raised against.
+        if (request.caseId) {
+          await tx.insert(documentCaseLinks).values({
+            documentId: doc.id,
+            caseId: request.caseId,
+          });
+        } else {
+          await tx.insert(leadDocumentLinks).values({
+            leadId: request.leadId!,
+            documentId: doc.id,
+          });
+        }
 
         await tx.insert(documentAccess).values({
           documentId: doc.id,

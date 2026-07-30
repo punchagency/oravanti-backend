@@ -247,6 +247,67 @@ export const generateInvitationWithCredentialsTemplate = ({
   </div>
 `;
 
+export type DocumentRequestEmailProps = {
+  /** Who the request is about, e.g. "Dear Maria". */
+  recipientName?: string | null;
+  firmName: string;
+  /** What is being asked for, e.g. "Birth Certificate". */
+  requestedLabel: string;
+  /** Why, in the reviewer-facing prose the AI review already renders. */
+  reason: string;
+  uploadLink: string;
+  expiresAt: Date;
+};
+
+/**
+ * The email behind "Request re-upload" / "Send client reminder".
+ *
+ * The point of this template over a bare paragraph is that the recipient can
+ * act: it names the document, says why it is needed, and carries the upload
+ * link. Structure follows the invitation-with-credentials template — the grey
+ * panel is where the specifics go.
+ */
+export const generateDocumentRequestEmailTemplate = ({
+  recipientName,
+  firmName,
+  requestedLabel,
+  reason,
+  uploadLink,
+  expiresAt,
+}: DocumentRequestEmailProps): string => `
+  <div style="background-color: #ffffff; color: #374151; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 40px 20px; text-align: center; border-radius: 12px; max-width: 500px; margin: 0 auto; border: 1px solid #e5e7eb; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);">
+
+    <div style="background-color: #06b6d4; color: #ffffff; width: 56px; height: 56px; line-height: 56px; border-radius: 16px; font-weight: bold; font-size: 20px; margin: 0 auto 24px auto; text-transform: uppercase; box-shadow: 0px 4px 12px rgba(6, 182, 212, 0.25);">
+      ${firmName.substring(0, 2).toUpperCase()}
+    </div>
+
+    <h2 style="color: #1f2937; font-size: 20px; font-weight: 600; margin-bottom: 6px; line-height: 1.4;">
+      ${recipientName ? `${recipientName}, a` : "A"} document is needed
+    </h2>
+
+    <p style="color: #4b5563; font-size: 14px; line-height: 1.6; margin-bottom: 24px;">
+      ${firmName} needs a document from you to keep your matter moving.
+    </p>
+
+    <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin-bottom: 24px; text-align: left;">
+      <p style="margin: 0 0 8px; font-size: 13px; color: #6b7280;">Document requested</p>
+      <p style="margin: 0 0 16px; font-size: 15px; font-weight: 600; color: #1f2937;">${requestedLabel}</p>
+      <p style="margin: 0 0 8px; font-size: 13px; color: #6b7280;">Why it is needed</p>
+      <p style="margin: 0; font-size: 14px; color: #1f2937; line-height: 1.5;">${reason}</p>
+    </div>
+
+    <div style="margin-bottom: 16px;">
+      <a href="${uploadLink}" target="_blank" style="background-color: #2563eb; color: #ffffff; padding: 14px 32px; font-size: 15px; font-weight: 600; text-decoration: none; border-radius: 8px; display: inline-block; box-shadow: 0px 4px 14px rgba(37, 99, 235, 0.3);">
+        Upload document
+      </a>
+    </div>
+
+    <p style="color: #9ca3af; font-size: 12px; line-height: 1.5; padding: 0 10px;">
+      This link is unique to you — please do not share it. It expires on ${expiresAt.toDateString()}.
+    </p>
+  </div>
+`;
+
 export const OTP_EMAIL_CONFIG: Record<
   VerificationOTPType,
   {

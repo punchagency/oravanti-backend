@@ -42,6 +42,7 @@ import {
   loadIssueForAction,
   type ActionDeps,
 } from "./action-dispatch";
+import { eligibleAssignees, resolveAssignee } from "./assignees";
 import {
   documentFlagLabel,
   issueCategory,
@@ -53,6 +54,15 @@ import {
   type ExportFormat,
   type ReportColumn,
 } from "../../utils/report-export";
+
+/** Why an assignee-taking action could not run, in words a reviewer can act on. */
+const ASSIGNEE_ERRORS = {
+  none:
+    "No eligible attorney to assign. A case assigned to a team can only be " +
+    "routed to an attorney on that team.",
+  ambiguous: "Choose an attorney to assign this to",
+  ineligible: "That staff member cannot be assigned this issue",
+} as const;
 
 const CRITICAL_SEVERITIES = ["critical", "high"] as const;
 const WARNING_SEVERITIES = ["medium", "low"] as const;
@@ -812,13 +822,37 @@ export class CaseReviewService {
    *
    * Navigate actions return where to go and change nothing.
    */
+  /**
+   * The attorneys an issue's assignee-taking actions may route work to.
+   *
+   * Scoped by the issue's own matter, so a case committed to a team offers only
+   * that team — the picker and the dispatch must agree on who is eligible.
+   */
+  getEligibleAssignees = async (organizationId: string, id: string) => {
+    const issue = await loadIssueForAction(organizationId, id);
+    if (!issue) throw new NotFoundError("Issue not found");
+    return eligibleAssignees({ organizationId, caseId: issue.caseId });
+  };
+
+  /**
+   * `ctx` is an object rather than trailing positional arguments: the mix of
+   * "who acted", "who it is for" and the injected deps is too easy to transpose.
+   */
   runAction = async (
     organizationId: string,
     id: string,
     actionKey: string,
-    staffId: string | undefined,
-    deps: ActionDeps = defaultActionDeps,
+    ctx: {
+      /** The staff member performing the action, for the event trail. */
+      staffId?: string;
+      /** The attorney chosen to receive the work. */
+      assigneeStaffId?: string;
+      /** The signed-in user, recorded as a document request's requester. */
+      actorUserId?: string;
+      deps?: ActionDeps;
+    } = {},
   ) => {
+    const { staffId, assigneeStaffId, actorUserId, deps = defaultActionDeps } = ctx;
     const issue = await loadIssueForAction(organizationId, id);
     if (!issue) throw new NotFoundError("Issue not found");
 
@@ -838,7 +872,24 @@ export class CaseReviewService {
       );
     }
 
-    const result = await dispatchAction(deps, issue, action, staffId);
+    // Resolve the assignee before doing anything: a task nobody can act on is
+    // worse than a refused action, so an unassignable issue fails loudly rather
+    // than falling back to whoever clicked.
+    let assignee: string | undefined;
+    if (action.requiresAssignee) {
+      const resolved = await resolveAssignee(
+        { organizationId, caseId: issue.caseId },
+        assigneeStaffId,
+      );
+      if (!resolved.ok) throw new BadRequestError(ASSIGNEE_ERRORS[resolved.reason]);
+      assignee = resolved.staffId;
+    }
+
+    const result = await dispatchAction(deps, issue, action, {
+      assigneeStaffId: assignee,
+      staffId,
+      actorUserId,
+    });
 
     if (result.kind === "navigate") {
       return result;
