@@ -110,16 +110,10 @@ const FLAG_FOR_ATTORNEY = A({
   pastLabel: "Flagged for attorney",
   variant: "secondary",
   kind: "mutation",
-  // Implemented for leads (creates a lead task); offered on cases too but not
-  // yet wired.
-  //
-  // TODO(ai-review): to implement the case side, route to the case-level `tasks`
-  // table (src/db/schema/tasks.ts) — it already has `assignedToId -> staff.id`
-  // and `teamId -> team.id`, which is what a case task needs. Eligible attorneys
-  // must then be narrowed to the case's assigned team; see `eligibleAssignees`
-  // in ./assignees.ts for the join and the team_member/team_members trap.
+  // Both matter types, by their own idiom: a lead gets a pipeline task, a case
+  // gets its current workflow step assigned. Cases have no task table — work on
+  // a case is a workflow step.
   scenarios: ["lead", "case"],
-  stubScenarios: ["case"],
   requiresAssignee: true,
 });
 

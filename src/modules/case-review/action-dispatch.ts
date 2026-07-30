@@ -21,11 +21,13 @@ import { scenarioDocumentRequirements } from "../../db/schema/document-requireme
 import { leadTasks } from "../../db/schema/lead-tasks";
 import { leads } from "../../db/schema/leads";
 import { questionnaireResponseFiles } from "../../db/schema/questionnaires";
+import { caseWorkflowSteps } from "../../db/schema/workflow";
 import { BadRequestError } from "../../utils/error/app-error";
 import { emailService } from "../../utils/email/email.service";
 import { generateDocumentRequestEmailTemplate } from "../../utils/email/email.types";
 import { DocumentsService } from "../documents/documents.service";
 import { getFirmLanguage } from "../settings/consultation/consultation-settings.service";
+import { WorkflowService } from "../workflow/workflow.service";
 import type { ActionDef } from "./actions";
 import { renderIssue } from "./render";
 
@@ -55,6 +57,7 @@ export type ActionDeps = {
 };
 
 const documentsService = new DocumentsService();
+const workflowService = new WorkflowService();
 
 export const defaultActionDeps: ActionDeps = {
   sendEmail: (opts) => emailService.sendEmail(opts),
@@ -279,6 +282,54 @@ const deriveTaskStage = async (issue: IssueRow): Promise<TaskStage> => {
     : "conflict_check";
 };
 
+/**
+ * Route a case issue to an attorney by assigning the case's current workflow
+ * step. Cases have no task table — work on a case *is* a workflow step, so the
+ * case equivalent of "create a task for an attorney" is "give them the step".
+ *
+ * "Current" is the in-progress step; a case that has not started one (freshly
+ * opened, or every step still pending) falls back to the earliest incomplete
+ * step, which assigning also starts.
+ */
+const assignCaseWorkflowStep = async (
+  issue: IssueRow,
+  assigneeStaffId: string,
+  actorStaffId: string | undefined,
+) => {
+  const steps = await db
+    .select({
+      id: caseWorkflowSteps.id,
+      status: caseWorkflowSteps.status,
+      orderIndex: caseWorkflowSteps.orderIndex,
+    })
+    .from(caseWorkflowSteps)
+    .where(eq(caseWorkflowSteps.caseId, issue.caseId!))
+    .orderBy(caseWorkflowSteps.orderIndex);
+
+  const target =
+    steps.find((s) => s.status === "in_progress") ??
+    steps.find((s) => s.status === "pending");
+
+  if (!target) {
+    throw new BadRequestError(
+      steps.length === 0
+        ? "This case has no workflow steps to assign"
+        : "Every workflow step on this case is already finished",
+    );
+  }
+
+  // Through the service rather than a direct update, so the assignment is
+  // org-checked and lands in the step action log like any other.
+  await workflowService.assignStep(
+    issue.caseId!,
+    target.id,
+    assigneeStaffId,
+    issue.organizationId,
+    undefined,
+    actorStaffId,
+  );
+};
+
 /** Create a lead task carrying the issue, for the attorney-routing actions. */
 const createLeadTask = async (
   issue: IssueRow,
@@ -287,10 +338,6 @@ const createLeadTask = async (
 ) => {
   if (!issue.leadId) {
     // Should be unreachable: the registry only offers these on lead issues.
-    //
-    // TODO(ai-review): the case equivalent needs the case-level `tasks` table
-    // and must restrict the assignee to the case's assigned team — see the TODO
-    // on FLAG_FOR_ATTORNEY in ./actions.ts.
     throw new BadRequestError("Task actions apply to lead-stage matters only");
   }
   const pipelineStage = await deriveTaskStage(issue);
@@ -350,7 +397,9 @@ const createCalendarAlert = async (issue: IssueRow, title: string) => {
 export type DispatchContext = {
   /** The chosen attorney, for actions that route work. */
   assigneeStaffId?: string;
-  /** Who is acting — a document request records its requester. */
+  /** Who is acting, as a staff id — recorded on the step action log. */
+  staffId?: string;
+  /** Who is acting, as a user id — a document request records its requester. */
   actorUserId?: string;
 };
 
@@ -403,11 +452,20 @@ export const dispatchAction = async (
     case "assign_to_attorney":
     case "escalate_to_attorney":
     case "flag_for_attorney":
-      await createLeadTask(
-        issue,
-        ctx.assigneeStaffId,
-        `Attorney review: ${action.label}`,
-      );
+      // Same intent, different idiom per matter type.
+      if (issue.caseId) {
+        await assignCaseWorkflowStep(
+          issue,
+          ctx.assigneeStaffId!,
+          ctx.staffId,
+        );
+      } else {
+        await createLeadTask(
+          issue,
+          ctx.assigneeStaffId,
+          `Attorney review: ${action.label}`,
+        );
+      }
       break;
     case "request_postponement":
       await createLeadTask(

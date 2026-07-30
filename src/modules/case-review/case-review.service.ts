@@ -57,7 +57,9 @@ import {
 
 /** Why an assignee-taking action could not run, in words a reviewer can act on. */
 const ASSIGNEE_ERRORS = {
-  none: "No eligible attorney to assign. Add an attorney to the firm first.",
+  none:
+    "No eligible attorney to assign. A case assigned to a team can only be " +
+    "routed to an attorney on that team.",
   ambiguous: "Choose an attorney to assign this to",
   ineligible: "That staff member cannot be assigned this issue",
 } as const;
@@ -820,11 +822,16 @@ export class CaseReviewService {
    *
    * Navigate actions return where to go and change nothing.
    */
-  /** The attorneys an issue's assignee-taking actions may route work to. */
+  /**
+   * The attorneys an issue's assignee-taking actions may route work to.
+   *
+   * Scoped by the issue's own matter, so a case committed to a team offers only
+   * that team — the picker and the dispatch must agree on who is eligible.
+   */
   getEligibleAssignees = async (organizationId: string, id: string) => {
     const issue = await loadIssueForAction(organizationId, id);
     if (!issue) throw new NotFoundError("Issue not found");
-    return eligibleAssignees(organizationId);
+    return eligibleAssignees({ organizationId, caseId: issue.caseId });
   };
 
   /**
@@ -870,13 +877,17 @@ export class CaseReviewService {
     // than falling back to whoever clicked.
     let assignee: string | undefined;
     if (action.requiresAssignee) {
-      const resolved = await resolveAssignee(organizationId, assigneeStaffId);
+      const resolved = await resolveAssignee(
+        { organizationId, caseId: issue.caseId },
+        assigneeStaffId,
+      );
       if (!resolved.ok) throw new BadRequestError(ASSIGNEE_ERRORS[resolved.reason]);
       assignee = resolved.staffId;
     }
 
     const result = await dispatchAction(deps, issue, action, {
       assigneeStaffId: assignee,
+      staffId,
       actorUserId,
     });
 

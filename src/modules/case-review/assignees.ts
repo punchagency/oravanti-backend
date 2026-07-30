@@ -8,7 +8,8 @@
  */
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../../db/client";
-import { member } from "../../db/schema/auth-schema";
+import { member, teamMember } from "../../db/schema/auth-schema";
+import { cases } from "../../db/schema/cases";
 import { staff } from "../../db/schema/staff";
 
 export type EligibleAssignee = {
@@ -36,19 +37,60 @@ const isAttorney = sql`(
 )`;
 
 /**
- * Active attorneys in the firm, ordered by name.
+ * The matter an assignment is being made against.
  *
- * TODO(ai-review): once the attorney actions are implemented for cases, a case
- * with an `assignedTeamId` must narrow this to that team's members —
- * `cases.assignedTeamId -> team_member.teamId -> staff ON staff.userId =
- * team_member.userId` (the pattern in `OrganizationService.getTeam`). Note the
- * custom `team_members` table keyed by `staffId` is seed-only; `team_member`
- * (better-auth, keyed by `userId`) is the one the app maintains.
+ * A case may have a team assigned; a lead never does (there is no team column on
+ * `leads`), so lead-stage issues always see the whole firm's attorneys.
+ */
+export type AssigneeScope = {
+  organizationId: string;
+  caseId?: string | null;
+};
+
+/**
+ * Restrict to a case's assigned team, when it has one.
+ *
+ * Membership lives in better-auth's `team_member`, keyed by `user_id` — not the
+ * custom `team_members` table keyed by `staff_id`, which only the CLI seed
+ * writes. A consequence of that key: `staff.user_id` is nullable, so a
+ * staff member who has not accepted their invitation cannot belong to a team and
+ * will not appear here.
+ */
+const onCaseTeam = (teamId: string) => sql`${staff.userId} IN (
+  SELECT ${teamMember.userId} FROM ${teamMember}
+  WHERE ${teamMember.teamId} = ${teamId}
+)`;
+
+/**
+ * Active attorneys who may take work on this matter, ordered by name.
+ *
+ * Narrowed to the case's team where one is assigned: a firm that has committed a
+ * case to a team should not be able to route that case's work outside it.
  */
 export const eligibleAssignees = async (
-  organizationId: string,
-): Promise<EligibleAssignee[]> =>
-  db
+  scope: AssigneeScope,
+): Promise<EligibleAssignee[]> => {
+  const conditions = [
+    eq(staff.organizationId, scope.organizationId),
+    eq(staff.status, "active"),
+    isAttorney,
+  ];
+
+  if (scope.caseId) {
+    const [row] = await db
+      .select({ teamId: cases.assignedTeamId })
+      .from(cases)
+      .where(
+        and(
+          eq(cases.id, scope.caseId),
+          eq(cases.organizationId, scope.organizationId),
+        ),
+      )
+      .limit(1);
+    if (row?.teamId) conditions.push(onCaseTeam(row.teamId));
+  }
+
+  return db
     .select({
       id: staff.id,
       firstName: staff.firstName,
@@ -64,14 +106,9 @@ export const eligibleAssignees = async (
         eq(member.organizationId, staff.organizationId),
       ),
     )
-    .where(
-      and(
-        eq(staff.organizationId, organizationId),
-        eq(staff.status, "active"),
-        isAttorney,
-      ),
-    )
+    .where(and(...conditions))
     .orderBy(staff.firstName, staff.lastName);
+};
 
 /**
  * The assignee an action should use, or a reason it cannot run.
@@ -85,10 +122,10 @@ export type AssigneeResolution =
   | { ok: false; reason: "none" | "ambiguous" | "ineligible" };
 
 export const resolveAssignee = async (
-  organizationId: string,
+  scope: AssigneeScope,
   requested: string | undefined,
 ): Promise<AssigneeResolution> => {
-  const eligible = await eligibleAssignees(organizationId);
+  const eligible = await eligibleAssignees(scope);
   if (eligible.length === 0) return { ok: false, reason: "none" };
 
   if (!requested) {

@@ -16,10 +16,13 @@ import {
   caseIssueEvents,
   caseIssues,
 } from "../../src/db/schema/case-issues";
+import { team, teamMember, user } from "../../src/db/schema/auth-schema";
+import { cases } from "../../src/db/schema/cases";
 import { scenarioDocumentRequirements } from "../../src/db/schema/document-requirements";
 import { calendarEvents } from "../../src/db/schema/calendar-events";
 import { leadTasks } from "../../src/db/schema/lead-tasks";
 import { staff } from "../../src/db/schema/staff";
+import { caseWorkflowSteps, workflowLog } from "../../src/db/schema/workflow";
 import type { DocumentRequestInput } from "../../src/modules/case-review/action-dispatch";
 import { CaseReviewService } from "../../src/modules/case-review/case-review.service";
 import { renderCsv, renderPdf } from "../../src/utils/report-export";
@@ -615,7 +618,7 @@ const main = async () => {
 
         section("actions — stubs are offered but flagged");
 
-        // flag_for_attorney is offered on cases per product, but not wired.
+        // flag_for_attorney runs on both matter types, by different idioms.
         const caseFlagIssue = await seedIssue(fx.organizationId, fx.leadId, {
           leadId: null,
           caseId: c.caseId,
@@ -632,7 +635,7 @@ const main = async () => {
           caseFlagDetail.actions as { key: string; stub: boolean }[]
         ).find((a) => a.key === "flag_for_attorney");
         check("flag_for_attorney is offered on a case issue", !!caseFlag, caseFlagDetail.actions);
-        checkEqual("but flagged as a stub on cases", caseFlag?.stub, true);
+        checkEqual("and is implemented for cases too", caseFlag?.stub, false);
 
         // mark_as_filed is offered on a filing issue but always a stub.
         const filingIssue = await seedIssue(fx.organizationId, fx.leadId, {
@@ -933,6 +936,150 @@ const main = async () => {
           0,
         );
 
+        section("actions — attorney dispatch on a case assigns a workflow step");
+
+        const [pendingStep] = await systemDb
+          .insert(caseWorkflowSteps)
+          .values({
+            organizationId: fx.organizationId,
+            caseId: c.caseId,
+            title: "Prepare filing",
+            orderIndex: 0,
+          })
+          .returning();
+
+        await service.runAction(
+          fx.organizationId,
+          caseFlagIssue.id,
+          "flag_for_attorney",
+          { staffId: fx.staffId, assigneeStaffId: attorney.id, deps },
+        );
+
+        const [assignedStep] = await systemDb
+          .select()
+          .from(caseWorkflowSteps)
+          .where(eq(caseWorkflowSteps.id, pendingStep.id));
+        checkEqual(
+          "the case's step went to the chosen attorney",
+          assignedStep?.assignedToId,
+          attorney.id,
+        );
+        checkEqual(
+          "assigning it starts the step",
+          assignedStep?.status,
+          "in_progress",
+        );
+        checkEqual(
+          "no lead task was created for a case issue",
+          (
+            await systemDb
+              .select()
+              .from(leadTasks)
+              .where(eq(leadTasks.leadId, fx.leadId))
+          ).length,
+          staged.length,
+        );
+
+        section("actions — a case with no assignable step is refused");
+
+        await systemDb
+          .update(caseWorkflowSteps)
+          .set({ status: "completed" })
+          .where(eq(caseWorkflowSteps.id, pendingStep.id));
+
+        let noStep = false;
+        try {
+          await service.runAction(
+            fx.organizationId,
+            caseFlagIssue.id,
+            "flag_for_attorney",
+            { staffId: fx.staffId, assigneeStaffId: attorney.id, deps },
+          );
+        } catch {
+          noStep = true;
+        }
+        check("a finished workflow has nothing to assign", noStep);
+
+        section("actions — a case team narrows the eligible attorneys");
+
+        // attorney and attorneyTwo are both in the firm; neither is on a team.
+        const [caseTeam] = await systemDb
+          .insert(team)
+          .values({
+            id: randomUUID(),
+            name: "Filing team",
+            organizationId: fx.organizationId,
+            createdAt: new Date(),
+          })
+          .returning();
+        await systemDb
+          .update(cases)
+          .set({ assignedTeamId: caseTeam.id })
+          .where(eq(cases.id, c.caseId));
+
+        const caseEligible = await service.getEligibleAssignees(
+          fx.organizationId,
+          caseFlagIssue.id,
+        );
+        checkEqual(
+          "an attorney off the case's team is not offered",
+          caseEligible.length,
+          0,
+        );
+
+        // Put one on the team — membership is keyed by user id, so the attorney
+        // needs a user before they can belong to one.
+        const teamUserId = `check-attorney-${randomUUID().slice(0, 8)}`;
+        await systemDb.insert(user).values({
+          id: teamUserId,
+          name: "Team Attorney",
+          email: `${teamUserId}@example.test`,
+          emailVerified: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+        await systemDb
+          .update(staff)
+          .set({ userId: teamUserId })
+          .where(eq(staff.id, attorney.id));
+        await systemDb.insert(teamMember).values({
+          id: randomUUID(),
+          teamId: caseTeam.id,
+          userId: teamUserId,
+          createdAt: new Date(),
+        });
+
+        const onTeam = await service.getEligibleAssignees(
+          fx.organizationId,
+          caseFlagIssue.id,
+        );
+        checkEqual("an attorney on the team is offered", onTeam.length, 1);
+        checkEqual("and it is the right one", onTeam[0]?.id, attorney.id);
+
+        const leadEligible = await service.getEligibleAssignees(
+          fx.organizationId,
+          leadIssue.id,
+        );
+        check(
+          "a lead issue is unaffected by case teams",
+          leadEligible.length === 2,
+          leadEligible.length,
+        );
+
+        await systemDb
+          .update(cases)
+          .set({ assignedTeamId: null })
+          .where(eq(cases.id, c.caseId));
+        await systemDb
+          .delete(teamMember)
+          .where(eq(teamMember.teamId, caseTeam.id));
+        await systemDb.delete(team).where(eq(team.id, caseTeam.id));
+        await systemDb
+          .update(staff)
+          .set({ userId: null })
+          .where(eq(staff.id, attorney.id));
+        await systemDb.delete(user).where(eq(user.id, teamUserId));
+
         section("actions — calendar dispatch (case)");
 
         await service.runAction(
@@ -984,6 +1131,13 @@ const main = async () => {
       await systemDb
         .delete(caseIssues)
         .where(eq(caseIssues.organizationId, fx.organizationId));
+      // assignStep writes a workflow_log row referencing the step.
+      await systemDb
+        .delete(workflowLog)
+        .where(eq(workflowLog.organizationId, fx.organizationId));
+      await systemDb
+        .delete(caseWorkflowSteps)
+        .where(eq(caseWorkflowSteps.organizationId, fx.organizationId));
       await systemDb
         .delete(scenarioDocumentRequirements)
         .where(
