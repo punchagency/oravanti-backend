@@ -7,6 +7,7 @@ import {
   leads,
 } from "../../db/schema";
 import type { LeadEventType } from "../../db/schema/leads";
+import { assertAssignableStaff } from "../../utils/assignable-staff";
 import { triggerScenarioScan } from "../ai-scan/scan-triggers";
 import { logLeadEvent } from "./lead-events.service";
 import { documents, documentVersions } from "../../db/schema/documents";
@@ -125,6 +126,10 @@ export class LeadWorkflowService {
     organizationId: string,
     actorId?: string | null,
   ) {
+    if (data.assignedToId) {
+      await assertAssignableStaff(data.assignedToId, organizationId);
+    }
+
     const [task] = await db
       .insert(leadTasks)
       .values({ ...data, organizationId })
@@ -181,6 +186,8 @@ export class LeadWorkflowService {
     actorId?: string | null,
   ) {
     const existing = await this.getTask(taskId, organizationId);
+    await assertAssignableStaff(assignedToId, organizationId);
+
     const [task] = await db
       .update(leadTasks)
       .set({
@@ -196,7 +203,12 @@ export class LeadWorkflowService {
     const [assignee] = await db
       .select({ name: sql<string>`concat(${staff.firstName}, ' ', ${staff.lastName})` })
       .from(staff)
-      .where(eq(staff.id, assignedToId))
+      .where(
+        and(
+          eq(staff.id, assignedToId),
+          eq(staff.organizationId, organizationId),
+        ),
+      )
       .limit(1);
 
     await logLeadEvent({
