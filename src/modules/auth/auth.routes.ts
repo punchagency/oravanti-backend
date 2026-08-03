@@ -454,5 +454,91 @@ export class AuthRouter {
       validateRequest({ body: this.validation.requiredBody("password") }),
       this.authController.disableTwoFactorAuth,
     );
+
+    /**
+     * @openapi
+     * /auth/two-factor/verify-setup:
+     *   post:
+     *     tags: [Auth]
+     *     summary: Verify a TOTP code to complete 2FA enrollment
+     *     security: [{ bearerAuth: [] }]
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [token]
+     *             properties:
+     *               token: { type: string }
+     *     responses:
+     *       200:
+     *         description: Code verified
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: "#/components/schemas/TotpVerifiedResponse"
+     */
+    this.router.post(
+      "/two-factor/verify-setup",
+      validateRequest({ body: this.validation.requiredBody("token") }),
+      this.authController.verifyTwoFactorSetup,
+    );
+
+    /**
+     * @openapi
+     * /auth/two-factor/verify-backup-code:
+     *   post:
+     *     tags: [Auth]
+     *     summary: Verify a backup code to complete 2FA sign-in
+     *     security: [{ bearerAuth: [] }]
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [code]
+     *             properties:
+     *               code: { type: string }
+     *     responses:
+     *       200:
+     *         description: Backup code verified
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: "#/components/schemas/MessageResponse"
+     */
+    this.router.post(
+      "/two-factor/verify-backup-code",
+      validateRequest({ body: this.validation.requiredBody("code") }),
+      this.authController.verifyTwoFactorBackupCode,
+    );
+
+    /**
+     * @openapi
+     * /auth/sessions/{token}:
+     *   delete:
+     *     tags: [Auth]
+     *     summary: Revoke a specific session by token
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: token
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200:
+     *         description: Session revoked
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: "#/components/schemas/MessageResponse"
+     */
+    this.router.delete(
+      "/sessions/:token",
+      validateRequest({ params: this.validation.tokenParams("token") }),
+      this.authController.revokeSessionByToken,
+    );
   }
 }

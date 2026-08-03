@@ -201,4 +201,38 @@ export class AuthController {
 
     sendSuccess(res, data, data.message ?? "Two-factor authentication disabled successfully");
   });
+
+  verifyTwoFactorSetup = asyncWrap(async (req, res) => {
+    const { token } = req.body;
+
+    const authResponse = await this.authService.verifyTOTP(token, req);
+
+    applyAuthHeaders(authResponse.headers, res);
+
+    const data = await authResponse.json();
+    sendSuccess(res, data, "Two-factor authentication verified");
+  });
+
+  verifyTwoFactorBackupCode = asyncWrap(async (req, res) => {
+    const { code } = req.body;
+
+    const authResponse = await this.authService.verifyTwoFactorBackupCode(
+      { code },
+      req,
+    );
+
+    applyAuthHeaders(authResponse.headers, res);
+
+    const data = await authResponse.json();
+    sendSuccess(res, data, data.message ?? "Backup code verified");
+  });
+
+  revokeSessionByToken = asyncWrap(async (req, res) => {
+    const token = String(req.params.token);
+
+    const authResponse = await this.authService.revokeSession(token, req);
+
+    const data = await authResponse.json();
+    sendSuccess(res, null, data.message ?? "Session revoked successfully");
+  });
 }

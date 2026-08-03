@@ -3,7 +3,6 @@ import { createCipheriv, createHash, randomBytes, randomUUID } from "crypto";
 import { inArray } from "drizzle-orm";
 import { Request } from "express";
 import { auth } from "../../auth";
-import { getRequestContext } from "../../middleware/request-context";
 import { env } from "../../config/env";
 import { db } from "../../db/client";
 import {
@@ -161,10 +160,9 @@ export class AuthService {
       );
     }
 
-    const displayName = [body.firstName, body.lastName]
-      .filter(Boolean)
-      .join(" ")
-      .trim() || "User";
+    const displayName =
+      [body.firstName, body.lastName].filter(Boolean).join(" ").trim() ||
+      "User";
 
     let response;
     try {
@@ -210,7 +208,6 @@ export class AuthService {
     identificationFiles: Express.Multer.File[],
     req: Request,
   ) => {
-    const { organizationId } = getRequestContext();
     const email = normalizeEmail(body.email);
     const specialtyIds = [...new Set(body.specialtyIds)];
     const certificationDocuments = body.certificationDocuments;
@@ -722,10 +719,7 @@ export class AuthService {
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const errorCode = errorData.code as
-        | "INVALID_TOKEN"
-        | "OTP_EXPIRED"
-        | "MISSING_FIELD"
-        | "VALIDATION_ERROR";
+        "INVALID_TOKEN" | "OTP_EXPIRED" | "MISSING_FIELD" | "VALIDATION_ERROR";
 
       const message = errorData.message || "Password reset failed";
 
@@ -799,10 +793,7 @@ export class AuthService {
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const errorCode = errorData.code as
-        | "UNAUTHORIZED"
-        | "INVALID_TOKEN"
-        | "MISSING_FIELD"
-        | "VALIDATION_ERROR";
+        "UNAUTHORIZED" | "INVALID_TOKEN" | "MISSING_FIELD" | "VALIDATION_ERROR";
 
       const message = errorData.message || "Session revocation failed";
 
@@ -866,9 +857,7 @@ export class AuthService {
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const errorCode = errorData.code as
-        | "INVALID_TOKEN"
-        | "MISSING_FIELD"
-        | "VALIDATION_ERROR";
+        "INVALID_TOKEN" | "MISSING_FIELD" | "VALIDATION_ERROR";
 
       const message = errorData.message || "Failed to retrieve sessions";
 
@@ -897,9 +886,7 @@ export class AuthService {
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const errorCode = errorData.code as
-        | "INVALID_PASSWORD"
-        | "MISSING_FIELD"
-        | "VALIDATION_ERROR";
+        "INVALID_PASSWORD" | "MISSING_FIELD" | "VALIDATION_ERROR";
 
       const message = errorData.message || "Failed to enable 2FA";
 
@@ -930,15 +917,56 @@ export class AuthService {
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const errorCode = errorData.code as
-        | "INVALID_PASSWORD"
-        | "MISSING_FIELD"
-        | "VALIDATION_ERROR";
+        "INVALID_PASSWORD" | "MISSING_FIELD" | "VALIDATION_ERROR";
 
       const message = errorData.message || "Failed to describe 2FA";
 
       switch (errorCode) {
         case "INVALID_PASSWORD":
           throw new AuthenticationError(message, errorData);
+        case "MISSING_FIELD":
+        case "VALIDATION_ERROR":
+          throw new ValidationError(message, errorData);
+        default:
+          throw new Error(message);
+      }
+    }
+
+    return response;
+  };
+
+  verifyTwoFactorBackupCode = async (
+    {
+      code,
+    }: {
+      code: string;
+    },
+    req: Request,
+  ) => {
+    const clientHeaders = fromNodeHeaders(req.headers);
+    const response = await auth.api.verifyBackupCode({
+      headers: clientHeaders,
+      body: { code },
+      asResponse: true,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorCode = errorData.code as
+        | "INVALID_BACKUP_CODE"
+        | "INVALID_CODE"
+        | "BACKUP_CODES_NOT_ENABLED"
+        | "MISSING_FIELD"
+        | "VALIDATION_ERROR";
+
+      const message = errorData.message || "Backup code verification failed";
+
+      switch (errorCode) {
+        case "INVALID_BACKUP_CODE":
+        case "INVALID_CODE":
+          throw new AuthenticationError(message, errorData);
+        case "BACKUP_CODES_NOT_ENABLED":
+          throw new BadRequestError(message, errorData);
         case "MISSING_FIELD":
         case "VALIDATION_ERROR":
           throw new ValidationError(message, errorData);
