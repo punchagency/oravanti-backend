@@ -17,6 +17,12 @@ import { DocumentsController } from "./documents.controller";
 
 const documentPermission = z.enum(["VIEW", "COMMENT", "EDIT", "ADMIN"]);
 const documentStatus = z.enum(["active", "archived", "deleted"]);
+const documentCategory = z.enum([
+  "application",
+  "supporting",
+  "identity",
+  "uscis_response",
+]);
 
 export class DocumentsRouter {
   public router: Router;
@@ -182,7 +188,10 @@ export class DocumentsRouter {
       "/",
       this.upload.single("file"),
       validateRequest({
-        body: this.validation.requiredBody("caseId", "title"),
+        body: this.validation.requiredBody("caseId", "title").extend({
+          caseId: this.validation.uuid,
+          category: documentCategory.optional(),
+        }),
       }),
       this.documentsController.uploadDocument,
     );
