@@ -23,6 +23,13 @@ const documentCategory = z.enum([
   "identity",
   "uscis_response",
 ]);
+const documentRequestStatus = z.enum([
+  "PENDING",
+  "SUBMITTED",
+  "PARTIALLY_SUBMITTED",
+  "EXPIRED",
+  "CANCELLED",
+]);
 
 export class DocumentsRouter {
   public router: Router;
@@ -112,8 +119,18 @@ export class DocumentsRouter {
      * /documents/requests:
      *   get:
      *     tags: [Documents]
-     *     summary: List external document requests
+     *     summary: List external document requests for the firm
      *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: query
+     *         name: caseId
+     *         schema: { type: string, format: uuid }
+     *       - in: query
+     *         name: leadId
+     *         schema: { type: string, format: uuid }
+     *       - in: query
+     *         name: status
+     *         schema: { type: string, enum: [PENDING, SUBMITTED, PARTIALLY_SUBMITTED, EXPIRED, CANCELLED] }
      *     responses:
      *       200:
      *         description: External document requests
@@ -123,7 +140,17 @@ export class DocumentsRouter {
      *               type: array
      *               items: { type: object }
      */
-    this.router.get("/requests", this.documentsController.getExternalRequests);
+    this.router.get(
+      "/requests",
+      validateRequest({
+        query: this.validation.query({
+          caseId: this.validation.uuid.optional(),
+          leadId: this.validation.uuid.optional(),
+          status: documentRequestStatus.optional(),
+        }),
+      }),
+      this.documentsController.getExternalRequests,
+    );
 
     /**
      * @openapi
@@ -209,24 +236,43 @@ export class DocumentsRouter {
      *         application/json:
      *           schema:
      *             type: object
-     *             required: [caseId, recipientEmail, expiresAt]
+     *             required: [recipientEmail, requestedLabel]
      *             properties:
      *               caseId: { type: string, format: uuid }
+     *               leadId: { type: string, format: uuid }
      *               recipientEmail: { type: string, format: email }
      *               recipientName: { type: string }
+     *               requestedLabel: { type: string }
      *               message: { type: string }
-     *               expiresAt: { type: string, format: date-time }
+     *               expiresAt: { type: string, format: date-time, description: "Defaults to 14 days out" }
      *     responses:
      *       201:
-     *         description: External document request created
+     *         description: External document request created, and the upload link emailed to the recipient
      */
     this.router.post(
       "/requests",
       validateRequest({
-        body: this.validation
-          .requiredBody("caseId", "recipientEmail", "expiresAt")
-          .extend({
-            expiresAt: z.string().datetime("expiresAt must be a valid ISO date"),
+        // Exactly one of caseId/leadId — the service enforces the same rule, but
+        // failing here keeps the error a 400 with a field the caller can fix.
+        body: z
+          .object({
+            caseId: this.validation.uuid.optional(),
+            leadId: this.validation.uuid.optional(),
+            recipientEmail: z.string().email("A valid recipient email is required"),
+            recipientName: z.string().trim().min(1).optional(),
+            requestedLabel: z
+              .string()
+              .trim()
+              .min(1, "Say what document is being requested"),
+            message: z.string().trim().optional(),
+            expiresAt: z
+              .string()
+              .datetime("expiresAt must be a valid ISO date")
+              .optional(),
+          })
+          .refine((body) => Boolean(body.caseId) !== Boolean(body.leadId), {
+            message: "A document request belongs to exactly one case or lead",
+            path: ["caseId"],
           }),
       }),
       this.documentsController.createExternalRequest,

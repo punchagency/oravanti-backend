@@ -11,7 +11,7 @@ import {
   or,
 } from "drizzle-orm";
 import { db } from "../../db/client";
-import { user } from "../../db/schema/auth-schema";
+import { organization, user } from "../../db/schema/auth-schema";
 import { cases } from "../../db/schema/cases";
 import { clients } from "../../db/schema/clients";
 import {
@@ -36,6 +36,9 @@ import {
   getPaginationOffset,
 } from "../../utils/pagination";
 import { storageService } from "../../utils/storage/storage.service";
+import { emailService } from "../../utils/email/email.service";
+import { generateDocumentRequestEmailTemplate } from "../../utils/email/email.types";
+import { env } from "../../config/env";
 import {
   triggerScanForDocument,
   triggerScenarioScan,
@@ -48,6 +51,12 @@ type DocumentCategory =
   | "supporting"
   | "identity"
   | "uscis_response";
+type DocumentRequestStatus =
+  | "PENDING"
+  | "SUBMITTED"
+  | "PARTIALLY_SUBMITTED"
+  | "EXPIRED"
+  | "CANCELLED";
 
 const permissionRank: Record<DocumentPermission, number> = {
   VIEW: 1,
@@ -825,6 +834,62 @@ export class DocumentsService {
     return { ...request, token };
   };
 
+  /**
+   * Create a document request *and* deliver it.
+   *
+   * `createExternalRequest` only records the request — the AI-review dispatcher
+   * pairs it with its own email. A request raised by hand from a matter has no
+   * such partner, so the delivery lives here: a request the client never hears
+   * about is a request that never happens.
+   */
+  requestDocumentFromClient = async (
+    organizationId: string,
+    userId: string,
+    data: {
+      caseId?: string;
+      leadId?: string;
+      recipientEmail: string;
+      recipientName?: string;
+      requestedLabel: string;
+      message?: string;
+      expiresAt: Date;
+    },
+  ) => {
+    const request = await this.createExternalRequest(organizationId, userId, data);
+
+    const [org] = await db
+      .select({ name: organization.name })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .limit(1);
+
+    const uploadLink = `${env.FRONTEND_APP_URL}/document-upload/${request.token}`;
+
+    // The request is already committed by this point, so a bounced send must not
+    // undo it. The caller gets `emailSent: false` and the link to pass on itself.
+    let emailSent = true;
+    try {
+      await emailService.sendEmail({
+        to: data.recipientEmail,
+        subject: `Document requested: ${data.requestedLabel}`,
+        html: generateDocumentRequestEmailTemplate({
+          recipientName: data.recipientName ?? null,
+          firmName: org?.name ?? "Your legal team",
+          requestedLabel: data.requestedLabel,
+          reason:
+            data.message?.trim() ||
+            "Your legal team needs this document to keep your matter moving.",
+          uploadLink,
+          expiresAt: data.expiresAt,
+        }),
+      });
+    } catch {
+      emailSent = false;
+    }
+
+    return { ...request, uploadLink, emailSent };
+  };
+
   submitExternalDocument = async (
     token: string,
     data: {
@@ -1134,14 +1199,63 @@ export class DocumentsService {
     );
   };
 
-  getExternalRequests = async (userId: string) =>
-    db
-      .select()
+  /**
+   * Outstanding requests for the firm, optionally narrowed to one matter.
+   *
+   * Scoped by organization rather than by who raised the request: chasing a
+   * client for a document is the matter's business, not one colleague's.
+   */
+  getExternalRequests = async (
+    organizationId: string,
+    filters?: { caseId?: string; leadId?: string; status?: DocumentRequestStatus },
+  ) => {
+    const conditions = [eq(documentRequests.organizationId, organizationId)];
+    if (filters?.caseId) {
+      conditions.push(eq(documentRequests.caseId, filters.caseId));
+    }
+    if (filters?.leadId) {
+      conditions.push(eq(documentRequests.leadId, filters.leadId));
+    }
+    if (filters?.status) {
+      conditions.push(eq(documentRequests.status, filters.status));
+    }
+
+    const rows = await db
+      .select({
+        id: documentRequests.id,
+        caseId: documentRequests.caseId,
+        leadId: documentRequests.leadId,
+        recipientName: documentRequests.recipientName,
+        recipientEmail: documentRequests.recipientEmail,
+        requestedLabel: documentRequests.requestedLabel,
+        message: documentRequests.message,
+        status: documentRequests.status,
+        expiresAt: documentRequests.expiresAt,
+        createdAt: documentRequests.createdAt,
+        requestedById: user.id,
+        requestedByName: user.name,
+        submissionCount: count(externalSubmissions.id),
+      })
       .from(documentRequests)
-      .where(eq(documentRequests.requestedByUserId, userId))
+      .leftJoin(user, eq(user.id, documentRequests.requestedByUserId))
+      .leftJoin(
+        externalSubmissions,
+        eq(externalSubmissions.requestId, documentRequests.id),
+      )
+      .where(and(...conditions))
+      .groupBy(documentRequests.id, user.id)
       .orderBy(desc(documentRequests.createdAt));
 
-  cancelExternalRequest = async (id: string, userId: string) => {
+    return rows.map((row) => ({
+      ...row,
+      submissionCount: Number(row.submissionCount),
+      requestedBy: row.requestedById
+        ? { id: row.requestedById, name: row.requestedByName }
+        : null,
+    }));
+  };
+
+  cancelExternalRequest = async (id: string, organizationId: string, userId: string) => {
     return db.transaction(async (tx) => {
       const [request] = await tx
         .update(documentRequests)
@@ -1149,7 +1263,7 @@ export class DocumentsService {
         .where(
           and(
             eq(documentRequests.id, id),
-            eq(documentRequests.requestedByUserId, userId),
+            eq(documentRequests.organizationId, organizationId),
             inArray(documentRequests.status, [
               "PENDING",
               "PARTIALLY_SUBMITTED",

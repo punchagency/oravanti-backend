@@ -6,6 +6,10 @@ import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { sendSuccess } from "../../utils/send-success";
 import * as documentsService from "./documents.service";
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Matches the window the AI-review dispatcher gives a client to respond. */
+const DEFAULT_REQUEST_EXPIRY_DAYS = 14;
+
 export class DocumentsController {
   private documentsService: documentsService.DocumentsService;
 
@@ -124,15 +128,19 @@ export class DocumentsController {
   });
 
   createExternalRequest = asyncWrap(async (req: Request, res: Response) => {
-    const result = await this.documentsService.createExternalRequest(
+    const result = await this.documentsService.requestDocumentFromClient(
       getRequestContext().organizationId!,
       getRequestContext().userId!,
       {
         caseId: req.body.caseId,
+        leadId: req.body.leadId,
         recipientEmail: req.body.recipientEmail,
         recipientName: req.body.recipientName,
+        requestedLabel: req.body.requestedLabel,
         message: req.body.message,
-        expiresAt: new Date(req.body.expiresAt),
+        expiresAt: req.body.expiresAt
+          ? new Date(req.body.expiresAt)
+          : new Date(Date.now() + DEFAULT_REQUEST_EXPIRY_DAYS * DAY_MS),
       },
     );
 
@@ -141,7 +149,12 @@ export class DocumentsController {
 
   getExternalRequests = asyncWrap(async (req: Request, res: Response) => {
     const result = await this.documentsService.getExternalRequests(
-      getRequestContext().userId!,
+      getRequestContext().organizationId!,
+      {
+        caseId: req.query.caseId as string | undefined,
+        leadId: req.query.leadId as string | undefined,
+        status: req.query.status as never,
+      },
     );
     sendSuccess(res, result, "External requests retrieved successfully");
   });
@@ -149,6 +162,7 @@ export class DocumentsController {
   cancelExternalRequest = asyncWrap(async (req: Request, res: Response) => {
     const result = await this.documentsService.cancelExternalRequest(
       req.params.requestId as string,
+      getRequestContext().organizationId!,
       getRequestContext().userId!,
     );
 
