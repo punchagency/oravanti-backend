@@ -174,5 +174,7 @@ export class StaffsService {
       .update(staff)
       .set({ avatarUrl })
       .where(eq(staff.id, staffRecord.id));
+
+    return { avatarUrl };
   }
 }
