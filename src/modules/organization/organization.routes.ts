@@ -2,13 +2,33 @@
  * @openapi
  * tags:
  *   - name: Organization
- *     description: Organization invitations & membership
+ *     description: Organization management (teams, staffs, invitations)
  */
 import { Router } from "express";
+import { z } from "zod";
 import { requireAuth } from "../../middleware/auth.middleware";
-import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { requirePermission } from "../../middleware/permission.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { OrganizationController } from "./organization.controller";
+
+const updateOrganizationBody = z
+  .object({
+    data: z
+      .object({
+        name: z.string().trim().min(1, "name is required").optional(),
+        slug: z.string().trim().min(1, "slug is required").optional(),
+        emailAddress: z.string().trim().min(1).optional(),
+        phoneNumber: z.string().trim().min(1).optional(),
+        address: z.string().trim().min(1).optional(),
+        city: z.string().trim().min(1).optional(),
+        state: z.string().trim().min(1).optional(),
+        zipCode: z.string().trim().min(1).optional(),
+        website: z.string().trim().min(1).optional(),
+        taxId: z.string().trim().min(1).optional(),
+      })
+      .strict(),
+  })
+  .strict();
 
 export class OrganizationRouter {
   public router: Router;
@@ -69,43 +89,22 @@ export class OrganizationRouter {
       this.organizationController.createTeam,
     );
     this.router.get(
-      "/staff",
+      "/staffs",
       requireAuth,
       requirePermission("staffs", "read"),
-      this.organizationController.getAll,
+      this.organizationController.getStaffs,
     );
     this.router.get(
-      "/staff/me",
+      "/staffs/:staffId",
       requireAuth,
       requirePermission("staffs", "read"),
-      this.organizationController.getMyStaff,
-    );
-    this.router.get(
-      "/staff/:staffId",
-      requireAuth,
-      requirePermission("staffs", "read"),
-      this.organizationController.getStaff,
+      this.organizationController.getStaffMember,
     );
     this.router.post(
       "/invite",
       requireAuth,
       requirePermission("staffs", "create"),
       this.organizationController.invite,
-    );
-    this.router.post(
-      "/accept-invite",
-      requireAuth,
-      this.organizationController.acceptInvite,
-    );
-    this.router.get(
-      "/my-pending-invitation",
-      requireAuth,
-      this.organizationController.getMyPendingInvitation,
-    );
-    this.router.get(
-      "/needs-setup",
-      requireAuth,
-      this.organizationController.needsSetup,
     );
     this.router.get(
       "/invitations",
@@ -119,22 +118,22 @@ export class OrganizationRouter {
       this.organizationController.cancelInvitation,
     );
     this.router.delete(
-      "/staff/:staffId",
+      "/staffs/:staffId",
       requireAuth,
       requirePermission("staffs", "delete"),
-      this.organizationController.deleteStaff,
+      this.organizationController.removeStaffMember,
     );
     this.router.patch(
-      "/staff/:staffId",
+      "/staffs/:staffId",
       requireAuth,
       requirePermission("staffs", "update"),
-      this.organizationController.updateStaff,
+      this.organizationController.updateStaffMember,
     );
     this.router.patch(
-      "/staff/:staffId/role",
+      "/staffs/:staffId/role",
       requireAuth,
       requirePermission("staffs", "update"),
-      this.organizationController.updateStaffRole,
+      this.organizationController.updateStaffMemberRole,
     );
     this.router.post(
       "/resend-invitation",
@@ -165,10 +164,15 @@ export class OrganizationRouter {
       requirePermission("staffs", "update"),
       this.organizationController.removeTeamMember,
     );
-    this.router.post(
-      "/set-password",
-      requireAuth,
-      this.organizationController.setPassword,
+    this.router.get("/needs-setup", this.organizationController.needsSetup);
+    this.router.get(
+      "/my-pending-invitation",
+      this.organizationController.getMyPendingInvitation,
     );
+    this.router.post(
+      "/accept-invite",
+      this.organizationController.acceptInvite,
+    );
+    this.router.post("/set-password", this.organizationController.setPassword);
   }
 }
