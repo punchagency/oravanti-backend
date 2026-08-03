@@ -281,6 +281,7 @@ export const getCaseById = async (id: string, organizationId: string) => {
       estimatedCompletionDate: cases.estimatedCompletionDate,
       clientId: clients.id,
       clientName: clients.displayName,
+      clientEmail: clients.email,
       practiceAreaId: practiceAreas.id,
       practiceAreaName: practiceAreas.name,
       caseTypeId: practiceAreaCaseTypes.id,
@@ -308,7 +309,9 @@ export const getCaseById = async (id: string, organizationId: string) => {
     status: row.status,
     createdAt: row.createdAt,
     estimatedCompletionDate: row.estimatedCompletionDate,
-    client: row.clientName ? { id: row.clientId, name: row.clientName } : null,
+    client: row.clientName
+      ? { id: row.clientId, name: row.clientName, email: row.clientEmail }
+      : null,
     practiceArea: row.practiceAreaName ? { id: row.practiceAreaId, name: row.practiceAreaName } : null,
     caseType: row.caseTypeName ? { id: row.caseTypeId, name: row.caseTypeName } : null,
     assignedTeam: row.assignedTeamName ? { id: row.assignedTeamId, name: row.assignedTeamName } : null,
