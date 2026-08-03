@@ -9,6 +9,7 @@ import multer from "multer";
 import { z } from "zod";
 
 import { requireAuth } from "../../middleware/auth.middleware";
+import { preserveRequestContext } from "../../middleware/request-context";
 import { resolveActorContext } from "../../middleware/resolve-actor-context";
 
 import { validateRequest } from "../../middleware/validate.middleware";
@@ -180,7 +181,7 @@ export class DocumentsRouter {
      */
     this.router.post(
       "/",
-      this.upload.single("file"),
+      preserveRequestContext(this.upload.single("file")),
       validateRequest({
         body: this.validation.requiredBody("caseId", "title"),
       }),
@@ -350,7 +351,7 @@ export class DocumentsRouter {
      */
     this.router.patch(
       "/:id",
-      this.upload.single("file"),
+      preserveRequestContext(this.upload.single("file")),
       validateRequest({ params: this.validation.idParams }),
       this.documentsController.updateDocument,
     );
@@ -382,7 +383,7 @@ export class DocumentsRouter {
      */
     this.router.post(
       "/:id/versions",
-      this.upload.single("file"),
+      preserveRequestContext(this.upload.single("file")),
       validateRequest({ params: this.validation.idParams }),
       this.documentsController.updateDocument,
     );
