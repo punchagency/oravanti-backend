@@ -6,6 +6,7 @@ import { staff } from "../../db/schema/staff";
 import { staffCertifications } from "../../db/schema/staff-certifications";
 import { timeEntries } from "../../db/schema/time-entries";
 import { dayjs } from "../../utils/date";
+import { resolveAvatarUrl } from "../../utils/storage/avatar-url";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -250,34 +251,36 @@ export const getRevenueAnalytics = async (
     fetchSkillLevelByStaff(staffIds),
   ]);
 
-  const staffMetrics = staffList.map((s) => {
-    const hourlyRate = parseFloat(s.hourlyRate ?? "0");
-    const monthlySalary = parseFloat(s.monthlySalary ?? "0");
-    const hours = hoursByStaff[s.id] ?? 0;
-    const periodMonths = period === "all" ? monthsSince(s.startDate) : months;
-    const salary = monthlySalary * periodMonths;
-    const revenue = hours * hourlyRate;
-    const profit = revenue - salary;
-    const roi = salary > 0 ? ((revenue - salary) / salary) * 100 : 0;
-    const revenuePerHour = hours > 0 ? revenue / hours : 0;
-    const salaryPerHour = hours > 0 ? salary / hours : 0;
+  const staffMetrics = await Promise.all(
+    staffList.map(async (s) => {
+      const hourlyRate = parseFloat(s.hourlyRate ?? "0");
+      const monthlySalary = parseFloat(s.monthlySalary ?? "0");
+      const hours = hoursByStaff[s.id] ?? 0;
+      const periodMonths = period === "all" ? monthsSince(s.startDate) : months;
+      const salary = monthlySalary * periodMonths;
+      const revenue = hours * hourlyRate;
+      const profit = revenue - salary;
+      const roi = salary > 0 ? ((revenue - salary) / salary) * 100 : 0;
+      const revenuePerHour = hours > 0 ? revenue / hours : 0;
+      const salaryPerHour = hours > 0 ? salary / hours : 0;
 
-    return {
-      id: s.id,
-      firstName: s.firstName,
-      lastName: s.lastName,
-      role: s.role,
-      avatarUrl: s.avatarUrl,
-      skillLevel: skillLevels[s.id] ?? null,
-      revenue: Math.round(revenue),
-      salary: Math.round(salary),
-      profit: Math.round(profit),
-      roi: Math.round(roi * 10) / 10,
-      hours: Math.round(hours * 10) / 10,
-      revenuePerHour: Math.round(revenuePerHour),
-      salaryPerHour: Math.round(salaryPerHour),
-    };
-  });
+      return {
+        id: s.id,
+        firstName: s.firstName,
+        lastName: s.lastName,
+        role: s.role,
+        avatarUrl: await resolveAvatarUrl(s.avatarUrl),
+        skillLevel: skillLevels[s.id] ?? null,
+        revenue: Math.round(revenue),
+        salary: Math.round(salary),
+        profit: Math.round(profit),
+        roi: Math.round(roi * 10) / 10,
+        hours: Math.round(hours * 10) / 10,
+        revenuePerHour: Math.round(revenuePerHour),
+        salaryPerHour: Math.round(salaryPerHour),
+      };
+    }),
+  );
 
   const totalRevenue = staffMetrics.reduce((acc, s) => acc + s.revenue, 0);
   const totalSalaries = staffMetrics.reduce((acc, s) => acc + s.salary, 0);

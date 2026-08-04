@@ -2,6 +2,7 @@
 import multer from "multer";
 
 import { requireAuth } from "../../middleware/auth.middleware";
+import { preserveRequestContext } from "../../middleware/request-context";
 import { resolveActorContext } from "../../middleware/resolve-actor-context";
 
 import { requirePermission } from "../../middleware/permission.middleware";
@@ -52,7 +53,7 @@ export class QuestionnairesRouter {
     );
     this.router.post(
       "/client/:token/files",
-      this.upload.single("file"),
+      preserveRequestContext(this.upload.single("file")),
       validateRequest({
         params: v.questionnaireClientTokenParamsSchema,
         body: v.uploadResponseFileBodySchema,
@@ -102,7 +103,7 @@ export class QuestionnairesRouter {
     this.router.post(
       "/responses/:responseId/files",
       ...staffGuards,
-      this.upload.single("file"),
+      preserveRequestContext(this.upload.single("file")),
       validateRequest({
         params: v.responseIdParamsSchema,
         body: v.uploadResponseFileStaffBodySchema,

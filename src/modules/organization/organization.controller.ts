@@ -20,22 +20,13 @@ export class OrganizationController {
     sendSuccess(res, result, "Team created successfully", 201);
   });
 
-  getStaff = asyncWrap(async (req: Request, res: Response) => {
+  getStaffMember = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     if (!organizationId) return res.status(400).json({ error: "No active organization" });
     const targetStaffId = req.params.staffId as string;
-    const result = await this.organizationService.getStaff(targetStaffId, organizationId);
+    const result = await this.organizationService.getStaffMember(targetStaffId, organizationId);
     if (!result) return res.status(404).json({ error: "Staff member not found" });
-    sendSuccess(res, result, "Staff retrieved successfully");
-  });
-
-  getMyStaff = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
-    if (!organizationId) return res.status(400).json({ error: "No active organization" });
-    if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const result = await this.organizationService.getStaffByUserId(userId, organizationId);
-    if (!result) return res.status(404).json({ error: "Staff member not found" });
-    sendSuccess(res, result, "Staff retrieved successfully");
+    sendSuccess(res, result, "Staff member retrieved successfully");
   });
 
   getTeam = asyncWrap(async (req: Request, res: Response) => {
@@ -55,11 +46,11 @@ export class OrganizationController {
     sendSuccess(res, result.data, "Teams retrieved successfully", 200, { pagination: result.pagination, counts: result.counts });
   });
 
-  getAll = asyncWrap(async (req: Request, res: Response) => {
+  getStaffs = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     if (!organizationId) return res.status(400).json({ error: "No active organization" });
     const { search, role, team, status, page, limit } = req.query as Record<string, string | undefined>;
-    const result = await this.organizationService.getAll(organizationId, { search, role, team, status, page: page ? parseInt(page, 10) : undefined, limit: limit ? parseInt(limit, 10) : undefined });
+    const result = await this.organizationService.listStaffs(organizationId, { search, role, team, status, page: page ? parseInt(page, 10) : undefined, limit: limit ? parseInt(limit, 10) : undefined });
     sendSuccess(res, result.data, "Staff retrieved successfully", 200, { pagination: result.pagination, counts: result.counts });
   });
 
@@ -71,12 +62,6 @@ export class OrganizationController {
     if (!organizationId) return res.status(400).json({ error: "No active organization" });
     const result = await this.organizationService.invite({ organizationId, firstName, lastName, email, orgEmail, phone, role, startDate, maxCaseload, caseTypeIds, teamIds }, req.headers as any);
     sendSuccess(res, { staffId: result.staffId, invitationId: result.invitationId }, "Invitation sent successfully", 201);
-  });
-
-  acceptInvite = asyncWrap(async (req: Request, res: Response) => {
-    const { invitationId } = req.body;
-    const data = await this.organizationService.acceptInvite(invitationId, req.headers as any);
-    sendSuccess(res, data, "Invitation accepted");
   });
 
   getInvitations = asyncWrap(async (req: Request, res: Response) => {
@@ -94,45 +79,31 @@ export class OrganizationController {
     sendSuccess(res, null, "Invitation cancelled");
   });
 
-  updateStaff = asyncWrap(async (req: Request, res: Response) => {
+  updateStaffMember = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     if (!organizationId) return res.status(400).json({ error: "No active organization" });
     const targetStaffId = req.params.staffId as string;
     const { phone, jobTitle, maxCaseload, startDate, email, orgEmail, firstName, lastName, caseTypeIds, teamIds } = req.body;
-    const result = await this.organizationService.updateStaff(targetStaffId, organizationId, { phone, jobTitle, maxCaseload, startDate, email, orgEmail, firstName, lastName, caseTypeIds, teamIds });
+    const result = await this.organizationService.updateStaffMember(targetStaffId, organizationId, { phone, jobTitle, maxCaseload, startDate, email, orgEmail, firstName, lastName, caseTypeIds, teamIds });
     sendSuccess(res, result, "Staff updated successfully");
   });
 
-  updateStaffRole = asyncWrap(async (req: Request, res: Response) => {
+  updateStaffMemberRole = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     if (!organizationId) return res.status(400).json({ error: "No active organization" });
     const targetStaffId = req.params.staffId as string;
     const { role } = req.body;
     if (!role) return res.status(400).json({ error: "role is required" });
-    await this.organizationService.updateStaffRole(targetStaffId, organizationId, role, req.headers as any);
+    await this.organizationService.updateStaffMemberRole(targetStaffId, organizationId, role, req.headers as any);
     sendSuccess(res, null, "Role updated successfully");
   });
 
-  getMyPendingInvitation = asyncWrap(async (req: Request, res: Response) => {
-    const { userId } = getRequestContext();
-    if (!userId) return res.status(401).json({ error: "Not authenticated" });
-    const invitation = await this.organizationService.getMyPendingInvitation(userId);
-    sendSuccess(res, { invitation });
-  });
-
-  needsSetup = asyncWrap(async (req: Request, res: Response) => {
-    const { userId } = getRequestContext();
-    if (!userId) return res.status(401).json({ error: "Not authenticated" });
-    const result = await this.organizationService.needsSetup(userId);
-    sendSuccess(res, result);
-  });
-
-  deleteStaff = asyncWrap(async (req: Request, res: Response) => {
+  removeStaffMember = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     if (!organizationId) return res.status(400).json({ error: "No active organization" });
     const targetStaffId = req.params.staffId as string;
-    await this.organizationService.deleteStaff(targetStaffId, organizationId);
-    sendSuccess(res, null, "Staff deleted successfully");
+    await this.organizationService.removeStaffMember(targetStaffId, organizationId);
+    sendSuccess(res, null, "Staff member deleted successfully");
   });
 
   deleteTeam = asyncWrap(async (req: Request, res: Response) => {
@@ -180,12 +151,56 @@ export class OrganizationController {
     sendSuccess(res, null, "Members added successfully");
   });
 
+  updateOrganization = asyncWrap(async (req: Request, res: Response) => {
+    const { data: organizationData } = req.body;
+    const authResponse = await this.organizationService.updateOrganization(
+      organizationData,
+      req,
+    );
+    const data = await authResponse.json();
+    sendSuccess(res, data, "Organization updated successfully");
+  });
+
+  acceptInvite = asyncWrap(async (req: Request, res: Response) => {
+    const { invitationId } = req.body;
+    if (!invitationId)
+      return res.status(400).json({ error: "invitationId is required" });
+    const data = await this.organizationService.acceptInvite(
+      invitationId,
+      req.headers as any,
+    );
+    sendSuccess(res, data, "Invitation accepted");
+  });
+
+  getMyPendingInvitation = asyncWrap(async (req: Request, res: Response) => {
+    const { userId } = getRequestContext();
+    if (!userId) return res.status(401).json({ error: "Not authenticated" });
+    const invitation = await this.organizationService.getMyPendingInvitation(
+      userId,
+    );
+    sendSuccess(res, { invitation });
+  });
+
+  needsSetup = asyncWrap(async (req: Request, res: Response) => {
+    const { userId } = getRequestContext();
+    if (!userId) return res.status(401).json({ error: "Not authenticated" });
+    const result = await this.organizationService.needsSetup(userId);
+    sendSuccess(res, result);
+  });
+
   setPassword = asyncWrap(async (req: Request, res: Response) => {
     const { userId } = getRequestContext();
     if (!userId) return res.status(401).json({ error: "Not authenticated" });
     const { currentPassword, newPassword } = req.body;
-    if (!currentPassword || !newPassword) return res.status(400).json({ error: "currentPassword and newPassword are required" });
-    const result = await this.organizationService.setPassword(userId, { currentPassword, newPassword }, req.headers as any);
+    if (!currentPassword || !newPassword)
+      return res
+        .status(400)
+        .json({ error: "currentPassword and newPassword are required" });
+    const result = await this.organizationService.setPassword(
+      userId,
+      { currentPassword, newPassword },
+      req.headers as any,
+    );
     sendSuccess(res, result, "Password set successfully");
   });
 }

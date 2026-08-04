@@ -12,8 +12,6 @@ import { and, eq } from "drizzle-orm";
 import { env } from "../config/env";
 import { systemDb } from "../db/client";
 import { staff } from "../db/schema";
-import { consultationSettings } from "../db/schema/consultation-settings";
-import { profiles } from "../db/schema/profiles";
 import {
   account,
   invitation,
@@ -26,6 +24,7 @@ import {
   user,
   verification,
 } from "../db/schema/auth-schema";
+import { consultationSettings } from "../db/schema/consultation-settings";
 import { emailService } from "../utils/email/email.service";
 import { databaseHooks } from "./database-hooks";
 import { ac, admin, attorney, owner, paralegal } from "./permissions";
@@ -267,15 +266,19 @@ export const auth = betterAuth({
         firmTimezone = settings?.timezone ?? "UTC";
       }
 
+      if (memberRole === "") {
+      }
+
       // User's own timezone preference (null → client falls back to browser).
-      const [profile] = await systemDb
-        .select({ timezone: profiles.timezone })
-        .from(profiles)
-        .where(eq(profiles.userId, user.id))
+      // Lives on the staff record (staff is the source of truth for profile data).
+      const [staffTimezone] = await systemDb
+        .select({ timezone: staff.timezone })
+        .from(staff)
+        .where(eq(staff.userId, user.id))
         .limit(1);
 
       return {
-        user: { ...user, timezone: profile?.timezone ?? null },
+        user: { ...user, timezone: staffTimezone?.timezone ?? null },
         session,
         memberRole,
         firmTimezone,

@@ -2,9 +2,17 @@ import { symmetricEncrypt } from "better-auth/crypto";
 import { fromNodeHeaders } from "better-auth/node";
 import { aliasedTable, and, desc, eq, inArray, sql } from "drizzle-orm";
 import { randomBytes, randomUUID } from "node:crypto";
+import { Request } from "express";
 import { auth } from "../../auth";
 import { env } from "../../config/env";
 import { db } from "../../db/client";
+import {
+  AuthorizationError,
+  BadRequestError,
+  ConflictError,
+  ExternalServiceError,
+  NotFoundError,
+} from "../../utils/error/app-error";
 import {
   practiceAreaCaseTypes,
   practiceAreas,
@@ -21,8 +29,9 @@ import {
   team as teamTable,
   user,
 } from "../../db/schema/auth-schema";
+import { resolveAvatarUrl } from "../../utils/storage/avatar-url";
 
-export interface GetAllFilters {
+export interface GetStaffsFilters {
   search?: string;
   role?: string;
   team?: string;
@@ -55,7 +64,7 @@ export interface InviteStaffParams {
   teamIds?: string[];
 }
 
-export interface UpdateStaffParams {
+export interface UpdateStaffMemberParams {
   phone?: string;
   jobTitle?: string;
   maxCaseload?: number;
@@ -64,12 +73,14 @@ export interface UpdateStaffParams {
   orgEmail?: string;
   firstName?: string;
   lastName?: string;
+  barNumber?: string;
+  timezone?: string;
   caseTypeIds?: string[];
   teamIds?: string[];
 }
 
 export class OrganizationService {
-  async getAll(organizationId: string, filters: GetAllFilters = {}) {
+  async listStaffs(organizationId: string, filters: GetStaffsFilters = {}) {
     const { search, role, team, status, page = 1, limit = 10 } = filters;
     const offset = (page - 1) * limit;
 
@@ -160,8 +171,10 @@ export class OrganizationService {
         staffRole: staff.role,
         status: staff.status,
         jobTitle: staff.jobTitle,
+        barNumber: staff.barNumber,
         startDate: staff.startDate,
         maxCaseload: staff.maxCaseload,
+        avatarUrl: staff.avatarUrl,
         createdAt: staff.createdAt,
         updatedAt: staff.updatedAt,
         practiceAreas: sql<{ id: string; name: string }[]>`
@@ -227,35 +240,39 @@ export class OrganizationService {
       .offset(offset);
 
     // Assemble final response rows: coalesce auth email/role with staff fallback
-    const data = rows.map((row) => ({
-      id: row.id,
-      userId: row.userId,
-      firstName: row.firstName,
-      lastName: row.lastName,
-      email: row.email ?? row.staffEmail,
-      orgEmail: row.orgEmail,
-      phone: row.phone,
-      role: row.role ?? row.staffRole,
-      memberId: row.memberId,
-      status: row.status,
-      jobTitle: row.jobTitle,
-      startDate: row.startDate,
-      maxCaseload: row.maxCaseload,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-      practiceAreas: row.practiceAreas ?? [],
-      subcategories: row.subcategories ?? [],
-      caseTypes: row.caseTypes ?? [],
-      teams: row.teams,
-    }));
+    const data = await Promise.all(
+      rows.map(async (row) => ({
+        id: row.id,
+        userId: row.userId,
+        firstName: row.firstName,
+        lastName: row.lastName,
+        email: row.email ?? row.staffEmail,
+        orgEmail: row.orgEmail,
+        phone: row.phone,
+        role: row.role ?? row.staffRole,
+        memberId: row.memberId,
+        status: row.status,
+        jobTitle: row.jobTitle,
+        barNumber: row.barNumber,
+        startDate: row.startDate,
+        maxCaseload: row.maxCaseload,
+        avatarUrl: await resolveAvatarUrl(row.avatarUrl),
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        practiceAreas: row.practiceAreas ?? [],
+        subcategories: row.subcategories ?? [],
+        caseTypes: row.caseTypes ?? [],
+        teams: row.teams,
+      })),
+    );
 
     // Unfiltered status counts for the summary bar (computed from all staff in org, ignoring filters)
-    const counts = await this.getCounts(organizationId);
+    const counts = await this.getStaffCounts(organizationId);
 
     return { data, counts, pagination: { total, limit, offset } };
   }
 
-  async getCounts(organizationId: string) {
+  async getStaffCounts(organizationId: string) {
     const [result] = await db
       .select({
         active: sql<number>`COUNT(*) FILTER (WHERE ${staff.status} = 'active')::int`,
@@ -267,17 +284,6 @@ export class OrganizationService {
       .where(eq(staff.organizationId, organizationId));
 
     return result;
-  }
-
-  async acceptInvite(
-    invitationId: string,
-    headers: Record<string, string | string[] | undefined>,
-  ) {
-    const data = await auth.api.acceptInvitation({
-      body: { invitationId },
-      headers: fromNodeHeaders(headers as Record<string, string>),
-    });
-    return data;
   }
 
   async listInvitations(
@@ -479,10 +485,117 @@ export class OrganizationService {
     return cancelled;
   }
 
-  async updateStaff(
+  async acceptInvite(
+    invitationId: string,
+    headers: Record<string, string | string[] | undefined>,
+  ) {
+    const data = await auth.api.acceptInvitation({
+      body: { invitationId },
+      headers: fromNodeHeaders(headers as Record<string, string>),
+    });
+    return data;
+  }
+
+  async getMyPendingInvitation(userId: string) {
+    const [userRecord] = await db
+      .select({ email: user.email })
+      .from(user)
+      .where(eq(user.id, userId))
+      .limit(1);
+
+    if (!userRecord?.email) return null;
+
+    const [pending] = await db
+      .select({
+        id: invitation.id,
+        email: invitation.email,
+        role: invitation.role,
+        status: invitation.status,
+        expiresAt: invitation.expiresAt,
+        createdAt: invitation.createdAt,
+        organizationId: invitation.organizationId,
+        organizationName: organization.name,
+        inviterId: invitation.inviterId,
+        inviterName: user.name,
+        inviterEmail: user.email,
+      })
+      .from(invitation)
+      .innerJoin(organization, eq(invitation.organizationId, organization.id))
+      .innerJoin(user, eq(invitation.inviterId, user.id))
+      .where(
+        and(
+          eq(invitation.email, userRecord.email),
+          eq(invitation.status, "pending"),
+        ),
+      )
+      .limit(1);
+
+    return pending || null;
+  }
+
+  async needsSetup(userId: string) {
+    const [userRecord] = await db
+      .select({ email: user.email })
+      .from(user)
+      .where(eq(user.id, userId))
+      .limit(1);
+
+    const [pendingResult] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(invitation)
+      .where(
+        and(
+          eq(invitation.email, userRecord?.email ?? ""),
+          eq(invitation.status, "pending"),
+        ),
+      );
+
+    const needsAcceptInvitation = (pendingResult?.count ?? 0) > 0;
+
+    const [staffRecord] = await db
+      .select({ tempPassword: staff.tempPassword })
+      .from(staff)
+      .where(eq(staff.userId, userId))
+      .limit(1);
+
+    const needsPasswordChange = !!staffRecord?.tempPassword;
+
+    return { needsAcceptInvitation, needsPasswordChange };
+  }
+
+  async setPassword(
+    userId: string,
+    params: { currentPassword: string; newPassword: string },
+    headers: Record<string, string | string[] | undefined>,
+  ) {
+    const response = await auth.api.changePassword({
+      headers: fromNodeHeaders(headers as Record<string, string>),
+      body: {
+        currentPassword: params.currentPassword,
+        newPassword: params.newPassword,
+        revokeOtherSessions: true,
+      },
+      asResponse: true,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.message || "Password change failed");
+    }
+
+    // Clear temp password so user can proceed to dashboard
+    await db
+      .update(staff)
+      .set({ tempPassword: null })
+      .where(eq(staff.userId, userId));
+
+    return { message: "Password set successfully" };
+  }
+
+  async updateStaffMember(
     staffId: string,
     organizationId: string,
-    params: UpdateStaffParams,
+    params: UpdateStaffMemberParams,
   ) {
     const {
       caseTypeIds,
@@ -599,7 +712,7 @@ export class OrganizationService {
     return { message: "Staff updated successfully" };
   }
 
-  async updateStaffRole(
+  async updateStaffMemberRole(
     staffId: string,
     organizationId: string,
     role: string,
@@ -638,102 +751,6 @@ export class OrganizationService {
     });
 
     return { message: "Role updated successfully" };
-  }
-
-  async getMyPendingInvitation(userId: string) {
-    const [userRecord] = await db
-      .select({ email: user.email })
-      .from(user)
-      .where(eq(user.id, userId))
-      .limit(1);
-
-    if (!userRecord?.email) return null;
-
-    const [pending] = await db
-      .select({
-        id: invitation.id,
-        email: invitation.email,
-        role: invitation.role,
-        status: invitation.status,
-        expiresAt: invitation.expiresAt,
-        createdAt: invitation.createdAt,
-        organizationId: invitation.organizationId,
-        organizationName: organization.name,
-        inviterId: invitation.inviterId,
-        inviterName: user.name,
-        inviterEmail: user.email,
-      })
-      .from(invitation)
-      .innerJoin(organization, eq(invitation.organizationId, organization.id))
-      .innerJoin(user, eq(invitation.inviterId, user.id))
-      .where(
-        and(
-          eq(invitation.email, userRecord.email),
-          eq(invitation.status, "pending"),
-        ),
-      )
-      .limit(1);
-
-    return pending || null;
-  }
-
-  async needsSetup(userId: string) {
-    const [userRecord] = await db
-      .select({ email: user.email })
-      .from(user)
-      .where(eq(user.id, userId))
-      .limit(1);
-
-    const [pendingResult] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(invitation)
-      .where(
-        and(
-          eq(invitation.email, userRecord?.email ?? ""),
-          eq(invitation.status, "pending"),
-        ),
-      );
-
-    const needsAcceptInvitation = (pendingResult?.count ?? 0) > 0;
-
-    const [staffRecord] = await db
-      .select({ tempPassword: staff.tempPassword })
-      .from(staff)
-      .where(eq(staff.userId, userId))
-      .limit(1);
-
-    const needsPasswordChange = !!staffRecord?.tempPassword;
-
-    return { needsAcceptInvitation, needsPasswordChange };
-  }
-
-  async setPassword(
-    userId: string,
-    params: { currentPassword: string; newPassword: string },
-    headers: Record<string, string | string[] | undefined>,
-  ) {
-    const response = await auth.api.changePassword({
-      headers: fromNodeHeaders(headers as Record<string, string>),
-      body: {
-        currentPassword: params.currentPassword,
-        newPassword: params.newPassword,
-        revokeOtherSessions: true,
-      },
-      asResponse: true,
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.message || "Password change failed");
-    }
-
-    // Clear temp password so user can proceed to dashboard
-    await db
-      .update(staff)
-      .set({ tempPassword: null })
-      .where(eq(staff.userId, userId));
-
-    return { message: "Password set successfully" };
   }
 
   async listTeams(
@@ -1211,7 +1228,7 @@ export class OrganizationService {
       .where(and(eq(teamTable.id, teamId), eq(teamTable.leadId, staffId)));
   }
 
-  async getStaff(staffId: string, organizationId: string) {
+  async getStaffMember(staffId: string, organizationId: string) {
     const [row] = await db
       .select({
         id: staff.id,
@@ -1223,9 +1240,15 @@ export class OrganizationService {
         phone: staff.phone,
         role: member.role,
         staffRole: staff.role,
+        memberId: member.id,
         status: staff.status,
+        jobTitle: staff.jobTitle,
+        barNumber: staff.barNumber,
         startDate: staff.startDate,
         maxCaseload: staff.maxCaseload,
+        avatarUrl: staff.avatarUrl,
+        createdAt: staff.createdAt,
+        updatedAt: staff.updatedAt,
         practiceAreas: sql<{ id: string; name: string }[]>`
           COALESCE(
             (
@@ -1293,106 +1316,7 @@ export class OrganizationService {
 
     if (!row) return null;
 
-    return {
-      id: row.id,
-      userId: row.userId,
-      firstName: row.firstName,
-      lastName: row.lastName,
-      email: row.email,
-      orgEmail: row.orgEmail,
-      phone: row.phone,
-      role: row.role ?? row.staffRole,
-      status: row.status,
-      startDate: row.startDate,
-      maxCaseload: row.maxCaseload,
-      practiceAreas: row.practiceAreas ?? [],
-      subcategories: row.subcategories ?? [],
-      caseTypes: row.caseTypes ?? [],
-      teams: row.teams ?? [],
-    };
-  }
-
-  async getStaffByUserId(userId: string, organizationId: string) {
-    const [row] = await db
-      .select({
-        id: staff.id,
-        userId: staff.userId,
-        firstName: staff.firstName,
-        lastName: staff.lastName,
-        email: user.email,
-        orgEmail: staff.orgEmail,
-        phone: staff.phone,
-        role: member.role,
-        staffRole: staff.role,
-        status: staff.status,
-        startDate: staff.startDate,
-        maxCaseload: staff.maxCaseload,
-        practiceAreas: sql<{ id: string; name: string }[]>`
-          COALESCE(
-            (
-              SELECT json_agg(DISTINCT jsonb_build_object('id', ${practiceAreas.id}, 'name', ${practiceAreas.name}))
-              FROM ${staffPracticeAreaCaseTypes}
-              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${staffPracticeAreaCaseTypes.caseTypeId}
-              INNER JOIN ${practiceAreaSubcategories} ON ${practiceAreaSubcategories.id} = ${practiceAreaCaseTypes.subcategoryId}
-              INNER JOIN ${practiceAreas} ON ${practiceAreas.id} = ${practiceAreaSubcategories.practiceAreaId}
-              WHERE ${staffPracticeAreaCaseTypes.staffId} = ${staff.id}
-            ),
-            '[]'::json
-          )
-        `,
-        subcategories: sql<{ id: string; name: string }[]>`
-          COALESCE(
-            (
-              SELECT json_agg(DISTINCT jsonb_build_object('id', ${practiceAreaSubcategories.id}, 'name', ${practiceAreaSubcategories.name}))
-              FROM ${staffPracticeAreaCaseTypes}
-              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${staffPracticeAreaCaseTypes.caseTypeId}
-              INNER JOIN ${practiceAreaSubcategories} ON ${practiceAreaSubcategories.id} = ${practiceAreaCaseTypes.subcategoryId}
-              WHERE ${staffPracticeAreaCaseTypes.staffId} = ${staff.id}
-            ),
-            '[]'::json
-          )
-        `,
-        caseTypes: sql<{ id: string; name: string }[]>`
-          COALESCE(
-            (
-              SELECT json_agg(json_build_object('id', ${staffPracticeAreaCaseTypes.caseTypeId}, 'name', ${practiceAreaCaseTypes.name}))
-              FROM ${staffPracticeAreaCaseTypes}
-              INNER JOIN ${practiceAreaCaseTypes} ON ${practiceAreaCaseTypes.id} = ${staffPracticeAreaCaseTypes.caseTypeId}
-              WHERE ${staffPracticeAreaCaseTypes.staffId} = ${staff.id}
-            ),
-            '[]'::json
-          )
-        `,
-        teams: sql<{ id: string; name: string }[]>`
-          COALESCE(
-            (
-              SELECT json_agg(json_build_object('id', ${teamTable.id}, 'name', ${teamTable.name}) ORDER BY ${teamTable.name})
-              FROM ${teamMember}
-              INNER JOIN ${teamTable} ON ${teamTable.id} = ${teamMember.teamId}
-              WHERE ${teamMember.userId} = ${staff.userId}
-            ),
-            '[]'::json
-          )
-        `,
-      })
-      .from(staff)
-      .leftJoin(user, eq(staff.userId, user.id))
-      .leftJoin(
-        member,
-        and(
-          eq(member.userId, staff.userId),
-          eq(member.organizationId, staff.organizationId),
-        ),
-      )
-      .where(
-        and(
-          eq(staff.userId, userId),
-          eq(staff.organizationId, organizationId),
-        ),
-      )
-      .limit(1);
-
-    if (!row) return null;
+    const avatarUrl = await resolveAvatarUrl(row.avatarUrl);
 
     return {
       id: row.id,
@@ -1403,9 +1327,15 @@ export class OrganizationService {
       orgEmail: row.orgEmail,
       phone: row.phone,
       role: row.role ?? row.staffRole,
+      memberId: row.memberId,
       status: row.status,
+      jobTitle: row.jobTitle,
+      barNumber: row.barNumber,
       startDate: row.startDate,
       maxCaseload: row.maxCaseload,
+      avatarUrl,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
       practiceAreas: row.practiceAreas ?? [],
       subcategories: row.subcategories ?? [],
       caseTypes: row.caseTypes ?? [],
@@ -1413,7 +1343,7 @@ export class OrganizationService {
     };
   }
 
-  async deleteStaff(staffId: string, organizationId: string) {
+  async removeStaffMember(staffId: string, organizationId: string) {
     const [staffMember] = await db
       .select({ userId: staff.userId })
       .from(staff)
@@ -1543,4 +1473,47 @@ export class OrganizationService {
       }
     }
   }
+
+  updateOrganization = async (data: Record<string, string>, req: Request) => {
+    const clientHeaders = fromNodeHeaders(req.headers);
+    const response = await auth.api.updateOrganization({
+      headers: clientHeaders,
+      body: { data },
+      asResponse: true,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorCode = errorData.code as
+        | "ORGANIZATION_SLUG_ALREADY_TAKEN"
+        | "ORGANIZATION_ALREADY_EXISTS"
+        | "ORGANIZATION_NOT_FOUND"
+        | "NO_ACTIVE_ORGANIZATION"
+        | "YOU_ARE_NOT_ALLOWED_TO_UPDATE_THIS_ORGANIZATION"
+        | "YOU_ARE_NOT_A_MEMBER_OF_THE_ORGANIZATION"
+        | "MISSING_FIELD"
+        | "VALIDATION_ERROR";
+
+      const message = errorData.message || "Failed to update organization";
+
+      switch (errorCode) {
+        case "ORGANIZATION_SLUG_ALREADY_TAKEN":
+        case "ORGANIZATION_ALREADY_EXISTS":
+          throw new ConflictError(message, errorData);
+        case "ORGANIZATION_NOT_FOUND":
+          throw new NotFoundError(message, errorData);
+        case "NO_ACTIVE_ORGANIZATION":
+        case "MISSING_FIELD":
+        case "VALIDATION_ERROR":
+          throw new BadRequestError(message, errorData);
+        case "YOU_ARE_NOT_ALLOWED_TO_UPDATE_THIS_ORGANIZATION":
+        case "YOU_ARE_NOT_A_MEMBER_OF_THE_ORGANIZATION":
+          throw new AuthorizationError(message, errorData);
+        default:
+          throw new ExternalServiceError(message, errorData);
+      }
+    }
+
+    return response;
+  };
 }

@@ -1,4 +1,5 @@
 import { NextFunction, Request, Response } from "express";
+import multer from "multer";
 import { getErrorResponse } from "../utils/error";
 import { HttpException } from "../utils/http.exception";
 
@@ -42,6 +43,18 @@ export const errorMiddleware = (
       status: "error",
       code: "TENANT_ISOLATION_VIOLATION",
       message: "Access denied: You are not authorized to perform actions on this resource.",
+    });
+  }
+
+  // Multer (multipart upload) errors
+  if (error instanceof multer.MulterError) {
+    const isTooLarge = error.code === "LIMIT_FILE_SIZE";
+    return res.status(isTooLarge ? 413 : 400).json({
+      status: "error",
+      code: isTooLarge ? "FILE_TOO_LARGE" : "UPLOAD_ERROR",
+      message: isTooLarge
+        ? "File is too large"
+        : error.message || "File upload failed",
     });
   }
 

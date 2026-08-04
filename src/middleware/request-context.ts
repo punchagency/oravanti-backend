@@ -1,5 +1,5 @@
 ﻿import { AsyncLocalStorage } from "node:async_hooks";
-import { Request, Response, NextFunction } from "express";
+import { Request, Response, NextFunction, RequestHandler } from "express";
 import { sql } from "drizzle-orm";
 
 export interface RequestContext {
@@ -44,6 +44,25 @@ export function setRequestContext(updates: Partial<Pick<RequestContext, "userId"
     if (updates.staffId !== undefined) store.staffId = updates.staffId;
     if (updates.rawUserDEK !== undefined) store.rawUserDEK = updates.rawUserDEK;
   }
+}
+
+/**
+ * Wraps a middleware (e.g. multer) so the AsyncLocalStorage request context is
+ * preserved when it resumes the chain. Multer calls next() from a stream event
+ * callback, which runs OUTSIDE the request's ALS context, so downstream
+ * handlers (controllers) would otherwise see an empty context (userId null).
+ */
+export function preserveRequestContext(handler: RequestHandler): RequestHandler {
+  return (req, res, next) => {
+    const store = requestContextStore.getStore();
+    handler(req, res, (err?: unknown) => {
+      if (store) {
+        requestContextStore.run(store, () => next(err as any));
+      } else {
+        next(err as any);
+      }
+    });
+  };
 }
 
 /**
