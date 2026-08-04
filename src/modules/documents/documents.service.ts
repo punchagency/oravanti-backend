@@ -9,6 +9,7 @@ import {
   isNull,
   max,
   or,
+  sql,
 } from "drizzle-orm";
 import { db } from "../../db/client";
 import { organization, user } from "../../db/schema/auth-schema";
@@ -25,6 +26,8 @@ import {
 } from "../../db/schema/documents";
 import { leadDocumentLinks } from "../../db/schema/lead-document-links";
 import { leads } from "../../db/schema/leads";
+import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
+import { practiceAreas } from "../../db/schema/practice-areas";
 import {
   AuthorizationError,
   BadRequestError,
@@ -90,6 +93,14 @@ const buildExternalStoragePath = (requestId: string, filename: string) =>
 
 const hashToken = (token: string) =>
   createHash("sha256").update(token).digest("hex");
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** How long a client has to act on a link, matching the AI-review dispatcher. */
+export const REQUEST_EXPIRY_DAYS = 14;
+
+/** The default expiry for a link issued now. */
+export const defaultRequestExpiry = () =>
+  new Date(Date.now() + REQUEST_EXPIRY_DAYS * DAY_MS);
 
 export class DocumentsService {
   private logActivity = async (data: {
@@ -886,6 +897,167 @@ export class DocumentsService {
     } catch {
       emailSent = false;
     }
+
+    return { ...request, uploadLink, emailSent };
+  };
+
+  /**
+   * What the recipient of an upload link is allowed to see about the request.
+   *
+   * The token is the only credential here, so this stays to what the client
+   * already knows: which of their matters this is (they may well have several),
+   * what was asked for, and how long they have. Status comes back too — a dead
+   * link should say so on arrival rather than after they pick a file.
+   */
+  getRequestByToken = async (token: string) => {
+    const [row] = await db
+      .select({
+        id: documentRequests.id,
+        status: documentRequests.status,
+        expiresAt: documentRequests.expiresAt,
+        requestedLabel: documentRequests.requestedLabel,
+        message: documentRequests.message,
+        recipientName: documentRequests.recipientName,
+        firmName: organization.name,
+        caseId: cases.id,
+        caseNumber: cases.caseNumber,
+        caseTypeName: practiceAreaCaseTypes.name,
+        practiceAreaName: practiceAreas.name,
+        clientName: clients.displayName,
+        leadId: leads.id,
+        leadFirstName: leads.firstName,
+        leadLastName: leads.lastName,
+      })
+      .from(documentRequests)
+      .leftJoin(organization, eq(organization.id, documentRequests.organizationId))
+      .leftJoin(cases, eq(cases.id, documentRequests.caseId))
+      .leftJoin(clients, eq(clients.id, cases.clientId))
+      .leftJoin(leads, eq(leads.id, documentRequests.leadId))
+      .leftJoin(
+        practiceAreas,
+        sql`${practiceAreas.id} = COALESCE(${cases.practiceAreaId}, ${leads.practiceAreaId})`,
+      )
+      .leftJoin(
+        practiceAreaCaseTypes,
+        eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+      )
+      .where(eq(documentRequests.tokenHash, hashToken(token)))
+      .limit(1);
+
+    if (!row) throw new NotFoundError("Document request not found");
+
+    // Read as expired rather than reporting a stale PENDING; the submit path
+    // flips the row itself when someone actually tries to use it.
+    const expired = row.expiresAt.getTime() <= Date.now();
+    const status = expired && row.status === "PENDING" ? "EXPIRED" : row.status;
+
+    return {
+      status,
+      expiresAt: row.expiresAt,
+      requestedLabel: row.requestedLabel,
+      message: row.message,
+      recipientName: row.recipientName,
+      firmName: row.firmName,
+      matter: row.caseId
+        ? {
+            type: "case" as const,
+            reference: row.caseNumber,
+            caseType: row.caseTypeName,
+            practiceArea: row.practiceAreaName,
+            clientName: row.clientName,
+          }
+        : {
+            type: "lead" as const,
+            reference: null,
+            caseType: null,
+            practiceArea: row.practiceAreaName,
+            clientName:
+              [row.leadFirstName, row.leadLastName].filter(Boolean).join(" ") ||
+              null,
+          },
+    };
+  };
+
+  /**
+   * Mint a fresh link for an open request, optionally emailing it.
+   *
+   * Rotation is the price of never storing the raw token: the only way to hand
+   * the link over a second time is to issue a new one, which retires whatever
+   * the recipient already had. Both nudging and copying go through here so the
+   * old link can never linger beside the new one.
+   */
+  reissueExternalRequest = async (
+    id: string,
+    organizationId: string,
+    userId: string,
+    options: { notify: boolean },
+  ) => {
+    const [existing] = await db
+      .select()
+      .from(documentRequests)
+      .where(
+        and(
+          eq(documentRequests.id, id),
+          eq(documentRequests.organizationId, organizationId),
+          inArray(documentRequests.status, ["PENDING", "PARTIALLY_SUBMITTED"]),
+        ),
+      )
+      .limit(1);
+
+    if (!existing) throw new NotFoundError("Open document request not found");
+
+    const token = randomBytes(32).toString("hex");
+    // A link the client has a day to act on is no use as a nudge, so the clock
+    // restarts with the link it belongs to.
+    const expiresAt = defaultRequestExpiry();
+
+    const [request] = await db
+      .update(documentRequests)
+      .set({ tokenHash: hashToken(token), expiresAt, updatedAt: new Date() })
+      .where(eq(documentRequests.id, id))
+      .returning();
+
+    const uploadLink = `${env.FRONTEND_APP_URL}/document-upload/${token}`;
+    let emailSent = false;
+
+    if (options.notify) {
+      const [org] = await db
+        .select({ name: organization.name })
+        .from(organization)
+        .where(eq(organization.id, organizationId))
+        .limit(1);
+
+      try {
+        await emailService.sendEmail({
+          to: request.recipientEmail,
+          subject: `Reminder: ${request.requestedLabel ?? "a document"} is still needed`,
+          html: generateDocumentRequestEmailTemplate({
+            recipientName: request.recipientName,
+            firmName: org?.name ?? "Your legal team",
+            requestedLabel: request.requestedLabel ?? "A document for your matter",
+            reason:
+              request.message?.trim() ||
+              "This is a reminder — we still need this document to keep your matter moving.",
+            uploadLink,
+            expiresAt,
+          }),
+        });
+        emailSent = true;
+      } catch {
+        emailSent = false;
+      }
+    }
+
+    await db.insert(documentActivityLogs).values({
+      actorUserId: userId,
+      action: "EXTERNAL_REQUEST_CREATED",
+      metadata: {
+        requestId: id,
+        reissued: true,
+        notified: emailSent,
+        recipientEmail: request.recipientEmail,
+      },
+    });
 
     return { ...request, uploadLink, emailSent };
   };

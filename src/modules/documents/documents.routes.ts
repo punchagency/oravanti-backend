@@ -94,6 +94,32 @@ export class DocumentsRouter {
       this.documentsController.submitExternalDocument,
     );
 
+    /**
+     * @openapi
+     * /documents/requests/{token}:
+     *   get:
+     *     tags: [Documents]
+     *     summary: Details of a document request, for the recipient of its link
+     *     description: >
+     *       Unauthenticated — the token is the credential. Returns only what the
+     *       recipient already knows: which matter the request belongs to, what
+     *       was asked for, and whether the link is still live.
+     *     parameters:
+     *       - in: path
+     *         name: token
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200:
+     *         description: Document request details
+     *       404: { description: Document request not found }
+     */
+    this.router.get(
+      "/requests/:token",
+      validateRequest({ params: this.validation.tokenParams("token") }),
+      this.documentsController.getExternalRequestByToken,
+    );
+
     this.router.use(requireAuth);
     this.router.use(resolveActorContext);
 
@@ -276,6 +302,43 @@ export class DocumentsRouter {
           }),
       }),
       this.documentsController.createExternalRequest,
+    );
+
+    /**
+     * @openapi
+     * /documents/requests/{requestId}/reissue:
+     *   post:
+     *     tags: [Documents]
+     *     summary: Issue a fresh upload link for an open request
+     *     description: >
+     *       Rotates the token, so any link already in the recipient's hands stops
+     *       working. Set `notify` false to mint a link to pass on by hand without
+     *       emailing a reminder.
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: requestId
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *     requestBody:
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             properties:
+     *               notify: { type: boolean, default: true }
+     *     responses:
+     *       200:
+     *         description: Fresh upload link issued
+     *       404: { description: Open document request not found }
+     */
+    this.router.post(
+      "/requests/:requestId/reissue",
+      validateRequest({
+        params: z.object({ requestId: this.validation.uuid }),
+        body: z.object({ notify: z.boolean().optional() }),
+      }),
+      this.documentsController.reissueExternalRequest,
     );
 
     /**

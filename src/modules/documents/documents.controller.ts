@@ -5,10 +5,8 @@ import { parsePaginationQuery } from "../../utils/pagination";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { sendSuccess } from "../../utils/send-success";
 import * as documentsService from "./documents.service";
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-/** Matches the window the AI-review dispatcher gives a client to respond. */
-const DEFAULT_REQUEST_EXPIRY_DAYS = 14;
+// Named separately: the instance field below shadows the namespace alias.
+import { defaultRequestExpiry } from "./documents.service";
 
 export class DocumentsController {
   private documentsService: documentsService.DocumentsService;
@@ -140,7 +138,7 @@ export class DocumentsController {
         message: req.body.message,
         expiresAt: req.body.expiresAt
           ? new Date(req.body.expiresAt)
-          : new Date(Date.now() + DEFAULT_REQUEST_EXPIRY_DAYS * DAY_MS),
+          : defaultRequestExpiry(),
       },
     );
 
@@ -157,6 +155,24 @@ export class DocumentsController {
       },
     );
     sendSuccess(res, result, "External requests retrieved successfully");
+  });
+
+  getExternalRequestByToken = asyncWrap(async (req: Request, res: Response) => {
+    const result = await this.documentsService.getRequestByToken(
+      req.params.token as string,
+    );
+    sendSuccess(res, result, "Document request retrieved successfully");
+  });
+
+  reissueExternalRequest = asyncWrap(async (req: Request, res: Response) => {
+    const result = await this.documentsService.reissueExternalRequest(
+      req.params.requestId as string,
+      getRequestContext().organizationId!,
+      getRequestContext().userId!,
+      { notify: req.body.notify !== false },
+    );
+
+    sendSuccess(res, result, "Document request re-issued successfully");
   });
 
   cancelExternalRequest = asyncWrap(async (req: Request, res: Response) => {
