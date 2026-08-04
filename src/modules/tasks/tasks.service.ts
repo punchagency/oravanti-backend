@@ -1,6 +1,7 @@
 import { and, count, desc, eq, gte, lte, or } from "drizzle-orm";
 import { db } from "../../db/client";
 import { admins, cases, clients, staff, tasks } from "../../db/schema";
+import { assertAssignableStaff } from "../../utils/assignable-staff";
 import { dayjs } from "../../utils/date";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 
@@ -192,6 +193,8 @@ export class TasksService {
     priority?: string;
     requiredCertifications?: string[];
   }) => {
+    await assertAssignableStaff(data.assignedToId, data.organizationId);
+
     const [newTask] = await db
       .insert(tasks)
       .values({

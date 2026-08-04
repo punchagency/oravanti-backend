@@ -8,7 +8,7 @@
  * resolution-log views, and the contextual action registry.
  */
 import { randomUUID } from "crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { systemDb } from "../../src/db/client";
 import { aiScanJobs } from "../../src/db/schema/ai-scan-jobs";
 import {
@@ -16,9 +16,14 @@ import {
   caseIssueEvents,
   caseIssues,
 } from "../../src/db/schema/case-issues";
+import { team, teamMember, user } from "../../src/db/schema/auth-schema";
+import { cases } from "../../src/db/schema/cases";
 import { scenarioDocumentRequirements } from "../../src/db/schema/document-requirements";
 import { calendarEvents } from "../../src/db/schema/calendar-events";
 import { leadTasks } from "../../src/db/schema/lead-tasks";
+import { staff } from "../../src/db/schema/staff";
+import { caseWorkflowSteps, workflowLog } from "../../src/db/schema/workflow";
+import type { DocumentRequestInput } from "../../src/modules/case-review/action-dispatch";
 import { CaseReviewService } from "../../src/modules/case-review/case-review.service";
 import { renderCsv, renderPdf } from "../../src/utils/report-export";
 import {
@@ -543,10 +548,17 @@ const main = async () => {
   // ── contextual actions ──────────────────────────────────────────────────────
   await withTempFixture({ docs: [], withCase: true }, async (fx) => {
     const c = fx.case!;
-    const sent: { to: string; subject: string }[] = [];
+    const sent: { to: string; subject: string; html: string }[] = [];
+    const requested: DocumentRequestInput[] = [];
     const deps = {
       sendEmail: async (o: { to: string; subject: string; html: string }) => {
-        sent.push({ to: o.to, subject: o.subject });
+        sent.push(o);
+      },
+      // Records the ask instead of writing a row, so the dispatch can be driven
+      // without creating real requests.
+      createDocumentRequest: async (input: DocumentRequestInput) => {
+        requested.push(input);
+        return { token: "test-token-abc" };
       },
     };
 
@@ -606,7 +618,7 @@ const main = async () => {
 
         section("actions — stubs are offered but flagged");
 
-        // flag_for_attorney is offered on cases per product, but not wired.
+        // flag_for_attorney runs on both matter types, by different idioms.
         const caseFlagIssue = await seedIssue(fx.organizationId, fx.leadId, {
           leadId: null,
           caseId: c.caseId,
@@ -623,7 +635,7 @@ const main = async () => {
           caseFlagDetail.actions as { key: string; stub: boolean }[]
         ).find((a) => a.key === "flag_for_attorney");
         check("flag_for_attorney is offered on a case issue", !!caseFlag, caseFlagDetail.actions);
-        checkEqual("but flagged as a stub on cases", caseFlag?.stub, true);
+        checkEqual("and is implemented for cases too", caseFlag?.stub, false);
 
         // mark_as_filed is offered on a filing issue but always a stub.
         const filingIssue = await seedIssue(fx.organizationId, fx.leadId, {
@@ -652,8 +664,7 @@ const main = async () => {
             fx.organizationId,
             filingIssue.id,
             "mark_as_filed",
-            fx.staffId,
-            deps,
+            { staffId: fx.staffId, deps },
           );
         } catch (err) {
           stubRejected = true;
@@ -681,8 +692,7 @@ const main = async () => {
           fx.organizationId,
           leadIssue.id,
           "request_reupload",
-          fx.staffId,
-          deps,
+          { staffId: fx.staffId, actorUserId: fx.userId, deps },
         )) as Record<string, unknown>;
         checkEqual("a mutation was reported", emailRes.kind, "mutation");
         checkEqual("one email was sent", sent.length, 1);
@@ -690,6 +700,36 @@ const main = async () => {
           "it went to the lead's address",
           sent[0]?.to.includes("lead-"),
           sent[0]?.to,
+        );
+
+        checkEqual("a document request was opened", requested.length, 1);
+        checkEqual(
+          "the request is scoped to the lead, not a case",
+          requested[0]?.leadId,
+          fx.leadId,
+        );
+        checkEqual(
+          "no case is attached to a lead-stage request",
+          requested[0]?.caseId,
+          undefined,
+        );
+        checkEqual(
+          "it records what was asked for",
+          requested[0]?.requestedLabel,
+          "Passport",
+        );
+        check(
+          "the email carries the upload link",
+          sent[0]?.html.includes("/document-upload/test-token-abc"),
+          sent[0]?.html.slice(0, 120),
+        );
+        check(
+          "the email names the document",
+          sent[0]?.html.includes("Passport"),
+        );
+        check(
+          "the email explains why, using the issue's own prose",
+          sent[0]?.html.includes("expires"),
         );
 
         const [afterEmail] = await systemDb
@@ -712,20 +752,333 @@ const main = async () => {
           emailEvents.map((e) => e.actionKey),
         );
 
-        section("actions — task dispatch (lead)");
+        section("actions — an attorney action with no attorney is refused");
+
+        // The fixture's only staff member is a paralegal.
+        let noAttorney = false;
+        try {
+          await service.runAction(
+            fx.organizationId,
+            leadIssue.id,
+            "flag_for_attorney",
+            { staffId: fx.staffId, deps },
+          );
+        } catch {
+          noAttorney = true;
+        }
+        check("an unassignable action is refused", noAttorney);
+        checkEqual(
+          "and no task was created for it",
+          (
+            await systemDb
+              .select()
+              .from(leadTasks)
+              .where(eq(leadTasks.leadId, fx.leadId))
+          ).length,
+          0,
+        );
+
+        section("actions — task dispatch assigns the attorney, not the actor");
+
+        const [attorney] = await systemDb
+          .insert(staff)
+          .values({
+            organizationId: fx.organizationId,
+            firstName: "Check",
+            lastName: "Attorney",
+            email: `attorney-${randomUUID().slice(0, 8)}@example.test`,
+            role: "attorney",
+            status: "active",
+          })
+          .returning();
 
         await service.runAction(
           fx.organizationId,
           leadIssue.id,
           "flag_for_attorney",
-          fx.staffId,
-          deps,
+          { staffId: fx.staffId, deps },
         );
         const tasks = await systemDb
           .select()
           .from(leadTasks)
           .where(eq(leadTasks.leadId, fx.leadId));
-        check("a lead task was created", tasks.length >= 1, tasks.length);
+        check("a lead task was created", tasks.length === 1, tasks.length);
+        checkEqual(
+          "a lone attorney is assigned without the caller choosing",
+          tasks[0]?.assignedToId,
+          attorney.id,
+        );
+        check(
+          "the acting paralegal was not assigned their own task",
+          tasks[0]?.assignedToId !== fx.staffId,
+        );
+        check("assignedAt was stamped", !!tasks[0]?.assignedAt);
+
+        section("actions — a second attorney makes the choice explicit");
+
+        const [attorneyTwo] = await systemDb
+          .insert(staff)
+          .values({
+            organizationId: fx.organizationId,
+            firstName: "Second",
+            lastName: "Attorney",
+            email: `attorney-${randomUUID().slice(0, 8)}@example.test`,
+            role: "attorney",
+            status: "active",
+          })
+          .returning();
+
+        const eligible = await service.getEligibleAssignees(
+          fx.organizationId,
+          leadIssue.id,
+        );
+        checkEqual("both attorneys are eligible", eligible.length, 2);
+        check(
+          "the paralegal is not offered",
+          !eligible.some((a) => a.id === fx.staffId),
+          eligible.map((a) => a.id),
+        );
+
+        let ambiguous = false;
+        try {
+          await service.runAction(
+            fx.organizationId,
+            leadIssue.id,
+            "flag_for_attorney",
+            { staffId: fx.staffId, deps },
+          );
+        } catch {
+          ambiguous = true;
+        }
+        check("an unspecified assignee is refused when there is a choice", ambiguous);
+
+        let ineligible = false;
+        try {
+          await service.runAction(
+            fx.organizationId,
+            leadIssue.id,
+            "flag_for_attorney",
+            { staffId: fx.staffId, assigneeStaffId: fx.staffId, deps },
+          );
+        } catch {
+          ineligible = true;
+        }
+        check("a non-attorney assignee is rejected", ineligible);
+
+        await service.runAction(
+          fx.organizationId,
+          leadIssue.id,
+          "flag_for_attorney",
+          { staffId: fx.staffId, assigneeStaffId: attorneyTwo.id, deps },
+        );
+        const chosen = await systemDb
+          .select()
+          .from(leadTasks)
+          .where(eq(leadTasks.leadId, fx.leadId));
+        check(
+          "the chosen attorney gets the task",
+          chosen.some((t) => t.assignedToId === attorneyTwo.id),
+          chosen.map((t) => t.assignedToId),
+        );
+
+        section("actions — the task lands on the issue's own stage");
+
+        // No requirement and no documents: falls back to the lead's stage.
+        check(
+          "an unattributable issue falls back to the lead's stage",
+          tasks[0]?.pipelineStage === "conflict_check",
+          tasks[0]?.pipelineStage,
+        );
+
+        const [requirement] = await systemDb
+          .insert(scenarioDocumentRequirements)
+          .values({
+            organizationId: fx.organizationId,
+            leadId: fx.leadId,
+            label: "Questionnaire upload",
+            source: "questionnaire",
+            isRequired: true,
+            orderIndex: 0,
+          })
+          .returning();
+        const questionnaireIssue = await seedIssue(
+          fx.organizationId,
+          fx.leadId,
+          {
+            issueType: "missing_required_document",
+            templateKey: "missing_required_document",
+            templateParams: { label: "Questionnaire upload" },
+            facts: { requirementId: requirement.id },
+          },
+        );
+
+        await service.runAction(
+          fx.organizationId,
+          questionnaireIssue.id,
+          "escalate_to_attorney",
+          { staffId: fx.staffId, assigneeStaffId: attorney.id, deps },
+        );
+        const staged = await systemDb
+          .select()
+          .from(leadTasks)
+          .where(eq(leadTasks.leadId, fx.leadId));
+        const questionnaireTask = staged.find(
+          (t) => t.pipelineStage === "questionnaire",
+        );
+        check(
+          "a questionnaire-sourced requirement files the task on that stage",
+          !!questionnaireTask,
+          staged.map((t) => t.pipelineStage),
+        );
+        checkEqual(
+          "orderIndex restarts per stage",
+          questionnaireTask?.orderIndex,
+          0,
+        );
+
+        section("actions — attorney dispatch on a case assigns a workflow step");
+
+        const [pendingStep] = await systemDb
+          .insert(caseWorkflowSteps)
+          .values({
+            organizationId: fx.organizationId,
+            caseId: c.caseId,
+            title: "Prepare filing",
+            orderIndex: 0,
+          })
+          .returning();
+
+        await service.runAction(
+          fx.organizationId,
+          caseFlagIssue.id,
+          "flag_for_attorney",
+          { staffId: fx.staffId, assigneeStaffId: attorney.id, deps },
+        );
+
+        const [assignedStep] = await systemDb
+          .select()
+          .from(caseWorkflowSteps)
+          .where(eq(caseWorkflowSteps.id, pendingStep.id));
+        checkEqual(
+          "the case's step went to the chosen attorney",
+          assignedStep?.assignedToId,
+          attorney.id,
+        );
+        checkEqual(
+          "assigning it starts the step",
+          assignedStep?.status,
+          "in_progress",
+        );
+        checkEqual(
+          "no lead task was created for a case issue",
+          (
+            await systemDb
+              .select()
+              .from(leadTasks)
+              .where(eq(leadTasks.leadId, fx.leadId))
+          ).length,
+          staged.length,
+        );
+
+        section("actions — a case with no assignable step is refused");
+
+        await systemDb
+          .update(caseWorkflowSteps)
+          .set({ status: "completed" })
+          .where(eq(caseWorkflowSteps.id, pendingStep.id));
+
+        let noStep = false;
+        try {
+          await service.runAction(
+            fx.organizationId,
+            caseFlagIssue.id,
+            "flag_for_attorney",
+            { staffId: fx.staffId, assigneeStaffId: attorney.id, deps },
+          );
+        } catch {
+          noStep = true;
+        }
+        check("a finished workflow has nothing to assign", noStep);
+
+        section("actions — a case team narrows the eligible attorneys");
+
+        // attorney and attorneyTwo are both in the firm; neither is on a team.
+        const [caseTeam] = await systemDb
+          .insert(team)
+          .values({
+            id: randomUUID(),
+            name: "Filing team",
+            organizationId: fx.organizationId,
+            createdAt: new Date(),
+          })
+          .returning();
+        await systemDb
+          .update(cases)
+          .set({ assignedTeamId: caseTeam.id })
+          .where(eq(cases.id, c.caseId));
+
+        const caseEligible = await service.getEligibleAssignees(
+          fx.organizationId,
+          caseFlagIssue.id,
+        );
+        checkEqual(
+          "an attorney off the case's team is not offered",
+          caseEligible.length,
+          0,
+        );
+
+        // Put one on the team — membership is keyed by user id, so the attorney
+        // needs a user before they can belong to one.
+        const teamUserId = `check-attorney-${randomUUID().slice(0, 8)}`;
+        await systemDb.insert(user).values({
+          id: teamUserId,
+          name: "Team Attorney",
+          email: `${teamUserId}@example.test`,
+          emailVerified: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+        await systemDb
+          .update(staff)
+          .set({ userId: teamUserId })
+          .where(eq(staff.id, attorney.id));
+        await systemDb.insert(teamMember).values({
+          id: randomUUID(),
+          teamId: caseTeam.id,
+          userId: teamUserId,
+          createdAt: new Date(),
+        });
+
+        const onTeam = await service.getEligibleAssignees(
+          fx.organizationId,
+          caseFlagIssue.id,
+        );
+        checkEqual("an attorney on the team is offered", onTeam.length, 1);
+        checkEqual("and it is the right one", onTeam[0]?.id, attorney.id);
+
+        const leadEligible = await service.getEligibleAssignees(
+          fx.organizationId,
+          leadIssue.id,
+        );
+        check(
+          "a lead issue is unaffected by case teams",
+          leadEligible.length === 2,
+          leadEligible.length,
+        );
+
+        await systemDb
+          .update(cases)
+          .set({ assignedTeamId: null })
+          .where(eq(cases.id, c.caseId));
+        await systemDb
+          .delete(teamMember)
+          .where(eq(teamMember.teamId, caseTeam.id));
+        await systemDb.delete(team).where(eq(team.id, caseTeam.id));
+        await systemDb
+          .update(staff)
+          .set({ userId: null })
+          .where(eq(staff.id, attorney.id));
+        await systemDb.delete(user).where(eq(user.id, teamUserId));
 
         section("actions — calendar dispatch (case)");
 
@@ -733,8 +1086,7 @@ const main = async () => {
           fx.organizationId,
           caseIssue.id,
           "set_calendar_alert",
-          fx.staffId,
-          deps,
+          { staffId: fx.staffId, deps },
         );
         const events = await systemDb
           .select()
@@ -748,8 +1100,7 @@ const main = async () => {
           fx.organizationId,
           caseIssue.id,
           "view_case",
-          fx.staffId,
-          deps,
+          { staffId: fx.staffId, deps },
         )) as Record<string, unknown>;
         checkEqual("navigate is reported as such", nav.kind, "navigate");
         checkEqual("it targets the case", nav.target, "case");
@@ -763,8 +1114,7 @@ const main = async () => {
             fx.organizationId,
             leadIssue.id,
             "set_calendar_alert",
-            fx.staffId,
-            deps,
+            { staffId: fx.staffId, deps },
           );
         } catch {
           rejected = true;
@@ -781,6 +1131,28 @@ const main = async () => {
       await systemDb
         .delete(caseIssues)
         .where(eq(caseIssues.organizationId, fx.organizationId));
+      // assignStep writes a workflow_log row referencing the step.
+      await systemDb
+        .delete(workflowLog)
+        .where(eq(workflowLog.organizationId, fx.organizationId));
+      await systemDb
+        .delete(caseWorkflowSteps)
+        .where(eq(caseWorkflowSteps.organizationId, fx.organizationId));
+      await systemDb
+        .delete(scenarioDocumentRequirements)
+        .where(
+          eq(scenarioDocumentRequirements.organizationId, fx.organizationId),
+        );
+      // Only the attorneys seeded above — the fixture's own paralegal is still
+      // referenced by the case's opened_by_id until withTempFixture tears down.
+      await systemDb
+        .delete(staff)
+        .where(
+          and(
+            eq(staff.organizationId, fx.organizationId),
+            eq(staff.role, "attorney"),
+          ),
+        );
     }
   });
 

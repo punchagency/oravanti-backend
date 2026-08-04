@@ -308,7 +308,10 @@ export class QuestionnairesController {
 
   getFilesByLeadId = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
-    const files = await this.svc.getFilesByLeadId(req.params.leadId as string);
+    const files = await this.svc.getFilesByLeadId(
+      req.params.leadId as string,
+      organizationId!,
+    );
     sendSuccess(res, files, "Lead files retrieved successfully");
   });
 }

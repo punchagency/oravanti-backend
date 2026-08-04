@@ -43,6 +43,12 @@ export type ActionDef = {
   stubScenarios?: ScenarioType[];
   /** Where a `navigate` action points, relative to the issue's scenario. */
   target?: "case" | "document";
+  /**
+   * The action routes work to an attorney and must be told which one. The UI
+   * asks; the server still decides (it resolves the eligible set, auto-picks a
+   * lone attorney, and rejects anyone outside it).
+   */
+  requiresAssignee?: boolean;
 };
 
 const BOTH: ScenarioType[] = ["lead", "case"];
@@ -85,6 +91,7 @@ const ESCALATE_TO_ATTORNEY = A({
   variant: "secondary",
   kind: "mutation",
   scenarios: ["lead"],
+  requiresAssignee: true,
 });
 
 const ASSIGN_TO_ATTORNEY = A({
@@ -94,6 +101,7 @@ const ASSIGN_TO_ATTORNEY = A({
   variant: "primary",
   kind: "mutation",
   scenarios: ["lead"],
+  requiresAssignee: true,
 });
 
 const FLAG_FOR_ATTORNEY = A({
@@ -102,10 +110,11 @@ const FLAG_FOR_ATTORNEY = A({
   pastLabel: "Flagged for attorney",
   variant: "secondary",
   kind: "mutation",
-  // Implemented for leads (creates a lead task); offered on cases too but not
-  // yet wired, since there is no case task table.
+  // Both matter types, by their own idiom: a lead gets a pipeline task, a case
+  // gets its current workflow step assigned. Cases have no task table — work on
+  // a case is a workflow step.
   scenarios: ["lead", "case"],
-  stubScenarios: ["case"],
+  requiresAssignee: true,
 });
 
 const REQUEST_POSTPONEMENT = A({
@@ -257,6 +266,8 @@ export type PresentedAction = {
   kind: ActionKind;
   target?: "case" | "document";
   stub: boolean;
+  /** The UI must collect an assignee before invoking this action. */
+  requiresAssignee: boolean;
 };
 
 export const presentActions = (
@@ -270,6 +281,7 @@ export const presentActions = (
     kind: a.kind,
     target: a.target,
     stub: isStubAction(a, scenarioType),
+    requiresAssignee: a.requiresAssignee ?? false,
   }));
 
 /**
