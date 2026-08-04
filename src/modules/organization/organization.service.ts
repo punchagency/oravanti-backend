@@ -29,6 +29,7 @@ import {
   team as teamTable,
   user,
 } from "../../db/schema/auth-schema";
+import { resolveAvatarUrl } from "../../utils/storage/avatar-url";
 
 export interface GetStaffsFilters {
   search?: string;
@@ -239,29 +240,31 @@ export class OrganizationService {
       .offset(offset);
 
     // Assemble final response rows: coalesce auth email/role with staff fallback
-    const data = rows.map((row) => ({
-      id: row.id,
-      userId: row.userId,
-      firstName: row.firstName,
-      lastName: row.lastName,
-      email: row.email ?? row.staffEmail,
-      orgEmail: row.orgEmail,
-      phone: row.phone,
-      role: row.role ?? row.staffRole,
-      memberId: row.memberId,
-      status: row.status,
-      jobTitle: row.jobTitle,
-      barNumber: row.barNumber,
-      startDate: row.startDate,
-      maxCaseload: row.maxCaseload,
-      avatarUrl: row.avatarUrl,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-      practiceAreas: row.practiceAreas ?? [],
-      subcategories: row.subcategories ?? [],
-      caseTypes: row.caseTypes ?? [],
-      teams: row.teams,
-    }));
+    const data = await Promise.all(
+      rows.map(async (row) => ({
+        id: row.id,
+        userId: row.userId,
+        firstName: row.firstName,
+        lastName: row.lastName,
+        email: row.email ?? row.staffEmail,
+        orgEmail: row.orgEmail,
+        phone: row.phone,
+        role: row.role ?? row.staffRole,
+        memberId: row.memberId,
+        status: row.status,
+        jobTitle: row.jobTitle,
+        barNumber: row.barNumber,
+        startDate: row.startDate,
+        maxCaseload: row.maxCaseload,
+        avatarUrl: await resolveAvatarUrl(row.avatarUrl),
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        practiceAreas: row.practiceAreas ?? [],
+        subcategories: row.subcategories ?? [],
+        caseTypes: row.caseTypes ?? [],
+        teams: row.teams,
+      })),
+    );
 
     // Unfiltered status counts for the summary bar (computed from all staff in org, ignoring filters)
     const counts = await this.getStaffCounts(organizationId);
@@ -1313,6 +1316,8 @@ export class OrganizationService {
 
     if (!row) return null;
 
+    const avatarUrl = await resolveAvatarUrl(row.avatarUrl);
+
     return {
       id: row.id,
       userId: row.userId,
@@ -1328,7 +1333,7 @@ export class OrganizationService {
       barNumber: row.barNumber,
       startDate: row.startDate,
       maxCaseload: row.maxCaseload,
-      avatarUrl: row.avatarUrl,
+      avatarUrl,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       practiceAreas: row.practiceAreas ?? [],

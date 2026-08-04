@@ -10,6 +10,7 @@ import {
   teamMember,
 } from "../../db/schema";
 import { member, user } from "../../db/schema/auth-schema";
+import { resolveAvatarUrl } from "../../utils/storage/avatar-url";
 import { storageService } from "../../utils/storage/storage.service";
 
 export interface UpdateOwnProfileParams {
@@ -106,6 +107,8 @@ export class StaffsService {
 
     if (!row) return null;
 
+    const avatarUrl = await resolveAvatarUrl(row.avatarUrl);
+
     return {
       id: row.id,
       userId: row.userId,
@@ -121,7 +124,7 @@ export class StaffsService {
       barNumber: row.barNumber,
       startDate: row.startDate,
       maxCaseload: row.maxCaseload,
-      avatarUrl: row.avatarUrl,
+      avatarUrl,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       practiceAreas: row.practiceAreas ?? [],
@@ -170,9 +173,11 @@ export class StaffsService {
 
     const avatarUrl = await storageService.getSignedDownloadUrl(key);
 
+    // Persist the R2 key, not the signed URL — presigned URLs expire (1h) and
+    // the browser fetches avatars directly from R2, so each read re-signs.
     await db
       .update(staff)
-      .set({ avatarUrl })
+      .set({ avatarUrl: key })
       .where(eq(staff.id, staffRecord.id));
 
     return { avatarUrl };

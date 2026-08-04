@@ -28,6 +28,11 @@ export class R2StorageService extends BaseStorageService {
         accessKeyId: env.R2_ACCESS_KEY_ID,
         secretAccessKey: env.R2_SECRET_ACCESS_KEY,
       },
+      // Newer aws-sdk versions append `x-amz-checksum-mode=ENABLED` to
+      // GetObject by default; Cloudflare R2 rejects that header (403), so
+      // only compute checksums when the API explicitly requires them.
+      requestChecksumCalculation: "WHEN_REQUIRED",
+      responseChecksumValidation: "WHEN_REQUIRED",
     });
   }
 
