@@ -5,6 +5,8 @@ import { parsePaginationQuery } from "../../utils/pagination";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { sendSuccess } from "../../utils/send-success";
 import * as documentsService from "./documents.service";
+// Named separately: the instance field below shadows the namespace alias.
+import { defaultRequestExpiry } from "./documents.service";
 
 export class DocumentsController {
   private documentsService: documentsService.DocumentsService;
@@ -124,15 +126,19 @@ export class DocumentsController {
   });
 
   createExternalRequest = asyncWrap(async (req: Request, res: Response) => {
-    const result = await this.documentsService.createExternalRequest(
+    const result = await this.documentsService.requestDocumentFromClient(
       getRequestContext().organizationId!,
       getRequestContext().userId!,
       {
         caseId: req.body.caseId,
+        leadId: req.body.leadId,
         recipientEmail: req.body.recipientEmail,
         recipientName: req.body.recipientName,
+        requestedLabel: req.body.requestedLabel,
         message: req.body.message,
-        expiresAt: new Date(req.body.expiresAt),
+        expiresAt: req.body.expiresAt
+          ? new Date(req.body.expiresAt)
+          : defaultRequestExpiry(),
       },
     );
 
@@ -141,14 +147,37 @@ export class DocumentsController {
 
   getExternalRequests = asyncWrap(async (req: Request, res: Response) => {
     const result = await this.documentsService.getExternalRequests(
-      getRequestContext().userId!,
+      getRequestContext().organizationId!,
+      {
+        caseId: req.query.caseId as string | undefined,
+        leadId: req.query.leadId as string | undefined,
+        status: req.query.status as never,
+      },
     );
     sendSuccess(res, result, "External requests retrieved successfully");
+  });
+
+  getExternalRequestByToken = asyncWrap(async (req: Request, res: Response) => {
+    const result = await this.documentsService.getRequestByToken(
+      req.params.token as string,
+    );
+    sendSuccess(res, result, "Document request retrieved successfully");
+  });
+
+  reissueExternalRequest = asyncWrap(async (req: Request, res: Response) => {
+    const result = await this.documentsService.reissueExternalRequest(
+      req.params.requestId as string,
+      getRequestContext().organizationId!,
+      getRequestContext().userId!,
+    );
+
+    sendSuccess(res, result, "Document request re-issued successfully");
   });
 
   cancelExternalRequest = asyncWrap(async (req: Request, res: Response) => {
     const result = await this.documentsService.cancelExternalRequest(
       req.params.requestId as string,
+      getRequestContext().organizationId!,
       getRequestContext().userId!,
     );
 

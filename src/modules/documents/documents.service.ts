@@ -9,9 +9,10 @@ import {
   isNull,
   max,
   or,
+  sql,
 } from "drizzle-orm";
 import { db } from "../../db/client";
-import { user } from "../../db/schema/auth-schema";
+import { organization, user } from "../../db/schema/auth-schema";
 import { cases } from "../../db/schema/cases";
 import { clients } from "../../db/schema/clients";
 import {
@@ -25,6 +26,8 @@ import {
 } from "../../db/schema/documents";
 import { leadDocumentLinks } from "../../db/schema/lead-document-links";
 import { leads } from "../../db/schema/leads";
+import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
+import { practiceAreas } from "../../db/schema/practice-areas";
 import {
   AuthorizationError,
   BadRequestError,
@@ -36,6 +39,9 @@ import {
   getPaginationOffset,
 } from "../../utils/pagination";
 import { storageService } from "../../utils/storage/storage.service";
+import { emailService } from "../../utils/email/email.service";
+import { generateDocumentRequestEmailTemplate } from "../../utils/email/email.types";
+import { env } from "../../config/env";
 import {
   triggerScanForDocument,
   triggerScenarioScan,
@@ -48,6 +54,12 @@ type DocumentCategory =
   | "supporting"
   | "identity"
   | "uscis_response";
+type DocumentRequestStatus =
+  | "PENDING"
+  | "SUBMITTED"
+  | "PARTIALLY_SUBMITTED"
+  | "EXPIRED"
+  | "CANCELLED";
 
 const permissionRank: Record<DocumentPermission, number> = {
   VIEW: 1,
@@ -81,6 +93,14 @@ const buildExternalStoragePath = (requestId: string, filename: string) =>
 
 const hashToken = (token: string) =>
   createHash("sha256").update(token).digest("hex");
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** How long a client has to act on a link, matching the AI-review dispatcher. */
+export const REQUEST_EXPIRY_DAYS = 14;
+
+/** The default expiry for a link issued now. */
+export const defaultRequestExpiry = () =>
+  new Date(Date.now() + REQUEST_EXPIRY_DAYS * DAY_MS);
 
 export class DocumentsService {
   private logActivity = async (data: {
@@ -825,6 +845,221 @@ export class DocumentsService {
     return { ...request, token };
   };
 
+  /**
+   * Create a document request *and* deliver it.
+   *
+   * `createExternalRequest` only records the request — the AI-review dispatcher
+   * pairs it with its own email. A request raised by hand from a matter has no
+   * such partner, so the delivery lives here: a request the client never hears
+   * about is a request that never happens.
+   */
+  requestDocumentFromClient = async (
+    organizationId: string,
+    userId: string,
+    data: {
+      caseId?: string;
+      leadId?: string;
+      recipientEmail: string;
+      recipientName?: string;
+      requestedLabel: string;
+      message?: string;
+      expiresAt: Date;
+    },
+  ) => {
+    const request = await this.createExternalRequest(organizationId, userId, data);
+
+    const [org] = await db
+      .select({ name: organization.name })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .limit(1);
+
+    const uploadLink = `${env.FRONTEND_APP_URL}/document-upload/${request.token}`;
+
+    // The request is already committed by this point, so a bounced send must not
+    // undo it. The caller gets `emailSent: false` and the link to pass on itself.
+    let emailSent = true;
+    try {
+      await emailService.sendEmail({
+        to: data.recipientEmail,
+        subject: `Document requested: ${data.requestedLabel}`,
+        html: generateDocumentRequestEmailTemplate({
+          recipientName: data.recipientName ?? null,
+          firmName: org?.name ?? "Your legal team",
+          requestedLabel: data.requestedLabel,
+          reason:
+            data.message?.trim() ||
+            "Your legal team needs this document to keep your matter moving.",
+          uploadLink,
+          expiresAt: data.expiresAt,
+        }),
+      });
+    } catch {
+      emailSent = false;
+    }
+
+    return { ...request, uploadLink, emailSent };
+  };
+
+  /**
+   * What the recipient of an upload link is allowed to see about the request.
+   *
+   * The token is the only credential here, so this stays to what the client
+   * already knows: which of their matters this is (they may well have several),
+   * what was asked for, and how long they have. Status comes back too — a dead
+   * link should say so on arrival rather than after they pick a file.
+   */
+  getRequestByToken = async (token: string) => {
+    const [row] = await db
+      .select({
+        id: documentRequests.id,
+        status: documentRequests.status,
+        expiresAt: documentRequests.expiresAt,
+        requestedLabel: documentRequests.requestedLabel,
+        message: documentRequests.message,
+        recipientName: documentRequests.recipientName,
+        firmName: organization.name,
+        caseId: cases.id,
+        caseNumber: cases.caseNumber,
+        caseTypeName: practiceAreaCaseTypes.name,
+        practiceAreaName: practiceAreas.name,
+        clientName: clients.displayName,
+        leadId: leads.id,
+        leadFirstName: leads.firstName,
+        leadLastName: leads.lastName,
+      })
+      .from(documentRequests)
+      .leftJoin(organization, eq(organization.id, documentRequests.organizationId))
+      .leftJoin(cases, eq(cases.id, documentRequests.caseId))
+      .leftJoin(clients, eq(clients.id, cases.clientId))
+      .leftJoin(leads, eq(leads.id, documentRequests.leadId))
+      .leftJoin(
+        practiceAreas,
+        sql`${practiceAreas.id} = COALESCE(${cases.practiceAreaId}, ${leads.practiceAreaId})`,
+      )
+      .leftJoin(
+        practiceAreaCaseTypes,
+        eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+      )
+      .where(eq(documentRequests.tokenHash, hashToken(token)))
+      .limit(1);
+
+    if (!row) throw new NotFoundError("Document request not found");
+
+    // Read as expired rather than reporting a stale PENDING; the submit path
+    // flips the row itself when someone actually tries to use it.
+    const expired = row.expiresAt.getTime() <= Date.now();
+    const status = expired && row.status === "PENDING" ? "EXPIRED" : row.status;
+
+    return {
+      status,
+      expiresAt: row.expiresAt,
+      requestedLabel: row.requestedLabel,
+      message: row.message,
+      recipientName: row.recipientName,
+      firmName: row.firmName,
+      matter: row.caseId
+        ? {
+            type: "case" as const,
+            reference: row.caseNumber,
+            caseType: row.caseTypeName,
+            practiceArea: row.practiceAreaName,
+            clientName: row.clientName,
+          }
+        : {
+            type: "lead" as const,
+            reference: null,
+            caseType: null,
+            practiceArea: row.practiceAreaName,
+            clientName:
+              [row.leadFirstName, row.leadLastName].filter(Boolean).join(" ") ||
+              null,
+          },
+    };
+  };
+
+  /**
+   * Nudge an open request: a fresh link, emailed as a reminder.
+   *
+   * Rotation is the price of never storing the raw token — the only way to send
+   * the link a second time is to issue a new one, which retires whatever the
+   * recipient already had. The fresh link is returned so the caller can offer it
+   * for copying; this is the last moment it is readable.
+   */
+  reissueExternalRequest = async (
+    id: string,
+    organizationId: string,
+    userId: string,
+  ) => {
+    const [existing] = await db
+      .select()
+      .from(documentRequests)
+      .where(
+        and(
+          eq(documentRequests.id, id),
+          eq(documentRequests.organizationId, organizationId),
+          inArray(documentRequests.status, ["PENDING", "PARTIALLY_SUBMITTED"]),
+        ),
+      )
+      .limit(1);
+
+    if (!existing) throw new NotFoundError("Open document request not found");
+
+    const token = randomBytes(32).toString("hex");
+    // A link the client has a day to act on is no use as a nudge, so the clock
+    // restarts with the link it belongs to.
+    const expiresAt = defaultRequestExpiry();
+
+    const [request] = await db
+      .update(documentRequests)
+      .set({ tokenHash: hashToken(token), expiresAt, updatedAt: new Date() })
+      .where(eq(documentRequests.id, id))
+      .returning();
+
+    const uploadLink = `${env.FRONTEND_APP_URL}/document-upload/${token}`;
+
+    const [org] = await db
+      .select({ name: organization.name })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .limit(1);
+
+    // The rotation is already committed, so a bounced reminder must not fail the
+    // call — the caller still has a link it can pass on by hand.
+    let emailSent = true;
+    try {
+      await emailService.sendEmail({
+        to: request.recipientEmail,
+        subject: `Reminder: ${request.requestedLabel ?? "a document"} is still needed`,
+        html: generateDocumentRequestEmailTemplate({
+          recipientName: request.recipientName,
+          firmName: org?.name ?? "Your legal team",
+          requestedLabel: request.requestedLabel ?? "A document for your matter",
+          reason:
+            request.message?.trim() ||
+            "This is a reminder — we still need this document to keep your matter moving.",
+          uploadLink,
+          expiresAt,
+        }),
+      });
+    } catch {
+      emailSent = false;
+    }
+
+    await db.insert(documentActivityLogs).values({
+      actorUserId: userId,
+      action: "EXTERNAL_REQUEST_CREATED",
+      metadata: {
+        requestId: id,
+        reissued: true,
+        notified: emailSent,
+        recipientEmail: request.recipientEmail,
+      },
+    });
+
+    return { ...request, uploadLink, emailSent };
+  };
+
   submitExternalDocument = async (
     token: string,
     data: {
@@ -1134,14 +1369,63 @@ export class DocumentsService {
     );
   };
 
-  getExternalRequests = async (userId: string) =>
-    db
-      .select()
+  /**
+   * Outstanding requests for the firm, optionally narrowed to one matter.
+   *
+   * Scoped by organization rather than by who raised the request: chasing a
+   * client for a document is the matter's business, not one colleague's.
+   */
+  getExternalRequests = async (
+    organizationId: string,
+    filters?: { caseId?: string; leadId?: string; status?: DocumentRequestStatus },
+  ) => {
+    const conditions = [eq(documentRequests.organizationId, organizationId)];
+    if (filters?.caseId) {
+      conditions.push(eq(documentRequests.caseId, filters.caseId));
+    }
+    if (filters?.leadId) {
+      conditions.push(eq(documentRequests.leadId, filters.leadId));
+    }
+    if (filters?.status) {
+      conditions.push(eq(documentRequests.status, filters.status));
+    }
+
+    const rows = await db
+      .select({
+        id: documentRequests.id,
+        caseId: documentRequests.caseId,
+        leadId: documentRequests.leadId,
+        recipientName: documentRequests.recipientName,
+        recipientEmail: documentRequests.recipientEmail,
+        requestedLabel: documentRequests.requestedLabel,
+        message: documentRequests.message,
+        status: documentRequests.status,
+        expiresAt: documentRequests.expiresAt,
+        createdAt: documentRequests.createdAt,
+        requestedById: user.id,
+        requestedByName: user.name,
+        submissionCount: count(externalSubmissions.id),
+      })
       .from(documentRequests)
-      .where(eq(documentRequests.requestedByUserId, userId))
+      .leftJoin(user, eq(user.id, documentRequests.requestedByUserId))
+      .leftJoin(
+        externalSubmissions,
+        eq(externalSubmissions.requestId, documentRequests.id),
+      )
+      .where(and(...conditions))
+      .groupBy(documentRequests.id, user.id)
       .orderBy(desc(documentRequests.createdAt));
 
-  cancelExternalRequest = async (id: string, userId: string) => {
+    return rows.map((row) => ({
+      ...row,
+      submissionCount: Number(row.submissionCount),
+      requestedBy: row.requestedById
+        ? { id: row.requestedById, name: row.requestedByName }
+        : null,
+    }));
+  };
+
+  cancelExternalRequest = async (id: string, organizationId: string, userId: string) => {
     return db.transaction(async (tx) => {
       const [request] = await tx
         .update(documentRequests)
@@ -1149,7 +1433,7 @@ export class DocumentsService {
         .where(
           and(
             eq(documentRequests.id, id),
-            eq(documentRequests.requestedByUserId, userId),
+            eq(documentRequests.organizationId, organizationId),
             inArray(documentRequests.status, [
               "PENDING",
               "PARTIALLY_SUBMITTED",

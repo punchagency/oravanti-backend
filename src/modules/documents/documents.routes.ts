@@ -18,6 +18,19 @@ import { DocumentsController } from "./documents.controller";
 
 const documentPermission = z.enum(["VIEW", "COMMENT", "EDIT", "ADMIN"]);
 const documentStatus = z.enum(["active", "archived", "deleted"]);
+const documentCategory = z.enum([
+  "application",
+  "supporting",
+  "identity",
+  "uscis_response",
+]);
+const documentRequestStatus = z.enum([
+  "PENDING",
+  "SUBMITTED",
+  "PARTIALLY_SUBMITTED",
+  "EXPIRED",
+  "CANCELLED",
+]);
 
 export class DocumentsRouter {
   public router: Router;
@@ -82,6 +95,32 @@ export class DocumentsRouter {
       this.documentsController.submitExternalDocument,
     );
 
+    /**
+     * @openapi
+     * /documents/requests/{token}:
+     *   get:
+     *     tags: [Documents]
+     *     summary: Details of a document request, for the recipient of its link
+     *     description: >
+     *       Unauthenticated — the token is the credential. Returns only what the
+     *       recipient already knows: which matter the request belongs to, what
+     *       was asked for, and whether the link is still live.
+     *     parameters:
+     *       - in: path
+     *         name: token
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200:
+     *         description: Document request details
+     *       404: { description: Document request not found }
+     */
+    this.router.get(
+      "/requests/:token",
+      validateRequest({ params: this.validation.tokenParams("token") }),
+      this.documentsController.getExternalRequestByToken,
+    );
+
     this.router.use(requireAuth);
     this.router.use(resolveActorContext);
 
@@ -107,8 +146,18 @@ export class DocumentsRouter {
      * /documents/requests:
      *   get:
      *     tags: [Documents]
-     *     summary: List external document requests
+     *     summary: List external document requests for the firm
      *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: query
+     *         name: caseId
+     *         schema: { type: string, format: uuid }
+     *       - in: query
+     *         name: leadId
+     *         schema: { type: string, format: uuid }
+     *       - in: query
+     *         name: status
+     *         schema: { type: string, enum: [PENDING, SUBMITTED, PARTIALLY_SUBMITTED, EXPIRED, CANCELLED] }
      *     responses:
      *       200:
      *         description: External document requests
@@ -118,7 +167,17 @@ export class DocumentsRouter {
      *               type: array
      *               items: { type: object }
      */
-    this.router.get("/requests", this.documentsController.getExternalRequests);
+    this.router.get(
+      "/requests",
+      validateRequest({
+        query: this.validation.query({
+          caseId: this.validation.uuid.optional(),
+          leadId: this.validation.uuid.optional(),
+          status: documentRequestStatus.optional(),
+        }),
+      }),
+      this.documentsController.getExternalRequests,
+    );
 
     /**
      * @openapi
@@ -183,7 +242,10 @@ export class DocumentsRouter {
       "/",
       preserveRequestContext(this.upload.single("file")),
       validateRequest({
-        body: this.validation.requiredBody("caseId", "title"),
+        body: this.validation.requiredBody("caseId", "title").extend({
+          caseId: this.validation.uuid,
+          category: documentCategory.optional(),
+        }),
       }),
       this.documentsController.uploadDocument,
     );
@@ -201,27 +263,75 @@ export class DocumentsRouter {
      *         application/json:
      *           schema:
      *             type: object
-     *             required: [caseId, recipientEmail, expiresAt]
+     *             required: [recipientEmail, requestedLabel]
      *             properties:
      *               caseId: { type: string, format: uuid }
+     *               leadId: { type: string, format: uuid }
      *               recipientEmail: { type: string, format: email }
      *               recipientName: { type: string }
+     *               requestedLabel: { type: string }
      *               message: { type: string }
-     *               expiresAt: { type: string, format: date-time }
+     *               expiresAt: { type: string, format: date-time, description: "Defaults to 14 days out" }
      *     responses:
      *       201:
-     *         description: External document request created
+     *         description: External document request created, and the upload link emailed to the recipient
      */
     this.router.post(
       "/requests",
       validateRequest({
-        body: this.validation
-          .requiredBody("caseId", "recipientEmail", "expiresAt")
-          .extend({
-            expiresAt: z.string().datetime("expiresAt must be a valid ISO date"),
+        // Exactly one of caseId/leadId — the service enforces the same rule, but
+        // failing here keeps the error a 400 with a field the caller can fix.
+        body: z
+          .object({
+            caseId: this.validation.uuid.optional(),
+            leadId: this.validation.uuid.optional(),
+            recipientEmail: z.string().email("A valid recipient email is required"),
+            recipientName: z.string().trim().min(1).optional(),
+            requestedLabel: z
+              .string()
+              .trim()
+              .min(1, "Say what document is being requested"),
+            message: z.string().trim().optional(),
+            expiresAt: z
+              .string()
+              .datetime("expiresAt must be a valid ISO date")
+              .optional(),
+          })
+          .refine((body) => Boolean(body.caseId) !== Boolean(body.leadId), {
+            message: "A document request belongs to exactly one case or lead",
+            path: ["caseId"],
           }),
       }),
       this.documentsController.createExternalRequest,
+    );
+
+    /**
+     * @openapi
+     * /documents/requests/{requestId}/reissue:
+     *   post:
+     *     tags: [Documents]
+     *     summary: Resend an open request with a fresh upload link
+     *     description: >
+     *       Emails the recipient a reminder and rotates the token, so any link
+     *       already in their hands stops working. The fresh link comes back in
+     *       the response — the only moment it is readable.
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: requestId
+     *         required: true
+     *         schema: { type: string, format: uuid }
+     *     responses:
+     *       200:
+     *         description: Reminder sent and fresh upload link issued
+     *       404: { description: Open document request not found }
+     */
+    this.router.post(
+      "/requests/:requestId/reissue",
+      validateRequest({
+        params: z.object({ requestId: this.validation.uuid }),
+      }),
+      this.documentsController.reissueExternalRequest,
     );
 
     /**
