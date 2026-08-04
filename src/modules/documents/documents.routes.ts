@@ -309,34 +309,26 @@ export class DocumentsRouter {
      * /documents/requests/{requestId}/reissue:
      *   post:
      *     tags: [Documents]
-     *     summary: Issue a fresh upload link for an open request
+     *     summary: Resend an open request with a fresh upload link
      *     description: >
-     *       Rotates the token, so any link already in the recipient's hands stops
-     *       working. Set `notify` false to mint a link to pass on by hand without
-     *       emailing a reminder.
+     *       Emails the recipient a reminder and rotates the token, so any link
+     *       already in their hands stops working. The fresh link comes back in
+     *       the response — the only moment it is readable.
      *     security: [{ bearerAuth: [] }]
      *     parameters:
      *       - in: path
      *         name: requestId
      *         required: true
      *         schema: { type: string, format: uuid }
-     *     requestBody:
-     *       content:
-     *         application/json:
-     *           schema:
-     *             type: object
-     *             properties:
-     *               notify: { type: boolean, default: true }
      *     responses:
      *       200:
-     *         description: Fresh upload link issued
+     *         description: Reminder sent and fresh upload link issued
      *       404: { description: Open document request not found }
      */
     this.router.post(
       "/requests/:requestId/reissue",
       validateRequest({
         params: z.object({ requestId: this.validation.uuid }),
-        body: z.object({ notify: z.boolean().optional() }),
       }),
       this.documentsController.reissueExternalRequest,
     );

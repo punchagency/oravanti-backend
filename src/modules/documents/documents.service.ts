@@ -979,18 +979,17 @@ export class DocumentsService {
   };
 
   /**
-   * Mint a fresh link for an open request, optionally emailing it.
+   * Nudge an open request: a fresh link, emailed as a reminder.
    *
-   * Rotation is the price of never storing the raw token: the only way to hand
-   * the link over a second time is to issue a new one, which retires whatever
-   * the recipient already had. Both nudging and copying go through here so the
-   * old link can never linger beside the new one.
+   * Rotation is the price of never storing the raw token — the only way to send
+   * the link a second time is to issue a new one, which retires whatever the
+   * recipient already had. The fresh link is returned so the caller can offer it
+   * for copying; this is the last moment it is readable.
    */
   reissueExternalRequest = async (
     id: string,
     organizationId: string,
     userId: string,
-    options: { notify: boolean },
   ) => {
     const [existing] = await db
       .select()
@@ -1018,34 +1017,33 @@ export class DocumentsService {
       .returning();
 
     const uploadLink = `${env.FRONTEND_APP_URL}/document-upload/${token}`;
-    let emailSent = false;
 
-    if (options.notify) {
-      const [org] = await db
-        .select({ name: organization.name })
-        .from(organization)
-        .where(eq(organization.id, organizationId))
-        .limit(1);
+    const [org] = await db
+      .select({ name: organization.name })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .limit(1);
 
-      try {
-        await emailService.sendEmail({
-          to: request.recipientEmail,
-          subject: `Reminder: ${request.requestedLabel ?? "a document"} is still needed`,
-          html: generateDocumentRequestEmailTemplate({
-            recipientName: request.recipientName,
-            firmName: org?.name ?? "Your legal team",
-            requestedLabel: request.requestedLabel ?? "A document for your matter",
-            reason:
-              request.message?.trim() ||
-              "This is a reminder — we still need this document to keep your matter moving.",
-            uploadLink,
-            expiresAt,
-          }),
-        });
-        emailSent = true;
-      } catch {
-        emailSent = false;
-      }
+    // The rotation is already committed, so a bounced reminder must not fail the
+    // call — the caller still has a link it can pass on by hand.
+    let emailSent = true;
+    try {
+      await emailService.sendEmail({
+        to: request.recipientEmail,
+        subject: `Reminder: ${request.requestedLabel ?? "a document"} is still needed`,
+        html: generateDocumentRequestEmailTemplate({
+          recipientName: request.recipientName,
+          firmName: org?.name ?? "Your legal team",
+          requestedLabel: request.requestedLabel ?? "A document for your matter",
+          reason:
+            request.message?.trim() ||
+            "This is a reminder — we still need this document to keep your matter moving.",
+          uploadLink,
+          expiresAt,
+        }),
+      });
+    } catch {
+      emailSent = false;
     }
 
     await db.insert(documentActivityLogs).values({

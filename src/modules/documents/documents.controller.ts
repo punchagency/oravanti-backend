@@ -169,7 +169,6 @@ export class DocumentsController {
       req.params.requestId as string,
       getRequestContext().organizationId!,
       getRequestContext().userId!,
-      { notify: req.body.notify !== false },
     );
 
     sendSuccess(res, result, "Document request re-issued successfully");
