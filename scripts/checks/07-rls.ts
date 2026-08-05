@@ -44,6 +44,13 @@ const TENANT_TABLES = [
   "case_issue_documents",
   "case_issue_events",
   "ai_scan_jobs",
+  "invoices",
+  "invoice_line_items",
+  "invoice_payments",
+  "invoice_followups",
+  "finance_events",
+  "billing_rates",
+  "time_entries",
 ] as const;
 
 const main = async () => {
