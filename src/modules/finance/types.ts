@@ -26,6 +26,8 @@ export type InvoiceStatusFilter =
 
 export type AccountFilter = "all" | "operating" | "trust";
 
+export type FollowupChannelInput = "email" | "sms" | "both";
+
 export type InvoiceListRow = {
   id: string;
   invoiceNumber: string;

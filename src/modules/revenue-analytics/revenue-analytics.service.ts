@@ -116,18 +116,30 @@ function monthsSince(startDate: Date | null): number {
 
 // ─── Data Fetchers ────────────────────────────────────────────────────────────
 
-async function fetchHoursByStaff(
+type StaffTotals = { hours: number; earnings: number };
+
+/**
+ * Hours AND earnings per staff member.
+ *
+ * Earnings are the sum of the stored `time_entries.amount` — the rate that was
+ * snapshotted onto each entry when it was logged or approved. This used to be
+ * computed as `hours * staff.hourlyRate` at read time, which silently restated
+ * every historical revenue figure the moment anyone got a raise. See
+ * `src/modules/finance/billing-rates.service.ts` for the rate model.
+ */
+async function fetchTotalsByStaff(
   organizationId: string,
   staffIds: string[],
   startStr: string | null,
   endStr: string | null,
-): Promise<Record<string, number>> {
+): Promise<Record<string, StaffTotals>> {
   if (staffIds.length === 0) return {};
 
   const rows = await db
     .select({
       staffId: timeEntries.staffId,
       total: sum(timeEntries.hoursWorked),
+      earnings: sum(timeEntries.amount),
     })
     .from(timeEntries)
     .where(
@@ -141,7 +153,13 @@ async function fetchHoursByStaff(
     .groupBy(timeEntries.staffId);
 
   return Object.fromEntries(
-    rows.map((r) => [r.staffId, parseFloat(r.total ?? "0")]),
+    rows.map((r) => [
+      r.staffId,
+      {
+        hours: parseFloat(r.total ?? "0"),
+        earnings: parseFloat(r.earnings ?? "0"),
+      },
+    ]),
   );
 }
 
@@ -238,27 +256,28 @@ export const getRevenueAnalytics = async (
 
   const staffIds = staffList.map((s) => s.id);
 
-  const [hoursByStaff, prevHoursByStaff, skillLevels] = await Promise.all([
-    fetchHoursByStaff(organizationId, staffIds, startStr, endStr),
+  const [totalsByStaff, prevTotalsByStaff, skillLevels] = await Promise.all([
+    fetchTotalsByStaff(organizationId, staffIds, startStr, endStr),
     prevRange.startStr
-      ? fetchHoursByStaff(
+      ? fetchTotalsByStaff(
           organizationId,
           staffIds,
           prevRange.startStr,
           prevRange.endStr,
         )
-      : Promise.resolve({} as Record<string, number>),
+      : Promise.resolve({} as Record<string, StaffTotals>),
     fetchSkillLevelByStaff(staffIds),
   ]);
 
   const staffMetrics = await Promise.all(
     staffList.map(async (s) => {
-      const hourlyRate = parseFloat(s.hourlyRate ?? "0");
       const monthlySalary = parseFloat(s.monthlySalary ?? "0");
-      const hours = hoursByStaff[s.id] ?? 0;
+      const totals = totalsByStaff[s.id];
+      const hours = totals?.hours ?? 0;
       const periodMonths = period === "all" ? monthsSince(s.startDate) : months;
       const salary = monthlySalary * periodMonths;
-      const revenue = hours * hourlyRate;
+      // The rate snapshotted on each entry, not the staff member's current one.
+      const revenue = totals?.earnings ?? 0;
       const profit = revenue - salary;
       const roi = salary > 0 ? ((revenue - salary) / salary) * 100 : 0;
       const revenuePerHour = hours > 0 ? revenue / hours : 0;
@@ -292,11 +311,10 @@ export const getRevenueAnalytics = async (
 
   let revenueTrend: number | null = null;
   if (prevRange.startStr) {
-    const prevRevenue = staffList.reduce((acc, s) => {
-      const hours = prevHoursByStaff[s.id] ?? 0;
-      const rate = parseFloat(s.hourlyRate ?? "0");
-      return acc + hours * rate;
-    }, 0);
+    const prevRevenue = staffList.reduce(
+      (acc, s) => acc + (prevTotalsByStaff[s.id]?.earnings ?? 0),
+      0,
+    );
     if (prevRevenue > 0) {
       revenueTrend =
         Math.round(((totalRevenue - prevRevenue) / prevRevenue) * 1000) / 10;

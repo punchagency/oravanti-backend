@@ -1,6 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../../db/client";
+import { member } from "../../db/schema/auth-schema";
 import { financialAccessControls } from "../../db/schema/financial-access-controls";
+import { staff } from "../../db/schema/staff";
+import { getRequestContext } from "../../middleware/request-context";
 import { AuthorizationError } from "../../utils/error/app-error";
 import type { AccountAccess, AccountLevel, FinanceRestrictions } from "./types";
 
@@ -91,6 +94,47 @@ export const resolveAccountAccess = async (
   }
 
   return { operating, trust };
+};
+
+/**
+ * Resolve the caller's access from the ambient request context.
+ *
+ * The org role comes from Better Auth's `member` table, which is the only
+ * place `owner` exists — `staff.role` is (admin | attorney | paralegal) and an
+ * owner may have no staff row at all. Falls back to `staff.role` for a staff
+ * member whose membership row is missing.
+ */
+export const accessForRequest = async (): Promise<AccountAccess> => {
+  const { organizationId, userId } = getRequestContext();
+  if (!organizationId) {
+    return { operating: OPERATING_DEFAULT, trust: TRUST_DEFAULT };
+  }
+
+  let role: string | null = null;
+
+  if (userId) {
+    const [membership] = await db
+      .select({ role: member.role })
+      .from(member)
+      .where(
+        and(eq(member.userId, userId), eq(member.organizationId, organizationId)),
+      )
+      .limit(1);
+    role = membership?.role ?? null;
+
+    if (!role) {
+      const [staffRow] = await db
+        .select({ role: staff.role })
+        .from(staff)
+        .where(
+          and(eq(staff.userId, userId), eq(staff.organizationId, organizationId)),
+        )
+        .limit(1);
+      role = staffRow?.role ?? null;
+    }
+  }
+
+  return resolveAccountAccess(organizationId, role);
 };
 
 /** Can the caller see trust figures at all? */
