@@ -556,11 +556,35 @@ const main = async () => {
         rpt.accountSplit.operatingPercent + (rpt.accountSplit.trustPercent ?? 0),
         100,
       );
-      const bucketSum = rpt.collectionStatus.reduce((a, b) => a + b.count, 0);
+      const bucketCount = rpt.collectionStatus.reduce((a, b) => a + b.count, 0);
       checkEqual(
         "every invoice lands in exactly one status bucket",
-        bucketSum,
+        bucketCount,
         rpt.summary.invoiceCount,
+      );
+      // Counts alone used to be all this asserted, which let a real bug
+      // through: `paid` summed invoice totals while the other three summed
+      // outstanding balances, so the breakdown added up to neither revenue nor
+      // outstanding. Every bucket now reports the invoice total.
+      const bucketAmount = rpt.collectionStatus.reduce((a, b) => a + b.amount, 0);
+      checkEqual(
+        "and the bucket amounts sum to total revenue",
+        toMoney(bucketAmount),
+        toMoney(rpt.summary.totalRevenue),
+      );
+      // Both fixture invoices in this month are due in the future, so nothing
+      // is overdue. `overdue` previously omitted the due-date filter entirely
+      // and was just a second copy of `outstanding`.
+      checkEqual("nothing due in the future counts as overdue", rpt.summary.overdue, 0);
+      checkEqual(
+        "outstanding is exactly what was invoiced but not collected",
+        toMoney(rpt.summary.outstanding),
+        toMoney(rpt.summary.totalRevenue - rpt.summary.collected),
+      );
+      checkEqual(
+        "aging declares its all-time scope",
+        rpt.aging.scope,
+        "all_time",
       );
       check(
         "trust reconciliation is present with access",

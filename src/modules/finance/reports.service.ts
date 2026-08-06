@@ -57,7 +57,7 @@ export const getMonthlyReport = async (
     trustReconciliation,
     trustInvoices,
   ] = await Promise.all([
-    fetchSummary(scope),
+    fetchSummary(scope, today),
     fetchCollectionStatus(scope, today),
     fetchByPracticeArea(scope),
     fetchAging(organizationId, today),
@@ -105,16 +105,23 @@ export const getMonthlyReport = async (
   };
 };
 
-const fetchSummary = async (scope: ReturnType<typeof and>) => {
+const fetchSummary = async (scope: ReturnType<typeof and>, today: string) => {
   const [row] = await db
     .select({
       invoiceCount: sql<number>`count(*)::int`,
       totalInvoiced: sql<string>`coalesce(sum(${invoices.totalAmount}), 0)`,
+      // Cohort, not cash: what has been collected against invoices ISSUED in
+      // this month. That is what makes `collectionRate` a coherent ratio —
+      // both sides share one population. Cash received during the month is a
+      // different figure and is deliberately not what this reports.
       collected: sql<string>`coalesce(sum(${invoices.amountPaid}), 0)`,
       outstanding: sql<string>`coalesce(sum(${invoices.balanceDue}), 0)`,
       operatingTotal: sql<string>`coalesce(sum(${invoices.subtotalOperating}), 0)`,
       trustTotal: sql<string>`coalesce(sum(${invoices.subtotalTrust}), 0)`,
-      overdueAmount: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${invoices.status} IN ('sent','partial')), 0)`,
+      // The due-date predicate is what makes this "overdue" rather than a
+      // second copy of `outstanding`. Without it every unpaid invoice counted
+      // as overdue from the moment it was issued.
+      overdueAmount: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${invoices.dueDate} < ${today}), 0)`,
     })
     .from(invoices)
     .where(scope);
@@ -140,17 +147,23 @@ const fetchCollectionStatus = async (
       paidCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'paid')::int`,
       paidAmount: sql<string>`coalesce(sum(${invoices.totalAmount}) FILTER (WHERE ${invoices.status} = 'paid'), 0)`,
       overdueCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${invoices.dueDate} < ${today})::int`,
-      overdueAmount: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${invoices.dueDate} < ${today}), 0)`,
+      overdueAmount: sql<string>`coalesce(sum(${invoices.totalAmount}) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${invoices.dueDate} < ${today}), 0)`,
       partialCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'partial' AND ${invoices.dueDate} >= ${today})::int`,
-      partialAmount: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${invoices.status} = 'partial' AND ${invoices.dueDate} >= ${today}), 0)`,
+      partialAmount: sql<string>`coalesce(sum(${invoices.totalAmount}) FILTER (WHERE ${invoices.status} = 'partial' AND ${invoices.dueDate} >= ${today}), 0)`,
       unpaidCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'sent' AND ${invoices.amountPaid} = 0 AND ${invoices.dueDate} >= ${today})::int`,
-      unpaidAmount: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${invoices.status} = 'sent' AND ${invoices.amountPaid} = 0 AND ${invoices.dueDate} >= ${today}), 0)`,
+      unpaidAmount: sql<string>`coalesce(sum(${invoices.totalAmount}) FILTER (WHERE ${invoices.status} = 'sent' AND ${invoices.amountPaid} = 0 AND ${invoices.dueDate} >= ${today}), 0)`,
     })
     .from(invoices)
     .where(scope);
 
+  // Every bucket reports the INVOICE TOTAL, not the outstanding balance, so
+  // the four amounts sum to `summary.totalRevenue` — which is how the design's
+  // panel reads (its four figures add up to "Total revenue invoiced" exactly).
+  // Mixing totals for `paid` with balances for the rest made the breakdown add
+  // up to neither revenue nor outstanding.
+  //
   // Same precedence as the list filter: overdue outranks partial, so each
-  // invoice appears in exactly one bucket and the buckets sum to the total.
+  // invoice appears in exactly one bucket.
   return [
     { status: "paid", count: row?.paidCount ?? 0, amount: num(row?.paidAmount) },
     {
@@ -238,6 +251,12 @@ const fetchAging = async (organizationId: string, today: string) => {
     );
 
   return {
+    // Explicitly all-time. Aging answers "what is owed", which does not depend
+    // on which month an invoice happened to be raised in — so this total will
+    // legitimately exceed `summary.outstanding` whenever an older invoice is
+    // still unpaid. Flagged here so the UI can say so rather than looking like
+    // it contradicts the month figure.
+    scope: "all_time" as const,
     total: num(row?.total),
     buckets: [
       { key: "current", label: "Current (not yet due)", amount: num(row?.current) },
