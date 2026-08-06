@@ -39,6 +39,36 @@ export class App {
     const allowedOrigins = env.CORS_ORIGIN;
     const betterAuthUrl = env.BETTER_AUTH_URL;
 
+    const makeCorsOrigin =
+      (serverOrigin: string) =>
+      (
+        requestOrigin: string | undefined,
+        callback: (
+          err: Error | null,
+          origin?: boolean | string | RegExp | Array<boolean | string | RegExp>,
+        ) => void,
+      ) => {
+        if (!requestOrigin || requestOrigin === "null") {
+          return callback(null, true);
+        }
+
+        const origins: string[] = [serverOrigin];
+
+        if (allowedOrigins) {
+          origins.push(...allowedOrigins.split(",").map((o) => o.trim()));
+        }
+
+        if (betterAuthUrl) {
+          origins.push(betterAuthUrl);
+        }
+
+        if (origins.includes(requestOrigin) || origins.includes("*")) {
+          return callback(null, true);
+        }
+
+        callback(new Error("Not allowed by CORS"));
+      };
+
     this.express.use(
       (
         req: express.Request,
@@ -47,27 +77,7 @@ export class App {
       ) => {
         const serverOrigin = `${req.protocol}://${req.get("host")}`;
         cors({
-          origin: (requestOrigin, callback) => {
-            if (!requestOrigin || requestOrigin === "null") {
-              return callback(null, true);
-            }
-
-            const origins: string[] = [serverOrigin];
-
-            if (allowedOrigins) {
-              origins.push(...allowedOrigins.split(",").map((o) => o.trim()));
-            }
-
-            if (betterAuthUrl) {
-              origins.push(betterAuthUrl);
-            }
-
-            if (origins.includes(requestOrigin) || origins.includes("*")) {
-              return callback(null, true);
-            }
-
-            callback(new Error("Not allowed by CORS"));
-          },
+          origin: makeCorsOrigin(serverOrigin),
           methods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
           credentials: true,
         })(req, res, next);

@@ -33,18 +33,22 @@ type AppEnv = Record<RequiredEnvKey, string> & {
   CONTRACTOR_PAYMENT_ENCRYPTION_KEY?: string;
   RESEND_API_KEY?: string;
   // Platform-owned Google Workspace service account used to mint Google Meet
-  // links for all firms.
+  // links for all firms. Optional: when unset the Meet service falls back to a
+  // placeholder link so non-Workspace/dev environments still function.
   GOOGLE_MEET_CLIENT_EMAIL?: string;
   GOOGLE_MEET_PRIVATE_KEY?: string;
   GOOGLE_MEET_IMPERSONATED_USER?: string;
   // Platform-owned Dropbox Sign (HelloSign) account, shared across all firms.
+  // Optional: when the API key/client id are unset the leads module falls back
+  // to the stub e-signature provider so dev environments still function.
   DROPBOX_SIGN_API_KEY?: string;
   DROPBOX_SIGN_CLIENT_ID?: string;
   // When true (default outside production) signature requests are created in
   // test mode and do not consume signature quota.
   DROPBOX_SIGN_TEST_MODE: boolean;
   // Dev-only escape hatch: skips the "payment received" requirement on the
-  // case-opening gate for non-contingency fee agreements.
+  // case-opening gate for non-contingency fee agreements. Never active in
+  // production.
   FEE_PAYMENT_GATE_BYPASS: boolean;
   databaseUrl: string;
   isProduction: boolean;
