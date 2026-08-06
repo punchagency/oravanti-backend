@@ -10,6 +10,7 @@ import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { emailService } from "../../utils/email/email.service";
 import { logCaseEvent } from "../cases/case-events.service";
 import { requireTrustWrite } from "./account-access";
+import { hasSuccessfulDelivery } from "./deliveries.service";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
 import { money, num, proRateSplit, toMoney } from "./money";
@@ -226,6 +227,13 @@ export const sendFollowUp = async (
   }
   if (row.status === "paid") {
     throw new BadRequestError("This invoice is already paid");
+  }
+  // Chasing someone for an invoice they were never sent is the failure mode
+  // this whole delivery flow exists to prevent.
+  if (!(await hasSuccessfulDelivery(organizationId, invoiceId))) {
+    throw new BadRequestError(
+      "This invoice has not been delivered to the client yet — send it first",
+    );
   }
 
   const wantsEmail = input.channel === "email" || input.channel === "both";

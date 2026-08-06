@@ -19,6 +19,7 @@ export type FinanceRestrictions = {
 
 export type InvoiceStatusFilter =
   | "all"
+  | "draft"
   | "paid"
   | "unpaid"
   | "partial"

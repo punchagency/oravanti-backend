@@ -21,6 +21,8 @@ export class GmailEmailService extends BaseEmailService {
   }
 
   async sendEmail(options: SendEmailOptions): Promise<void> {
+    // `attachments` needs no mapping: nodemailer's attachment shape is exactly
+    // { filename, content, contentType }, so the spread carries it through.
     const mailOptions = { ...options, from: EMAIL_CONFIG.fromAddress };
 
     try {

@@ -163,12 +163,16 @@ export const list = async (
         ? gt(invoices.subtotalTrust, "0")
         : undefined;
 
+  // `countableInvoices()` keeps drafts out of every money figure, which is
+  // correct — but it would also make the Drafts filter return nothing. When
+  // drafts are what was asked for, the status predicate alone scopes the query.
+  const wantsDrafts = options.status === "draft";
+
   const where = and(
     // RLS enforces this too; the explicit predicate is defence in depth and
     // universal in this codebase.
     eq(invoices.organizationId, organizationId),
-    // Drafts never appear in the list — the UI has no draft bucket.
-    countableInvoices(),
+    wantsDrafts ? undefined : countableInvoices(),
     statusFilter(options.status, today),
     accountPredicate,
     options.clientId ? eq(invoices.clientId, options.clientId) : undefined,
@@ -423,7 +427,7 @@ export type CreateInvoiceInput = {
   issueDate: string;
   dueDate: string;
   notes?: string;
-  status: "draft" | "sent";
+  status: "draft";
   lineItems: CreateInvoiceLine[];
   timeEntryIds: string[];
 };
@@ -511,7 +515,7 @@ export const create = async (
         issueDate: input.issueDate,
         dueDate: input.dueDate,
         notes: input.notes ?? null,
-        sentAt: input.status === "sent" ? new Date() : null,
+        // `sentAt` is set by a successful delivery and nothing else.
         createdById: actorStaffId,
       })
       .returning();
@@ -574,8 +578,8 @@ export const create = async (
 
     await logFinanceEvent({
       organizationId,
-      eventType: input.status === "sent" ? "invoice_sent" : "invoice_created",
-      title: `${invoiceNumber} — invoice ${input.status === "sent" ? "sent" : "created"}`,
+      eventType: "invoice_created",
+      title: `${invoiceNumber} — draft created`,
       description: null,
       amount: totals.totalAmount,
       invoiceId: invoice!.id,
@@ -591,7 +595,7 @@ export const create = async (
         organizationId,
         caseId: input.caseId,
         eventType: "case_invoice_created",
-        title: `Invoice ${invoiceNumber} issued`,
+        title: `Invoice ${invoiceNumber} drafted`,
         description: `Total ${totals.totalAmount.toFixed(2)}`,
         actorId: actorStaffId,
       });
@@ -602,43 +606,6 @@ export const create = async (
 };
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
-
-export const markSent = async (
-  organizationId: string,
-  invoiceId: string,
-  actorStaffId: string | null,
-  access: AccountAccess,
-) => {
-  const [existing] = await db
-    .select({ status: invoices.status, invoiceNumber: invoices.invoiceNumber })
-    .from(invoices)
-    .where(
-      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
-    )
-    .limit(1);
-
-  if (!existing) throw new NotFoundError("Invoice not found");
-  if (existing.status !== "draft") {
-    throw new BadRequestError("Only a draft invoice can be sent");
-  }
-
-  await db
-    .update(invoices)
-    .set({ status: "sent", sentAt: new Date(), updatedAt: new Date() })
-    .where(
-      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
-    );
-
-  await logFinanceEvent({
-    organizationId,
-    eventType: "invoice_sent",
-    title: `${existing.invoiceNumber} — invoice sent`,
-    invoiceId,
-    actorId: actorStaffId,
-  });
-
-  return getById(organizationId, invoiceId, access);
-};
 
 export const voidInvoice = async (
   organizationId: string,

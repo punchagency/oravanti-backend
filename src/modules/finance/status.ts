@@ -61,6 +61,11 @@ export const statusFilter = (
   today: string,
 ): SQL | undefined => {
   switch (value) {
+    // Drafts are excluded from `countableInvoices`, so they never reach a money
+    // figure. This filter is the only way to see them — which is what makes
+    // them sendable rather than invisible.
+    case "draft":
+      return eq(invoices.status, "draft");
     case "paid":
       return eq(invoices.status, "paid");
     case "overdue":

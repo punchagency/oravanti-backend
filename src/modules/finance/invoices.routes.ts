@@ -173,11 +173,52 @@ export class InvoicesRouter {
       controller.update,
     );
 
+    /**
+     * @openapi
+     * /finance/invoices/{id}/pdf:
+     *   get:
+     *     tags: [Finance — Invoicing]
+     *     summary: The invoice PDF — the only renderer, also what gets emailed
+     */
+    this.router.get(
+      "/:id/pdf",
+      read,
+      validateRequest({ params: invoiceParamsSchema }),
+      controller.pdf,
+    );
+
+    this.router.get(
+      "/:id/deliveries",
+      read,
+      validateRequest({ params: invoiceParamsSchema }),
+      controller.getDeliveries,
+    );
+
+    /**
+     * @openapi
+     * /finance/invoices/{id}/send:
+     *   post:
+     *     tags: [Finance — Invoicing]
+     *     summary: Email a draft invoice to the client and record the attempt
+     *     description: >
+     *       Archives the PDF, records the attempt, then sends. The invoice is
+     *       only promoted out of draft once the provider accepts the message —
+     *       a failure leaves it a draft with the reason recorded.
+     *     responses:
+     *       201: { description: Attempt recorded (check `status`) }
+     */
     this.router.post(
       "/:id/send",
       update,
       validateRequest({ params: invoiceParamsSchema }),
       controller.send,
+    );
+
+    this.router.post(
+      "/:id/resend",
+      update,
+      validateRequest({ params: invoiceParamsSchema }),
+      controller.resend,
     );
 
     this.router.post(

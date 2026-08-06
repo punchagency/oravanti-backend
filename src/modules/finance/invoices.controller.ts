@@ -4,6 +4,12 @@ import type { ExportFormat } from "../../utils/report-export";
 import { sendSuccess } from "../../utils/send-success";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { accessForRequest, restrictionsFor } from "./account-access";
+import {
+  buildInvoicePdf,
+  listDeliveries,
+  resendInvoice,
+  sendInvoice,
+} from "./deliveries.service";
 import { getRecentActivity } from "./finance-events.service";
 import * as invoicesService from "./invoices.service";
 import * as paymentsService from "./payments.service";
@@ -99,16 +105,69 @@ export class InvoicesController {
     sendSuccess(res, invoice, "Invoice updated successfully");
   };
 
+  /**
+   * A failed send is a 201 with `status: "failed"`, not an error status: the
+   * attempt was recorded and the caller needs the reason to act on. Only an
+   * unusable request (void invoice, no client email) throws.
+   */
   send = async (req: Request, res: Response) => {
     const { organizationId, staffId } = getRequestContext();
     const access = await accessForRequest();
-    const invoice = await invoicesService.markSent(
+    const result = await sendInvoice(
       organizationId!,
       req.params.id as string,
       staffId ?? null,
       access,
     );
-    sendSuccess(res, invoice, "Invoice sent successfully");
+    sendSuccess(
+      res,
+      result,
+      result.status === "sent"
+        ? "Invoice sent to the client"
+        : "Invoice could not be delivered — the attempt was recorded",
+      201,
+    );
+  };
+
+  resend = async (req: Request, res: Response) => {
+    const { organizationId, staffId } = getRequestContext();
+    const access = await accessForRequest();
+    const result = await resendInvoice(
+      organizationId!,
+      req.params.id as string,
+      staffId ?? null,
+      access,
+    );
+    sendSuccess(
+      res,
+      result,
+      result.status === "sent"
+        ? "Invoice resent to the client"
+        : "Invoice could not be delivered — the attempt was recorded",
+      201,
+    );
+  };
+
+  getDeliveries = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const rows = await listDeliveries(organizationId!, req.params.id as string);
+    sendSuccess(res, rows, "Deliveries retrieved");
+  };
+
+  /** The only invoice renderer — the frontend no longer builds its own HTML. */
+  pdf = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const access = await accessForRequest();
+    const { buffer, invoiceNumber } = await buildInvoicePdf(
+      organizationId!,
+      req.params.id as string,
+      access,
+    );
+    sendDownload(res, {
+      filename: `${invoiceNumber}.pdf`,
+      mime: "application/pdf",
+      body: buffer,
+    });
   };
 
   void = async (req: Request, res: Response) => {

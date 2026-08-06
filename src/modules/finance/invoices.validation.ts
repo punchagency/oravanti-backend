@@ -9,7 +9,9 @@ export const invoiceParamsSchema = z.object({
 });
 
 export const listInvoicesQuerySchema = z.object({
-  status: z.enum(["all", "paid", "unpaid", "partial", "overdue"]).optional(),
+  status: z
+    .enum(["all", "draft", "paid", "unpaid", "partial", "overdue"])
+    .optional(),
   account: z.enum(["all", "operating", "trust"]).optional(),
   search: z.string().trim().max(200).optional(),
   clientId: z.string().uuid().optional(),
@@ -48,7 +50,9 @@ export const createInvoiceBodySchema = z
     issueDate: z.string().date(),
     dueDate: z.string().date(),
     notes: z.string().trim().max(4000).optional(),
-    status: z.enum(["draft", "sent"]).default("sent"),
+    // Draft by default. An invoice becomes `sent` only when a delivery
+    // actually succeeds — see deliveries.service.ts.
+    status: z.enum(["draft"]).default("draft"),
     lineItems: z.array(lineItemSchema).default([]),
     /** Approved, unbilled entries to convert into lines. */
     timeEntryIds: z.array(z.string().uuid()).default([]),

@@ -48,6 +48,7 @@ const TENANT_TABLES = [
   "invoice_line_items",
   "invoice_payments",
   "invoice_followups",
+  "invoice_deliveries",
   "finance_events",
   "billing_rates",
   "time_entries",
