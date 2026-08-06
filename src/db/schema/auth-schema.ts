@@ -134,6 +134,15 @@ export const organization = pgTable(
     website: text("website"),
     taxId: text("tax_id"),
 
+    // Firm profile (General settings tab)
+    displayName: text("display_name"),
+    tagline: text("tagline"),
+    country: text("country"),
+    barNumber: text("bar_number"),
+    jurisdiction: text("jurisdiction"),
+    practiceType: text("practice_type"),
+    foundedYear: integer("founded_year"),
+
     // Referral / Source
     referralSource: text("referral_source"),
 
