@@ -549,6 +549,33 @@ const main = async () => {
       checkEqual("and a retry after fixing the address succeeds", retried.status, "sent");
       checkEqual("counting it as a second attempt", retried.attemptCount, 2);
 
+      // Invoices issued before delivery tracking existed have `sentAt` but no
+      // delivery rows. They must stay chaseable — the gate distinguishes
+      // absence of evidence from evidence of failure, and blocking every
+      // invoice a firm already has would be a regression, not a safeguard.
+      const [legacy] = await systemDb
+        .insert(invoices)
+        .values({
+          organizationId: orgId,
+          invoiceNumber: `INV-LEGACY-${randomUUID().slice(0, 6)}`,
+          clientId,
+          practiceAreaId,
+          status: "sent",
+          issueDate: daysFromNow(-30),
+          dueDate: daysFromNow(-10),
+          totalAmount: "100.00",
+          subtotalOperating: "100.00",
+          sentAt: new Date(),
+        })
+        .returning();
+      check(
+        "a pre-tracking invoice is still chaseable",
+        await deliveriesService.canChaseInvoice(orgId, legacy!.id),
+      );
+      // Removed straight away: it exists to prove one thing, and leaving it
+      // would shift every money figure the rest of this check asserts on.
+      await systemDb.delete(invoices).where(eq(invoices.id, legacy!.id));
+
       const pdf = await deliveriesService.buildInvoicePdf(orgId, invoice.id, FULL);
       check("the PDF renders", pdf.buffer.length > 1000);
       checkEqual(

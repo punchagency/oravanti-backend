@@ -390,20 +390,47 @@ export const listDeliveries = async (
   }));
 };
 
-/** Has this invoice ever actually reached the client? Gates follow-ups. */
-export const hasSuccessfulDelivery = async (
+/**
+ * May this invoice be chased?
+ *
+ * The distinction that matters is absence of evidence versus evidence of
+ * failure:
+ *
+ *   - any successful delivery                  → yes
+ *   - no delivery rows at all, but `sentAt` set → yes. The invoice predates
+ *     delivery tracking; it was issued by the old code path and may well have
+ *     been sent by hand. Blocking these would break every invoice a firm
+ *     already has.
+ *   - delivery rows exist but none succeeded   → NO. Here we know the client
+ *     never received it, which is exactly the case worth refusing.
+ */
+export const canChaseInvoice = async (
   organizationId: string,
   invoiceId: string,
 ): Promise<boolean> => {
   const [row] = await db
-    .select({ n: sql<number>`count(*)::int` })
+    .select({
+      total: sql<number>`count(*)::int`,
+      succeeded: sql<number>`count(*) FILTER (WHERE ${invoiceDeliveries.status} = 'sent')::int`,
+    })
     .from(invoiceDeliveries)
     .where(
       and(
         eq(invoiceDeliveries.organizationId, organizationId),
         eq(invoiceDeliveries.invoiceId, invoiceId),
-        eq(invoiceDeliveries.status, "sent"),
       ),
     );
-  return (row?.n ?? 0) > 0;
+
+  if ((row?.succeeded ?? 0) > 0) return true;
+  if ((row?.total ?? 0) > 0) return false;
+
+  const [invoice] = await db
+    .select({ sentAt: invoices.sentAt })
+    .from(invoices)
+    .where(
+      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+    )
+    .limit(1);
+
+  return invoice?.sentAt != null;
 };
