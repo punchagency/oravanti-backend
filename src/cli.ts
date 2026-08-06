@@ -15,6 +15,10 @@ import { createHash, randomUUID } from "crypto";
 import { and, asc, desc, eq, ilike, inArray, like, or } from "drizzle-orm";
 import { env } from "./config/env";
 import { closeDb, db } from "./db/client";
+import {
+  pickFinanceRole,
+  resolveAccountAccess,
+} from "./modules/finance/account-access";
 import { admins } from "./db/schema/admins";
 import { adverseParties } from "./db/schema/adverse-parties";
 import { aiSystemConfig } from "./db/schema/ai-system-config";
@@ -37,6 +41,7 @@ import { scenarioDocumentRequirements } from "./db/schema/document-requirements"
 import { calendarEvents } from "./db/schema/calendar-events";
 import { cases } from "./db/schema/cases";
 import { certifications } from "./db/schema/cases";
+import { financialAccessControls } from "./db/schema/financial-access-controls";
 import { clientCompanies } from "./db/schema/client-companies";
 import { clientContacts } from "./db/schema/client-contacts";
 import { clientRequests } from "./db/schema/client-requests";
@@ -3731,6 +3736,328 @@ const setStaffAvailabilityFlow = async (organizationId?: string) => {
   }
 };
 
+// ─── Financial access controls ───────────────────────────────────────────────
+//
+// `financial_access_controls` is keyed on (organization, accountType, role) —
+// it is NOT per staff member. This flow still starts from a staff member,
+// because that is how the question is usually asked ("what can Amara see?"),
+// but it resolves that person's role and says plainly that saving applies to
+// everyone sharing it.
+//
+// Why this matters: trust (IOLTA) access is deny-by-default in
+// `resolveAccountAccess`, so a firm with no rows here shows no trust data to
+// anyone — including the owner. That is the intended safe default, and this is
+// the tool for turning it on.
+
+const ACCOUNT_TYPE_LABELS: Record<string, string> = {
+  operating: "Operating account (firm revenue)",
+  trust_iolta: "Trust account / IOLTA (client funds)",
+};
+
+const PERMISSION_LABELS: Record<string, string> = {
+  full_access: "Full access — read and write",
+  payments: "Payments — read and write (treated as full access)",
+  view_only: "View only — read, no writes",
+  no_access: "No access — hidden entirely",
+  assigned: "Assigned (no finance meaning — treated as no access)",
+  own_only: "Own only (no finance meaning — treated as no access)",
+  approve: "Approve (no finance meaning — treated as no access)",
+  submit: "Submit (no finance meaning — treated as no access)",
+};
+
+/** The roles `financial_access_controls` can be keyed on. */
+type ControlsRole = "admin" | "attorney" | "paralegal" | "client";
+
+/** The four levels that actually mean something to the finance module. */
+const FINANCE_PERMISSIONS = [
+  "full_access",
+  "payments",
+  "view_only",
+  "no_access",
+] as const;
+
+const getFinancialAccessControls = (organizationId: string) =>
+  db
+    .select({
+      accountType: financialAccessControls.accountType,
+      role: financialAccessControls.role,
+      permission: financialAccessControls.permission,
+      updatedAt: financialAccessControls.updatedAt,
+    })
+    .from(financialAccessControls)
+    .where(eq(financialAccessControls.organizationId, organizationId))
+    .orderBy(
+      asc(financialAccessControls.role),
+      asc(financialAccessControls.accountType),
+    );
+
+const printFinancialAccessControls = (
+  rows: Awaited<ReturnType<typeof getFinancialAccessControls>>,
+) => {
+  if (!rows.length) {
+    note(
+      [
+        "No financial access controls configured for this firm.",
+        "",
+        "Trust (IOLTA) access is deny-by-default, so with no rows here NOBODY",
+        "sees trust figures — not even the owner. Operating access stays open.",
+      ].join("\n"),
+    );
+    return;
+  }
+
+  console.table(
+    rows.map((row) => ({
+      role: row.role,
+      account: row.accountType,
+      permission: row.permission,
+      updated: row.updatedAt.toISOString().slice(0, 10),
+    })),
+  );
+};
+
+/**
+ * The role a staff member's requests will actually be classified under.
+ *
+ * Mirrors `pickFinanceRole` in the finance module exactly — if these two ever
+ * disagree, the CLI would configure a row that never applies.
+ */
+const resolveStaffFinanceRole = async (
+  organizationId: string,
+  staffId: string,
+) => {
+  const [row] = await db
+    .select({
+      firstName: staff.firstName,
+      lastName: staff.lastName,
+      staffRole: staff.role,
+      userId: staff.userId,
+      memberRole: member.role,
+    })
+    .from(staff)
+    .leftJoin(
+      member,
+      and(
+        eq(member.userId, staff.userId),
+        eq(member.organizationId, staff.organizationId),
+      ),
+    )
+    .where(and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)))
+    .limit(1);
+
+  if (!row) return null;
+
+  const financeRole = pickFinanceRole(row.memberRole, row.staffRole);
+
+  // owner collapses onto admin — permission_role_enum has no owner value, which
+  // is the same mapping `toPermissionRole` makes inside the finance module.
+  const controlsRole: ControlsRole | null =
+    financeRole === "owner"
+      ? "admin"
+      : financeRole === "admin" ||
+          financeRole === "attorney" ||
+          financeRole === "paralegal" ||
+          financeRole === "client"
+        ? financeRole
+        : null;
+
+  return {
+    name: `${row.firstName} ${row.lastName}`.trim(),
+    staffRole: row.staffRole,
+    memberRole: row.memberRole,
+    hasLogin: row.userId != null,
+    financeRole,
+    controlsRole,
+  };
+};
+
+const upsertFinancialAccessControl = async (input: {
+  organizationId: string;
+  accountType: "operating" | "trust_iolta";
+  role: ControlsRole;
+  permission: (typeof FINANCE_PERMISSIONS)[number];
+}) => {
+  await db
+    .insert(financialAccessControls)
+    .values({
+      organizationId: input.organizationId,
+      accountType: input.accountType,
+      role: input.role,
+      permission: input.permission,
+    })
+    // The table is unique on (organization, accountType, role), so setting a
+    // permission twice updates rather than erroring.
+    .onConflictDoUpdate({
+      target: [
+        financialAccessControls.organizationId,
+        financialAccessControls.accountType,
+        financialAccessControls.role,
+      ],
+      set: { permission: input.permission, updatedAt: new Date() },
+    });
+};
+
+const setFinancialAccessFlow = async (organizationId?: string) => {
+  const firm = await resolveFirm(organizationId);
+  if (!firm) return;
+
+  while (true) {
+    const staffMember = await resolveStaffMember(firm.id);
+    if (!staffMember) return;
+
+    const resolved = await resolveStaffFinanceRole(firm.id, staffMember.id);
+    if (!resolved) {
+      note("Could not resolve that staff member.");
+      return;
+    }
+
+    note(
+      [
+        `Staff member:   ${resolved.name}`,
+        `staff.role:     ${resolved.staffRole ?? "—"}`,
+        `member.role:    ${resolved.memberRole ?? "— (no membership row)"}`,
+        `Resolves to:    ${resolved.financeRole ?? "— (nothing)"}`,
+        `Controls role:  ${resolved.controlsRole ?? "— (none applicable)"}`,
+      ].join("\n"),
+    );
+
+    if (!resolved.controlsRole) {
+      note(
+        [
+          "This person's role does not map to any financial_access_controls row,",
+          "so no configuration here can affect them. Give them a staff.role of",
+          "admin/attorney/paralegal, or make them an org admin or owner.",
+        ].join("\n"),
+      );
+      await waitForEnter();
+      return;
+    }
+
+    if (!resolved.hasLogin) {
+      note(
+        "Heads up: this staff member has no linked user account, so they cannot sign in yet. The rows below will apply once they do.",
+      );
+    }
+
+    const controlsRole = resolved.controlsRole;
+
+    note(
+      `Controls are stored PER ROLE, not per person. Saving below changes what EVERY "${controlsRole}" in ${firm.firmName} can see.`,
+    );
+
+    const current = await getFinancialAccessControls(firm.id);
+    const forRole = current.filter((row) => row.role === controlsRole);
+
+    note(`Current rows for "${controlsRole}"`);
+    if (forRole.length) {
+      printFinancialAccessControls(forRole);
+    } else {
+      note("None — falling back to defaults (operating open, trust denied).");
+    }
+
+    const effectiveBefore = await resolveAccountAccess(
+      firm.id,
+      resolved.financeRole,
+    );
+    console.table([
+      {
+        when: "before",
+        operating: effectiveBefore.operating,
+        trust: effectiveBefore.trust,
+      },
+    ]);
+
+    const accountType = abortIfCancelled(
+      await select({
+        message: "Which account?",
+        options: [
+          { value: "operating", label: ACCOUNT_TYPE_LABELS.operating! },
+          { value: "trust_iolta", label: ACCOUNT_TYPE_LABELS.trust_iolta! },
+          { value: "both", label: "Both — set the same permission for each" },
+        ],
+      }),
+    ) as "operating" | "trust_iolta" | "both";
+
+    const permission = abortIfCancelled(
+      await select({
+        message: `Permission for "${controlsRole}"`,
+        options: FINANCE_PERMISSIONS.map((value) => ({
+          value,
+          label: PERMISSION_LABELS[value]!,
+        })),
+      }),
+    ) as (typeof FINANCE_PERMISSIONS)[number];
+
+    const targets: ("operating" | "trust_iolta")[] =
+      accountType === "both" ? ["operating", "trust_iolta"] : [accountType];
+
+    const confirmed = abortIfCancelled(
+      await confirm({
+        message: `Set ${targets.join(" + ")} to "${permission}" for every ${controlsRole} in ${firm.firmName}?`,
+      }),
+    );
+
+    if (confirmed) {
+      for (const target of targets) {
+        await upsertFinancialAccessControl({
+          organizationId: firm.id,
+          accountType: target,
+          role: controlsRole,
+          permission,
+        });
+      }
+
+      // Read back through the real resolver, so what is printed is exactly what
+      // the finance endpoints will do — not a restatement of what was written.
+      const effectiveAfter = await resolveAccountAccess(
+        firm.id,
+        resolved.financeRole,
+      );
+      note(`Saved. Effective access for ${resolved.name}:`);
+      console.table([
+        {
+          when: "before",
+          operating: effectiveBefore.operating,
+          trust: effectiveBefore.trust,
+        },
+        {
+          when: "after",
+          operating: effectiveAfter.operating,
+          trust: effectiveAfter.trust,
+        },
+      ]);
+    } else {
+      note("No changes made.");
+    }
+
+    const again = abortIfCancelled(
+      await confirm({ message: "Configure another staff member?" }),
+    );
+    if (!again) return;
+  }
+};
+
+/** Show the whole (role × account) matrix for a firm. */
+const viewFinancialAccessFlow = async (organizationId?: string) => {
+  const firm = await resolveFirm(organizationId);
+  if (!firm) return;
+
+  note(`Financial access controls — ${firm.firmName}`);
+  printFinancialAccessControls(await getFinancialAccessControls(firm.id));
+
+  const roles = ["admin", "attorney", "paralegal", "client"] as const;
+  const effective = await Promise.all(
+    roles.map(async (role) => ({
+      role,
+      ...(await resolveAccountAccess(firm.id, role)),
+    })),
+  );
+  note("Effective access by role (what the finance endpoints will actually do)");
+  console.table(effective);
+
+  await waitForEnter();
+};
+
 const runInteractive = async () => {
   intro("Oravanti CLI");
 
@@ -3783,6 +4110,14 @@ const runInteractive = async () => {
         {
           value: "browse-cases",
           label: "Browse cases (firm → practice area → case type → case)",
+        },
+        {
+          value: "financial-access",
+          label: "Set financial access controls (operating / trust) for a staff member",
+        },
+        {
+          value: "financial-access-view",
+          label: "View financial access controls for a firm",
         },
         { value: "exit", label: "Exit" },
       ],
@@ -3857,6 +4192,14 @@ const runInteractive = async () => {
 
       if (action === "browse-cases") {
         await browseCases();
+      }
+
+      if (action === "financial-access") {
+        await setFinancialAccessFlow();
+      }
+
+      if (action === "financial-access-view") {
+        await viewFinancialAccessFlow();
       }
 
       if (action === "seed-staff-teams") {
@@ -4058,6 +4401,24 @@ program
   .description("Set a staff member's consultation availability")
   .argument("[organizationId]", "Organization id")
   .action(setStaffAvailabilityFlow);
+
+const financialAccess = program
+  .command("financial-access")
+  .description("Operating / trust (IOLTA) access controls");
+
+financialAccess
+  .command("set")
+  .description(
+    "Set financial access for a staff member's role (applies to that whole role)",
+  )
+  .argument("[organizationId]", "Organization id")
+  .action(setFinancialAccessFlow);
+
+financialAccess
+  .command("view")
+  .description("Show a firm's financial access controls and effective access")
+  .argument("[organizationId]", "Organization id")
+  .action(viewFinancialAccessFlow);
 
 program
   .parseAsync(process.argv)

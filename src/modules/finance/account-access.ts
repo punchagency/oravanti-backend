@@ -97,44 +97,64 @@ export const resolveAccountAccess = async (
 };
 
 /**
- * Resolve the caller's access from the ambient request context.
+ * Which of the two role columns actually classifies someone for finance.
  *
- * The org role comes from Better Auth's `member` table, which is the only
- * place `owner` exists — `staff.role` is (admin | attorney | paralegal) and an
- * owner may have no staff row at all. Falls back to `staff.role` for a staff
- * member whose membership row is missing.
+ * Better Auth's `member.role` is org membership: `owner`, `admin`, or the
+ * generic `member`. `staff.role` is the professional role
+ * (admin | attorney | paralegal), and it is what `financial_access_controls`
+ * is keyed on.
+ *
+ * Preferring `member.role` outright was wrong. Most staff carry
+ * `member.role = 'member'`, which is truthy, so a `?? staff.role` fallback
+ * never fired; `toPermissionRole('member')` then returned null and
+ * `resolveAccountAccess` returned early WITHOUT reading the table. Every
+ * attorney and paralegal silently got the defaults no matter what the firm had
+ * configured for their role.
+ *
+ * So: take `member.role` only when it carries org privilege (owner/admin —
+ * also the only place `owner` exists, and where an owner may have no staff row
+ * at all), otherwise use `staff.role`, and fall back to `member.role` when
+ * there is no staff row.
  */
+export const pickFinanceRole = (
+  memberRole: string | null | undefined,
+  staffRole: string | null | undefined,
+): string | null => {
+  if (memberRole === "owner" || memberRole === "admin") return memberRole;
+  if (staffRole) return staffRole;
+  return memberRole ?? null;
+};
+
+/** Resolve the caller's access from the ambient request context. */
 export const accessForRequest = async (): Promise<AccountAccess> => {
   const { organizationId, userId } = getRequestContext();
   if (!organizationId) {
     return { operating: OPERATING_DEFAULT, trust: TRUST_DEFAULT };
   }
 
-  let role: string | null = null;
+  if (!userId) return resolveAccountAccess(organizationId, null);
 
-  if (userId) {
-    const [membership] = await db
+  const [[membership], [staffRow]] = await Promise.all([
+    db
       .select({ role: member.role })
       .from(member)
       .where(
         and(eq(member.userId, userId), eq(member.organizationId, organizationId)),
       )
-      .limit(1);
-    role = membership?.role ?? null;
+      .limit(1),
+    db
+      .select({ role: staff.role })
+      .from(staff)
+      .where(
+        and(eq(staff.userId, userId), eq(staff.organizationId, organizationId)),
+      )
+      .limit(1),
+  ]);
 
-    if (!role) {
-      const [staffRow] = await db
-        .select({ role: staff.role })
-        .from(staff)
-        .where(
-          and(eq(staff.userId, userId), eq(staff.organizationId, organizationId)),
-        )
-        .limit(1);
-      role = staffRow?.role ?? null;
-    }
-  }
-
-  return resolveAccountAccess(organizationId, role);
+  return resolveAccountAccess(
+    organizationId,
+    pickFinanceRole(membership?.role, staffRow?.role),
+  );
 };
 
 /** Can the caller see trust figures at all? */

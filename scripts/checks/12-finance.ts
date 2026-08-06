@@ -34,6 +34,7 @@ import { practiceAreaSubcategories } from "../../src/db/schema/practice-area-sub
 import { practiceAreas } from "../../src/db/schema/practice-areas";
 import { staff } from "../../src/db/schema/staff";
 import { timeEntries } from "../../src/db/schema/time-entries";
+import { pickFinanceRole } from "../../src/modules/finance/account-access";
 import {
   resolveBillingRate,
   setBillingRate,
@@ -196,6 +197,45 @@ const main = async () => {
         "pro-rata split sums exactly",
         toMoney(split.operating + split.trust),
         600,
+      );
+
+      // ── Finance role resolution ───────────────────────────────────────────
+      section("finance role resolution");
+
+      // Better Auth's member.role is org membership; staff.role is the
+      // professional role financial_access_controls is keyed on. Preferring
+      // member.role outright meant most staff resolved to the generic
+      // "member", which maps to no permission role at all — so the controls
+      // table was never read and every attorney silently got the defaults.
+      checkEqual(
+        "a plain member falls through to their staff role",
+        pickFinanceRole("member", "attorney"),
+        "attorney",
+      );
+      checkEqual(
+        "org owner wins over staff role",
+        pickFinanceRole("owner", "admin"),
+        "owner",
+      );
+      checkEqual(
+        "org admin wins over staff role",
+        pickFinanceRole("admin", "paralegal"),
+        "admin",
+      );
+      checkEqual(
+        "no membership row still resolves from staff",
+        pickFinanceRole(null, "paralegal"),
+        "paralegal",
+      );
+      checkEqual(
+        "an owner with no staff row still resolves",
+        pickFinanceRole("owner", null),
+        "owner",
+      );
+      checkEqual(
+        "nothing to go on resolves to nothing",
+        pickFinanceRole(null, null),
+        null,
       );
 
       // ── Billing rates ─────────────────────────────────────────────────────
