@@ -43,6 +43,8 @@ import * as invoicesService from "../../src/modules/finance/invoices.service";
 import { formatInvoiceNumber } from "../../src/modules/finance/invoice-number";
 import { proRateSplit, toMoney } from "../../src/modules/finance/money";
 import * as paymentsService from "../../src/modules/finance/payments.service";
+import * as deliveriesService from "../../src/modules/finance/deliveries.service";
+import { invoiceDeliveries } from "../../src/db/schema/invoice-deliveries";
 import * as reportsService from "../../src/modules/finance/reports.service";
 import * as timeBilling from "../../src/modules/finance/time-billing.service";
 import { deriveStoredStatus } from "../../src/modules/finance/totals";
@@ -51,6 +53,8 @@ import { check, checkEqual, report, section, withOrgContext } from "./_bootstrap
 
 const FULL: AccountAccess = { operating: "full_access", trust: "full_access" };
 const NO_TRUST: AccountAccess = { operating: "full_access", trust: "no_access" };
+
+const CLIENT_EMAIL = "amara.chen@example.test";
 
 const iso = (d: Date) => d.toISOString().slice(0, 10);
 const daysFromNow = (n: number) =>
@@ -138,7 +142,7 @@ const main = async () => {
       firstName: "Amara",
       lastName: "Chen",
       displayName: "Amara Chen",
-      email: "amara.chen@example.test",
+      email: CLIENT_EMAIL,
       phone: "+15550100",
       entityType: "individual",
       status: "active",
@@ -339,7 +343,7 @@ const main = async () => {
         attorneyId: staffAId,
         issueDate: daysFromNow(-5),
         dueDate: daysFromNow(10),
-        status: "sent",
+        status: "draft",
         lineItems: [
           {
             description: "USCIS I-485 filing fee",
@@ -374,7 +378,7 @@ const main = async () => {
           caseId,
           issueDate: daysFromNow(-1),
           dueDate: daysFromNow(20),
-          status: "sent",
+          status: "draft",
           lineItems: [],
           timeEntryIds: [backdated.id],
         });
@@ -388,13 +392,181 @@ const main = async () => {
         practiceAreaId,
         issueDate: daysFromNow(-40),
         dueDate: daysFromNow(-20),
-        status: "sent",
+        status: "draft",
         lineItems: [
           { description: "Consultation", quantity: 1, rate: 300, account: "operating" },
         ],
         timeEntryIds: [],
       });
       checkEqual("second invoice increments", second.invoiceNumber.slice(-4), "0002");
+
+      // ── Delivery ──────────────────────────────────────────────────────────
+      section("delivery");
+
+      checkEqual("a new invoice is a draft", invoice.status, "draft");
+      checkEqual("and has no sentAt", invoice.sentAt, null);
+
+      // Drafts are not invoiced revenue and must stay out of every money tile.
+      const statsBeforeSend = await invoicesService.getStats(orgId, FULL);
+      checkEqual(
+        "drafts are excluded from the totals",
+        statsBeforeSend.totalInvoiced,
+        0,
+      );
+      const draftList = await invoicesService.list(orgId, FULL, {
+        status: "draft",
+      });
+      checkEqual("but the drafts filter finds them", draftList.data.length, 2);
+
+      // Chasing a client for an invoice they were never sent is the bug this
+      // whole flow exists to prevent.
+      let followUpBeforeSendRejected = false;
+      try {
+        await paymentsService.sendFollowUp(orgId, second.id, staffBId, {
+          message: "x",
+          channel: "email",
+        });
+      } catch {
+        followUpBeforeSendRejected = true;
+      }
+      check(
+        "an undelivered invoice cannot be chased",
+        followUpBeforeSendRejected,
+      );
+
+      // Recording a payment against something never sent is equally wrong.
+      let payBeforeSendRejected = false;
+      try {
+        await paymentsService.recordPayment(orgId, invoice.id, staffBId, FULL, {
+          amount: 10,
+          paymentDate: daysFromNow(0),
+          method: "cash",
+        });
+      } catch {
+        payBeforeSendRejected = true;
+      }
+      check("a draft cannot receive a payment", payBeforeSendRejected);
+
+      const sendResult = await deliveriesService.sendInvoice(
+        orgId,
+        invoice.id,
+        staffBId,
+        FULL,
+      );
+      checkEqual("sending reports success", sendResult.status, "sent");
+      checkEqual("to the client's address", sendResult.recipientEmail, CLIENT_EMAIL);
+
+      const afterSend = await invoicesService.getById(orgId, invoice.id, FULL);
+      checkEqual("the invoice leaves draft", afterSend.status, "unpaid");
+      check("and sentAt is stamped", afterSend.sentAt != null);
+
+      const [deliveryRow] = await systemDb
+        .select()
+        .from(invoiceDeliveries)
+        .where(eq(invoiceDeliveries.invoiceId, invoice.id));
+      checkEqual("a delivery row records it", deliveryRow?.status, "sent");
+      check("with the archived document key", Boolean(deliveryRow?.documentKey));
+      check("and a handoff timestamp", deliveryRow?.deliveredAt != null);
+
+      checkEqual(
+        "the invoice now counts as revenue",
+        (await invoicesService.getStats(orgId, FULL)).totalInvoiced,
+        1940,
+      );
+
+      // Sending twice is a resend, not a second send.
+      let doubleSendRejected = false;
+      try {
+        await deliveriesService.sendInvoice(orgId, invoice.id, staffBId, FULL);
+      } catch {
+        doubleSendRejected = true;
+      }
+      check("a sent invoice cannot be sent again", doubleSendRejected);
+
+      const resent = await deliveriesService.resendInvoice(
+        orgId,
+        invoice.id,
+        staffBId,
+        FULL,
+      );
+      checkEqual("but it can be resent", resent.status, "sent");
+      checkEqual("which counts the attempt", resent.attemptCount, 2);
+
+      // The failure path is the point of the whole design: an invoice whose
+      // delivery fails must stay a draft with the reason recorded, rather than
+      // claiming a send. Forced with an address the transport rejects.
+      await systemDb
+        .update(clients)
+        .set({ email: "not a valid address" })
+        .where(eq(clients.id, clientId));
+
+      const failed = await deliveriesService.sendInvoice(
+        orgId,
+        second.id,
+        staffBId,
+        FULL,
+      );
+      checkEqual("a rejected send reports failure", failed.status, "failed");
+      check("with a reason", Boolean(failed.failureReason), failed);
+      checkEqual(
+        "and the invoice is STILL a draft",
+        (await invoicesService.getById(orgId, second.id, FULL)).status,
+        "draft",
+      );
+
+      const [failedRow] = await systemDb
+        .select()
+        .from(invoiceDeliveries)
+        .where(eq(invoiceDeliveries.id, failed.deliveryId));
+      checkEqual("the attempt is recorded as failed", failedRow?.status, "failed");
+      checkEqual("with no handoff timestamp", failedRow?.deliveredAt, null);
+
+      // Still cannot be chased — a failed send is not a delivery.
+      let chaseAfterFailureRejected = false;
+      try {
+        await paymentsService.sendFollowUp(orgId, second.id, staffBId, {
+          message: "x",
+          channel: "email",
+        });
+      } catch {
+        chaseAfterFailureRejected = true;
+      }
+      check("a failed delivery still blocks a chase", chaseAfterFailureRejected);
+
+      await systemDb
+        .update(clients)
+        .set({ email: CLIENT_EMAIL })
+        .where(eq(clients.id, clientId));
+
+      // Now that the address is valid again, the retry succeeds — proving a
+      // failure is recoverable rather than terminal.
+      const retried = await deliveriesService.sendInvoice(
+        orgId,
+        second.id,
+        staffBId,
+        FULL,
+      );
+      checkEqual("and a retry after fixing the address succeeds", retried.status, "sent");
+      checkEqual("counting it as a second attempt", retried.attemptCount, 2);
+
+      const pdf = await deliveriesService.buildInvoicePdf(orgId, invoice.id, FULL);
+      check("the PDF renders", pdf.buffer.length > 1000);
+      checkEqual(
+        "as a real PDF",
+        pdf.buffer.subarray(0, 4).toString("utf8"),
+        "%PDF",
+      );
+
+      // Trust lines are withheld from the payload, so they cannot reach the PDF.
+      const maskedPdf = await deliveriesService.buildInvoicePdf(
+        orgId,
+        invoice.id,
+        NO_TRUST,
+      );
+      check(
+        "a caller without trust access gets a smaller document",
+        maskedPdf.buffer.length < pdf.buffer.length,
+      );
 
       // ── Payments ──────────────────────────────────────────────────────────
       section("payments");
@@ -513,7 +685,7 @@ const main = async () => {
           practiceAreaId,
           issueDate: daysFromNow(0),
           dueDate: daysFromNow(30),
-          status: "sent",
+          status: "draft",
           lineItems: [
             { description: "Filing fee", quantity: 1, rate: 500, account: "trust_iolta" },
           ],
