@@ -16,6 +16,16 @@ export const listInvoicesQuerySchema = z.object({
   search: z.string().trim().max(200).optional(),
   clientId: z.string().uuid().optional(),
   caseId: z.string().uuid().optional(),
+  /**
+   * Show drafts alongside everything else. Only meaningful with status "all" —
+   * the other buckets already name a specific non-draft state.
+   *
+   * Deliberately not z.coerce.boolean(), which maps the string "false" to true.
+   */
+  includeDrafts: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => v === "true"),
   page: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().positive().max(100).optional(),
 });

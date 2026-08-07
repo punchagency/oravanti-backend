@@ -99,6 +99,17 @@ export const statusFilter = (
 export const countableInvoices = () =>
   inArray(invoices.status, ["sent", "partial", "paid"]);
 
+/**
+ * What the LIST may show, which is not the same question as what counts as
+ * money. Drafts can be surfaced here on request; `countableInvoices` stays the
+ * only thing the tiles, reports and footer totals are built from, so a draft
+ * can never become revenue by being made visible.
+ */
+export const listableInvoices = (includeDrafts: boolean) =>
+  includeDrafts
+    ? inArray(invoices.status, ["draft", "sent", "partial", "paid"])
+    : countableInvoices();
+
 /** The overdue predicate, shared by the stats tile and the aging buckets. */
 export const overdueCondition = (today: string) =>
   and(inArray(invoices.status, ["sent", "partial"]), lt(invoices.dueDate, today));

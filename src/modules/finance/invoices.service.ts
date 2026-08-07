@@ -34,6 +34,7 @@ import {
   countableInvoices,
   effectiveStatusSql,
   firmToday,
+  listableInvoices,
   statusFilter,
 } from "./status";
 import { recalculateInvoiceTotals } from "./totals";
@@ -52,6 +53,8 @@ export type ListInvoicesOptions = Partial<PaginationParams> & {
   search?: string;
   clientId?: string;
   caseId?: string;
+  /** Show drafts alongside the rest. Only honoured when status is "all". */
+  includeDrafts?: boolean;
 };
 
 /** Matches case-review's cap and rationale: an export is a page, not a stream. */
@@ -163,16 +166,21 @@ export const list = async (
         ? gt(invoices.subtotalTrust, "0")
         : undefined;
 
-  // `countableInvoices()` keeps drafts out of every money figure, which is
-  // correct — but it would also make the Drafts filter return nothing. When
-  // drafts are what was asked for, the status predicate alone scopes the query.
-  const wantsDrafts = options.status === "draft";
+  // Drafts are excluded from every money figure, which is correct — but that
+  // would also make the Drafts filter return nothing. Two ways in: asking for
+  // the drafts bucket, or asking for them alongside everything else.
+  //
+  // `includeDrafts` is only honoured on "all": every other bucket names a
+  // specific non-draft state, so mixing drafts in would contradict the filter.
+  const isAllStatus = !options.status || options.status === "all";
+  const showDrafts =
+    options.status === "draft" || (isAllStatus && options.includeDrafts === true);
 
   const where = and(
     // RLS enforces this too; the explicit predicate is defence in depth and
     // universal in this codebase.
     eq(invoices.organizationId, organizationId),
-    wantsDrafts ? undefined : countableInvoices(),
+    options.status === "draft" ? undefined : listableInvoices(showDrafts),
     statusFilter(options.status, today),
     accountPredicate,
     options.clientId ? eq(invoices.clientId, options.clientId) : undefined,
@@ -245,6 +253,15 @@ export const list = async (
   };
 };
 
+/**
+ * Footer totals for the current filter.
+ *
+ * `countableInvoices()` is re-applied here even though the list's own predicate
+ * may admit drafts: a draft that is visible must still not be counted, or the
+ * footer would disagree with the tiles above it. `draftCount` is returned
+ * alongside so the UI can say how many rows are sitting outside the total
+ * rather than leaving the discrepancy unexplained.
+ */
 const listTotals = async (
   where: ReturnType<typeof and>,
   access: AccountAccess,
@@ -254,16 +271,30 @@ const listTotals = async (
       operating: sql<string>`coalesce(sum(${invoices.subtotalOperating}), 0)`,
       trust: sql<string>`coalesce(sum(${invoices.subtotalTrust}), 0)`,
       total: sql<string>`coalesce(sum(${invoices.totalAmount}), 0)`,
+      draftCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'draft')::int`,
     })
     .from(invoices)
     .innerJoin(clients, eq(clients.id, invoices.clientId))
     .leftJoin(cases, eq(cases.id, invoices.caseId))
     .where(where);
 
+  const [countable] = await db
+    .select({
+      operating: sql<string>`coalesce(sum(${invoices.subtotalOperating}), 0)`,
+      trust: sql<string>`coalesce(sum(${invoices.subtotalTrust}), 0)`,
+      total: sql<string>`coalesce(sum(${invoices.totalAmount}), 0)`,
+    })
+    .from(invoices)
+    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(cases, eq(cases.id, invoices.caseId))
+    .where(and(where, countableInvoices()));
+
   return {
-    operating: num(row?.operating),
-    trust: maskTrust(access, num(row?.trust)),
-    total: num(row?.total),
+    operating: num(countable?.operating),
+    trust: maskTrust(access, num(countable?.trust)),
+    total: num(countable?.total),
+    /** Rows on screen that the totals above deliberately exclude. */
+    draftCount: row?.draftCount ?? 0,
   };
 };
 

@@ -58,6 +58,9 @@ export class InvoicesController {
       search: req.query.search as string | undefined,
       clientId: req.query.clientId as string | undefined,
       caseId: req.query.caseId as string | undefined,
+      // validateRequest replaces req.query with the parsed object, so this is a
+      // real boolean by now — Express's own typing just cannot see that.
+      includeDrafts: (req.query.includeDrafts as unknown as boolean) === true,
       page,
       limit,
     });

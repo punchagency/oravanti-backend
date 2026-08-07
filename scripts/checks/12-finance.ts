@@ -418,6 +418,42 @@ const main = async () => {
       });
       checkEqual("but the drafts filter finds them", draftList.data.length, 2);
 
+      // "all" hides drafts by default, and can be asked to show them.
+      const allDefault = await invoicesService.list(orgId, FULL, {
+        status: "all",
+      });
+      checkEqual("all hides drafts by default", allDefault.data.length, 0);
+
+      const allWithDrafts = await invoicesService.list(orgId, FULL, {
+        status: "all",
+        includeDrafts: true,
+      });
+      checkEqual("and shows them on request", allWithDrafts.data.length, 2);
+      // Visible is not the same as counted: a draft on screen must still not
+      // reach the totals, or the footer would disagree with the tiles above it.
+      checkEqual(
+        "but they are still excluded from the totals",
+        allWithDrafts.totals.total,
+        0,
+      );
+      checkEqual(
+        "and the count of excluded rows is reported",
+        allWithDrafts.totals.draftCount,
+        2,
+      );
+
+      // The flag is meaningless on a bucket that names a non-draft state, and
+      // must not smuggle drafts into it.
+      const paidWithFlag = await invoicesService.list(orgId, FULL, {
+        status: "paid",
+        includeDrafts: true,
+      });
+      checkEqual(
+        "includeDrafts is ignored on a specific status",
+        paidWithFlag.data.length,
+        0,
+      );
+
       // Chasing a client for an invoice they were never sent is the bug this
       // whole flow exists to prevent.
       let followUpBeforeSendRejected = false;
