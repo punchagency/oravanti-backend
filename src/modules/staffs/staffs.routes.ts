@@ -20,7 +20,7 @@ const updateOwnProfileBody = z
     lastName: z.string().trim().min(2, "Last name is required").optional(),
     email: z.string().email("Invalid email address").optional(),
     phone: z.string().trim().min(10, "Invalid phone number").optional(),
-    barNumber: z.string().trim().min(2, "Bar number is required").optional(),
+    barNumber: z.string().trim().optional(),
   })
   .strict();
 
