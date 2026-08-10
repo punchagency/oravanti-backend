@@ -34,6 +34,13 @@ import {
   restrictionsFor,
 } from "./account-access";
 import { logFinanceEvent } from "./finance-events.service";
+import { allocate, type ScheduleRow } from "./instalments";
+import {
+  assertScheduleBalances,
+  clearSchedules,
+  listInstalments,
+  writeSchedule,
+} from "./instalments.service";
 import { allocateInvoiceNumber, currentInvoiceYear } from "./invoice-number";
 import { money, num } from "./money";
 import {
@@ -387,6 +394,29 @@ export const getById = async (
     ? `${row.attorneyFirstName} ${row.attorneyLastName ?? ""}`.trim()
     : null;
 
+  // Per-instalment state is derived here rather than in the browser, for the
+  // same reason `effectiveStatus` is: the firm's timezone decides what is
+  // overdue, and a client-side recomputation would disagree either side of
+  // midnight.
+  const scheduleRows = await listInstalments(organizationId, invoiceId);
+  const instalments = allocate(
+    scheduleRows.map((s) => ({
+      id: s.id,
+      sequence: s.sequence,
+      dueDate: s.dueDate,
+      amount: num(s.amount),
+    })),
+    num(row.amountPaid),
+  ).map((i) => ({
+    ...i,
+    state:
+      i.state === "paid"
+        ? ("paid" as const)
+        : i.dueDate < today
+          ? ("overdue" as const)
+          : i.state,
+  }));
+
   return {
     id: row.id,
     invoiceNumber: row.invoiceNumber,
@@ -443,6 +473,7 @@ export const getById = async (
       amountPaid: num(row.amountPaid),
       balanceDue: num(row.balanceDue),
     },
+    instalments,
     lastPaymentMethod: row.lastPaymentMethod,
     lastPaymentDate: row.lastPaymentDate,
     sentAt: row.sentAt,
@@ -591,6 +622,8 @@ export type CreateInvoiceInput = {
   status: "draft";
   lineItems: CreateInvoiceLine[];
   timeEntryIds: string[];
+  /** Optional payment schedule; must sum to the resulting invoice total. */
+  instalments?: ScheduleRow[];
 };
 
 export const create = async (
@@ -659,7 +692,12 @@ export const create = async (
         );
     }
 
+    if (input.instalments?.length) {
+      await writeSchedule(organizationId, invoice!.id, input.instalments);
+    }
+
     const totals = await recalculateInvoiceTotals(organizationId, invoice!.id);
+    await assertScheduleBalances(organizationId, invoice!.id, totals.totalAmount);
 
     await logFinanceEvent({
       organizationId,
@@ -762,6 +800,12 @@ export const voidInvoice = async (
         );
     }
 
+    // A voided invoice owes nothing, so its schedule is meaningless. Dropping
+    // it also keeps `duesFrom` honest: it emits instalment rows for any invoice
+    // that has a schedule, and the status filter is the only thing that would
+    // otherwise be holding those slices out of the aging report.
+    await clearSchedules(organizationId, [invoiceId]);
+
     await logFinanceEvent({
       organizationId,
       eventType: "invoice_voided",
@@ -787,6 +831,11 @@ export type UpdateInvoiceInput = {
   practiceAreaId?: string | null;
   lineItems?: CreateInvoiceLine[];
   timeEntryIds?: string[];
+  /**
+   * Replaces the whole schedule. Unlike the rest of the content set this is
+   * allowed on a sent invoice — see the note in `update()`.
+   */
+  instalments?: ScheduleRow[];
 };
 
 /**
@@ -811,7 +860,8 @@ export const update = async (
     input.timeEntryIds !== undefined ||
     input.issueDate !== undefined ||
     input.caseId !== undefined ||
-    input.practiceAreaId !== undefined;
+    input.practiceAreaId !== undefined ||
+    input.instalments !== undefined;
 
   const [existing] = await db
     .select({
@@ -834,8 +884,45 @@ export const update = async (
     throw new BadRequestError("A voided invoice cannot be edited");
   }
 
+  const scheduled =
+    (await listInstalments(organizationId, invoiceId)).length > 0;
+
+  // A schedule's rows have to keep summing to the total, so a line edit that
+  // moves the total has to arrive with the schedule that matches it. Refusing
+  // outright ("delete the schedule first") would make nudging a rate by $50 a
+  // three-step dance; the dialog sends both together.
+  if (
+    scheduled &&
+    input.instalments === undefined &&
+    (input.lineItems !== undefined || input.timeEntryIds !== undefined)
+  ) {
+    throw new BadRequestError(
+      "This invoice has a payment schedule. Send the updated schedule with the line changes, or remove the schedule first.",
+    );
+  }
+
+  // The header due date belongs to the schedule once one exists — writeSchedule
+  // pins it to the final instalment. Accepting a bare due-date change here would
+  // let the invoice claim a date its own schedule contradicts.
+  if (scheduled && input.dueDate !== undefined && input.instalments === undefined) {
+    throw new BadRequestError(
+      "This invoice's due date follows its payment schedule. Revise the schedule instead.",
+    );
+  }
+
   if (editsContent) {
-    if (existing.status !== "draft") {
+    // A schedule may be revised after sending — plans get renegotiated, and
+    // that is the point of offering one. Only the rest of the content set is
+    // draft-only.
+    const scheduleOnly =
+      input.instalments !== undefined &&
+      input.lineItems === undefined &&
+      input.timeEntryIds === undefined &&
+      input.issueDate === undefined &&
+      input.caseId === undefined &&
+      input.practiceAreaId === undefined;
+
+    if (!scheduleOnly && existing.status !== "draft") {
       throw new BadRequestError(
         "Only a draft invoice can be edited. Void this one and issue a corrected invoice instead.",
       );
@@ -905,15 +992,37 @@ export const update = async (
       );
     }
 
-    const totals = editsContent
-      ? await recalculateInvoiceTotals(organizationId, invoiceId)
-      : null;
+    // After the lines, so the header due date it pins survives the write above.
+    if (input.instalments !== undefined) {
+      await writeSchedule(organizationId, invoiceId, input.instalments);
+    }
+
+    // Also on a bare due-date change: `next_due_date` is a fold this function is
+    // the sole writer of, and skipping it there would leave the invoice
+    // overdue-or-not according to a date nobody can see.
+    const totals =
+      editsContent || input.dueDate !== undefined
+        ? await recalculateInvoiceTotals(organizationId, invoiceId)
+        : null;
+
+    if (totals) {
+      await assertScheduleBalances(organizationId, invoiceId, totals.totalAmount);
+    }
 
     await logFinanceEvent({
       organizationId,
-      eventType: "invoice_updated",
+      eventType:
+        input.instalments !== undefined
+          ? scheduled
+            ? "invoice_schedule_revised"
+            : "invoice_schedule_set"
+          : "invoice_updated",
       title: `${existing.invoiceNumber} — ${
-        editsContent ? "draft edited" : "invoice updated"
+        input.instalments !== undefined
+          ? `payment schedule ${scheduled ? "revised" : "set"}`
+          : editsContent
+            ? "draft edited"
+            : "invoice updated"
       }`,
       amount: totals?.totalAmount ?? null,
       invoiceId,

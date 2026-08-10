@@ -19,6 +19,7 @@ import {
   invoiceParamsSchema,
   listInvoicesQuerySchema,
   recordPaymentBodySchema,
+  setScheduleBodySchema,
   unbilledTimeQuerySchema,
   updateInvoiceBodySchema,
   voidInvoiceBodySchema,
@@ -209,6 +210,43 @@ export class InvoicesRouter {
         body: updateInvoiceBodySchema,
       }),
       controller.update,
+    );
+
+    /**
+     * @openapi
+     * /finance/invoices/{id}/schedule:
+     *   put:
+     *     tags: [Finance — Invoicing]
+     *     summary: Set or revise the payment schedule
+     *     description: >
+     *       Replaces the whole schedule. Allowed on a draft, sent or partly
+     *       paid invoice — plans get renegotiated, and a revision is recorded
+     *       as its own event. Refused once the invoice is paid or void. The
+     *       instalments must sum to the invoice total; the header due date is
+     *       pinned to the final instalment. `sequence` is assigned by the
+     *       server in due-date order, not accepted from the client.
+     *     responses:
+     *       200: { description: Schedule saved }
+     *       400: { description: Paid/void, or the rows do not sum to the total }
+     *   delete:
+     *     tags: [Finance — Invoicing]
+     *     summary: Remove the schedule; the invoice reverts to one due date
+     */
+    this.router.put(
+      "/:id/schedule",
+      update,
+      validateRequest({
+        params: invoiceParamsSchema,
+        body: setScheduleBodySchema,
+      }),
+      controller.setSchedule,
+    );
+
+    this.router.delete(
+      "/:id/schedule",
+      update,
+      validateRequest({ params: invoiceParamsSchema }),
+      controller.removeSchedule,
     );
 
     /**

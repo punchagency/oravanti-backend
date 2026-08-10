@@ -55,6 +55,25 @@ export const caseDefaultsQuerySchema = z.object({
   caseId: z.string().uuid(),
 });
 
+/**
+ * One dated slice of the invoice total.
+ *
+ * `sequence` is deliberately not accepted: the server sorts by date and
+ * renumbers, so a client-supplied ordering could only ever disagree with the one
+ * the allocation actually walks.
+ */
+const instalmentSchema = z.object({
+  dueDate: z.string().date(),
+  amount: z.coerce.number().positive(),
+});
+
+/** 120 matches the fee-agreement wizard's cap on an instalment plan. */
+const instalmentsSchema = z.array(instalmentSchema).min(1).max(120);
+
+export const setScheduleBodySchema = z.object({
+  instalments: instalmentsSchema,
+});
+
 const lineItemSchema = z.object({
   description: z.string().trim().min(1).max(500),
   quantity: z.coerce.number().positive().default(1),
@@ -78,6 +97,8 @@ export const createInvoiceBodySchema = z
     lineItems: z.array(lineItemSchema).default([]),
     /** Approved, unbilled entries to convert into lines. */
     timeEntryIds: z.array(z.string().uuid()).default([]),
+    /** Optional payment schedule; the service checks it sums to the total. */
+    instalments: instalmentsSchema.optional(),
   })
   .refine((v) => v.lineItems.length > 0 || v.timeEntryIds.length > 0, {
     message: "An invoice needs at least one line item or time entry",
@@ -113,6 +134,12 @@ export const updateInvoiceBodySchema = z
     practiceAreaId: z.string().uuid().nullable().optional(),
     lineItems: z.array(lineItemSchema).optional(),
     timeEntryIds: z.array(z.string().uuid()).optional(),
+    /**
+     * Replaces the whole schedule. The one content field allowed on a sent
+     * invoice — a renegotiated plan is the point of offering one, and the
+     * revision is recorded as its own event.
+     */
+    instalments: instalmentsSchema.optional(),
   })
   // A content edit REPLACES the whole line set, so a payload carrying only one
   // half of it would silently delete the other. Demanding both makes the client

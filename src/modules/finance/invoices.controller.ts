@@ -11,6 +11,7 @@ import {
   sendInvoice,
 } from "./deliveries.service";
 import { getRecentActivity } from "./finance-events.service";
+import * as instalmentsService from "./instalments.service";
 import * as invoicesService from "./invoices.service";
 import * as paymentsService from "./payments.service";
 import type { AccountFilter, InvoiceStatusFilter } from "./types";
@@ -116,6 +117,39 @@ export class InvoicesController {
       access,
     );
     sendSuccess(res, invoice, "Invoice updated successfully");
+  };
+
+  setSchedule = async (req: Request, res: Response) => {
+    const { organizationId, staffId } = getRequestContext();
+    const access = await accessForRequest();
+    await instalmentsService.setSchedule(
+      organizationId!,
+      req.params.id as string,
+      req.body.instalments,
+      staffId ?? null,
+    );
+    const invoice = await invoicesService.getById(
+      organizationId!,
+      req.params.id as string,
+      access,
+    );
+    sendSuccess(res, invoice, "Payment schedule saved");
+  };
+
+  removeSchedule = async (req: Request, res: Response) => {
+    const { organizationId, staffId } = getRequestContext();
+    const access = await accessForRequest();
+    await instalmentsService.removeSchedule(
+      organizationId!,
+      req.params.id as string,
+      staffId ?? null,
+    );
+    const invoice = await invoicesService.getById(
+      organizationId!,
+      req.params.id as string,
+      access,
+    );
+    sendSuccess(res, invoice, "Payment schedule removed");
   };
 
   /**
