@@ -8,8 +8,9 @@ import { practiceAreas } from "../../db/schema/practice-areas";
 import { renderReport, type ReportColumn } from "../../utils/report-export";
 import { dayjs } from "../../utils/date";
 import { canReadTrust, restrictionsFor } from "./account-access";
+import { agingOverDues } from "./dues";
 import { num, toMoney } from "./money";
-import { countableInvoices, firmToday } from "./status";
+import { countableInvoices, dueBy, firmToday } from "./status";
 import type { AccountAccess } from "./types";
 
 /**
@@ -48,6 +49,10 @@ export const getMonthlyReport = async (
     countableInvoices(),
     inMonth(from, to),
   );
+  // The same month window without the org/status predicates, which `duesFrom`
+  // applies itself. Passing the full `scope` would repeat them harmlessly but
+  // reads as though the dues query were unscoped without it.
+  const monthScope = inMonth(from, to);
 
   const [
     summary,
@@ -57,7 +62,7 @@ export const getMonthlyReport = async (
     trustReconciliation,
     trustInvoices,
   ] = await Promise.all([
-    fetchSummary(scope, today),
+    fetchSummary(organizationId, scope, monthScope, today),
     fetchCollectionStatus(scope, today),
     fetchByPracticeArea(scope),
     fetchAging(organizationId, today),
@@ -105,7 +110,12 @@ export const getMonthlyReport = async (
   };
 };
 
-const fetchSummary = async (scope: ReturnType<typeof and>, today: string) => {
+const fetchSummary = async (
+  organizationId: string,
+  scope: ReturnType<typeof and>,
+  monthScope: ReturnType<typeof and>,
+  today: string,
+) => {
   const [row] = await db
     .select({
       invoiceCount: sql<number>`count(*)::int`,
@@ -118,13 +128,16 @@ const fetchSummary = async (scope: ReturnType<typeof and>, today: string) => {
       outstanding: sql<string>`coalesce(sum(${invoices.balanceDue}), 0)`,
       operatingTotal: sql<string>`coalesce(sum(${invoices.subtotalOperating}), 0)`,
       trustTotal: sql<string>`coalesce(sum(${invoices.subtotalTrust}), 0)`,
-      // The due-date predicate is what makes this "overdue" rather than a
-      // second copy of `outstanding`. Without it every unpaid invoice counted
-      // as overdue from the moment it was issued.
-      overdueAmount: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${invoices.dueDate} < ${today}), 0)`,
     })
     .from(invoices)
     .where(scope);
+
+  // Overdue is per SLICE — on a scheduled invoice only the instalments that
+  // have actually fallen due are late. It gets its own query for two reasons:
+  // joining the schedule into the SELECT above would multiply all six figures,
+  // and the month scope has to be carried across explicitly or this silently
+  // becomes an all-time figure that exceeds `outstanding`.
+  const overdue = await agingOverDues(organizationId, today, monthScope);
 
   return {
     invoiceCount: row?.invoiceCount ?? 0,
@@ -133,7 +146,7 @@ const fetchSummary = async (scope: ReturnType<typeof and>, today: string) => {
     outstanding: num(row?.outstanding),
     operatingTotal: num(row?.operatingTotal),
     trustTotal: num(row?.trustTotal),
-    overdueAmount: num(row?.overdueAmount),
+    overdueAmount: num(overdue.pastDue),
   };
 };
 
@@ -146,12 +159,12 @@ const fetchCollectionStatus = async (
     .select({
       paidCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'paid')::int`,
       paidAmount: sql<string>`coalesce(sum(${invoices.totalAmount}) FILTER (WHERE ${invoices.status} = 'paid'), 0)`,
-      overdueCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${invoices.dueDate} < ${today})::int`,
-      overdueAmount: sql<string>`coalesce(sum(${invoices.totalAmount}) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${invoices.dueDate} < ${today}), 0)`,
-      partialCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'partial' AND ${invoices.dueDate} >= ${today})::int`,
-      partialAmount: sql<string>`coalesce(sum(${invoices.totalAmount}) FILTER (WHERE ${invoices.status} = 'partial' AND ${invoices.dueDate} >= ${today}), 0)`,
-      unpaidCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'sent' AND ${invoices.amountPaid} = 0 AND ${invoices.dueDate} >= ${today})::int`,
-      unpaidAmount: sql<string>`coalesce(sum(${invoices.totalAmount}) FILTER (WHERE ${invoices.status} = 'sent' AND ${invoices.amountPaid} = 0 AND ${invoices.dueDate} >= ${today}), 0)`,
+      overdueCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${dueBy} < ${today})::int`,
+      overdueAmount: sql<string>`coalesce(sum(${invoices.totalAmount}) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${dueBy} < ${today}), 0)`,
+      partialCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'partial' AND ${dueBy} >= ${today})::int`,
+      partialAmount: sql<string>`coalesce(sum(${invoices.totalAmount}) FILTER (WHERE ${invoices.status} = 'partial' AND ${dueBy} >= ${today}), 0)`,
+      unpaidCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'sent' AND ${invoices.amountPaid} = 0 AND ${dueBy} >= ${today})::int`,
+      unpaidAmount: sql<string>`coalesce(sum(${invoices.totalAmount}) FILTER (WHERE ${invoices.status} = 'sent' AND ${invoices.amountPaid} = 0 AND ${dueBy} >= ${today}), 0)`,
     })
     .from(invoices)
     .where(scope);
@@ -164,6 +177,13 @@ const fetchCollectionStatus = async (
   //
   // Same precedence as the list filter: overdue outranks partial, so each
   // invoice appears in exactly one bucket.
+  //
+  // This is INVOICE granularity, deliberately, and it is why
+  // `collectionStatus.overdue.amount` does not equal `summary.overdue`. A
+  // scheduled invoice can be part overdue and part not-yet-due, and splitting
+  // one `total_amount` across two buckets would break the sum above — the
+  // invariant this panel exists to hold. The scope labels on the payload say
+  // which figure is which.
   return [
     { status: "paid", count: row?.paidCount ?? 0, amount: num(row?.paidAmount) },
     {
@@ -233,22 +253,9 @@ const fetchByPracticeArea = async (scope: ReturnType<typeof and>) => {
  * an artificially clean receivables position.
  */
 const fetchAging = async (organizationId: string, today: string) => {
-  const age = sql`(${today}::date - ${invoices.dueDate})`;
-  const [row] = await db
-    .select({
-      current: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} <= 0), 0)`,
-      d1_15: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} BETWEEN 1 AND 15), 0)`,
-      d16_30: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} BETWEEN 16 AND 30), 0)`,
-      d31_plus: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} > 30), 0)`,
-      total: sql<string>`coalesce(sum(${invoices.balanceDue}), 0)`,
-    })
-    .from(invoices)
-    .where(
-      and(
-        eq(invoices.organizationId, organizationId),
-        sql`${invoices.status} IN ('sent','partial')`,
-      ),
-    );
+  // Per slice: an invoice with one instalment forty days late and another not
+  // due for two months contributes to two different buckets.
+  const row = await agingOverDues(organizationId, today);
 
   return {
     // Explicitly all-time. Aging answers "what is owed", which does not depend
@@ -257,13 +264,13 @@ const fetchAging = async (organizationId: string, today: string) => {
     // still unpaid. Flagged here so the UI can say so rather than looking like
     // it contradicts the month figure.
     scope: "all_time" as const,
-    total: num(row?.total),
+    total: num(row.total),
     buckets: [
-      { key: "current", label: "Current (not yet due)", amount: num(row?.current) },
-      { key: "1_15", label: "1–15 days overdue", amount: num(row?.d1_15) },
-      { key: "16_30", label: "16–30 days overdue", amount: num(row?.d16_30) },
+      { key: "current", label: "Current (not yet due)", amount: num(row.current) },
+      { key: "1_15", label: "1–15 days overdue", amount: num(row.d1_15) },
+      { key: "16_30", label: "16–30 days overdue", amount: num(row.d16_30) },
       // "> 30", labelled 31+: the design's "30+" would double-count day 30.
-      { key: "31_plus", label: "31+ days overdue", amount: num(row?.d31_plus) },
+      { key: "31_plus", label: "31+ days overdue", amount: num(row.d31_plus) },
     ],
   };
 };

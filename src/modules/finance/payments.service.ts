@@ -11,10 +11,11 @@ import { emailService } from "../../utils/email/email.service";
 import { logCaseEvent } from "../cases/case-events.service";
 import { requireTrustWrite } from "./account-access";
 import { canChaseInvoice } from "./deliveries.service";
+import { agingOverDues } from "./dues";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
 import { money, num, proRateSplit, toMoney } from "./money";
-import { firmToday } from "./status";
+import { dueBy, firmToday } from "./status";
 import { recalculateInvoiceTotals } from "./totals";
 import type { AccountAccess, FollowupChannelInput } from "./types";
 
@@ -207,7 +208,12 @@ export const sendFollowUp = async (
       caseId: invoices.caseId,
       clientId: invoices.clientId,
       balanceDue: invoices.balanceDue,
-      dueDate: invoices.dueDate,
+      amountPaid: invoices.amountPaid,
+      // Not `due_date`: on a scheduled invoice the header is the FINAL
+      // instalment's date, so chasing against it would report a debt that is
+      // not late yet — or, once the last instalment passes, one that is far
+      // later than any single missed payment.
+      dueDate: dueBy,
       clientEmail: clients.email,
       clientPhone: clients.phone,
       clientName: clients.displayName,
@@ -302,6 +308,16 @@ export const sendFollowUp = async (
     0,
   );
 
+  // The amount actually late, not the whole balance. On a plan the client may
+  // owe $4,000 in total and be $1,000 behind; recording the larger figure would
+  // leave a permanently wrong audit entry for a chase about the smaller one.
+  const overdueSlices = await agingOverDues(
+    organizationId,
+    today,
+    eq(invoices.id, invoiceId),
+  );
+  const overdueAmount = num(overdueSlices.pastDue);
+
   await logFinanceEvent({
     organizationId,
     eventType: "payment_followup_sent",
@@ -310,7 +326,7 @@ export const sendFollowUp = async (
       daysOverdue > 0
         ? `${daysOverdue} day(s) overdue · ${input.channel}`
         : `Sent via ${input.channel}`,
-    amount: num(row.balanceDue),
+    amount: overdueAmount > 0 ? overdueAmount : num(row.balanceDue),
     invoiceId,
     caseId: row.caseId,
     clientId: row.clientId,
@@ -324,5 +340,7 @@ export const sendFollowUp = async (
     smsDelivered: false,
     sentAt: followup!.sentAt,
     daysOverdue,
+    /** What is actually late — the whole balance only on an unscheduled invoice. */
+    overdueAmount,
   };
 };

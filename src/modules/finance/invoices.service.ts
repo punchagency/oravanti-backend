@@ -33,6 +33,7 @@ import {
   requireTrustWrite,
   restrictionsFor,
 } from "./account-access";
+import { agingOverDues } from "./dues";
 import { logFinanceEvent } from "./finance-events.service";
 import { allocate, type ScheduleRow } from "./instalments";
 import {
@@ -79,6 +80,12 @@ export const EXPORT_MAX = 5000;
  * One query, one table, no joins — the payoff for denormalizing the folds onto
  * the invoice header. Drafts and voided invoices are excluded from every
  * figure; a draft is not invoiced revenue and a void is not revenue at all.
+ *
+ * The overdue pair comes from a SECOND query rather than joining the schedule
+ * in. On a scheduled invoice the amount past due is the sum of its overdue
+ * slices, not its whole balance — but joining `invoice_instalments` here would
+ * multiply every one of the ten figures above it by the number of instalments.
+ * Two queries, the same reason `fetchTrustReconciliation` uses two subqueries.
  */
 export const getStats = async (
   organizationId: string,
@@ -94,13 +101,13 @@ export const getStats = async (
       collectedCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'paid')::int`,
       outstanding: sql<string>`coalesce(sum(${invoices.balanceDue}), 0)`,
       outstandingCount: sql<number>`count(*) FILTER (WHERE ${invoices.balanceDue} > 0)::int`,
-      overdueCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${invoices.dueDate} < ${today})::int`,
-      pastDueAmount: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${invoices.dueDate} < ${today}), 0)`,
       operatingTotal: sql<string>`coalesce(sum(${invoices.subtotalOperating}), 0)`,
       trustTotal: sql<string>`coalesce(sum(${invoices.subtotalTrust}), 0)`,
     })
     .from(invoices)
     .where(and(eq(invoices.organizationId, organizationId), countableInvoices()));
+
+  const overdue = await agingOverDues(organizationId, today);
 
   return {
     invoiceCount: row?.invoiceCount ?? 0,
@@ -109,8 +116,8 @@ export const getStats = async (
     collectedCount: row?.collectedCount ?? 0,
     outstanding: num(row?.outstanding),
     outstandingCount: row?.outstandingCount ?? 0,
-    overdueCount: row?.overdueCount ?? 0,
-    pastDueAmount: num(row?.pastDueAmount),
+    overdueCount: overdue.overdueInvoices,
+    pastDueAmount: num(overdue.pastDue),
     operatingTotal: num(row?.operatingTotal),
     // Omitted, not zeroed, when the caller cannot see trust money. The
     // `totalInvoiced` above still includes it, so the visible rows and the
@@ -122,6 +129,11 @@ export const getStats = async (
 /**
  * Aging buckets over outstanding balance.
  *
+ * Bucketed per SLICE, not per invoice: an invoice can have $500 forty days late
+ * and $500 not due for two months, and those belong in different buckets.
+ * `duesFrom` yields one row per unpaid instalment, or a single synthetic row
+ * for an invoice with no schedule, so both shapes bucket identically.
+ *
  * The design labels these "1-15 / 16-30 / 30+", which puts day 30 in two
  * buckets. Implemented as `> 30` and surfaced to the UI as "31+ days".
  */
@@ -129,28 +141,13 @@ export const getAging = async (
   organizationId: string,
 ): Promise<AgingBucket[]> => {
   const today = await firmToday(organizationId);
-  const age = sql`(${today}::date - ${invoices.dueDate})`;
-
-  const [row] = await db
-    .select({
-      current: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} <= 0), 0)`,
-      d1_15: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} BETWEEN 1 AND 15), 0)`,
-      d16_30: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} BETWEEN 16 AND 30), 0)`,
-      d31_plus: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} > 30), 0)`,
-    })
-    .from(invoices)
-    .where(
-      and(
-        eq(invoices.organizationId, organizationId),
-        inArray(invoices.status, ["sent", "partial"]),
-      ),
-    );
+  const row = await agingOverDues(organizationId, today);
 
   return [
-    { key: "current", label: "Current", amount: num(row?.current) },
-    { key: "1_15", label: "1–15 days", amount: num(row?.d1_15) },
-    { key: "16_30", label: "16–30 days", amount: num(row?.d16_30) },
-    { key: "31_plus", label: "31+ days", amount: num(row?.d31_plus) },
+    { key: "current", label: "Current", amount: num(row.current) },
+    { key: "1_15", label: "1–15 days", amount: num(row.d1_15) },
+    { key: "16_30", label: "16–30 days", amount: num(row.d16_30) },
+    { key: "31_plus", label: "31+ days", amount: num(row.d31_plus) },
   ];
 };
 
