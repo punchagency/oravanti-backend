@@ -38,6 +38,22 @@ export type InvoicePdfInput = {
     amountPaid: number;
     balanceDue: number;
   };
+  /**
+   * The payment schedule, already allocated. Empty when the invoice is due in
+   * one payment.
+   *
+   * Allocation state is passed in rather than recomputed here, so the document
+   * the client receives cannot describe the schedule differently from the
+   * screen the firm is looking at.
+   */
+  instalments: {
+    sequence: number;
+    dueDate: string;
+    amount: number;
+    amountPaid: number;
+    outstanding: number;
+    state: "paid" | "partial" | "due" | "overdue";
+  }[];
   firm: {
     name: string;
     email: string | null;
@@ -302,6 +318,89 @@ export const renderInvoicePdf = async (
 
   doc.x = left;
   doc.moveDown(1);
+
+  // ── Payment schedule ──────────────────────────────────────────────────────
+  // Only when there is one. An invoice due in a single payment already says so
+  // in the "Balance due" row above, and an empty schedule table would read like
+  // something had failed to load.
+  if (invoice.instalments.length > 0) {
+    doc.x = left;
+    drawLabel(doc, "Payment schedule");
+    doc.moveDown(0.2);
+
+    const seqX = left;
+    const dateX = left + contentWidth * 0.1;
+    const amountX = left + contentWidth * 0.45;
+    const stateX = left + contentWidth * 0.68;
+    const amountW = contentWidth * 0.2;
+    const stateW = contentWidth * 0.32;
+
+    const STATE_LABEL: Record<string, string> = {
+      paid: "Paid",
+      partial: "Part paid",
+      overdue: "Overdue",
+      due: "Due",
+    };
+
+    for (const row of invoice.instalments) {
+      if (doc.y > doc.page.height - doc.page.margins.bottom - 80) {
+        doc.addPage();
+      }
+      const y = doc.y;
+      const settled = row.state === "paid";
+
+      // A part-paid instalment says so whatever else is true of it. Showing
+      // only "Overdue" on one that is half settled would ask the client for
+      // money they have already sent.
+      const partPaid = row.amountPaid > 0 && row.outstanding > 0;
+      const label = partPaid
+        ? `${STATE_LABEL[row.state] ?? ""} — ${money(row.outstanding)} outstanding`
+        : (STATE_LABEL[row.state] ?? "");
+
+      doc
+        .font("Helvetica")
+        .fontSize(9)
+        .fillColor("#8a8577")
+        .text(`${row.sequence}.`, seqX, y, { width: contentWidth * 0.08 });
+      let bottom = doc.y;
+
+      doc
+        .font("Helvetica")
+        .fontSize(9)
+        .fillColor(settled ? "#8a8577" : "#1a1a1a")
+        .text(formatDateOnly(row.dueDate), dateX, y, {
+          width: contentWidth * 0.34,
+        });
+      bottom = Math.max(bottom, doc.y);
+
+      doc
+        .font(settled ? "Helvetica" : "Helvetica-Bold")
+        .fillColor(settled ? "#8a8577" : "#1a1a1a")
+        .text(money(row.amount), amountX, y, {
+          width: amountW,
+          align: "right",
+        });
+      bottom = Math.max(bottom, doc.y);
+
+      doc
+        .font("Helvetica")
+        .fontSize(9)
+        // Overdue is the only thing on this page the client has to act on
+        // differently, so it is the only thing coloured.
+        .fillColor(row.state === "overdue" ? "#b03030" : "#8a8577")
+        .text(label, stateX, y, { width: stateW, align: "right" });
+      bottom = Math.max(bottom, doc.y);
+
+      // Continue below the tallest column. Resetting to `y` and advancing by a
+      // fraction of a line moves less than the text's own height, which is what
+      // had the totals block printing over itself.
+      doc.y = bottom;
+      doc.moveDown(0.3);
+    }
+
+    doc.x = left;
+    doc.moveDown(0.8);
+  }
 
   // ── Notes ─────────────────────────────────────────────────────────────────
   if (invoice.notes) {

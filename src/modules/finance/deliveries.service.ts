@@ -42,6 +42,12 @@ const money = (n: number): string =>
     maximumFractionDigits: 2,
   })}`;
 
+/**
+ * On an invoice with a payment schedule the headline is the FIRST payment, not
+ * the total. A client who agreed to pay $4,000 over four months and opens an
+ * email demanding $4,000 by a single date will assume the plan was not applied.
+ * The total is still shown, below, and the full schedule is in the attachment.
+ */
 const invoiceEmailTemplate = (opts: {
   clientName: string;
   firmName: string;
@@ -49,7 +55,36 @@ const invoiceEmailTemplate = (opts: {
   total: number;
   dueDate: string;
   matterReference: string | null;
-}): string => `
+  instalmentCount: number;
+  firstInstalment: { dueDate: string; amount: number } | null;
+}): string => {
+  const scheduled = opts.instalmentCount > 0 && opts.firstInstalment !== null;
+
+  const rows = scheduled
+    ? `
+      <tr>
+        <td style="padding: 4px 16px 4px 0; color: #666;">First payment</td>
+        <td style="padding: 4px 0;"><b>${money(opts.firstInstalment!.amount)}</b></td>
+      </tr>
+      <tr>
+        <td style="padding: 4px 16px 4px 0; color: #666;">Due</td>
+        <td style="padding: 4px 0;"><b>${escapeHtml(opts.firstInstalment!.dueDate)}</b></td>
+      </tr>
+      <tr>
+        <td style="padding: 4px 16px 4px 0; color: #666;">Total</td>
+        <td style="padding: 4px 0;">${money(opts.total)} over ${opts.instalmentCount} payments</td>
+      </tr>`
+    : `
+      <tr>
+        <td style="padding: 4px 16px 4px 0; color: #666;">Amount due</td>
+        <td style="padding: 4px 0;"><b>${money(opts.total)}</b></td>
+      </tr>
+      <tr>
+        <td style="padding: 4px 16px 4px 0; color: #666;">Due date</td>
+        <td style="padding: 4px 0;"><b>${escapeHtml(opts.dueDate)}</b></td>
+      </tr>`;
+
+  return `
   <div style="font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; color: #1a1a1a;">
     <p style="margin: 0 0 16px;">Dear ${escapeHtml(opts.clientName)},</p>
     <p style="margin: 0 0 16px;">
@@ -59,22 +94,20 @@ const invoiceEmailTemplate = (opts: {
           : ""
       }.
     </p>
-    <table style="border-collapse: collapse; margin: 0 0 16px;">
-      <tr>
-        <td style="padding: 4px 16px 4px 0; color: #666;">Amount due</td>
-        <td style="padding: 4px 0;"><b>${money(opts.total)}</b></td>
-      </tr>
-      <tr>
-        <td style="padding: 4px 16px 4px 0; color: #666;">Due date</td>
-        <td style="padding: 4px 0;"><b>${escapeHtml(opts.dueDate)}</b></td>
-      </tr>
+    <table style="border-collapse: collapse; margin: 0 0 16px;">${rows}
     </table>
+    ${
+      scheduled
+        ? `<p style="margin: 0 0 16px;">The full payment schedule is set out in the attached invoice.</p>`
+        : ""
+    }
     <p style="margin: 0 0 16px;">
       If you have any questions about this invoice, please reply to this email.
     </p>
     <p style="margin: 24px 0 0; color: #666; font-size: 13px;">${escapeHtml(opts.firmName)}</p>
   </div>
 `;
+};
 
 /** Everything the PDF and the email need, in one round trip. */
 const loadForDelivery = async (organizationId: string, invoiceId: string) => {
@@ -147,6 +180,7 @@ export const buildInvoicePdf = async (
       account: l.account,
     })),
     totals: detail.totals,
+    instalments: detail.instalments,
     firm: {
       name: meta.firmName ?? "Your legal team",
       email: meta.firmEmail,
@@ -252,6 +286,11 @@ const deliver = async (
         total: detail.totals.balanceDue,
         dueDate: detail.dueDate,
         matterReference: detail.matter?.reference ?? null,
+        instalmentCount: detail.instalments.length,
+        // The first instalment still owing — on a resend after a payment, that
+        // is the next one due, not the one already settled.
+        firstInstalment:
+          detail.instalments.find((i) => i.outstanding > 0) ?? null,
       }),
       attachments: [
         {
