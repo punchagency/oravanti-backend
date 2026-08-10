@@ -117,6 +117,72 @@ export const duesFrom = (organizationId: string, scope?: SQL) => {
   return unionAll(scheduled, unscheduled).as("dues");
 };
 
+export type ScheduleSummary = {
+  count: number;
+  paidCount: number;
+  nextDueDate: string | null;
+};
+
+/**
+ * A one-line schedule summary per invoice, for the list.
+ *
+ * Keyed on the page's ids and issued as its own query, never joined into the
+ * list itself: that join would duplicate every row on the page, inflate the
+ * `count()` so pagination lies, and multiply the footer totals.
+ *
+ * `paidCount` counts the instalments the payments have fully covered, using the
+ * same running total as `outstandingPerInstalment` — an instalment is settled
+ * once the cumulative amount through it is within half a cent of what has been
+ * paid.
+ */
+export const scheduleSummaries = async (
+  organizationId: string,
+  invoiceIds: string[],
+): Promise<Map<string, ScheduleSummary>> => {
+  const summaries = new Map<string, ScheduleSummary>();
+  if (invoiceIds.length === 0) return summaries;
+
+  const walked = db
+    .select({
+      invoiceId: sql<string>`${invoiceInstalments.invoiceId}`.as("s_invoice_id"),
+      dueOn: sql<string>`${invoiceInstalments.dueDate}`.as("s_due_on"),
+      covered: sql<boolean>`
+        sum(${invoiceInstalments.amount}) OVER (
+          PARTITION BY ${invoiceInstalments.invoiceId}
+          ORDER BY ${invoiceInstalments.dueDate}, ${invoiceInstalments.sequence}
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) <= ${invoices.amountPaid} + 0.005`.as("s_covered"),
+    })
+    .from(invoiceInstalments)
+    .innerJoin(invoices, eq(invoices.id, invoiceInstalments.invoiceId))
+    .where(
+      and(
+        eq(invoiceInstalments.organizationId, organizationId),
+        inArray(invoiceInstalments.invoiceId, invoiceIds),
+      ),
+    )
+    .as("walked");
+
+  const rows = await db
+    .select({
+      invoiceId: walked.invoiceId,
+      count: sql<number>`count(*)::int`,
+      paidCount: sql<number>`count(*) FILTER (WHERE ${walked.covered})::int`,
+      nextDueDate: sql<string | null>`min(${walked.dueOn}) FILTER (WHERE NOT ${walked.covered})`,
+    })
+    .from(walked)
+    .groupBy(walked.invoiceId);
+
+  for (const row of rows) {
+    summaries.set(row.invoiceId, {
+      count: row.count,
+      paidCount: row.paidCount,
+      nextDueDate: row.nextDueDate,
+    });
+  }
+  return summaries;
+};
+
 export type DuesAging = {
   current: string;
   d1_15: string;

@@ -47,6 +47,19 @@ export type InvoiceListRow = {
   amountPaid: number;
   balanceDue: number;
   status: EffectiveInvoiceStatus;
+  /**
+   * A one-line summary of the payment schedule, or null when the invoice is due
+   * in a single payment.
+   *
+   * Deliberately a summary rather than the instalments themselves: the list
+   * shows "2 of 5 paid · next 1 Oct", and joining the schedule in to build it
+   * would multiply every row on the page.
+   */
+  schedule: {
+    count: number;
+    paidCount: number;
+    nextDueDate: string | null;
+  } | null;
 };
 
 export type InvoiceStats = {

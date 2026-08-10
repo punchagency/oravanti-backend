@@ -1278,6 +1278,37 @@ const main = async () => {
       checkEqual("and the paid slice ages nowhere", num(plannedAging.total), 1000);
       checkEqual("one invoice is counted overdue", plannedAging.overdueInvoices, 1);
 
+      // The list summary comes from its own query, never a join — a join would
+      // duplicate rows on the page and inflate the count that drives pagination.
+      const listed = await invoicesService.list(orgId, FULL, { status: "all" });
+      const plannedRowInList = listed.data.find((r) => r.id === planned.id);
+      checkEqual(
+        "the list reports the schedule size",
+        plannedRowInList?.schedule?.count,
+        3,
+      );
+      checkEqual(
+        "and how many instalments are settled",
+        plannedRowInList?.schedule?.paidCount,
+        1,
+      );
+      checkEqual(
+        "and which one is next",
+        plannedRowInList?.schedule?.nextDueDate,
+        daysFromNow(-40),
+      );
+      checkEqual(
+        "an unscheduled invoice reports no schedule",
+        listed.data.find((r) => r.id === second.id)?.schedule,
+        null,
+      );
+      // One row per invoice: a fan-out join would have duplicated `planned`.
+      checkEqual(
+        "the page has one row per invoice",
+        listed.data.filter((r) => r.id === planned.id).length,
+        1,
+      );
+
       // ── Instalment edge cases ─────────────────────────────────────────────
       section("instalment edge cases");
 

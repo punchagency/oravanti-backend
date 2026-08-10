@@ -33,7 +33,7 @@ import {
   requireTrustWrite,
   restrictionsFor,
 } from "./account-access";
-import { agingOverDues } from "./dues";
+import { agingOverDues, scheduleSummaries } from "./dues";
 import { logFinanceEvent } from "./finance-events.service";
 import { allocate, type ScheduleRow } from "./instalments";
 import {
@@ -236,6 +236,11 @@ export const list = async (
     .leftJoin(cases, eq(cases.id, invoices.caseId))
     .where(where);
 
+  const schedules = await scheduleSummaries(
+    organizationId,
+    rows.map((r) => r.id),
+  );
+
   const data: InvoiceListRow[] = rows.map((r) => ({
     id: r.id,
     invoiceNumber: r.invoiceNumber,
@@ -253,6 +258,7 @@ export const list = async (
     amountPaid: num(r.amountPaid),
     balanceDue: num(r.balanceDue),
     status: r.status as EffectiveInvoiceStatus,
+    schedule: schedules.get(r.id) ?? null,
   }));
 
   return {
