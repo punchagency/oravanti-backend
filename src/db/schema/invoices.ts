@@ -102,7 +102,30 @@ export const invoices = pgTable(
 
     status: invoiceStatusEnum("status").notNull().default("draft"),
     issueDate: date("issue_date").notNull(),
+    /**
+     * The date the whole invoice is owed by. When the invoice has a payment
+     * schedule this is derived as the FINAL instalment's date on every schedule
+     * write, so the header can never contradict the schedule the client was
+     * sent.
+     */
     dueDate: date("due_date").notNull(),
+    /**
+     * The date the invoice is NEXT owed money on: the earliest instalment not
+     * yet covered by `amount_paid`.
+     *
+     * NULL means "no schedule" — which is every invoice that does not have one,
+     * including every row that predates this column. Read it through
+     * `dueBy` in status.ts (`coalesce(next_due_date, due_date)`), never
+     * directly: a bare `next_due_date < today` is false on NULL, which would
+     * drop unscheduled invoices out of every bucket at once.
+     *
+     * Stored rather than derived because it is a fold over (schedule,
+     * amount_paid), the same category as `amount_paid` below, and deriving it
+     * would put a correlated subquery in every list predicate. It is not
+     * time-relative, so `overdue` is still decided by comparing it to the
+     * firm's today. Maintained only by `recalculateInvoiceTotals()`.
+     */
+    nextDueDate: date("next_due_date"),
 
     // ── Denormalized folds ────────────────────────────────────────────────
     // Every tile on the Invoicing tab and every figure on Reports is a SUM
@@ -158,11 +181,14 @@ export const invoices = pgTable(
       table.organizationId,
       table.invoiceNumber,
     ),
-    // Serves both the status filter and the overdue predicate.
+    // Serves both the status filter and the overdue predicate. The expression
+    // matches `dueBy` in status.ts exactly — coalesce over two columns is
+    // IMMUTABLE, so the predicates stay sargable, which is the whole
+    // justification for storing next_due_date at all.
     index("invoices_org_status_due_idx").on(
       table.organizationId,
       table.status,
-      table.dueDate,
+      sql`coalesce(next_due_date, due_date)`,
     ),
     index("invoices_org_issue_date_idx").on(
       table.organizationId,

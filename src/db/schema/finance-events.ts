@@ -24,6 +24,12 @@ export const financeEventTypeEnum = pgEnum("finance_event_type", [
   "invoice_paid",
   "invoice_partially_paid",
   "payment_followup_sent",
+  // Payment schedules. Note for whoever adds the next value: Postgres cannot
+  // USE an enum value in the same transaction that adds it, so an enum addition
+  // and any write referencing it have to be separate migrations.
+  "invoice_schedule_set",
+  "invoice_schedule_revised",
+  "invoice_schedule_removed",
   "time_entry_logged",
   "time_entry_approved",
   "time_entry_rejected",

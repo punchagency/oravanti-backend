@@ -32,6 +32,7 @@ export * from "./firm-practice-areas";
 export * from "./invoice-deliveries";
 export * from "./invoice-followups";
 export * from "./invoice-number-sequences";
+export * from "./invoice-instalments";
 export * from "./invoice-payments";
 export * from "./invoices";
 export * from "./lead-document-links";
