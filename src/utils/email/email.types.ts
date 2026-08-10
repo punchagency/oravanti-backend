@@ -1,7 +1,18 @@
+export type EmailAttachment = {
+  filename: string;
+  content: Buffer;
+  contentType: string;
+};
+
 export type SendEmailOptions = {
   to: string;
   subject: string;
   html: string;
+  /**
+   * Optional, so every existing caller is unaffected. Nodemailer accepts this
+   * shape directly; the Resend provider maps it explicitly.
+   */
+  attachments?: EmailAttachment[];
 };
 
 export type SendAuthLinkEmailOptions = {

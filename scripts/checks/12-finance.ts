@@ -20,7 +20,7 @@
 import { randomUUID } from "crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { closeDb, systemDb } from "../../src/db/client";
-import { organization, user } from "../../src/db/schema/auth-schema";
+import { organization, team, user } from "../../src/db/schema/auth-schema";
 import { billingRates } from "../../src/db/schema/billing-rates";
 import { cases } from "../../src/db/schema/cases";
 import { clients } from "../../src/db/schema/clients";
@@ -33,6 +33,7 @@ import { practiceAreaCaseTypes } from "../../src/db/schema/practice-area-case-ty
 import { practiceAreaSubcategories } from "../../src/db/schema/practice-area-subcategories";
 import { practiceAreas } from "../../src/db/schema/practice-areas";
 import { staff } from "../../src/db/schema/staff";
+import { teamMembers } from "../../src/db/schema/team-members";
 import { timeEntries } from "../../src/db/schema/time-entries";
 import { pickFinanceRole } from "../../src/modules/finance/account-access";
 import {
@@ -43,6 +44,8 @@ import * as invoicesService from "../../src/modules/finance/invoices.service";
 import { formatInvoiceNumber } from "../../src/modules/finance/invoice-number";
 import { proRateSplit, toMoney } from "../../src/modules/finance/money";
 import * as paymentsService from "../../src/modules/finance/payments.service";
+import * as deliveriesService from "../../src/modules/finance/deliveries.service";
+import { invoiceDeliveries } from "../../src/db/schema/invoice-deliveries";
 import * as reportsService from "../../src/modules/finance/reports.service";
 import * as timeBilling from "../../src/modules/finance/time-billing.service";
 import { deriveStoredStatus } from "../../src/modules/finance/totals";
@@ -51,6 +54,8 @@ import { check, checkEqual, report, section, withOrgContext } from "./_bootstrap
 
 const FULL: AccountAccess = { operating: "full_access", trust: "full_access" };
 const NO_TRUST: AccountAccess = { operating: "full_access", trust: "no_access" };
+
+const CLIENT_EMAIL = "amara.chen@example.test";
 
 const iso = (d: Date) => d.toISOString().slice(0, 10);
 const daysFromNow = (n: number) =>
@@ -138,7 +143,7 @@ const main = async () => {
       firstName: "Amara",
       lastName: "Chen",
       displayName: "Amara Chen",
-      email: "amara.chen@example.test",
+      email: CLIENT_EMAIL,
       phone: "+15550100",
       entityType: "individual",
       status: "active",
@@ -339,7 +344,7 @@ const main = async () => {
         attorneyId: staffAId,
         issueDate: daysFromNow(-5),
         dueDate: daysFromNow(10),
-        status: "sent",
+        status: "draft",
         lineItems: [
           {
             description: "USCIS I-485 filing fee",
@@ -374,7 +379,7 @@ const main = async () => {
           caseId,
           issueDate: daysFromNow(-1),
           dueDate: daysFromNow(20),
-          status: "sent",
+          status: "draft",
           lineItems: [],
           timeEntryIds: [backdated.id],
         });
@@ -388,13 +393,244 @@ const main = async () => {
         practiceAreaId,
         issueDate: daysFromNow(-40),
         dueDate: daysFromNow(-20),
-        status: "sent",
+        status: "draft",
         lineItems: [
           { description: "Consultation", quantity: 1, rate: 300, account: "operating" },
         ],
         timeEntryIds: [],
       });
       checkEqual("second invoice increments", second.invoiceNumber.slice(-4), "0002");
+
+      // ── Delivery ──────────────────────────────────────────────────────────
+      section("delivery");
+
+      checkEqual("a new invoice is a draft", invoice.status, "draft");
+      checkEqual("and has no sentAt", invoice.sentAt, null);
+
+      // Drafts are not invoiced revenue and must stay out of every money tile.
+      const statsBeforeSend = await invoicesService.getStats(orgId, FULL);
+      checkEqual(
+        "drafts are excluded from the totals",
+        statsBeforeSend.totalInvoiced,
+        0,
+      );
+      const draftList = await invoicesService.list(orgId, FULL, {
+        status: "draft",
+      });
+      checkEqual("but the drafts filter finds them", draftList.data.length, 2);
+
+      // "all" hides drafts by default, and can be asked to show them.
+      const allDefault = await invoicesService.list(orgId, FULL, {
+        status: "all",
+      });
+      checkEqual("all hides drafts by default", allDefault.data.length, 0);
+
+      const allWithDrafts = await invoicesService.list(orgId, FULL, {
+        status: "all",
+        includeDrafts: true,
+      });
+      checkEqual("and shows them on request", allWithDrafts.data.length, 2);
+      // Visible is not the same as counted: a draft on screen must still not
+      // reach the totals, or the footer would disagree with the tiles above it.
+      checkEqual(
+        "but they are still excluded from the totals",
+        allWithDrafts.totals.total,
+        0,
+      );
+      checkEqual(
+        "and the count of excluded rows is reported",
+        allWithDrafts.totals.draftCount,
+        2,
+      );
+
+      // The flag is meaningless on a bucket that names a non-draft state, and
+      // must not smuggle drafts into it.
+      const paidWithFlag = await invoicesService.list(orgId, FULL, {
+        status: "paid",
+        includeDrafts: true,
+      });
+      checkEqual(
+        "includeDrafts is ignored on a specific status",
+        paidWithFlag.data.length,
+        0,
+      );
+
+      // Chasing a client for an invoice they were never sent is the bug this
+      // whole flow exists to prevent.
+      let followUpBeforeSendRejected = false;
+      try {
+        await paymentsService.sendFollowUp(orgId, second.id, staffBId, {
+          message: "x",
+          channel: "email",
+        });
+      } catch {
+        followUpBeforeSendRejected = true;
+      }
+      check(
+        "an undelivered invoice cannot be chased",
+        followUpBeforeSendRejected,
+      );
+
+      // Recording a payment against something never sent is equally wrong.
+      let payBeforeSendRejected = false;
+      try {
+        await paymentsService.recordPayment(orgId, invoice.id, staffBId, FULL, {
+          amount: 10,
+          paymentDate: daysFromNow(0),
+          method: "cash",
+        });
+      } catch {
+        payBeforeSendRejected = true;
+      }
+      check("a draft cannot receive a payment", payBeforeSendRejected);
+
+      const sendResult = await deliveriesService.sendInvoice(
+        orgId,
+        invoice.id,
+        staffBId,
+        FULL,
+      );
+      checkEqual("sending reports success", sendResult.status, "sent");
+      checkEqual("to the client's address", sendResult.recipientEmail, CLIENT_EMAIL);
+
+      const afterSend = await invoicesService.getById(orgId, invoice.id, FULL);
+      checkEqual("the invoice leaves draft", afterSend.status, "unpaid");
+      check("and sentAt is stamped", afterSend.sentAt != null);
+
+      const [deliveryRow] = await systemDb
+        .select()
+        .from(invoiceDeliveries)
+        .where(eq(invoiceDeliveries.invoiceId, invoice.id));
+      checkEqual("a delivery row records it", deliveryRow?.status, "sent");
+      check("with the archived document key", Boolean(deliveryRow?.documentKey));
+      check("and a handoff timestamp", deliveryRow?.deliveredAt != null);
+
+      checkEqual(
+        "the invoice now counts as revenue",
+        (await invoicesService.getStats(orgId, FULL)).totalInvoiced,
+        1940,
+      );
+
+      // Sending twice is a resend, not a second send.
+      let doubleSendRejected = false;
+      try {
+        await deliveriesService.sendInvoice(orgId, invoice.id, staffBId, FULL);
+      } catch {
+        doubleSendRejected = true;
+      }
+      check("a sent invoice cannot be sent again", doubleSendRejected);
+
+      const resent = await deliveriesService.resendInvoice(
+        orgId,
+        invoice.id,
+        staffBId,
+        FULL,
+      );
+      checkEqual("but it can be resent", resent.status, "sent");
+      checkEqual("which counts the attempt", resent.attemptCount, 2);
+
+      // The failure path is the point of the whole design: an invoice whose
+      // delivery fails must stay a draft with the reason recorded, rather than
+      // claiming a send. Forced with an address the transport rejects.
+      await systemDb
+        .update(clients)
+        .set({ email: "not a valid address" })
+        .where(eq(clients.id, clientId));
+
+      const failed = await deliveriesService.sendInvoice(
+        orgId,
+        second.id,
+        staffBId,
+        FULL,
+      );
+      checkEqual("a rejected send reports failure", failed.status, "failed");
+      check("with a reason", Boolean(failed.failureReason), failed);
+      checkEqual(
+        "and the invoice is STILL a draft",
+        (await invoicesService.getById(orgId, second.id, FULL)).status,
+        "draft",
+      );
+
+      const [failedRow] = await systemDb
+        .select()
+        .from(invoiceDeliveries)
+        .where(eq(invoiceDeliveries.id, failed.deliveryId));
+      checkEqual("the attempt is recorded as failed", failedRow?.status, "failed");
+      checkEqual("with no handoff timestamp", failedRow?.deliveredAt, null);
+
+      // Still cannot be chased — a failed send is not a delivery.
+      let chaseAfterFailureRejected = false;
+      try {
+        await paymentsService.sendFollowUp(orgId, second.id, staffBId, {
+          message: "x",
+          channel: "email",
+        });
+      } catch {
+        chaseAfterFailureRejected = true;
+      }
+      check("a failed delivery still blocks a chase", chaseAfterFailureRejected);
+
+      await systemDb
+        .update(clients)
+        .set({ email: CLIENT_EMAIL })
+        .where(eq(clients.id, clientId));
+
+      // Now that the address is valid again, the retry succeeds — proving a
+      // failure is recoverable rather than terminal.
+      const retried = await deliveriesService.sendInvoice(
+        orgId,
+        second.id,
+        staffBId,
+        FULL,
+      );
+      checkEqual("and a retry after fixing the address succeeds", retried.status, "sent");
+      checkEqual("counting it as a second attempt", retried.attemptCount, 2);
+
+      // Invoices issued before delivery tracking existed have `sentAt` but no
+      // delivery rows. They must stay chaseable — the gate distinguishes
+      // absence of evidence from evidence of failure, and blocking every
+      // invoice a firm already has would be a regression, not a safeguard.
+      const [legacy] = await systemDb
+        .insert(invoices)
+        .values({
+          organizationId: orgId,
+          invoiceNumber: `INV-LEGACY-${randomUUID().slice(0, 6)}`,
+          clientId,
+          practiceAreaId,
+          status: "sent",
+          issueDate: daysFromNow(-30),
+          dueDate: daysFromNow(-10),
+          totalAmount: "100.00",
+          subtotalOperating: "100.00",
+          sentAt: new Date(),
+        })
+        .returning();
+      check(
+        "a pre-tracking invoice is still chaseable",
+        await deliveriesService.canChaseInvoice(orgId, legacy!.id),
+      );
+      // Removed straight away: it exists to prove one thing, and leaving it
+      // would shift every money figure the rest of this check asserts on.
+      await systemDb.delete(invoices).where(eq(invoices.id, legacy!.id));
+
+      const pdf = await deliveriesService.buildInvoicePdf(orgId, invoice.id, FULL);
+      check("the PDF renders", pdf.buffer.length > 1000);
+      checkEqual(
+        "as a real PDF",
+        pdf.buffer.subarray(0, 4).toString("utf8"),
+        "%PDF",
+      );
+
+      // Trust lines are withheld from the payload, so they cannot reach the PDF.
+      const maskedPdf = await deliveriesService.buildInvoicePdf(
+        orgId,
+        invoice.id,
+        NO_TRUST,
+      );
+      check(
+        "a caller without trust access gets a smaller document",
+        maskedPdf.buffer.length < pdf.buffer.length,
+      );
 
       // ── Payments ──────────────────────────────────────────────────────────
       section("payments");
@@ -513,7 +749,7 @@ const main = async () => {
           practiceAreaId,
           issueDate: daysFromNow(0),
           dueDate: daysFromNow(30),
-          status: "sent",
+          status: "draft",
           lineItems: [
             { description: "Filing fee", quantity: 1, rate: 500, account: "trust_iolta" },
           ],
@@ -635,6 +871,223 @@ const main = async () => {
         300,
       );
 
+      // ── Matter defaults (attorney prefill) ────────────────────────────────
+      section("matter defaults");
+
+      const noTeam = await invoicesService.getCaseDefaults(orgId, caseId);
+      checkEqual("a matter with no team resolves no attorney", noTeam.attorneyId, null);
+      checkEqual("and says so rather than guessing", noTeam.source, null);
+
+      const teamId = randomUUID();
+      await systemDb.insert(team).values({
+        id: teamId,
+        name: "Immigration team",
+        organizationId: orgId,
+        createdAt: new Date(),
+        // The lead is an admin, not an attorney — rule 1 must not fire.
+        leadId: staffBId,
+      });
+      await systemDb
+        .insert(teamMembers)
+        .values([{ teamId, staffId: staffAId }, { teamId, staffId: staffBId }]);
+      await systemDb
+        .update(cases)
+        .set({ assignedTeamId: teamId })
+        .where(eq(cases.id, caseId));
+
+      const soleAttorney = await invoicesService.getCaseDefaults(orgId, caseId);
+      checkEqual(
+        "the team's only attorney is picked",
+        soleAttorney.attorneyId,
+        staffAId,
+      );
+      checkEqual("and the rule is named", soleAttorney.source, "sole_attorney");
+
+      const [staffC] = await systemDb
+        .insert(staff)
+        .values({
+          organizationId: orgId,
+          firstName: "Nadia",
+          lastName: "Okoro",
+          email: `nadia-${randomUUID().slice(0, 8)}@example.test`,
+          role: "attorney",
+        })
+        .returning();
+      await systemDb
+        .insert(teamMembers)
+        .values({ teamId, staffId: staffC!.id });
+
+      // Two attorneys and a non-attorney lead: nothing is unambiguous, so the
+      // person answerable for the matter is the honest answer.
+      const ambiguous = await invoicesService.getCaseDefaults(orgId, caseId);
+      checkEqual("with several attorneys, the lead is used", ambiguous.attorneyId, staffBId);
+      checkEqual("the count is reported", ambiguous.attorneyCount, 2);
+
+      await systemDb
+        .update(team)
+        .set({ leadId: staffC!.id })
+        .where(eq(team.id, teamId));
+
+      const leadAttorney = await invoicesService.getCaseDefaults(orgId, caseId);
+      checkEqual(
+        "an attorney lead outranks the others",
+        leadAttorney.attorneyId,
+        staffC!.id,
+      );
+      checkEqual("and is labelled as the lead", leadAttorney.source, "team_lead");
+
+      // ── Editing a draft ───────────────────────────────────────────────────
+      section("draft editing");
+
+      // The void above released these two, so they are billable again.
+      const draft = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(0),
+        dueDate: daysFromNow(30),
+        status: "draft",
+        lineItems: [
+          { description: "Consultation", quantity: 1, rate: 100, account: "operating" },
+        ],
+        timeEntryIds: [backdated.id],
+      });
+      const backdatedAmount = draft.totals.total - 100;
+      check("the draft folds in its time entry", backdatedAmount > 0);
+
+      const edited = await invoicesService.update(
+        orgId,
+        draft.id,
+        {
+          notes: "Revised before sending",
+          lineItems: [
+            { description: "Consultation", quantity: 2, rate: 100, account: "operating" },
+          ],
+          // Swap which time entry it bills.
+          timeEntryIds: [recent.id],
+        },
+        staffBId,
+        FULL,
+      );
+      checkEqual("the edit keeps the invoice number", edited.invoiceNumber, draft.invoiceNumber);
+      checkEqual("it is still a draft", edited.status, "draft");
+      checkEqual("the notes stuck", edited.notes, "Revised before sending");
+      checkEqual("the line set was replaced", edited.lineItems.length, 2);
+
+      const [backdatedAfter] = await systemDb
+        .select({ invoicedAt: timeEntries.invoicedAt })
+        .from(timeEntries)
+        .where(eq(timeEntries.id, backdated.id));
+      const [recentAfter] = await systemDb
+        .select({ invoicedAt: timeEntries.invoicedAt })
+        .from(timeEntries)
+        .where(eq(timeEntries.id, recent.id));
+      // The dropped entry must become billable again, or the work is stranded.
+      checkEqual("the dropped entry is released", backdatedAfter?.invoicedAt ?? null, null);
+      check("the added entry is claimed", recentAfter?.invoicedAt != null);
+
+      // Totals are recalculated, not left at what the draft used to say.
+      const recentAmount = edited.totals.total - 200;
+      checkEqual(
+        "totals are recomputed from the new lines",
+        edited.totals.total,
+        toMoney(200 + recentAmount),
+      );
+      checkEqual("balance follows the total", edited.totals.balanceDue, edited.totals.total);
+
+      // Keeping an entry the draft already holds must not read as double-billing.
+      const kept = await invoicesService.update(
+        orgId,
+        draft.id,
+        {
+          lineItems: [],
+          timeEntryIds: [recent.id],
+        },
+        staffBId,
+        FULL,
+      );
+      checkEqual("a draft can keep its own time entry", kept.lineItems.length, 1);
+
+      // And it is still visible to the dialog that has to offer it back.
+      const offered = await invoicesService.getUnbilledTime(orgId, {
+        clientId,
+        forInvoiceId: draft.id,
+      });
+      check(
+        "the held entry is offered back when editing",
+        offered.some((e) => e.id === recent.id),
+      );
+      const unbilledOnly = await invoicesService.getUnbilledTime(orgId, { clientId });
+      check(
+        "but not to a plain unbilled query",
+        !unbilledOnly.some((e) => e.id === recent.id),
+      );
+
+      // A sent invoice is a statement the client already holds; correcting it
+      // is a void plus a reissue, never a rewrite.
+      let sentEditRejected = false;
+      try {
+        await invoicesService.update(
+          orgId,
+          second.id,
+          {
+            lineItems: [
+              { description: "Rewritten", quantity: 1, rate: 5, account: "operating" },
+            ],
+            timeEntryIds: [],
+          },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        sentEditRejected = true;
+      }
+      check("a sent invoice's lines cannot be edited", sentEditRejected);
+
+      const headerOnly = await invoicesService.update(
+        orgId,
+        second.id,
+        { notes: "Chased by phone" },
+        staffBId,
+        FULL,
+      );
+      checkEqual("but its header still can be", headerOnly.notes, "Chased by phone");
+
+      // Trust lines are withheld from a caller without access, so they cannot
+      // be in the payload — replacing the set would delete them unseen.
+      await invoicesService.update(
+        orgId,
+        draft.id,
+        {
+          lineItems: [
+            { description: "Filing fee", quantity: 1, rate: 400, account: "trust_iolta" },
+          ],
+          timeEntryIds: [],
+        },
+        staffBId,
+        FULL,
+      );
+      let blindTrustEditRejected = false;
+      try {
+        await invoicesService.update(
+          orgId,
+          draft.id,
+          {
+            lineItems: [
+              { description: "Only what I can see", quantity: 1, rate: 50, account: "operating" },
+            ],
+            timeEntryIds: [],
+          },
+          staffBId,
+          NO_TRUST,
+        );
+      } catch {
+        blindTrustEditRejected = true;
+      }
+      check(
+        "a draft with unseen trust lines cannot be edited blind",
+        blindTrustEditRejected,
+      );
+
       // ── Activity trail ────────────────────────────────────────────────────
       section("activity trail");
 
@@ -677,6 +1130,8 @@ const main = async () => {
     await systemDb.delete(timeEntries).where(eq(timeEntries.organizationId, orgId));
     await systemDb.delete(billingRates).where(eq(billingRates.organizationId, orgId));
     await systemDb.delete(cases).where(eq(cases.organizationId, orgId));
+    // After cases: cases.assigned_team_id references team.
+    await systemDb.delete(team).where(eq(team.organizationId, orgId));
     await systemDb.delete(clients).where(eq(clients.organizationId, orgId));
     await systemDb.delete(staff).where(eq(staff.organizationId, orgId));
     await systemDb

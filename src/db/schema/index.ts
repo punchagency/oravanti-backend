@@ -29,6 +29,7 @@ export * from "./fee-agreements";
 export * from "./finance-events";
 export * from "./financial-access-controls";
 export * from "./firm-practice-areas";
+export * from "./invoice-deliveries";
 export * from "./invoice-followups";
 export * from "./invoice-number-sequences";
 export * from "./invoice-payments";

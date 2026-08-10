@@ -61,6 +61,11 @@ export const statusFilter = (
   today: string,
 ): SQL | undefined => {
   switch (value) {
+    // Drafts are excluded from `countableInvoices`, so they never reach a money
+    // figure. This filter is the only way to see them — which is what makes
+    // them sendable rather than invisible.
+    case "draft":
+      return eq(invoices.status, "draft");
     case "paid":
       return eq(invoices.status, "paid");
     case "overdue":
@@ -93,6 +98,17 @@ export const statusFilter = (
  */
 export const countableInvoices = () =>
   inArray(invoices.status, ["sent", "partial", "paid"]);
+
+/**
+ * What the LIST may show, which is not the same question as what counts as
+ * money. Drafts can be surfaced here on request; `countableInvoices` stays the
+ * only thing the tiles, reports and footer totals are built from, so a draft
+ * can never become revenue by being made visible.
+ */
+export const listableInvoices = (includeDrafts: boolean) =>
+  includeDrafts
+    ? inArray(invoices.status, ["draft", "sent", "partial", "paid"])
+    : countableInvoices();
 
 /** The overdue predicate, shared by the stats tile and the aging buckets. */
 export const overdueCondition = (today: string) =>

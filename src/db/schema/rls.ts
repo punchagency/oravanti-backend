@@ -47,12 +47,12 @@
 //
 // ─── Coverage ───────────────────────────────────────────────────────────────
 //
-// Currently covered tables (18):
+// Currently covered tables (19):
 //   cases, case_events, case_record_notes, clients,
 //   leads, lead_events, lead_notes,
 //   case_issues, case_issue_documents, case_issue_events, ai_scan_jobs,
 //   invoices, invoice_line_items, invoice_payments, invoice_followups,
-//   finance_events, billing_rates, time_entries
+//   invoice_deliveries, finance_events, billing_rates, time_entries
 //
 // See .agents/plan-rls-remaining-tables.md for the full audit of uncovered tables.
 //
@@ -84,6 +84,7 @@ import {
 import { billingRates } from "./billing-rates";
 import { clients } from "./clients";
 import { financeEvents } from "./finance-events";
+import { invoiceDeliveries } from "./invoice-deliveries";
 import { invoiceFollowups } from "./invoice-followups";
 import { invoiceNumberSequences } from "./invoice-number-sequences";
 import { invoicePayments } from "./invoice-payments";
@@ -643,6 +644,13 @@ export const rlsInvoiceFollowupsOrg = pgPolicy("rls_invoice_followups_org", {
   using: sql`organization_id = ${currentOrgId}`,
   withCheck: sql`organization_id = ${currentOrgId}`,
 }).link(invoiceFollowups);
+
+export const rlsInvoiceDeliveriesOrg = pgPolicy("rls_invoice_deliveries_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(invoiceDeliveries);
 
 export const rlsFinanceEventsOrg = pgPolicy("rls_finance_events_org", {
   as: "permissive",

@@ -12,6 +12,7 @@ import { validateRequest } from "../../middleware/validate.middleware";
 import { InvoicesController } from "./invoices.controller";
 import {
   activityQuerySchema,
+  caseDefaultsQuerySchema,
   createInvoiceBodySchema,
   exportInvoicesQuerySchema,
   followUpBodySchema,
@@ -106,6 +107,26 @@ export class InvoicesRouter {
 
     /**
      * @openapi
+     * /finance/invoices/case-defaults:
+     *   get:
+     *     tags: [Finance — Invoicing]
+     *     summary: The attorney to bill a matter under, resolved from its team
+     *     description: >
+     *       A case is assigned to a team, not a person. Prefers the team lead
+     *       when they are an attorney, then the team's only attorney, then the
+     *       lead whatever their role. `source` says which rule fired.
+     *     responses:
+     *       200: { description: Matter defaults retrieved }
+     */
+    this.router.get(
+      "/case-defaults",
+      create,
+      validateRequest({ query: caseDefaultsQuerySchema }),
+      controller.getCaseDefaults,
+    );
+
+    /**
+     * @openapi
      * /finance/invoices/export:
      *   get:
      *     tags: [Finance — Invoicing]
@@ -163,6 +184,23 @@ export class InvoicesRouter {
       controller.getById,
     );
 
+    /**
+     * @openapi
+     * /finance/invoices/{id}:
+     *   patch:
+     *     tags: [Finance — Invoicing]
+     *     summary: Edit an invoice; line/matter/date edits are draft-only
+     *     description: >
+     *       Due date, notes, attorney and filing type apply to any live
+     *       invoice. Changing what the invoice charges — lines, time entries,
+     *       matter, issue date — is refused on anything but a draft: a sent
+     *       invoice is corrected by voiding and reissuing, not by rewriting a
+     *       document the client already holds. Sending `lineItems` replaces the
+     *       whole line set, so `timeEntryIds` must accompany it.
+     *     responses:
+     *       200: { description: Invoice updated }
+     *       400: { description: Not a draft, or the line set is incomplete }
+     */
     this.router.patch(
       "/:id",
       update,
@@ -173,11 +211,52 @@ export class InvoicesRouter {
       controller.update,
     );
 
+    /**
+     * @openapi
+     * /finance/invoices/{id}/pdf:
+     *   get:
+     *     tags: [Finance — Invoicing]
+     *     summary: The invoice PDF — the only renderer, also what gets emailed
+     */
+    this.router.get(
+      "/:id/pdf",
+      read,
+      validateRequest({ params: invoiceParamsSchema }),
+      controller.pdf,
+    );
+
+    this.router.get(
+      "/:id/deliveries",
+      read,
+      validateRequest({ params: invoiceParamsSchema }),
+      controller.getDeliveries,
+    );
+
+    /**
+     * @openapi
+     * /finance/invoices/{id}/send:
+     *   post:
+     *     tags: [Finance — Invoicing]
+     *     summary: Email a draft invoice to the client and record the attempt
+     *     description: >
+     *       Archives the PDF, records the attempt, then sends. The invoice is
+     *       only promoted out of draft once the provider accepts the message —
+     *       a failure leaves it a draft with the reason recorded.
+     *     responses:
+     *       201: { description: Attempt recorded (check `status`) }
+     */
     this.router.post(
       "/:id/send",
       update,
       validateRequest({ params: invoiceParamsSchema }),
       controller.send,
+    );
+
+    this.router.post(
+      "/:id/resend",
+      update,
+      validateRequest({ params: invoiceParamsSchema }),
+      controller.resend,
     );
 
     this.router.post(
