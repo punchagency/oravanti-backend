@@ -24,6 +24,7 @@ import { ConsultationSettingsModule } from "./settings/consultation/consultation
 import { DataAccessModule } from "./settings/data-access/data-access.module";
 import { FinancialAccessModule } from "./settings/financial-access/financial-access.module";
 import { FirmInfoModule } from "./settings/firm-info/firm-info.module";
+import { FirmProfileModule } from "./settings/firm-profile/firm-profile.module";
 import { PermissionAuditLogModule } from "./settings/permission-audit-log/permission-audit-log.module";
 import { SecurityModule } from "./settings/security/security.module";
 import { StaffAvailabilityModule } from "./staff-availability/staff-availability.module";
@@ -62,6 +63,7 @@ export const modules: Module[] = [
   new FinanceReportsModule(),
   new PermissionAuditLogModule(),
   new FirmInfoModule(),
+  new FirmProfileModule(),
   new ConsultationSettingsModule(),
   new AccessControlModule(),
   new FinancialAccessModule(),
