@@ -28,12 +28,19 @@ import { invoices } from "../../db/schema/invoices";
  * it, its full amount before they reach it, and the shortfall in between.
  * Overpayment (`P > total`) gives zero everywhere rather than a negative.
  *
- * ROWS, not the default RANGE. RANGE treats rows with equal `due_date` as peers
- * and hands each of them the cumulative total *through the whole peer group*, so
- * two $500 instalments due the same day against a $500 payment would each report
- * $500 outstanding — a $500 receivable that does not exist. `sequence` breaks
- * the tie, but stating the frame means the arithmetic stays right even if the
- * renumbering invariant is ever broken by a partial write.
+ * ROWS, not the default RANGE, and the frame is stated rather than assumed.
+ *
+ * RANGE treats rows equal in every ORDER BY column as peers and hands each of
+ * them the cumulative total through the whole group. `sequence` is in the
+ * ordering and is unique per invoice, so today no two rows are ever peers and
+ * RANGE would in fact agree — this is not currently a live bug, and a test
+ * cannot reach it while the unique index holds.
+ *
+ * It is spelled out because the correctness would otherwise rest silently on
+ * that tiebreaker. Drop `sequence` from the ORDER BY as redundant — dates look
+ * unique until two instalments land on the same day — and under RANGE two $500
+ * instalments against a $500 payment would each report $500 outstanding, a
+ * receivable that does not exist. Under ROWS the same edit stays correct.
  */
 const outstandingPerInstalment = sql`
   least(
