@@ -256,13 +256,20 @@ export const renderInvoicePdf = async (
   const labelWidth = totalsWidth * 0.55;
   const valueWidth = totalsWidth * 0.45;
 
-  const totalRow = (label: string, value: string, bold = false) => {
+  const totalRow = (
+    label: string,
+    value: string,
+    opts: { bold?: boolean; spaceBefore?: number } = {},
+  ) => {
+    const { bold = false, spaceBefore = 0 } = opts;
+    if (spaceBefore) doc.moveDown(spaceBefore);
     const y = doc.y;
     doc
       .font(bold ? "Helvetica-Bold" : "Helvetica")
       .fontSize(10)
       .fillColor(bold ? "#1a1a1a" : "#666")
       .text(label, totalsX, y, { width: labelWidth });
+    const labelBottom = doc.y;
     doc
       .font("Helvetica-Bold")
       .fillColor("#1a1a1a")
@@ -270,19 +277,28 @@ export const renderInvoicePdf = async (
         width: valueWidth,
         align: "right",
       });
-    doc.y = y;
-    doc.moveDown(0.6);
+    // Continue from the BOTTOM of the taller of the two columns. Resetting to
+    // `y` — the top of the row — and advancing by a fraction of a line was
+    // moving less than the text's own height, so each row printed over the one
+    // before it.
+    doc.y = Math.max(labelBottom, doc.y);
+    doc.moveDown(0.35);
   };
 
   if (invoice.totals.trust !== null && invoice.totals.trust > 0) {
     totalRow("Attorney fees & services", money(invoice.totals.operating));
     totalRow("Filing fees (held in trust)", money(invoice.totals.trust));
   }
-  totalRow("Total", money(invoice.totals.total), true);
+  totalRow("Total", money(invoice.totals.total), { bold: true });
   if (invoice.totals.amountPaid > 0) {
     totalRow("Amount paid", money(invoice.totals.amountPaid));
   }
-  totalRow("Balance due", money(invoice.totals.balanceDue), true);
+  // Set apart from the arithmetic above it: the balance is the one figure the
+  // client is being asked to act on, and it read as just another row.
+  totalRow("Balance due", money(invoice.totals.balanceDue), {
+    bold: true,
+    spaceBefore: 0.8,
+  });
 
   doc.x = left;
   doc.moveDown(1);
