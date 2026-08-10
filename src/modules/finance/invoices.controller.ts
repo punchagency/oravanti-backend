@@ -43,6 +43,7 @@ export class InvoicesController {
     const entries = await invoicesService.getUnbilledTime(organizationId!, {
       clientId: req.query.clientId as string | undefined,
       caseId: req.query.caseId as string | undefined,
+      forInvoiceId: req.query.forInvoiceId as string | undefined,
     });
     sendSuccess(res, entries, "Unbilled time retrieved");
   };

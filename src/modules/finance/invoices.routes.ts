@@ -163,6 +163,23 @@ export class InvoicesRouter {
       controller.getById,
     );
 
+    /**
+     * @openapi
+     * /finance/invoices/{id}:
+     *   patch:
+     *     tags: [Finance — Invoicing]
+     *     summary: Edit an invoice; line/matter/date edits are draft-only
+     *     description: >
+     *       Due date, notes, attorney and filing type apply to any live
+     *       invoice. Changing what the invoice charges — lines, time entries,
+     *       matter, issue date — is refused on anything but a draft: a sent
+     *       invoice is corrected by voiding and reissuing, not by rewriting a
+     *       document the client already holds. Sending `lineItems` replaces the
+     *       whole line set, so `timeEntryIds` must accompany it.
+     *     responses:
+     *       200: { description: Invoice updated }
+     *       400: { description: Not a draft, or the line set is incomplete }
+     */
     this.router.patch(
       "/:id",
       update,

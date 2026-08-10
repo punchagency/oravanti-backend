@@ -14,7 +14,11 @@ import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
 import { timeEntries } from "../../db/schema/time-entries";
 import { withTransaction } from "../../db/transaction-context";
-import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import {
+  AuthorizationError,
+  BadRequestError,
+  NotFoundError,
+} from "../../utils/error/app-error";
 import {
   buildPaginatedResponse,
   getPaginationOffset,
@@ -323,7 +327,9 @@ export const getById = async (
       caseId: invoices.caseId,
       caseNumber: cases.caseNumber,
       caseTypeLabel: practiceAreaCaseTypes.name,
+      practiceAreaId: invoices.practiceAreaId,
       practiceAreaName: practiceAreas.name,
+      attorneyId: invoices.attorneyId,
       attorneyFirstName: staff.firstName,
       attorneyLastName: staff.lastName,
       operatingAmount: invoices.subtotalOperating,
@@ -399,6 +405,10 @@ export const getById = async (
       ? { id: row.caseId, reference: row.caseNumber, type: row.caseTypeLabel }
       : null,
     practiceArea: row.practiceAreaName,
+    // The ids sit beside the labels because the edit dialog has to prefill
+    // selects, and matching a name back to an option is a guess.
+    practiceAreaId: row.practiceAreaId,
+    attorneyId: row.attorneyId,
     attorney: attorneyName,
     lineItems: lineRows
       // Trust lines are not merely blanked — they are withheld entirely, so a
@@ -449,6 +459,124 @@ export type CreateInvoiceLine = {
   account: "operating" | "trust_iolta";
 };
 
+/**
+ * Load the time entries an invoice is about to bill, refusing the ones that
+ * cannot legally be billed.
+ *
+ * The unique index on `invoice_line_items.time_entry_id` is the real backstop
+ * against double-billing; failing here just turns a constraint violation into a
+ * message someone can act on.
+ *
+ * `alreadyHeld` names the entries this same invoice holds today — on an edit
+ * they are legitimately stamped `invoicedAt`, so the "already invoiced" rule
+ * would otherwise reject an invoice for keeping its own lines.
+ */
+const loadBillableEntries = async (
+  organizationId: string,
+  entryIds: string[],
+  alreadyHeld: ReadonlySet<string> = new Set(),
+) => {
+  if (entryIds.length === 0) return [];
+
+  const entries = await db
+    .select({
+      id: timeEntries.id,
+      hoursWorked: timeEntries.hoursWorked,
+      hourlyRate: timeEntries.hourlyRate,
+      amount: timeEntries.amount,
+      description: timeEntries.description,
+      entryDate: timeEntries.entryDate,
+      status: timeEntries.status,
+      invoicedAt: timeEntries.invoicedAt,
+      billable: timeEntries.billable,
+      staffFirstName: staff.firstName,
+      staffLastName: staff.lastName,
+    })
+    .from(timeEntries)
+    .leftJoin(staff, eq(staff.id, timeEntries.staffId))
+    .where(
+      and(
+        eq(timeEntries.organizationId, organizationId),
+        inArray(timeEntries.id, entryIds),
+      ),
+    );
+
+  if (entries.length !== entryIds.length) {
+    throw new BadRequestError("One or more time entries could not be found");
+  }
+
+  for (const e of entries) {
+    if (e.status !== "approved") {
+      throw new BadRequestError(
+        "Only approved time entries can be added to an invoice",
+      );
+    }
+    if (e.invoicedAt && !alreadyHeld.has(e.id)) {
+      throw new BadRequestError(
+        "One or more time entries have already been invoiced",
+      );
+    }
+    if (!e.billable) {
+      throw new BadRequestError(
+        "Non-billable time entries cannot be added to an invoice",
+      );
+    }
+    if (e.hourlyRate == null) {
+      throw new BadRequestError(
+        "One or more time entries have no billing rate — set a rate for the staff member first",
+      );
+    }
+  }
+
+  return entries;
+};
+
+type BillableEntry = Awaited<ReturnType<typeof loadBillableEntries>>[number];
+
+/** Build the manual and time-entry lines for an invoice, in that order. */
+const buildLineValues = (
+  organizationId: string,
+  invoiceId: string,
+  lineItems: CreateInvoiceLine[],
+  entries: BillableEntry[],
+): NewInvoiceLineItem[] => {
+  let sortOrder = 0;
+
+  const values: NewInvoiceLineItem[] = lineItems.map((l) => ({
+    organizationId,
+    invoiceId,
+    description: l.description,
+    quantity: money(l.quantity),
+    rate: money(l.rate),
+    amount: money(l.quantity * l.rate),
+    account: l.account,
+    sortOrder: sortOrder++,
+  }));
+
+  for (const e of entries) {
+    const hours = num(e.hoursWorked);
+    const rate = num(e.hourlyRate);
+    const who = `${e.staffFirstName ?? ""} ${e.staffLastName ?? ""}`.trim();
+    values.push({
+      organizationId,
+      invoiceId,
+      description:
+        e.description?.trim() ||
+        `Legal services${who ? ` — ${who}` : ""} (${e.entryDate})`,
+      quantity: money(hours),
+      rate: money(rate),
+      // The stored snapshot wins over recomputing hours x rate: it is what was
+      // approved, and recomputing could differ by a rounding step.
+      amount: money(e.amount == null ? hours * rate : num(e.amount)),
+      account: "operating" as const,
+      sortOrder: sortOrder++,
+      timeEntryId: e.id,
+    });
+  }
+
+  return values;
+};
+
 export type CreateInvoiceInput = {
   clientId: string;
   caseId?: string;
@@ -474,60 +602,10 @@ export const create = async (
   }
 
   return withTransaction(db, async () => {
-    // Approved, unbilled entries only. The unique index on
-    // invoice_line_items.time_entry_id is the real backstop against
-    // double-billing, but failing here gives a usable message instead of a
-    // constraint violation.
-    const entries = input.timeEntryIds.length
-      ? await db
-          .select({
-            id: timeEntries.id,
-            hoursWorked: timeEntries.hoursWorked,
-            hourlyRate: timeEntries.hourlyRate,
-            amount: timeEntries.amount,
-            description: timeEntries.description,
-            entryDate: timeEntries.entryDate,
-            status: timeEntries.status,
-            invoicedAt: timeEntries.invoicedAt,
-            billable: timeEntries.billable,
-            staffFirstName: staff.firstName,
-            staffLastName: staff.lastName,
-          })
-          .from(timeEntries)
-          .leftJoin(staff, eq(staff.id, timeEntries.staffId))
-          .where(
-            and(
-              eq(timeEntries.organizationId, organizationId),
-              inArray(timeEntries.id, input.timeEntryIds),
-            ),
-          )
-      : [];
-
-    if (entries.length !== input.timeEntryIds.length) {
-      throw new BadRequestError("One or more time entries could not be found");
-    }
-    for (const e of entries) {
-      if (e.status !== "approved") {
-        throw new BadRequestError(
-          "Only approved time entries can be added to an invoice",
-        );
-      }
-      if (e.invoicedAt) {
-        throw new BadRequestError(
-          "One or more time entries have already been invoiced",
-        );
-      }
-      if (!e.billable) {
-        throw new BadRequestError(
-          "Non-billable time entries cannot be added to an invoice",
-        );
-      }
-      if (e.hourlyRate == null) {
-        throw new BadRequestError(
-          "One or more time entries have no billing rate — set a rate for the staff member first",
-        );
-      }
-    }
+    const entries = await loadBillableEntries(
+      organizationId,
+      input.timeEntryIds,
+    );
 
     const year = await currentInvoiceYear(organizationId);
     const invoiceNumber = await allocateInvoiceNumber(organizationId, year);
@@ -551,38 +629,12 @@ export const create = async (
       })
       .returning();
 
-    let sortOrder = 0;
-    const lineValues: NewInvoiceLineItem[] = input.lineItems.map((l) => ({
+    const lineValues = buildLineValues(
       organizationId,
-      invoiceId: invoice!.id,
-      description: l.description,
-      quantity: money(l.quantity),
-      rate: money(l.rate),
-      amount: money(l.quantity * l.rate),
-      account: l.account,
-      sortOrder: sortOrder++,
-    }));
-
-    for (const e of entries) {
-      const hours = num(e.hoursWorked);
-      const rate = num(e.hourlyRate);
-      const who = `${e.staffFirstName ?? ""} ${e.staffLastName ?? ""}`.trim();
-      lineValues.push({
-        organizationId,
-        invoiceId: invoice!.id,
-        description:
-          e.description?.trim() ||
-          `Legal services${who ? ` — ${who}` : ""} (${e.entryDate})`,
-        quantity: money(hours),
-        rate: money(rate),
-        // The stored snapshot wins over recomputing hours x rate: it is what
-        // was approved, and recomputing could differ by a rounding step.
-        amount: money(e.amount == null ? hours * rate : num(e.amount)),
-        account: "operating" as const,
-        sortOrder: sortOrder++,
-        timeEntryId: e.id,
-      });
-    }
+      invoice!.id,
+      input.lineItems,
+      entries,
+    );
 
     if (lineValues.length === 0) {
       throw new BadRequestError("An invoice needs at least one line item");
@@ -725,10 +777,26 @@ export const voidInvoice = async (
 export type UpdateInvoiceInput = {
   dueDate?: string;
   notes?: string;
-  attorneyId?: string;
+  attorneyId?: string | null;
   filingType?: string;
+  /** Draft-only, below. */
+  issueDate?: string;
+  caseId?: string | null;
+  practiceAreaId?: string | null;
+  lineItems?: CreateInvoiceLine[];
+  timeEntryIds?: string[];
 };
 
+/**
+ * Edit an invoice.
+ *
+ * Header fields (due date, notes, attorney, filing type) apply to any live
+ * invoice. Anything that changes what the invoice *says it charges* — lines,
+ * time entries, the matter, the issue date — is refused on anything but a
+ * draft: once a client has been sent an invoice it is a legal statement of what
+ * they owe, and the correction for that is a void plus a reissue, not a silent
+ * rewrite of a document someone already has a copy of.
+ */
 export const update = async (
   organizationId: string,
   invoiceId: string,
@@ -736,8 +804,23 @@ export const update = async (
   actorStaffId: string | null,
   access: AccountAccess,
 ) => {
+  const editsContent =
+    input.lineItems !== undefined ||
+    input.timeEntryIds !== undefined ||
+    input.issueDate !== undefined ||
+    input.caseId !== undefined ||
+    input.practiceAreaId !== undefined;
+
   const [existing] = await db
-    .select({ status: invoices.status, invoiceNumber: invoices.invoiceNumber })
+    .select({
+      status: invoices.status,
+      invoiceNumber: invoices.invoiceNumber,
+      issueDate: invoices.issueDate,
+      dueDate: invoices.dueDate,
+      caseId: invoices.caseId,
+      practiceAreaId: invoices.practiceAreaId,
+      subtotalTrust: invoices.subtotalTrust,
+    })
     .from(invoices)
     .where(
       and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
@@ -749,36 +832,203 @@ export const update = async (
     throw new BadRequestError("A voided invoice cannot be edited");
   }
 
-  await db
-    .update(invoices)
-    .set({
-      dueDate: input.dueDate,
-      notes: input.notes,
-      attorneyId: input.attorneyId,
-      filingType: input.filingType,
-      updatedAt: new Date(),
-    })
+  if (editsContent) {
+    if (existing.status !== "draft") {
+      throw new BadRequestError(
+        "Only a draft invoice can be edited. Void this one and issue a corrected invoice instead.",
+      );
+    }
+
+    // getById withholds trust lines from a caller without access, so the client
+    // cannot have sent them back — replacing the line set would delete them
+    // without the person doing it ever seeing they existed.
+    if (
+      restrictionsFor(access).trust === "no_access" &&
+      num(existing.subtotalTrust) > 0
+    ) {
+      throw new AuthorizationError(
+        "This draft has trust (IOLTA) lines you do not have access to, so it cannot be edited here",
+      );
+    }
+    if (input.lineItems?.some((l) => l.account === "trust_iolta")) {
+      requireTrustWrite(access);
+    }
+
+    const issueDate = input.issueDate ?? existing.issueDate;
+    const dueDate = input.dueDate ?? existing.dueDate;
+    if (dueDate < issueDate) {
+      throw new BadRequestError("Due date cannot precede the issue date");
+    }
+
+    // Same rule as create: without one or the other, revenue-by-practice-area
+    // silently undercounts the invoice.
+    const caseId = input.caseId !== undefined ? input.caseId : existing.caseId;
+    const practiceAreaId =
+      input.practiceAreaId !== undefined
+        ? input.practiceAreaId
+        : existing.practiceAreaId;
+    if (caseId == null && practiceAreaId == null) {
+      throw new BadRequestError(
+        "A practice area is required when the invoice has no matter",
+      );
+    }
+  }
+
+  return withTransaction(db, async () => {
+    await db
+      .update(invoices)
+      .set({
+        dueDate: input.dueDate,
+        notes: input.notes,
+        attorneyId: input.attorneyId,
+        filingType: input.filingType,
+        issueDate: input.issueDate,
+        caseId: input.caseId,
+        practiceAreaId: input.practiceAreaId,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(invoices.organizationId, organizationId),
+          eq(invoices.id, invoiceId),
+        ),
+      );
+
+    if (input.lineItems !== undefined && input.timeEntryIds !== undefined) {
+      await replaceInvoiceLines(
+        organizationId,
+        invoiceId,
+        input.lineItems,
+        input.timeEntryIds,
+      );
+    }
+
+    const totals = editsContent
+      ? await recalculateInvoiceTotals(organizationId, invoiceId)
+      : null;
+
+    await logFinanceEvent({
+      organizationId,
+      eventType: "invoice_updated",
+      title: `${existing.invoiceNumber} — ${
+        editsContent ? "draft edited" : "invoice updated"
+      }`,
+      amount: totals?.totalAmount ?? null,
+      invoiceId,
+      actorId: actorStaffId,
+    });
+
+    return getById(organizationId, invoiceId, access);
+  });
+};
+
+/**
+ * Swap a draft's line set for a new one, and reconcile which time entries it
+ * holds.
+ *
+ * Replacing wholesale rather than diffing the lines is safe precisely because
+ * this is draft-only: nothing references a line item (payments hang off the
+ * invoice), and a draft cannot have payments. What does need care is
+ * `time_entries.invoicedAt` — an entry dropped from the draft has to be
+ * released, or the work becomes permanently unbillable.
+ *
+ * Must be called inside a transaction.
+ */
+const replaceInvoiceLines = async (
+  organizationId: string,
+  invoiceId: string,
+  lineItems: CreateInvoiceLine[],
+  timeEntryIds: string[],
+) => {
+  const currentLines = await db
+    .select({ timeEntryId: invoiceLineItems.timeEntryId })
+    .from(invoiceLineItems)
     .where(
-      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+      and(
+        eq(invoiceLineItems.organizationId, organizationId),
+        eq(invoiceLineItems.invoiceId, invoiceId),
+      ),
     );
 
-  await logFinanceEvent({
-    organizationId,
-    eventType: "invoice_updated",
-    title: `${existing.invoiceNumber} — invoice updated`,
-    invoiceId,
-    actorId: actorStaffId,
-  });
+  const held = new Set(
+    currentLines
+      .map((l) => l.timeEntryId)
+      .filter((id): id is string => id != null),
+  );
+  const wanted = new Set(timeEntryIds);
+  const released = [...held].filter((id) => !wanted.has(id));
+  const claimed = timeEntryIds.filter((id) => !held.has(id));
 
-  return getById(organizationId, invoiceId, access);
+  const entries = await loadBillableEntries(organizationId, timeEntryIds, held);
+
+  const lineValues = buildLineValues(
+    organizationId,
+    invoiceId,
+    lineItems,
+    entries,
+  );
+  if (lineValues.length === 0) {
+    throw new BadRequestError("An invoice needs at least one line item");
+  }
+
+  // Delete before insert: the unique index on time_entry_id would otherwise
+  // reject re-inserting a line for an entry the draft already holds.
+  await db
+    .delete(invoiceLineItems)
+    .where(
+      and(
+        eq(invoiceLineItems.organizationId, organizationId),
+        eq(invoiceLineItems.invoiceId, invoiceId),
+      ),
+    );
+  await db.insert(invoiceLineItems).values(lineValues);
+
+  if (released.length) {
+    await db
+      .update(timeEntries)
+      .set({ invoicedAt: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(timeEntries.organizationId, organizationId),
+          inArray(timeEntries.id, released),
+        ),
+      );
+  }
+  if (claimed.length) {
+    await db
+      .update(timeEntries)
+      .set({ invoicedAt: new Date(), updatedAt: new Date() })
+      .where(
+        and(
+          eq(timeEntries.organizationId, organizationId),
+          inArray(timeEntries.id, claimed),
+        ),
+      );
+  }
 };
 
 // ── Unbilled time (feeds the New invoice dialog) ─────────────────────────────
 
 export const getUnbilledTime = async (
   organizationId: string,
-  filters: { clientId?: string; caseId?: string },
+  filters: { clientId?: string; caseId?: string; forInvoiceId?: string },
 ) => {
+  // "Unbilled, plus whatever this draft already holds." Attaching an entry
+  // stamps `invoicedAt`, which is exactly what makes it stop being unbilled —
+  // so without this an edit could only ever remove time, never keep it.
+  const heldByInvoice = filters.forInvoiceId
+    ? db
+        .select({ id: invoiceLineItems.timeEntryId })
+        .from(invoiceLineItems)
+        .where(
+          and(
+            eq(invoiceLineItems.organizationId, organizationId),
+            eq(invoiceLineItems.invoiceId, filters.forInvoiceId),
+            sql`${invoiceLineItems.timeEntryId} IS NOT NULL`,
+          ),
+        )
+    : null;
+
   const rows = await db
     .select({
       id: timeEntries.id,
@@ -800,7 +1050,12 @@ export const getUnbilledTime = async (
         eq(timeEntries.organizationId, organizationId),
         eq(timeEntries.status, "approved"),
         eq(timeEntries.billable, true),
-        sql`${timeEntries.invoicedAt} IS NULL`,
+        heldByInvoice
+          ? or(
+              sql`${timeEntries.invoicedAt} IS NULL`,
+              inArray(timeEntries.id, heldByInvoice),
+            )
+          : sql`${timeEntries.invoicedAt} IS NULL`,
         filters.caseId ? eq(timeEntries.caseId, filters.caseId) : undefined,
         filters.clientId ? eq(cases.clientId, filters.clientId) : undefined,
       ),

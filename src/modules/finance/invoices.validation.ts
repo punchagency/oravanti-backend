@@ -41,6 +41,14 @@ export const activityQuerySchema = z.object({
 export const unbilledTimeQuerySchema = z.object({
   clientId: z.string().uuid().optional(),
   caseId: z.string().uuid().optional(),
+  /**
+   * Also return the entries this draft already holds.
+   *
+   * Without it an edit could only ever drop time entries: they carry
+   * `invoicedAt` the moment they are attached, which is exactly what excludes
+   * them from "unbilled".
+   */
+  forInvoiceId: z.string().uuid().optional(),
 });
 
 const lineItemSchema = z.object({
@@ -82,12 +90,48 @@ export const createInvoiceBodySchema = z
     path: ["dueDate"],
   });
 
-export const updateInvoiceBodySchema = z.object({
-  dueDate: z.string().date().optional(),
-  notes: z.string().trim().max(4000).optional(),
-  attorneyId: z.string().uuid().optional(),
-  filingType: z.string().trim().max(100).optional(),
-});
+/**
+ * Header fields apply to any live invoice; the content fields below are refused
+ * on anything but a draft, in the service (only it can see the stored status).
+ *
+ * `attorneyId` is nullable so "Unassigned" can actually unassign — an omitted
+ * key means "leave alone", which is not the same thing.
+ */
+export const updateInvoiceBodySchema = z
+  .object({
+    dueDate: z.string().date().optional(),
+    notes: z.string().trim().max(4000).optional(),
+    attorneyId: z.string().uuid().nullable().optional(),
+    filingType: z.string().trim().max(100).optional(),
+    // ── Draft-only, below ────────────────────────────────────────────────────
+    issueDate: z.string().date().optional(),
+    caseId: z.string().uuid().nullable().optional(),
+    practiceAreaId: z.string().uuid().nullable().optional(),
+    lineItems: z.array(lineItemSchema).optional(),
+    timeEntryIds: z.array(z.string().uuid()).optional(),
+  })
+  // A content edit REPLACES the whole line set, so a payload carrying only one
+  // half of it would silently delete the other. Demanding both makes the client
+  // state what the invoice should end up containing.
+  .refine(
+    (v) =>
+      (v.lineItems === undefined) === (v.timeEntryIds === undefined),
+    {
+      message:
+        "Send lineItems and timeEntryIds together — editing lines replaces the whole set",
+      path: ["lineItems"],
+    },
+  )
+  .refine(
+    (v) =>
+      v.lineItems === undefined ||
+      v.lineItems.length > 0 ||
+      (v.timeEntryIds?.length ?? 0) > 0,
+    {
+      message: "An invoice needs at least one line item or time entry",
+      path: ["lineItems"],
+    },
+  );
 
 export const voidInvoiceBodySchema = z.object({
   reason: z.string().trim().max(500).optional(),

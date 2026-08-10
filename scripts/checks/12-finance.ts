@@ -870,6 +870,158 @@ const main = async () => {
         300,
       );
 
+      // ── Editing a draft ───────────────────────────────────────────────────
+      section("draft editing");
+
+      // The void above released these two, so they are billable again.
+      const draft = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(0),
+        dueDate: daysFromNow(30),
+        status: "draft",
+        lineItems: [
+          { description: "Consultation", quantity: 1, rate: 100, account: "operating" },
+        ],
+        timeEntryIds: [backdated.id],
+      });
+      const backdatedAmount = draft.totals.total - 100;
+      check("the draft folds in its time entry", backdatedAmount > 0);
+
+      const edited = await invoicesService.update(
+        orgId,
+        draft.id,
+        {
+          notes: "Revised before sending",
+          lineItems: [
+            { description: "Consultation", quantity: 2, rate: 100, account: "operating" },
+          ],
+          // Swap which time entry it bills.
+          timeEntryIds: [recent.id],
+        },
+        staffBId,
+        FULL,
+      );
+      checkEqual("the edit keeps the invoice number", edited.invoiceNumber, draft.invoiceNumber);
+      checkEqual("it is still a draft", edited.status, "draft");
+      checkEqual("the notes stuck", edited.notes, "Revised before sending");
+      checkEqual("the line set was replaced", edited.lineItems.length, 2);
+
+      const [backdatedAfter] = await systemDb
+        .select({ invoicedAt: timeEntries.invoicedAt })
+        .from(timeEntries)
+        .where(eq(timeEntries.id, backdated.id));
+      const [recentAfter] = await systemDb
+        .select({ invoicedAt: timeEntries.invoicedAt })
+        .from(timeEntries)
+        .where(eq(timeEntries.id, recent.id));
+      // The dropped entry must become billable again, or the work is stranded.
+      checkEqual("the dropped entry is released", backdatedAfter?.invoicedAt ?? null, null);
+      check("the added entry is claimed", recentAfter?.invoicedAt != null);
+
+      // Totals are recalculated, not left at what the draft used to say.
+      const recentAmount = edited.totals.total - 200;
+      checkEqual(
+        "totals are recomputed from the new lines",
+        edited.totals.total,
+        toMoney(200 + recentAmount),
+      );
+      checkEqual("balance follows the total", edited.totals.balanceDue, edited.totals.total);
+
+      // Keeping an entry the draft already holds must not read as double-billing.
+      const kept = await invoicesService.update(
+        orgId,
+        draft.id,
+        {
+          lineItems: [],
+          timeEntryIds: [recent.id],
+        },
+        staffBId,
+        FULL,
+      );
+      checkEqual("a draft can keep its own time entry", kept.lineItems.length, 1);
+
+      // And it is still visible to the dialog that has to offer it back.
+      const offered = await invoicesService.getUnbilledTime(orgId, {
+        clientId,
+        forInvoiceId: draft.id,
+      });
+      check(
+        "the held entry is offered back when editing",
+        offered.some((e) => e.id === recent.id),
+      );
+      const unbilledOnly = await invoicesService.getUnbilledTime(orgId, { clientId });
+      check(
+        "but not to a plain unbilled query",
+        !unbilledOnly.some((e) => e.id === recent.id),
+      );
+
+      // A sent invoice is a statement the client already holds; correcting it
+      // is a void plus a reissue, never a rewrite.
+      let sentEditRejected = false;
+      try {
+        await invoicesService.update(
+          orgId,
+          second.id,
+          {
+            lineItems: [
+              { description: "Rewritten", quantity: 1, rate: 5, account: "operating" },
+            ],
+            timeEntryIds: [],
+          },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        sentEditRejected = true;
+      }
+      check("a sent invoice's lines cannot be edited", sentEditRejected);
+
+      const headerOnly = await invoicesService.update(
+        orgId,
+        second.id,
+        { notes: "Chased by phone" },
+        staffBId,
+        FULL,
+      );
+      checkEqual("but its header still can be", headerOnly.notes, "Chased by phone");
+
+      // Trust lines are withheld from a caller without access, so they cannot
+      // be in the payload — replacing the set would delete them unseen.
+      await invoicesService.update(
+        orgId,
+        draft.id,
+        {
+          lineItems: [
+            { description: "Filing fee", quantity: 1, rate: 400, account: "trust_iolta" },
+          ],
+          timeEntryIds: [],
+        },
+        staffBId,
+        FULL,
+      );
+      let blindTrustEditRejected = false;
+      try {
+        await invoicesService.update(
+          orgId,
+          draft.id,
+          {
+            lineItems: [
+              { description: "Only what I can see", quantity: 1, rate: 50, account: "operating" },
+            ],
+            timeEntryIds: [],
+          },
+          staffBId,
+          NO_TRUST,
+        );
+      } catch {
+        blindTrustEditRejected = true;
+      }
+      check(
+        "a draft with unseen trust lines cannot be edited blind",
+        blindTrustEditRejected,
+      );
+
       // ── Activity trail ────────────────────────────────────────────────────
       section("activity trail");
 
