@@ -20,7 +20,7 @@
 import { randomUUID } from "crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { closeDb, systemDb } from "../../src/db/client";
-import { organization, user } from "../../src/db/schema/auth-schema";
+import { organization, team, user } from "../../src/db/schema/auth-schema";
 import { billingRates } from "../../src/db/schema/billing-rates";
 import { cases } from "../../src/db/schema/cases";
 import { clients } from "../../src/db/schema/clients";
@@ -33,6 +33,7 @@ import { practiceAreaCaseTypes } from "../../src/db/schema/practice-area-case-ty
 import { practiceAreaSubcategories } from "../../src/db/schema/practice-area-subcategories";
 import { practiceAreas } from "../../src/db/schema/practice-areas";
 import { staff } from "../../src/db/schema/staff";
+import { teamMembers } from "../../src/db/schema/team-members";
 import { timeEntries } from "../../src/db/schema/time-entries";
 import { pickFinanceRole } from "../../src/modules/finance/account-access";
 import {
@@ -870,6 +871,71 @@ const main = async () => {
         300,
       );
 
+      // ── Matter defaults (attorney prefill) ────────────────────────────────
+      section("matter defaults");
+
+      const noTeam = await invoicesService.getCaseDefaults(orgId, caseId);
+      checkEqual("a matter with no team resolves no attorney", noTeam.attorneyId, null);
+      checkEqual("and says so rather than guessing", noTeam.source, null);
+
+      const teamId = randomUUID();
+      await systemDb.insert(team).values({
+        id: teamId,
+        name: "Immigration team",
+        organizationId: orgId,
+        createdAt: new Date(),
+        // The lead is an admin, not an attorney — rule 1 must not fire.
+        leadId: staffBId,
+      });
+      await systemDb
+        .insert(teamMembers)
+        .values([{ teamId, staffId: staffAId }, { teamId, staffId: staffBId }]);
+      await systemDb
+        .update(cases)
+        .set({ assignedTeamId: teamId })
+        .where(eq(cases.id, caseId));
+
+      const soleAttorney = await invoicesService.getCaseDefaults(orgId, caseId);
+      checkEqual(
+        "the team's only attorney is picked",
+        soleAttorney.attorneyId,
+        staffAId,
+      );
+      checkEqual("and the rule is named", soleAttorney.source, "sole_attorney");
+
+      const [staffC] = await systemDb
+        .insert(staff)
+        .values({
+          organizationId: orgId,
+          firstName: "Nadia",
+          lastName: "Okoro",
+          email: `nadia-${randomUUID().slice(0, 8)}@example.test`,
+          role: "attorney",
+        })
+        .returning();
+      await systemDb
+        .insert(teamMembers)
+        .values({ teamId, staffId: staffC!.id });
+
+      // Two attorneys and a non-attorney lead: nothing is unambiguous, so the
+      // person answerable for the matter is the honest answer.
+      const ambiguous = await invoicesService.getCaseDefaults(orgId, caseId);
+      checkEqual("with several attorneys, the lead is used", ambiguous.attorneyId, staffBId);
+      checkEqual("the count is reported", ambiguous.attorneyCount, 2);
+
+      await systemDb
+        .update(team)
+        .set({ leadId: staffC!.id })
+        .where(eq(team.id, teamId));
+
+      const leadAttorney = await invoicesService.getCaseDefaults(orgId, caseId);
+      checkEqual(
+        "an attorney lead outranks the others",
+        leadAttorney.attorneyId,
+        staffC!.id,
+      );
+      checkEqual("and is labelled as the lead", leadAttorney.source, "team_lead");
+
       // ── Editing a draft ───────────────────────────────────────────────────
       section("draft editing");
 
@@ -1064,6 +1130,8 @@ const main = async () => {
     await systemDb.delete(timeEntries).where(eq(timeEntries.organizationId, orgId));
     await systemDb.delete(billingRates).where(eq(billingRates.organizationId, orgId));
     await systemDb.delete(cases).where(eq(cases.organizationId, orgId));
+    // After cases: cases.assigned_team_id references team.
+    await systemDb.delete(team).where(eq(team.organizationId, orgId));
     await systemDb.delete(clients).where(eq(clients.organizationId, orgId));
     await systemDb.delete(staff).where(eq(staff.organizationId, orgId));
     await systemDb

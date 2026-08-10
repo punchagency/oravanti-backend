@@ -12,6 +12,7 @@ import { validateRequest } from "../../middleware/validate.middleware";
 import { InvoicesController } from "./invoices.controller";
 import {
   activityQuerySchema,
+  caseDefaultsQuerySchema,
   createInvoiceBodySchema,
   exportInvoicesQuerySchema,
   followUpBodySchema,
@@ -102,6 +103,26 @@ export class InvoicesRouter {
       create,
       validateRequest({ query: unbilledTimeQuerySchema }),
       controller.getUnbilledTime,
+    );
+
+    /**
+     * @openapi
+     * /finance/invoices/case-defaults:
+     *   get:
+     *     tags: [Finance — Invoicing]
+     *     summary: The attorney to bill a matter under, resolved from its team
+     *     description: >
+     *       A case is assigned to a team, not a person. Prefers the team lead
+     *       when they are an attorney, then the team's only attorney, then the
+     *       lead whatever their role. `source` says which rule fired.
+     *     responses:
+     *       200: { description: Matter defaults retrieved }
+     */
+    this.router.get(
+      "/case-defaults",
+      create,
+      validateRequest({ query: caseDefaultsQuerySchema }),
+      controller.getCaseDefaults,
     );
 
     /**

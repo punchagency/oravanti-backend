@@ -51,6 +51,10 @@ export const unbilledTimeQuerySchema = z.object({
   forInvoiceId: z.string().uuid().optional(),
 });
 
+export const caseDefaultsQuerySchema = z.object({
+  caseId: z.string().uuid(),
+});
+
 const lineItemSchema = z.object({
   description: z.string().trim().min(1).max(500),
   quantity: z.coerce.number().positive().default(1),

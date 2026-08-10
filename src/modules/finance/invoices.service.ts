@@ -12,6 +12,8 @@ import {
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
+import { team } from "../../db/schema/auth-schema";
+import { teamMembers } from "../../db/schema/team-members";
 import { timeEntries } from "../../db/schema/time-entries";
 import { withTransaction } from "../../db/transaction-context";
 import {
@@ -1074,6 +1076,122 @@ export const getUnbilledTime = async (
     staffName: `${r.staffFirstName ?? ""} ${r.staffLastName ?? ""}`.trim() || null,
     rateUnset: r.hourlyRate == null,
   }));
+};
+
+// ── Case defaults (prefills the New invoice dialog) ──────────────────────────
+
+/**
+ * Who should be billed as the attorney on an invoice for this matter.
+ *
+ * A case is assigned to a *team*, not a person, so there is no attorney to read
+ * off it directly. The resolution order, and why:
+ *
+ *   1. **The team lead, when they are an attorney.** This is the "if there are
+ *      several attorneys, pick the lead" rule — the lead is the person who owns
+ *      the matter.
+ *   2. **The team's only attorney.** With exactly one there is nothing to
+ *      disambiguate, and it holds even when the team lead is a paralegal.
+ *   3. **The team lead, whatever their role.** A team with no attorney at all
+ *      still has someone answerable for it.
+ *   4. Nothing. Better an empty select than a confident wrong name on a bill.
+ *
+ * `source` and `attorneyCount` come back so the dialog can say *why* a name was
+ * filled in — a prefill nobody can account for is one nobody will correct.
+ */
+export const getCaseDefaults = async (
+  organizationId: string,
+  caseId: string,
+) => {
+  const [row] = await db
+    .select({ teamId: cases.assignedTeamId })
+    .from(cases)
+    .where(and(eq(cases.organizationId, organizationId), eq(cases.id, caseId)))
+    .limit(1);
+
+  if (!row) throw new NotFoundError("Matter not found");
+
+  const empty = {
+    caseId,
+    attorneyId: null as string | null,
+    attorneyName: null as string | null,
+    source: null as "team_lead" | "sole_attorney" | null,
+    attorneyCount: 0,
+  };
+
+  if (!row.teamId) return empty;
+
+  // team.leadId is text holding a staff uuid — there is no FK on it, hence the
+  // cast rather than a normal join condition.
+  const [leadRow] = await db
+    .select({
+      id: staff.id,
+      firstName: staff.firstName,
+      lastName: staff.lastName,
+      role: staff.role,
+    })
+    .from(team)
+    .innerJoin(
+      staff,
+      and(
+        sql`${staff.id}::text = ${team.leadId}`,
+        eq(staff.organizationId, organizationId),
+        eq(staff.status, "active"),
+      ),
+    )
+    .where(and(eq(team.id, row.teamId), eq(team.organizationId, organizationId)))
+    .limit(1);
+
+  const attorneys = await db
+    .select({
+      id: staff.id,
+      firstName: staff.firstName,
+      lastName: staff.lastName,
+    })
+    .from(teamMembers)
+    .innerJoin(staff, eq(staff.id, teamMembers.staffId))
+    .where(
+      and(
+        eq(teamMembers.teamId, row.teamId),
+        eq(staff.organizationId, organizationId),
+        eq(staff.status, "active"),
+        eq(staff.role, "attorney"),
+      ),
+    );
+
+  const named = (p: { firstName: string; lastName: string }) =>
+    `${p.firstName} ${p.lastName}`.trim();
+
+  if (leadRow?.role === "attorney") {
+    return {
+      caseId,
+      attorneyId: leadRow.id,
+      attorneyName: named(leadRow),
+      source: "team_lead" as const,
+      attorneyCount: attorneys.length,
+    };
+  }
+
+  if (attorneys.length === 1) {
+    return {
+      caseId,
+      attorneyId: attorneys[0]!.id,
+      attorneyName: named(attorneys[0]!),
+      source: "sole_attorney" as const,
+      attorneyCount: 1,
+    };
+  }
+
+  if (leadRow) {
+    return {
+      caseId,
+      attorneyId: leadRow.id,
+      attorneyName: named(leadRow),
+      source: "team_lead" as const,
+      attorneyCount: attorneys.length,
+    };
+  }
+
+  return { ...empty, attorneyCount: attorneys.length };
 };
 
 // ── Export ───────────────────────────────────────────────────────────────────

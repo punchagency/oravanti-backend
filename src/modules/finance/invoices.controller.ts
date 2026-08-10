@@ -48,6 +48,15 @@ export class InvoicesController {
     sendSuccess(res, entries, "Unbilled time retrieved");
   };
 
+  getCaseDefaults = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const defaults = await invoicesService.getCaseDefaults(
+      organizationId!,
+      req.query.caseId as string,
+    );
+    sendSuccess(res, defaults, "Matter defaults retrieved");
+  };
+
   list = async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     const access = await accessForRequest();
