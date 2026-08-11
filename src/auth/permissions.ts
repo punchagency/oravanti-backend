@@ -71,12 +71,23 @@ const memberRole = ac.newRole({
   case_review: [],
 });
 
+export const client = ac.newRole({
+  cases: ["read"],
+  clients: ["read"],
+  staffs: [],
+  conflicts: [],
+  documents: ["read", "download"],
+  case_review: [],
+  ...memberAc.statements,
+});
+
 export const roleMap = {
   paralegal,
   attorney,
   owner,
   admin,
   member: memberRole,
+  client
 } as const;
 
 // ── Client & Contractor permission sets ──────────────────────────────────────

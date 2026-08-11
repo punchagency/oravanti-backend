@@ -27,7 +27,7 @@ import {
 import { consultationSettings } from "../db/schema/consultation-settings";
 import { emailService } from "../utils/email/email.service";
 import { databaseHooks } from "./database-hooks";
-import { ac, admin, attorney, owner, paralegal } from "./permissions";
+import { ac, admin, attorney, client, owner, paralegal } from "./permissions";
 import { cryptoKeyPlugin } from "./plugins/cryptoKeyPlugin";
 
 const { isProduction } = env;
@@ -200,6 +200,7 @@ export const auth = betterAuth({
         admin,
         attorney,
         paralegal,
+        client
       },
       schema: {
         organization: {

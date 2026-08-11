@@ -4,6 +4,7 @@ import { inArray } from "drizzle-orm";
 import { Request } from "express";
 import { auth } from "../../auth";
 import { env } from "../../config/env";
+import { getEmailVerificationCallbackUrl } from "../../utils/portal";
 import { db } from "../../db/client";
 import {
   contractorCertificationDocuments,
@@ -174,7 +175,7 @@ export class AuthService {
           name: displayName,
           accountType: accountType,
           onboardingState: "email_unverified",
-          callbackURL: env.EMAIL_VERIFICATION_CALLBACK_URL,
+          callbackURL: getEmailVerificationCallbackUrl(accountType),
         },
         asResponse: true,
       });
@@ -294,7 +295,7 @@ export class AuthService {
         rememberMe: body.rememberMe,
         name: `${body.firstName.trim()} ${body.lastName.trim()}`,
         accountType: "contractor",
-        callbackURL: env.EMAIL_VERIFICATION_CALLBACK_URL,
+        callbackURL: getEmailVerificationCallbackUrl("contractor"),
       },
       asResponse: true,
     });
