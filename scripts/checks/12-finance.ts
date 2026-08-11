@@ -1224,6 +1224,18 @@ const main = async () => {
         daysFromNow(30),
       );
 
+      // A draft's schedule reaches nobody: the client has not been sent the
+      // invoice, so there is no plan to notify them about yet.
+      const draftDeliveries = await systemDb
+        .select({ id: invoiceDeliveries.id })
+        .from(invoiceDeliveries)
+        .where(eq(invoiceDeliveries.invoiceId, planned.id));
+      checkEqual(
+        "scheduling a draft notifies nobody",
+        draftDeliveries.length,
+        0,
+      );
+
       // Sent, so it counts as owed. Set directly rather than through the
       // delivery path, which would send a real email for a fixture.
       await systemDb
@@ -1471,6 +1483,56 @@ const main = async () => {
         "partial",
       );
 
+      // The client holds this invoice, so a changed plan has to reach them.
+      // Recorded as its own delivery kind, with the regenerated PDF archived.
+      const scheduleSends = await systemDb
+        .select({
+          kind: invoiceDeliveries.kind,
+          status: invoiceDeliveries.status,
+          documentKey: invoiceDeliveries.documentKey,
+          recipientEmail: invoiceDeliveries.recipientEmail,
+        })
+        .from(invoiceDeliveries)
+        .where(
+          and(
+            eq(invoiceDeliveries.invoiceId, planned.id),
+            eq(invoiceDeliveries.kind, "schedule_update"),
+          ),
+        );
+      checkEqual("revising notifies the client", scheduleSends.length, 1);
+      checkEqual(
+        "at the address on file",
+        scheduleSends[0]?.recipientEmail,
+        CLIENT_EMAIL,
+      );
+      check(
+        "with the revised invoice archived",
+        Boolean(scheduleSends[0]?.documentKey),
+      );
+
+      // A schedule email proves the client received something, not that they
+      // ever got the bill, so it must not unlock chasing on its own. `sentAt`
+      // is cleared for the length of this assertion because it would otherwise
+      // satisfy the legacy allowance and the check would pass without ever
+      // exercising the kind filter.
+      await systemDb
+        .update(invoices)
+        .set({ sentAt: null })
+        .where(eq(invoices.id, planned.id));
+      const chaseOnScheduleOnly = await deliveriesService.canChaseInvoice(
+        orgId,
+        planned.id,
+      );
+      await systemDb
+        .update(invoices)
+        .set({ sentAt: new Date() })
+        .where(eq(invoices.id, planned.id));
+      checkEqual(
+        "a schedule email is not evidence the invoice arrived",
+        chaseOnScheduleOnly,
+        false,
+      );
+
       let sentLineEditRejected = false;
       try {
         await invoicesService.update(
@@ -1519,6 +1581,7 @@ const main = async () => {
           invoice.id,
           [{ dueDate: daysFromNow(30), amount: 100 }],
           staffBId,
+          FULL,
         );
       } catch {
         paidRescheduleRejected = true;

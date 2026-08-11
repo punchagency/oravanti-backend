@@ -373,6 +373,194 @@ const deliver = async (
   };
 };
 
+const scheduleEmailTemplate = (opts: {
+  clientName: string;
+  firmName: string;
+  invoiceNumber: string;
+  revised: boolean;
+  total: number;
+  instalments: {
+    sequence: number;
+    dueDate: string;
+    amount: number;
+    outstanding: number;
+  }[];
+}): string => {
+  const rows = opts.instalments
+    .map(
+      (i) => `
+      <tr>
+        <td style="padding: 6px 16px 6px 0; color: #666;">${i.sequence}.</td>
+        <td style="padding: 6px 16px 6px 0;">${escapeHtml(i.dueDate)}</td>
+        <td style="padding: 6px 0; text-align: right;"><b>${money(i.amount)}</b></td>
+        <td style="padding: 6px 0 6px 16px; color: #666;">${
+          i.outstanding <= 0 ? "Paid" : ""
+        }</td>
+      </tr>`,
+    )
+    .join("");
+
+  return `
+  <div style="font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; color: #1a1a1a;">
+    <p style="margin: 0 0 16px;">Dear ${escapeHtml(opts.clientName)},</p>
+    <p style="margin: 0 0 16px;">
+      ${
+        opts.revised
+          ? `The payment schedule for invoice <b>${escapeHtml(opts.invoiceNumber)}</b> has been updated. The dates and amounts below replace the ones you were sent previously.`
+          : `A payment schedule has been set up for invoice <b>${escapeHtml(opts.invoiceNumber)}</b>. You can pay it in the instalments below rather than in one payment.`
+      }
+    </p>
+    <table style="border-collapse: collapse; margin: 0 0 16px;">${rows}
+    </table>
+    <p style="margin: 0 0 16px; color: #666;">
+      Total ${money(opts.total)}. An updated copy of the invoice is attached.
+    </p>
+    <p style="margin: 0 0 16px;">
+      If any of these dates do not work for you, please reply to this email.
+    </p>
+    <p style="margin: 24px 0 0; color: #666; font-size: 13px;">${escapeHtml(opts.firmName)}</p>
+  </div>
+`;
+};
+
+/**
+ * Tell the client their payment plan was set up or changed.
+ *
+ * Follows the same ordering as `deliver`, and for the same reason: archive the
+ * document, COMMIT a pending row, send, then record the outcome. An email
+ * cannot be rolled back, so the evidence has to exist before it goes out.
+ *
+ * Silent no-op on an invoice the client has never received — there is no plan
+ * to tell them about yet, and the schedule ships with the invoice when it is
+ * sent. Also a no-op when they have no email address: refusing the schedule
+ * change over an undeliverable notification would be the wrong trade, so the
+ * caller gets `null` and can say so.
+ */
+export const sendScheduleUpdate = async (
+  organizationId: string,
+  invoiceId: string,
+  actorStaffId: string | null,
+  access: AccountAccess,
+  opts: { revised: boolean },
+): Promise<SendResult | null> => {
+  const meta = await loadForDelivery(organizationId, invoiceId);
+
+  if (meta.status === "draft" || meta.status === "void") return null;
+  if (!meta.clientEmail) return null;
+
+  const [{ attempts }] = await db
+    .select({ attempts: sql<number>`count(*)::int` })
+    .from(invoiceDeliveries)
+    .where(
+      and(
+        eq(invoiceDeliveries.organizationId, organizationId),
+        eq(invoiceDeliveries.invoiceId, invoiceId),
+      ),
+    );
+
+  const { buffer, invoiceNumber, detail } = await buildInvoicePdf(
+    organizationId,
+    invoiceId,
+    access,
+  );
+
+  // Nothing to announce. Removing a schedule lands here; the client is told by
+  // the ordinary invoice, not by a table with no rows in it.
+  if (detail.instalments.length === 0) return null;
+
+  const documentKey = documentKeyFor(organizationId, invoiceId, invoiceNumber);
+  await storageService.upload({
+    key: documentKey,
+    body: buffer,
+    contentType: "application/pdf",
+  });
+
+  const [delivery] = await db
+    .insert(invoiceDeliveries)
+    .values({
+      organizationId,
+      invoiceId,
+      channel: "email",
+      kind: "schedule_update",
+      recipientEmail: meta.clientEmail,
+      documentKey,
+      status: "pending",
+      attemptCount: (attempts ?? 0) + 1,
+      sentById: actorStaffId,
+    })
+    .returning();
+
+  try {
+    await emailService.sendEmail({
+      to: meta.clientEmail,
+      subject: `${opts.revised ? "Updated payment schedule" : "Payment schedule"} — invoice ${invoiceNumber}`,
+      html: scheduleEmailTemplate({
+        clientName: meta.clientName,
+        firmName: meta.firmName ?? "Your legal team",
+        invoiceNumber,
+        revised: opts.revised,
+        total: detail.totals.total,
+        instalments: detail.instalments,
+      }),
+      attachments: [
+        {
+          filename: `${invoiceNumber}.pdf`,
+          content: buffer,
+          contentType: "application/pdf",
+        },
+      ],
+    });
+  } catch (error) {
+    const failureReason =
+      error instanceof Error ? error.message : "Unknown email failure";
+    await db
+      .update(invoiceDeliveries)
+      .set({ status: "failed", failureReason })
+      .where(eq(invoiceDeliveries.id, delivery!.id));
+
+    console.error(
+      `[finance] schedule update for ${invoiceNumber} failed:`,
+      failureReason,
+    );
+
+    // The schedule itself is already committed. Reporting the failure lets the
+    // caller say "saved, but not delivered" rather than implying the client
+    // knows about dates they have never seen.
+    return {
+      deliveryId: delivery!.id,
+      status: "failed",
+      recipientEmail: meta.clientEmail,
+      failureReason,
+      attemptCount: delivery!.attemptCount,
+    };
+  }
+
+  await db
+    .update(invoiceDeliveries)
+    .set({ status: "sent", deliveredAt: new Date(), failureReason: null })
+    .where(eq(invoiceDeliveries.id, delivery!.id));
+
+  await logFinanceEvent({
+    organizationId,
+    eventType: opts.revised
+      ? "invoice_schedule_revised"
+      : "invoice_schedule_set",
+    title: `${invoiceNumber} — schedule sent to ${meta.clientEmail}`,
+    invoiceId,
+    caseId: meta.caseId,
+    clientId: meta.clientId,
+    actorId: actorStaffId,
+  });
+
+  return {
+    deliveryId: delivery!.id,
+    status: "sent",
+    recipientEmail: meta.clientEmail,
+    failureReason: null,
+    attemptCount: delivery!.attemptCount,
+  };
+};
+
 export const sendInvoice = (
   organizationId: string,
   invoiceId: string,
@@ -396,6 +584,7 @@ export const listDeliveries = async (
     .select({
       id: invoiceDeliveries.id,
       channel: invoiceDeliveries.channel,
+      kind: invoiceDeliveries.kind,
       recipientEmail: invoiceDeliveries.recipientEmail,
       status: invoiceDeliveries.status,
       failureReason: invoiceDeliveries.failureReason,
@@ -418,6 +607,7 @@ export const listDeliveries = async (
   return rows.map((r) => ({
     id: r.id,
     channel: r.channel,
+    kind: r.kind,
     recipientEmail: r.recipientEmail,
     status: r.status,
     failureReason: r.failureReason,
@@ -457,6 +647,10 @@ export const canChaseInvoice = async (
       and(
         eq(invoiceDeliveries.organizationId, organizationId),
         eq(invoiceDeliveries.invoiceId, invoiceId),
+        // Only the invoice itself answers "has the client been billed". A
+        // delivered schedule update proves they received something, not that
+        // they ever got the bill it refers to.
+        eq(invoiceDeliveries.kind, "invoice"),
       ),
     );
 

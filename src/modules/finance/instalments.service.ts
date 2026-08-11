@@ -7,10 +7,12 @@ import {
 import { invoices } from "../../db/schema/invoices";
 import { withTransaction } from "../../db/transaction-context";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import { sendScheduleUpdate } from "./deliveries.service";
 import { logFinanceEvent } from "./finance-events.service";
 import type { ScheduleRow } from "./instalments";
 import { money, num } from "./money";
 import { recalculateInvoiceTotals } from "./totals";
+import type { AccountAccess } from "./types";
 
 /**
  * Reading and writing payment schedules.
@@ -148,6 +150,7 @@ export const setSchedule = async (
   invoiceId: string,
   rows: ScheduleRow[],
   actorStaffId: string | null,
+  access: AccountAccess,
 ) => {
   const [existing] = await db
     .select({
@@ -174,12 +177,12 @@ export const setSchedule = async (
     throw new BadRequestError("A schedule needs at least one instalment");
   }
 
-  return withTransaction(db, async () => {
-    const hadSchedule = (await listInstalments(organizationId, invoiceId)).length > 0;
+  const hadSchedule = (await listInstalments(organizationId, invoiceId)).length > 0;
 
+  const totals = await withTransaction(db, async () => {
     await writeSchedule(organizationId, invoiceId, rows);
-    const totals = await recalculateInvoiceTotals(organizationId, invoiceId);
-    await assertScheduleBalances(organizationId, invoiceId, totals.totalAmount);
+    const result = await recalculateInvoiceTotals(organizationId, invoiceId);
+    await assertScheduleBalances(organizationId, invoiceId, result.totalAmount);
 
     await logFinanceEvent({
       organizationId,
@@ -190,13 +193,30 @@ export const setSchedule = async (
       description: `${rows.length} instalment${rows.length === 1 ? "" : "s"}, ${
         rows[0]!.dueDate
       } to ${rows[rows.length - 1]!.dueDate}`,
-      amount: totals.totalAmount,
+      amount: result.totalAmount,
       invoiceId,
       actorId: actorStaffId,
     });
 
-    return totals;
+    return result;
   });
+
+  // AFTER the commit, deliberately. An email cannot be rolled back, so sending
+  // inside the transaction would mean a later failure retracts the schedule the
+  // client has already been told about. Same ordering doctrine as `deliver`.
+  //
+  // A failed notification does not undo the schedule either — the plan is
+  // agreed, the telling is what went wrong — so the outcome is returned rather
+  // than thrown, and the caller reports it.
+  const notification = await sendScheduleUpdate(
+    organizationId,
+    invoiceId,
+    actorStaffId,
+    access,
+    { revised: hadSchedule },
+  );
+
+  return { totals, notification };
 };
 
 /** Drop the schedule; the invoice reverts to a single header due date. */

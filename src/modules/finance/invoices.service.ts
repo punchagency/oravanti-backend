@@ -33,6 +33,7 @@ import {
   requireTrustWrite,
   restrictionsFor,
 } from "./account-access";
+import { sendScheduleUpdate } from "./deliveries.service";
 import { agingOverDues, scheduleSummaries } from "./dues";
 import { logFinanceEvent } from "./finance-events.service";
 import { allocate, type ScheduleRow } from "./instalments";
@@ -966,7 +967,7 @@ export const update = async (
     }
   }
 
-  return withTransaction(db, async () => {
+  const result = await withTransaction(db, async () => {
     await db
       .update(invoices)
       .set({
@@ -1034,6 +1035,18 @@ export const update = async (
 
     return getById(organizationId, invoiceId, access);
   });
+
+  // Same rule as the dedicated schedule endpoint: if this edit changed a plan
+  // on an invoice the client already holds, tell them. AFTER the commit, since
+  // an email cannot be rolled back. A draft is a no-op inside — the schedule
+  // ships with the invoice when it is first sent.
+  if (input.instalments !== undefined) {
+    await sendScheduleUpdate(organizationId, invoiceId, actorStaffId, access, {
+      revised: scheduled,
+    });
+  }
+
+  return result;
 };
 
 /**
