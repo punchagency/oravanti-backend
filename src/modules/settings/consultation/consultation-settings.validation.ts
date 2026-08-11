@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MINIMUM_CONSULTATION_FEE } from "../../../config/constants";
 import { isValidTimezone } from "../../../utils/date";
 
 export const consultationFeeStructures = [
@@ -26,7 +27,7 @@ export const languageSchema = z
 export const upsertConsultationSettingsSchema = z
   .object({
     chargesFee: z.boolean(),
-    defaultAmount: z.number().positive().nullish(),
+    defaultAmount: z.number().min(MINIMUM_CONSULTATION_FEE, `Minimum consultation fee amount is $${MINIMUM_CONSULTATION_FEE}.00`).nullish(),
     feeStructure: z.enum(consultationFeeStructures).nullish(),
     waiverWindowDays: z.number().int().positive().nullish(),
     timezone: timezoneSchema.optional(),
