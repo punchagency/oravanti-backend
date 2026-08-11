@@ -101,6 +101,12 @@ export const caseEventTypeEnum = pgEnum("case_event_type", [
   "step_submitted_for_review",
   "step_approved",
   "step_rejected",
+  // Billing bridge. Deliberately just these two, not the finance module's full
+  // vocabulary — that lives in `finance_events`. These exist so a matter's own
+  // timeline shows that it was invoiced and paid, without turning the legal
+  // activity feed into a billing ledger.
+  "case_invoice_created",
+  "case_payment_received",
 ]);
 
 // =========================================================================

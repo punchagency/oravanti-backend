@@ -29,6 +29,15 @@ import { cases } from "../../db/schema/cases";
 import { clientContacts } from "../../db/schema/client-contacts";
 import { clients } from "../../db/schema/clients";
 import { conflictChecks } from "../../db/schema/conflict-checks";
+import { invoices } from "../../db/schema/invoices";
+import {
+  consultationFee,
+  raiseConsultationInvoice,
+} from "../finance/consultation-billing.service";
+import {
+  feeInvoiceSatisfied,
+  raiseFeeAgreementInvoice,
+} from "../finance/fee-agreement-billing.service";
 import { consultationLocations } from "../../db/schema/consultation-locations";
 import { consultationSettings } from "../../db/schema/consultation-settings";
 import {
@@ -1187,7 +1196,7 @@ const advanceLeadStage = async (
             "Fee agreement must be signed before opening a case",
           );
         }
-        if (!feeAgreementPaymentSatisfied(fa.details)) {
+        if (!(await feeAgreementPaymentSatisfied(organizationId, fa))) {
           throw new ConflictError(
             "Payment must be received before opening a case",
           );
@@ -2425,6 +2434,14 @@ const initiateConsultation = async (
 
   let feeStatus: "none" | "unpaid" = "none";
   let feeAmount: string | null = null;
+  // Kept so the invoice line can name the surcharge rather than presenting a
+  // multiplied figure with no explanation.
+  let baseFee: number | null = null;
+  const emergencyMultiplier =
+    startNow && data.isEmergency && data.emergencyMultiplier != null
+      ? data.emergencyMultiplier
+      : null;
+
   if (settings?.chargesFee) {
     const defaultAmount =
       settings.defaultAmount != null ? Number(settings.defaultAmount) : null;
@@ -2435,8 +2452,17 @@ const initiateConsultation = async (
         ? (data.feeAmount ?? defaultAmount)
         : defaultAmount;
     if (resolved != null) {
+      // The multiplier is now APPLIED, not merely recorded. The column comment
+      // has always said "the multiplied amount is persisted in feeAmount" and
+      // the code never did it, so an emergency surcharge only ever took effect
+      // if the caller happened to pre-multiply the amount it sent.
+      baseFee = resolved;
+      const charged =
+        emergencyMultiplier != null
+          ? Math.round(resolved * emergencyMultiplier * 100) / 100
+          : resolved;
       feeStatus = "unpaid";
-      feeAmount = String(resolved);
+      feeAmount = String(charged);
     }
   }
 
@@ -2523,6 +2549,36 @@ const initiateConsultation = async (
           staffId: member.id,
           roleSnapshot: member.role ?? null,
         })),
+      );
+    }
+  }
+
+  // A chargeable consultation gets a real invoice, against the LEAD — there is
+  // no client at this stage of the pipeline and there may never be one.
+  //
+  // Failure is swallowed on purpose: the consultation is booked, the lead has
+  // been told, and losing that over a billing record would be the wrong trade.
+  // The fee columns above still hold the amount, so nothing is lost — it just
+  // is not on the ledger, which is the state every consultation was in before
+  // this existed.
+  if (feeAmount != null && feeStatus === "unpaid") {
+    try {
+      await raiseConsultationInvoice(organizationId, scheduledById ?? null, {
+        consultationId: consultation!.id,
+        leadId,
+        amount: Number(feeAmount),
+        baseAmount: baseFee,
+        emergencyMultiplier,
+        mode: data.mode,
+        scheduledAt,
+        // pay_now holds the consultation until the fee is settled, so it is
+        // due the moment it is raised.
+        dueImmediately: data.paymentTiming === "pay_now" || !startNow,
+      });
+    } catch (err) {
+      console.error(
+        `[leads] could not raise consultation invoice for ${consultation!.id}:`,
+        err,
       );
     }
   }
@@ -2763,7 +2819,12 @@ const getConsultation = async (leadId: string, organizationId: string) => {
       .orderBy(desc(consultations.createdAt))
   ).filter((c) => c.id !== consultation.id);
 
-  return { ...consultation, participants, consultationHistory };
+  // The invoice is authoritative once one exists: "paid" then means a payment
+  // is on the ledger, not that somebody flipped an enum. `feeStatus` and
+  // `feeAmount` are still returned unchanged for callers that predate this.
+  const fee = await consultationFee(organizationId, consultation);
+
+  return { ...consultation, fee, participants, consultationHistory };
 };
 
 const updateConsultation = async (
@@ -3121,11 +3182,9 @@ const getConsultationBooking = async (token: string) => {
     requiresPayment,
     isUrgent: consultation.isUrgent,
     status: consultation.status,
-    fee: {
-      status: consultation.feeStatus,
-      amount:
-        consultation.feeAmount != null ? Number(consultation.feeAmount) : null,
-    },
+    // From the invoice when there is one, so the lead is quoted the amount the
+    // firm is actually owed rather than a column that may predate it.
+    fee: await consultationFee(consultation.organizationId, consultation),
     scheduledAt: consultation.scheduledAt,
     bookingStatus: consultation.bookingStatus,
     slots,
@@ -3146,6 +3205,27 @@ const getLeadTimezone = async (
   return lead?.timezone ?? getFirmTimezone(organizationId);
 };
 
+/**
+ * The lead-facing "pay" action on the booking page.
+ *
+ * **This does not take money and must not write to the ledger.** There is no
+ * payment provider wired anywhere in this repo; the button has always been a
+ * dummy that flips flags. What changed is that consultation fees are now real
+ * invoices, so pretending here would put payments in `invoice_payments` that
+ * never happened — turning a UI that overstates itself into accounts that do.
+ *
+ * So the split is deliberate:
+ *
+ *   - `consultations.feeStatus` is flipped, because it gates the consultation
+ *     LIFECYCLE — whether the call starts, whether a slot can be picked. That
+ *     is a product decision already made and this keeps the demo flow working.
+ *   - The invoice is left alone. It stays outstanding and keeps appearing in
+ *     receivables, which is the truth: nobody has paid. Staff record the real
+ *     payment through the finance module when it arrives.
+ *
+ * Phase 3 replaces this with a provider, at which point the webhook records the
+ * payment and the two stop disagreeing.
+ */
 const payConsultationFee = async (token: string) => {
   const consultation = await getConsultationByBookingToken(token);
   if (consultation.feeStatus !== "unpaid")
@@ -3176,6 +3256,10 @@ const payConsultationFee = async (token: string) => {
         consultationId: consultation.id,
         amount: Number(consultation.feeAmount),
         instant: true,
+        // No provider is wired, so no money actually moved and the invoice is
+        // deliberately untouched. Recorded so the trail does not read as a
+        // settled payment.
+        demo: true,
       },
     });
 
@@ -3659,17 +3743,38 @@ const cancelConsultation = async (
 
 // ─── Fee Agreement ─────────────────────────────────────────────────────────────
 
-// True when the case-opening payment requirement is met. Contingency
-// agreements never require an upfront payment; legacy rows without details
-// predate payment tracking and are never blocked. FEE_PAYMENT_GATE_BYPASS is
-// the dev-only escape hatch (forced off in production).
-const feeAgreementPaymentSatisfied = (
-  details: FeeAgreementDetails | null | undefined,
-): boolean =>
-  env.FEE_PAYMENT_GATE_BYPASS ||
-  !details ||
-  details.attorneyFee.type === "contingency" ||
-  Boolean(details.paymentReceivedAt);
+/**
+ * True when the case-opening payment requirement is met.
+ *
+ * The invoice is the source of truth when there is one: satisfied while nothing
+ * on it is overdue and something has been received. A firm agreeing a deposit
+ * plus three monthly payments opens the case on the deposit — waiting for the
+ * whole plan would make offering one pointless — and a later missed instalment
+ * does not close the case again, because this is only consulted at open time.
+ *
+ * Everything else is a fallback for agreements that predate invoicing:
+ *
+ *   - no invoice and no details → legacy row, never blocked
+ *   - no invoice, contingency → nothing is charged upfront
+ *   - no invoice, otherwise → the old `paymentReceivedAt` flag
+ *
+ * Note the contingency short-circuit now only applies when there is NO invoice.
+ * A contingency agreement with client-upfront government fees has a real
+ * `totalDue`, and skipping the check on the word "contingency" alone is why
+ * that money was never gated and never asked for.
+ */
+const feeAgreementPaymentSatisfied = async (
+  organizationId: string,
+  agreement: { invoiceId: string | null; details: FeeAgreementDetails | null },
+): Promise<boolean> => {
+  if (env.FEE_PAYMENT_GATE_BYPASS) return true;
+  if (agreement.invoiceId) {
+    return feeInvoiceSatisfied(organizationId, agreement.invoiceId);
+  }
+  if (!agreement.details) return true;
+  if (agreement.details.attorneyFee.type === "contingency") return true;
+  return Boolean(agreement.details.paymentReceivedAt);
+};
 
 const generateFeeAgreement = async (
   leadId: string,
@@ -3989,6 +4094,65 @@ const sendFeeAgreement = async (
 };
 
 /**
+ * Bill what a newly signed agreement charges upfront.
+ *
+ * Lives beside `advanceLeadToCaseOpening` and for the same reason: two flows
+ * reach "signed" — the Dropbox Sign webhook and a staff member marking it
+ * received by hand — and a billing step that only one of them performed would
+ * be a gap nobody notices until a case opens unpaid.
+ *
+ * Idempotent on `invoiceId`: the webhook retries, and the manual path can run
+ * after it. A second invoice for the same agreement would be a second demand
+ * for the same money.
+ *
+ * Failure is logged, not thrown. The signature is valid and recorded; refusing
+ * to acknowledge it because an invoice could not be raised would lose the more
+ * important fact.
+ */
+const billSignedFeeAgreement = async (
+  agreementId: string,
+  organizationId: string,
+  actorId?: string | null,
+): Promise<void> => {
+  try {
+    const [agreement] = await db
+      .select()
+      .from(feeAgreements)
+      .where(
+        and(
+          eq(feeAgreements.id, agreementId),
+          eq(feeAgreements.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!agreement || agreement.invoiceId) return;
+
+    const document = await assembleFeeAgreementDocument(
+      agreement,
+      organizationId,
+    );
+
+    await raiseFeeAgreementInvoice(organizationId, actorId ?? null, {
+      agreementId,
+      leadId: agreement.leadId,
+      feeLines: document.feeLines,
+      totalDue: document.totalDue,
+      paymentPlan: document.paymentPlan,
+      twoPaymentsSchedule: document.twoPaymentsSchedule,
+      installmentSchedule: document.installmentSchedule,
+      applyConsultationCredit: document.applyConsultationCredit,
+      consultationFeeAmount: document.consultationFeeAmount,
+    });
+  } catch (err) {
+    console.error(
+      `[leads] could not raise fee-agreement invoice for ${agreementId}:`,
+      err,
+    );
+  }
+};
+
+/**
  * Move a lead to case_opening, emitting the stage_changed event the funnel
  * metrics depend on. Several flows reach this stage (manual receipt, the
  * e-signature webhook, payment landing last), so the read-then-write lives in
@@ -4071,7 +4235,16 @@ const markFeeAgreementReceived = async (
   // Advance only once the payment gate is also satisfied; otherwise the lead
   // stays in the consultation stage, whose agreement card offers the
   // "Mark payment received" action.
-  if (feeAgreementPaymentSatisfied(agreement.details)) {
+  // Bill before gating: the invoice raised here is exactly what the gate is
+  // about to consult, and `billSignedFeeAgreement` re-reads the row itself.
+  await billSignedFeeAgreement(agreementId, organizationId, actorId);
+  const [billed] = await db
+    .select({ invoiceId: feeAgreements.invoiceId, details: feeAgreements.details })
+    .from(feeAgreements)
+    .where(eq(feeAgreements.id, agreementId))
+    .limit(1);
+
+  if (await feeAgreementPaymentSatisfied(organizationId, billed ?? agreement)) {
     await advanceLeadToCaseOpening(
       agreement.leadId,
       organizationId,
@@ -4381,7 +4554,19 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
     // Auto-advance the lead to case_opening only when the payment gate is also
     // satisfied; otherwise it stays in the consultation stage until staff mark
     // the payment received.
-    if (feeAgreementPaymentSatisfied(agreement.details)) {
+    await billSignedFeeAgreement(agreement.id, agreement.organizationId, null);
+    const [billedByWebhook] = await db
+      .select({ invoiceId: feeAgreements.invoiceId, details: feeAgreements.details })
+      .from(feeAgreements)
+      .where(eq(feeAgreements.id, agreement.id))
+      .limit(1);
+
+    if (
+      await feeAgreementPaymentSatisfied(
+        agreement.organizationId,
+        billedByWebhook ?? agreement,
+      )
+    ) {
       await advanceLeadToCaseOpening(
         agreement.leadId,
         agreement.organizationId,
@@ -4507,7 +4692,7 @@ const openCase = async (
         "Fee agreement must be signed before opening a case",
       );
     }
-    if (!feeAgreementPaymentSatisfied(fa.details)) {
+    if (!(await feeAgreementPaymentSatisfied(organizationId, fa))) {
       throw new ConflictError("Payment must be received before opening a case");
     }
   }
@@ -4618,6 +4803,27 @@ const openCase = async (
         updatedAt: now,
       })
       .where(eq(leads.id, leadId));
+
+    // Money raised during intake was billed to the lead, because a client row
+    // did not exist yet — this is the moment one does. Repointing here, inside
+    // the same transaction that creates the client, is what keeps the invoice
+    // list showing one party per invoice rather than a lead who has since
+    // become a client. Same reasoning as the questionnaire and document
+    // relinking below.
+    //
+    // `client_id IS NULL` rather than a blanket update: an invoice already
+    // pointing at a client is not this lead's to move, and the check constraint
+    // requires exactly one of the two.
+    await db
+      .update(invoices)
+      .set({ clientId: client.id, leadId: null, updatedAt: now })
+      .where(
+        and(
+          eq(invoices.organizationId, organizationId),
+          eq(invoices.leadId, leadId),
+          isNull(invoices.clientId),
+        ),
+      );
 
     await logStageChange({
       organizationId,

@@ -15,6 +15,18 @@ const statement = {
   conflicts: ["review"], // conflict-check resolution (owners + admins only)
   documents: ["read", "download", "create", "update", "delete"], // download gates client docs
   case_review: ["read", "resolve", "configure"], // AI case review dashboard
+  // Finance: invoicing, payments, time & billing, reports.
+  // `trust` is the coarse yes/no on IOLTA data; `financial_access_controls`
+  // holds the firm's own fine-grained answer and is checked as well.
+  finance: [
+    "read",
+    "create",
+    "update",
+    "record_payment",
+    "approve_time",
+    "log_time",
+    "trust",
+  ],
 } as const;
 
 export const ac = createAccessControl(statement);
@@ -26,6 +38,9 @@ export const paralegal = ac.newRole({
   conflicts: [],
   documents: ["read"],
   case_review: ["read"],
+  // Sees the billing screens and logs their own time. No invoice creation, no
+  // money handling, no trust.
+  finance: ["read", "log_time"],
   ...memberAc.statements,
 });
 
@@ -36,6 +51,10 @@ export const attorney = ac.newRole({
   conflicts: [],
   documents: ["read", "download"],
   case_review: ["read"],
+  // Drafts an invoice for their own matter. Deliberately NOT record_payment or
+  // approve_time — money handling and time approval stay with admin/owner, and
+  // this role is kept thin by design.
+  finance: ["read", "create", "log_time"],
   ...memberAc.statements,
 });
 
@@ -47,6 +66,15 @@ export const owner = ac.newRole({
   conflicts: ["review"],
   documents: ["read", "download", "create", "update", "delete"],
   case_review: ["read", "resolve", "configure"],
+  finance: [
+    "read",
+    "create",
+    "update",
+    "record_payment",
+    "approve_time",
+    "log_time",
+    "trust",
+  ],
   ...ownerAc.statements,
 });
 
@@ -58,6 +86,15 @@ export const admin = ac.newRole({
   conflicts: ["review"],
   documents: ["read", "download", "create", "update", "delete"],
   case_review: ["read", "resolve", "configure"],
+  finance: [
+    "read",
+    "create",
+    "update",
+    "record_payment",
+    "approve_time",
+    "log_time",
+    "trust",
+  ],
   ...adminAc.statements,
 });
 
@@ -69,6 +106,7 @@ const memberRole = ac.newRole({
   conflicts: [],
   documents: [],
   case_review: [],
+  finance: [],
 });
 
 export const client = ac.newRole({

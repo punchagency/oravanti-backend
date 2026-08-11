@@ -47,19 +47,24 @@
 //
 // ─── Coverage ───────────────────────────────────────────────────────────────
 //
-// Currently covered tables (7):
+// Currently covered tables (20):
 //   cases, case_events, case_record_notes, clients,
-//   leads, lead_events, lead_notes
+//   leads, lead_events, lead_notes,
+//   case_issues, case_issue_documents, case_issue_events, ai_scan_jobs,
+//   invoices, invoice_line_items, invoice_payments, invoice_instalments,
+//   invoice_followups, invoice_deliveries, finance_events, billing_rates,
+//   time_entries
 //
 // See .agents/plan-rls-remaining-tables.md for the full audit of uncovered tables.
 //
 // Prerequisites:
 //   - Custom PostgreSQL functions (get_current_organization_id, get_current_user_id)
 //     must exist in the database before policies are applied.
-//     Created by: 0006_rls_consolidated.sql
-//   - RLS must be enabled on tables via:
-//     ALTER TABLE <table> ENABLE ROW LEVEL SECURITY;
-//     Done dynamically by: 0006_rls_consolidated.sql (for all org-scoped tables)
+//   - RLS must be ENABLED on each table. drizzle-kit does this automatically:
+//     any table carrying a linked pgPolicy gets
+//     `ALTER TABLE <table> ENABLE ROW LEVEL SECURITY;` emitted into the
+//     generated migration. Adding a pgPolicy block below is therefore
+//     sufficient — no hand-written SQL step is required.
 // =============================================================================
 
 import { sql } from "drizzle-orm";
@@ -77,8 +82,17 @@ import {
   caseIssueEvents,
   caseIssues,
 } from "./case-issues";
+import { billingRates } from "./billing-rates";
 import { clients } from "./clients";
+import { financeEvents } from "./finance-events";
+import { invoiceDeliveries } from "./invoice-deliveries";
+import { invoiceFollowups } from "./invoice-followups";
+import { invoiceNumberSequences } from "./invoice-number-sequences";
+import { invoiceInstalments } from "./invoice-instalments";
+import { invoicePayments } from "./invoice-payments";
+import { invoices, invoiceLineItems } from "./invoices";
 import { leads, leadEvents, leadNotes } from "./leads";
+import { timeEntries } from "./time-entries";
 
 // =============================================================================
 // Helper: SQL references to custom PostgreSQL RLS functions
@@ -565,6 +579,120 @@ export const rlsAiScanJobsOrg = pgPolicy("rls_ai_scan_jobs_org", {
   using: sql`organization_id = ${currentOrgId}`,
   withCheck: sql`organization_id = ${currentOrgId}`,
 }).link(aiScanJobs);
+
+
+// =============================================================================
+// Finance tables
+// =============================================================================
+// invoices, invoice_line_items, invoice_payments, invoice_instalments,
+// invoice_followups, finance_events, billing_rates, time_entries
+//
+// Staff only. Billing is firm-internal: an invoice names what the firm charged
+// and what a client still owes, and the trust lines carry client money the firm
+// merely holds. Clients and contractors get no permissive grant here, so they
+// are denied outright. (A client-portal invoice view would need its own
+// permissive `client_user_id = get_current_user_id()` policy plus a restrictive
+// org policy — the cases pattern above. Deliberately not added: nothing in the
+// finance module serves clients today, and a half-open door is worse than none.)
+//
+// PERMISSIVE, not restrictive — see the case_issues note above for why a
+// staff-only table whose only policy is restrictive matches nothing at all.
+//
+// Every one of these tables carries its own organization_id, deliberately, so
+// each policy is a column comparison rather than the subquery case_events
+// needs. On the two child tables (line items, payments) that is one
+// denormalized value bought in exchange for an index-friendly policy on
+// precisely the tables the aggregate queries scan hardest.
+
+export const rlsInvoicesOrg = pgPolicy("rls_invoices_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(invoices);
+
+export const rlsInvoiceLineItemsOrg = pgPolicy("rls_invoice_line_items_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(invoiceLineItems);
+
+export const rlsInvoicePaymentsOrg = pgPolicy("rls_invoice_payments_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(invoicePayments);
+
+export const rlsInvoiceInstalmentsOrg = pgPolicy(
+  "rls_invoice_instalments_org",
+  {
+    as: "permissive",
+    for: "all",
+    using: sql`organization_id = ${currentOrgId}`,
+    withCheck: sql`organization_id = ${currentOrgId}`,
+  },
+).link(invoiceInstalments);
+
+/**
+ * Only a counter, but the count is how many invoices a firm has issued this
+ * year — business-sensitive on its own, and the allocation path writes to it,
+ * so leaving it open would let one tenant bump another's sequence.
+ */
+export const rlsInvoiceNumberSequencesOrg = pgPolicy(
+  "rls_invoice_number_sequences_org",
+  {
+    as: "permissive",
+    for: "all",
+    using: sql`organization_id = ${currentOrgId}`,
+    withCheck: sql`organization_id = ${currentOrgId}`,
+  },
+).link(invoiceNumberSequences);
+
+export const rlsInvoiceFollowupsOrg = pgPolicy("rls_invoice_followups_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(invoiceFollowups);
+
+export const rlsInvoiceDeliveriesOrg = pgPolicy("rls_invoice_deliveries_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(invoiceDeliveries);
+
+export const rlsFinanceEventsOrg = pgPolicy("rls_finance_events_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(financeEvents);
+
+/**
+ * Billing rates are what every staff member's earnings are computed from, so
+ * they are at least as sensitive as the invoices themselves.
+ */
+export const rlsBillingRatesOrg = pgPolicy("rls_billing_rates_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(billingRates);
+
+/**
+ * time_entries had no policy before the finance module existed — it was
+ * reachable only through revenue-analytics, but it was never actually isolated.
+ * Covering it now closes that gap.
+ */
+export const rlsTimeEntriesOrg = pgPolicy("rls_time_entries_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(timeEntries);
 
 
 // =============================================================================

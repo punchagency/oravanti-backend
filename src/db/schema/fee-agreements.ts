@@ -120,6 +120,17 @@ export const feeAgreements = pgTable("fee_agreements", {
   providerStatus: text("provider_status"),
   lastWebhookEventAt: timestamp("last_webhook_event_at"),
   clientSignedAt: timestamp("client_signed_at"),
+  /**
+   * The invoice raised for what this agreement charges upfront, minted when it
+   * is signed. Null when the agreement bills nothing then — a pure contingency
+   * with firm-advanced costs — and on every agreement signed before invoicing
+   * existed, which is why the case-opening gate falls back to
+   * `details.paymentReceivedAt` rather than treating null as unpaid.
+   *
+   * Unlinked id, like `leads.clientId`: removing an invoice must not cascade
+   * into the signed agreement it belonged to.
+   */
+  invoiceId: uuid("invoice_id"),
   nudgedAt: timestamp("nudged_at"),
   // Actors. The client signs via the provider, so there is no staff actor for
   // the signature itself — receivedById records who *marked* it received manually.

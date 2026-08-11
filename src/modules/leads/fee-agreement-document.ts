@@ -25,7 +25,13 @@ export type FeeAgreementDocument = {
   client: { name: string; matterType: string };
   // amount null renders as "—" (contingency line); deferred lines (contingency,
   // firm-advanced government fees) are excluded from totalDue.
-  feeLines: { description: string; amount: number | null; deferred?: boolean }[];
+  feeLines: {
+    description: string;
+    amount: number | null;
+    deferred?: boolean;
+    /** Routes the amount to the right account when this becomes an invoice. */
+    kind: "fee" | "government" | "cost";
+  }[];
   totalDue: number; // sum of non-deferred lines — i.e. due upfront
   allocation: { operating: number; trust: number; total: number };
   paymentPlan: "pay_in_full" | "two_payments" | "installments";
@@ -119,6 +125,13 @@ export const assembleFeeAgreementDocument = async (
     description: string;
     amount: number | null;
     deferred?: boolean;
+    /**
+     * What the line IS, as opposed to what it says. The invoice needs this to
+     * route government fees to the trust account and everything else to
+     * operating — inferring it back out of the description would be guesswork,
+     * and the account an amount lands in is a compliance question.
+     */
+    kind: "fee" | "government" | "cost";
   }[] = [];
   const af = details?.attorneyFee;
   const contingencyPercent = af?.contingencyPercent ?? null;
@@ -126,7 +139,11 @@ export const assembleFeeAgreementDocument = async (
     const flat = af.flatRate ?? 0;
     const hourly = af.hourlyRate ?? 0;
     if (af.type === "flat") {
-      feeLines.push({ description: `Legal services — ${matterType}`, amount: flat });
+      feeLines.push({
+        description: `Legal services — ${matterType}`,
+        amount: flat,
+        kind: "fee",
+      });
     } else if (af.type === "hourly") {
       // Estimated hours only appear on wizard-era agreements; older rows keep
       // the original description verbatim.
@@ -136,11 +153,13 @@ export const assembleFeeAgreementDocument = async (
             ? `Legal services (billed at $${hourly}/hr, estimated ${af.estimatedHours} hours) — ${matterType}`
             : `Legal services (billed at $${hourly}/hr) — ${matterType}`,
         amount: 0,
+        kind: "fee",
       });
     } else if (af.type === "flat_hourly") {
       feeLines.push({
         description: `Legal services ($${flat} + $${hourly}/hr) — ${matterType}`,
         amount: flat,
+        kind: "fee",
       });
     } else {
       // Pure contingency: no upfront attorney fee.
@@ -148,6 +167,7 @@ export const assembleFeeAgreementDocument = async (
         description: `Legal services (contingency — ${contingencyPercent}% of settlement) — ${matterType}`,
         amount: null,
         deferred: true,
+        kind: "fee",
       });
     }
     // Settlement percentage added on top of an upfront fee structure.
@@ -156,6 +176,7 @@ export const assembleFeeAgreementDocument = async (
         description: `Contingency fee — ${contingencyPercent}% of settlement or award`,
         amount: null,
         deferred: true,
+        kind: "fee",
       });
     }
   }
@@ -166,6 +187,7 @@ export const assembleFeeAgreementDocument = async (
     feeLines.push({
       description: govDeferred ? `${name} — advanced by firm` : name,
       amount: g.amount,
+      kind: "government",
       ...(govDeferred ? { deferred: true } : {}),
     });
   }
@@ -179,6 +201,7 @@ export const assembleFeeAgreementDocument = async (
         ? `${c.name} — other costs, advanced by firm`
         : `${c.name} — other costs`,
       amount: c.amount,
+      kind: "cost",
       ...(otherDeferred ? { deferred: true } : {}),
     });
   }

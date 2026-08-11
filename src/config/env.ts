@@ -42,6 +42,18 @@ type AppEnv = Record<RequiredEnvKey, string> & {
   // to the stub e-signature provider so dev environments still function.
   DROPBOX_SIGN_API_KEY?: string;
   DROPBOX_SIGN_CLIENT_ID?: string;
+  /**
+   * Stripe. Unset everywhere today: the finance module falls back to a stub
+   * provider that records nothing and says so out loud.
+   *
+   * The secret and the webhook secret are required TOGETHER —
+   * `isPaymentProviderConfigured()` demands both. A secret key with no webhook
+   * secret would leave a public endpoint unable to verify what it is sent while
+   * the rest of the system believed payments were live.
+   */
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
+  STRIPE_PUBLISHABLE_KEY?: string;
   // When true (default outside production) signature requests are created in
   // test mode and do not consume signature quota.
   DROPBOX_SIGN_TEST_MODE: boolean;
@@ -99,6 +111,9 @@ const validateEnv = (): AppEnv => {
   const googleMeetClientEmail = readEnv("GOOGLE_MEET_CLIENT_EMAIL");
   const googleMeetPrivateKey = readEnv("GOOGLE_MEET_PRIVATE_KEY");
   const googleMeetImpersonatedUser = readEnv("GOOGLE_MEET_IMPERSONATED_USER");
+  const stripeSecretKey = readEnv("STRIPE_SECRET_KEY");
+  const stripeWebhookSecret = readEnv("STRIPE_WEBHOOK_SECRET");
+  const stripePublishableKey = readEnv("STRIPE_PUBLISHABLE_KEY");
   const dropboxSignApiKey = readEnv("DROPBOX_SIGN_API_KEY");
   const dropboxSignClientId = readEnv("DROPBOX_SIGN_CLIENT_ID");
   // Defaults to test mode everywhere except production so quota is never
@@ -119,6 +134,11 @@ const validateEnv = (): AppEnv => {
     ...(googleMeetClientEmail ? { GOOGLE_MEET_CLIENT_EMAIL: googleMeetClientEmail } : {}),
     ...(googleMeetPrivateKey ? { GOOGLE_MEET_PRIVATE_KEY: googleMeetPrivateKey } : {}),
     ...(googleMeetImpersonatedUser ? { GOOGLE_MEET_IMPERSONATED_USER: googleMeetImpersonatedUser } : {}),
+    ...(stripeSecretKey ? { STRIPE_SECRET_KEY: stripeSecretKey } : {}),
+    ...(stripeWebhookSecret ? { STRIPE_WEBHOOK_SECRET: stripeWebhookSecret } : {}),
+    ...(stripePublishableKey
+      ? { STRIPE_PUBLISHABLE_KEY: stripePublishableKey }
+      : {}),
     ...(dropboxSignApiKey ? { DROPBOX_SIGN_API_KEY: dropboxSignApiKey } : {}),
     ...(dropboxSignClientId ? { DROPBOX_SIGN_CLIENT_ID: dropboxSignClientId } : {}),
     DROPBOX_SIGN_TEST_MODE: dropboxSignTestMode,

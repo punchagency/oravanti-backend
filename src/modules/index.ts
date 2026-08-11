@@ -12,6 +12,13 @@ import { AiScanModule } from "./ai-scan/ai-scan.module";
 import { CaseReviewModule } from "./case-review/case-review.module";
 import { DocumentRequirementsModule } from "./document-requirements/document-requirements.module";
 import { QuestionnairesModule } from "./questionnaires/questionnaires.module";
+import {
+  FinanceReportsModule,
+  InvoicesModule,
+  PaymentPublicModule,
+  PaymentWebhookModule,
+  TimeBillingModule,
+} from "./finance/finance.module";
 import { RevenueAnalyticsModule } from "./revenue-analytics/revenue-analytics.module";
 import { AccessControlModule } from "./settings/access-control/access-control.module";
 import { ApprovalWorkflowsModule } from "./settings/approval-workflows/approval-workflows.module";
@@ -53,6 +60,12 @@ export const modules: Module[] = [
   new ClientResponsivenessModule(),
   new ClientsModule(),
   new RevenueAnalyticsModule(),
+  new InvoicesModule(),
+  new TimeBillingModule(),
+  new FinanceReportsModule(),
+  // Public: the token is the credential, no requireAuth.
+  new PaymentPublicModule(),
+  new PaymentWebhookModule(),
   new PermissionAuditLogModule(),
   new FirmInfoModule(),
   new FirmProfileModule(),
