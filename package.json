@@ -26,7 +26,8 @@
     "test:db:clear": "tsx scripts/test-db/drop.ts",
     "test:db:drop": "tsx scripts/test-db/drop.ts --database",
     "check": "tsx scripts/check.ts",
-    "backfill:lead-events": "tsx src/scripts/backfill-lead-events.ts"
+    "backfill:lead-events": "tsx src/scripts/backfill-lead-events.ts",
+    "backfill:time-entry-status": "tsx src/scripts/backfill-time-entry-status.ts"
   },
   "repository": {
     "type": "git",

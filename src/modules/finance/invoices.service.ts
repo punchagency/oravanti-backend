@@ -1,0 +1,1245 @@
+import { and, asc, count, desc, eq, gt, ilike, inArray, or, sql } from "drizzle-orm";
+import { db } from "../../db/client";
+import { cases } from "../../db/schema/cases";
+import { clients } from "../../db/schema/clients";
+import { invoicePayments } from "../../db/schema/invoice-payments";
+import {
+  invoiceLineItems,
+  invoices,
+  type EffectiveInvoiceStatus,
+  type NewInvoiceLineItem,
+} from "../../db/schema/invoices";
+import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
+import { practiceAreas } from "../../db/schema/practice-areas";
+import { staff } from "../../db/schema/staff";
+import { team } from "../../db/schema/auth-schema";
+import { teamMembers } from "../../db/schema/team-members";
+import { timeEntries } from "../../db/schema/time-entries";
+import { withTransaction } from "../../db/transaction-context";
+import {
+  AuthorizationError,
+  BadRequestError,
+  NotFoundError,
+} from "../../utils/error/app-error";
+import {
+  buildPaginatedResponse,
+  getPaginationOffset,
+  type PaginationParams,
+} from "../../utils/pagination";
+import { renderReport, type ReportColumn } from "../../utils/report-export";
+import { logCaseEvent } from "../cases/case-events.service";
+import {
+  maskTrust,
+  requireTrustWrite,
+  restrictionsFor,
+} from "./account-access";
+import { logFinanceEvent } from "./finance-events.service";
+import { allocateInvoiceNumber, currentInvoiceYear } from "./invoice-number";
+import { money, num } from "./money";
+import {
+  countableInvoices,
+  effectiveStatusSql,
+  firmToday,
+  listableInvoices,
+  statusFilter,
+} from "./status";
+import { recalculateInvoiceTotals } from "./totals";
+import type {
+  AccountAccess,
+  AccountFilter,
+  AgingBucket,
+  InvoiceListRow,
+  InvoiceStats,
+  InvoiceStatusFilter,
+} from "./types";
+
+export type ListInvoicesOptions = Partial<PaginationParams> & {
+  status?: InvoiceStatusFilter;
+  account?: AccountFilter;
+  search?: string;
+  clientId?: string;
+  caseId?: string;
+  /** Show drafts alongside the rest. Only honoured when status is "all". */
+  includeDrafts?: boolean;
+};
+
+/** Matches case-review's cap and rationale: an export is a page, not a stream. */
+export const EXPORT_MAX = 5000;
+
+// ── Stats ────────────────────────────────────────────────────────────────────
+
+/**
+ * One query, one table, no joins — the payoff for denormalizing the folds onto
+ * the invoice header. Drafts and voided invoices are excluded from every
+ * figure; a draft is not invoiced revenue and a void is not revenue at all.
+ */
+export const getStats = async (
+  organizationId: string,
+  access: AccountAccess,
+): Promise<InvoiceStats> => {
+  const today = await firmToday(organizationId);
+
+  const [row] = await db
+    .select({
+      invoiceCount: sql<number>`count(*)::int`,
+      totalInvoiced: sql<string>`coalesce(sum(${invoices.totalAmount}), 0)`,
+      collected: sql<string>`coalesce(sum(${invoices.amountPaid}), 0)`,
+      collectedCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'paid')::int`,
+      outstanding: sql<string>`coalesce(sum(${invoices.balanceDue}), 0)`,
+      outstandingCount: sql<number>`count(*) FILTER (WHERE ${invoices.balanceDue} > 0)::int`,
+      overdueCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${invoices.dueDate} < ${today})::int`,
+      pastDueAmount: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${invoices.dueDate} < ${today}), 0)`,
+      operatingTotal: sql<string>`coalesce(sum(${invoices.subtotalOperating}), 0)`,
+      trustTotal: sql<string>`coalesce(sum(${invoices.subtotalTrust}), 0)`,
+    })
+    .from(invoices)
+    .where(and(eq(invoices.organizationId, organizationId), countableInvoices()));
+
+  return {
+    invoiceCount: row?.invoiceCount ?? 0,
+    totalInvoiced: num(row?.totalInvoiced),
+    collected: num(row?.collected),
+    collectedCount: row?.collectedCount ?? 0,
+    outstanding: num(row?.outstanding),
+    outstandingCount: row?.outstandingCount ?? 0,
+    overdueCount: row?.overdueCount ?? 0,
+    pastDueAmount: num(row?.pastDueAmount),
+    operatingTotal: num(row?.operatingTotal),
+    // Omitted, not zeroed, when the caller cannot see trust money. The
+    // `totalInvoiced` above still includes it, so the visible rows and the
+    // headline total continue to reconcile.
+    trustTotal: maskTrust(access, num(row?.trustTotal)),
+  };
+};
+
+/**
+ * Aging buckets over outstanding balance.
+ *
+ * The design labels these "1-15 / 16-30 / 30+", which puts day 30 in two
+ * buckets. Implemented as `> 30` and surfaced to the UI as "31+ days".
+ */
+export const getAging = async (
+  organizationId: string,
+): Promise<AgingBucket[]> => {
+  const today = await firmToday(organizationId);
+  const age = sql`(${today}::date - ${invoices.dueDate})`;
+
+  const [row] = await db
+    .select({
+      current: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} <= 0), 0)`,
+      d1_15: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} BETWEEN 1 AND 15), 0)`,
+      d16_30: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} BETWEEN 16 AND 30), 0)`,
+      d31_plus: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} > 30), 0)`,
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.organizationId, organizationId),
+        inArray(invoices.status, ["sent", "partial"]),
+      ),
+    );
+
+  return [
+    { key: "current", label: "Current", amount: num(row?.current) },
+    { key: "1_15", label: "1–15 days", amount: num(row?.d1_15) },
+    { key: "16_30", label: "16–30 days", amount: num(row?.d16_30) },
+    { key: "31_plus", label: "31+ days", amount: num(row?.d31_plus) },
+  ];
+};
+
+// ── List ─────────────────────────────────────────────────────────────────────
+
+const searchPredicate = (search: string) =>
+  or(
+    ilike(invoices.invoiceNumber, `%${search}%`),
+    ilike(clients.displayName, `%${search}%`),
+    ilike(clients.email, `%${search}%`),
+    ilike(cases.caseNumber, `%${search}%`),
+  );
+
+export const list = async (
+  organizationId: string,
+  access: AccountAccess,
+  options: ListInvoicesOptions = {},
+) => {
+  const { page = 1, limit = 20 } = options;
+  const today = await firmToday(organizationId);
+
+  const accountPredicate =
+    options.account === "operating"
+      ? gt(invoices.subtotalOperating, "0")
+      : options.account === "trust"
+        ? gt(invoices.subtotalTrust, "0")
+        : undefined;
+
+  // Drafts are excluded from every money figure, which is correct — but that
+  // would also make the Drafts filter return nothing. Two ways in: asking for
+  // the drafts bucket, or asking for them alongside everything else.
+  //
+  // `includeDrafts` is only honoured on "all": every other bucket names a
+  // specific non-draft state, so mixing drafts in would contradict the filter.
+  const isAllStatus = !options.status || options.status === "all";
+  const showDrafts =
+    options.status === "draft" || (isAllStatus && options.includeDrafts === true);
+
+  const where = and(
+    // RLS enforces this too; the explicit predicate is defence in depth and
+    // universal in this codebase.
+    eq(invoices.organizationId, organizationId),
+    options.status === "draft" ? undefined : listableInvoices(showDrafts),
+    statusFilter(options.status, today),
+    accountPredicate,
+    options.clientId ? eq(invoices.clientId, options.clientId) : undefined,
+    options.caseId ? eq(invoices.caseId, options.caseId) : undefined,
+    options.search ? searchPredicate(options.search) : undefined,
+  );
+
+  const rows = await db
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      issueDate: invoices.issueDate,
+      dueDate: invoices.dueDate,
+      clientId: invoices.clientId,
+      clientName: clients.displayName,
+      clientEmail: clients.email,
+      caseId: invoices.caseId,
+      caseNumber: cases.caseNumber,
+      caseTypeLabel: practiceAreaCaseTypes.name,
+      operatingAmount: invoices.subtotalOperating,
+      trustAmount: invoices.subtotalTrust,
+      totalAmount: invoices.totalAmount,
+      amountPaid: invoices.amountPaid,
+      balanceDue: invoices.balanceDue,
+      status: effectiveStatusSql(today),
+    })
+    .from(invoices)
+    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(cases, eq(cases.id, invoices.caseId))
+    .leftJoin(
+      practiceAreaCaseTypes,
+      eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+    )
+    .where(where)
+    .orderBy(desc(invoices.issueDate), desc(invoices.createdAt))
+    .limit(limit)
+    .offset(getPaginationOffset({ page, limit }));
+
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(invoices)
+    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(cases, eq(cases.id, invoices.caseId))
+    .where(where);
+
+  const data: InvoiceListRow[] = rows.map((r) => ({
+    id: r.id,
+    invoiceNumber: r.invoiceNumber,
+    issueDate: r.issueDate,
+    dueDate: r.dueDate,
+    clientId: r.clientId,
+    clientName: r.clientName,
+    clientEmail: r.clientEmail,
+    caseId: r.caseId,
+    caseNumber: r.caseNumber,
+    caseTypeLabel: r.caseTypeLabel,
+    operatingAmount: num(r.operatingAmount),
+    trustAmount: maskTrust(access, num(r.trustAmount)),
+    totalAmount: num(r.totalAmount),
+    amountPaid: num(r.amountPaid),
+    balanceDue: num(r.balanceDue),
+    status: r.status as EffectiveInvoiceStatus,
+  }));
+
+  return {
+    ...buildPaginatedResponse(data, { page, limit, total: Number(total) }),
+    restrictions: restrictionsFor(access),
+    /** Footer totals for the visible filter, not just the visible page. */
+    totals: await listTotals(where, access),
+  };
+};
+
+/**
+ * Footer totals for the current filter.
+ *
+ * `countableInvoices()` is re-applied here even though the list's own predicate
+ * may admit drafts: a draft that is visible must still not be counted, or the
+ * footer would disagree with the tiles above it. `draftCount` is returned
+ * alongside so the UI can say how many rows are sitting outside the total
+ * rather than leaving the discrepancy unexplained.
+ */
+const listTotals = async (
+  where: ReturnType<typeof and>,
+  access: AccountAccess,
+) => {
+  const [row] = await db
+    .select({
+      operating: sql<string>`coalesce(sum(${invoices.subtotalOperating}), 0)`,
+      trust: sql<string>`coalesce(sum(${invoices.subtotalTrust}), 0)`,
+      total: sql<string>`coalesce(sum(${invoices.totalAmount}), 0)`,
+      draftCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'draft')::int`,
+    })
+    .from(invoices)
+    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(cases, eq(cases.id, invoices.caseId))
+    .where(where);
+
+  const [countable] = await db
+    .select({
+      operating: sql<string>`coalesce(sum(${invoices.subtotalOperating}), 0)`,
+      trust: sql<string>`coalesce(sum(${invoices.subtotalTrust}), 0)`,
+      total: sql<string>`coalesce(sum(${invoices.totalAmount}), 0)`,
+    })
+    .from(invoices)
+    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(cases, eq(cases.id, invoices.caseId))
+    .where(and(where, countableInvoices()));
+
+  return {
+    operating: num(countable?.operating),
+    trust: maskTrust(access, num(countable?.trust)),
+    total: num(countable?.total),
+    /** Rows on screen that the totals above deliberately exclude. */
+    draftCount: row?.draftCount ?? 0,
+  };
+};
+
+// ── Detail ───────────────────────────────────────────────────────────────────
+
+export const getById = async (
+  organizationId: string,
+  invoiceId: string,
+  access: AccountAccess,
+) => {
+  const today = await firmToday(organizationId);
+
+  const [row] = await db
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      status: effectiveStatusSql(today),
+      storedStatus: invoices.status,
+      issueDate: invoices.issueDate,
+      dueDate: invoices.dueDate,
+      notes: invoices.notes,
+      filingType: invoices.filingType,
+      clientId: invoices.clientId,
+      clientName: clients.displayName,
+      clientEmail: clients.email,
+      caseId: invoices.caseId,
+      caseNumber: cases.caseNumber,
+      caseTypeLabel: practiceAreaCaseTypes.name,
+      practiceAreaId: invoices.practiceAreaId,
+      practiceAreaName: practiceAreas.name,
+      attorneyId: invoices.attorneyId,
+      attorneyFirstName: staff.firstName,
+      attorneyLastName: staff.lastName,
+      operatingAmount: invoices.subtotalOperating,
+      trustAmount: invoices.subtotalTrust,
+      totalAmount: invoices.totalAmount,
+      amountPaid: invoices.amountPaid,
+      balanceDue: invoices.balanceDue,
+      lastPaymentMethod: invoices.lastPaymentMethod,
+      lastPaymentDate: invoices.lastPaymentDate,
+      sentAt: invoices.sentAt,
+      paidAt: invoices.paidAt,
+      createdAt: invoices.createdAt,
+    })
+    .from(invoices)
+    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(cases, eq(cases.id, invoices.caseId))
+    .leftJoin(
+      practiceAreaCaseTypes,
+      eq(practiceAreaCaseTypes.id, cases.caseTypeId),
+    )
+    .leftJoin(practiceAreas, eq(practiceAreas.id, invoices.practiceAreaId))
+    .leftJoin(staff, eq(staff.id, invoices.attorneyId))
+    .where(
+      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+    )
+    .limit(1);
+
+  if (!row) throw new NotFoundError("Invoice not found");
+
+  const lineRows = await db
+    .select()
+    .from(invoiceLineItems)
+    .where(
+      and(
+        eq(invoiceLineItems.organizationId, organizationId),
+        eq(invoiceLineItems.invoiceId, invoiceId),
+      ),
+    )
+    .orderBy(asc(invoiceLineItems.sortOrder), asc(invoiceLineItems.createdAt));
+
+  const paymentRows = await db
+    .select()
+    .from(invoicePayments)
+    .where(
+      and(
+        eq(invoicePayments.organizationId, organizationId),
+        eq(invoicePayments.invoiceId, invoiceId),
+      ),
+    )
+    .orderBy(desc(invoicePayments.paymentDate));
+
+  const attorneyName = row.attorneyFirstName
+    ? `${row.attorneyFirstName} ${row.attorneyLastName ?? ""}`.trim()
+    : null;
+
+  return {
+    id: row.id,
+    invoiceNumber: row.invoiceNumber,
+    status: row.status as EffectiveInvoiceStatus,
+    storedStatus: row.storedStatus,
+    issueDate: row.issueDate,
+    dueDate: row.dueDate,
+    notes: row.notes,
+    // The design's "filing type" is the case-type label when there is a matter,
+    // and the free-text column otherwise.
+    filingType: row.caseTypeLabel ?? row.filingType,
+    client: {
+      id: row.clientId,
+      name: row.clientName,
+      email: row.clientEmail,
+    },
+    matter: row.caseId
+      ? { id: row.caseId, reference: row.caseNumber, type: row.caseTypeLabel }
+      : null,
+    practiceArea: row.practiceAreaName,
+    // The ids sit beside the labels because the edit dialog has to prefill
+    // selects, and matching a name back to an option is a guess.
+    practiceAreaId: row.practiceAreaId,
+    attorneyId: row.attorneyId,
+    attorney: attorneyName,
+    lineItems: lineRows
+      // Trust lines are not merely blanked — they are withheld entirely, so a
+      // caller without access cannot infer the amounts from the arithmetic.
+      .filter((l) => l.account === "operating" || restrictionsFor(access).trust !== "no_access")
+      .map((l) => ({
+        id: l.id,
+        description: l.description,
+        quantity: num(l.quantity),
+        rate: num(l.rate),
+        amount: num(l.amount),
+        account: l.account,
+        timeEntryId: l.timeEntryId,
+      })),
+    payments: paymentRows.map((p) => ({
+      id: p.id,
+      amount: num(p.amount),
+      amountOperating: num(p.amountOperating),
+      amountTrust: maskTrust(access, num(p.amountTrust)),
+      paymentDate: p.paymentDate,
+      method: p.method,
+      reference: p.reference,
+      notes: p.notes,
+      createdAt: p.createdAt,
+    })),
+    totals: {
+      operating: num(row.operatingAmount),
+      trust: maskTrust(access, num(row.trustAmount)),
+      total: num(row.totalAmount),
+      amountPaid: num(row.amountPaid),
+      balanceDue: num(row.balanceDue),
+    },
+    lastPaymentMethod: row.lastPaymentMethod,
+    lastPaymentDate: row.lastPaymentDate,
+    sentAt: row.sentAt,
+    paidAt: row.paidAt,
+    createdAt: row.createdAt,
+    restrictions: restrictionsFor(access),
+  };
+};
+
+// ── Create ───────────────────────────────────────────────────────────────────
+
+export type CreateInvoiceLine = {
+  description: string;
+  quantity: number;
+  rate: number;
+  account: "operating" | "trust_iolta";
+};
+
+/**
+ * Load the time entries an invoice is about to bill, refusing the ones that
+ * cannot legally be billed.
+ *
+ * The unique index on `invoice_line_items.time_entry_id` is the real backstop
+ * against double-billing; failing here just turns a constraint violation into a
+ * message someone can act on.
+ *
+ * `alreadyHeld` names the entries this same invoice holds today — on an edit
+ * they are legitimately stamped `invoicedAt`, so the "already invoiced" rule
+ * would otherwise reject an invoice for keeping its own lines.
+ */
+const loadBillableEntries = async (
+  organizationId: string,
+  entryIds: string[],
+  alreadyHeld: ReadonlySet<string> = new Set(),
+) => {
+  if (entryIds.length === 0) return [];
+
+  const entries = await db
+    .select({
+      id: timeEntries.id,
+      hoursWorked: timeEntries.hoursWorked,
+      hourlyRate: timeEntries.hourlyRate,
+      amount: timeEntries.amount,
+      description: timeEntries.description,
+      entryDate: timeEntries.entryDate,
+      status: timeEntries.status,
+      invoicedAt: timeEntries.invoicedAt,
+      billable: timeEntries.billable,
+      staffFirstName: staff.firstName,
+      staffLastName: staff.lastName,
+    })
+    .from(timeEntries)
+    .leftJoin(staff, eq(staff.id, timeEntries.staffId))
+    .where(
+      and(
+        eq(timeEntries.organizationId, organizationId),
+        inArray(timeEntries.id, entryIds),
+      ),
+    );
+
+  if (entries.length !== entryIds.length) {
+    throw new BadRequestError("One or more time entries could not be found");
+  }
+
+  for (const e of entries) {
+    if (e.status !== "approved") {
+      throw new BadRequestError(
+        "Only approved time entries can be added to an invoice",
+      );
+    }
+    if (e.invoicedAt && !alreadyHeld.has(e.id)) {
+      throw new BadRequestError(
+        "One or more time entries have already been invoiced",
+      );
+    }
+    if (!e.billable) {
+      throw new BadRequestError(
+        "Non-billable time entries cannot be added to an invoice",
+      );
+    }
+    if (e.hourlyRate == null) {
+      throw new BadRequestError(
+        "One or more time entries have no billing rate — set a rate for the staff member first",
+      );
+    }
+  }
+
+  return entries;
+};
+
+type BillableEntry = Awaited<ReturnType<typeof loadBillableEntries>>[number];
+
+/** Build the manual and time-entry lines for an invoice, in that order. */
+const buildLineValues = (
+  organizationId: string,
+  invoiceId: string,
+  lineItems: CreateInvoiceLine[],
+  entries: BillableEntry[],
+): NewInvoiceLineItem[] => {
+  let sortOrder = 0;
+
+  const values: NewInvoiceLineItem[] = lineItems.map((l) => ({
+    organizationId,
+    invoiceId,
+    description: l.description,
+    quantity: money(l.quantity),
+    rate: money(l.rate),
+    amount: money(l.quantity * l.rate),
+    account: l.account,
+    sortOrder: sortOrder++,
+  }));
+
+  for (const e of entries) {
+    const hours = num(e.hoursWorked);
+    const rate = num(e.hourlyRate);
+    const who = `${e.staffFirstName ?? ""} ${e.staffLastName ?? ""}`.trim();
+    values.push({
+      organizationId,
+      invoiceId,
+      description:
+        e.description?.trim() ||
+        `Legal services${who ? ` — ${who}` : ""} (${e.entryDate})`,
+      quantity: money(hours),
+      rate: money(rate),
+      // The stored snapshot wins over recomputing hours x rate: it is what was
+      // approved, and recomputing could differ by a rounding step.
+      amount: money(e.amount == null ? hours * rate : num(e.amount)),
+      account: "operating" as const,
+      sortOrder: sortOrder++,
+      timeEntryId: e.id,
+    });
+  }
+
+  return values;
+};
+
+export type CreateInvoiceInput = {
+  clientId: string;
+  caseId?: string;
+  practiceAreaId?: string;
+  attorneyId?: string;
+  filingType?: string;
+  issueDate: string;
+  dueDate: string;
+  notes?: string;
+  status: "draft";
+  lineItems: CreateInvoiceLine[];
+  timeEntryIds: string[];
+};
+
+export const create = async (
+  organizationId: string,
+  actorStaffId: string | null,
+  access: AccountAccess,
+  input: CreateInvoiceInput,
+) => {
+  if (input.lineItems.some((l) => l.account === "trust_iolta")) {
+    requireTrustWrite(access);
+  }
+
+  return withTransaction(db, async () => {
+    const entries = await loadBillableEntries(
+      organizationId,
+      input.timeEntryIds,
+    );
+
+    const year = await currentInvoiceYear(organizationId);
+    const invoiceNumber = await allocateInvoiceNumber(organizationId, year);
+
+    const [invoice] = await db
+      .insert(invoices)
+      .values({
+        organizationId,
+        invoiceNumber,
+        clientId: input.clientId,
+        caseId: input.caseId ?? null,
+        practiceAreaId: input.practiceAreaId ?? null,
+        attorneyId: input.attorneyId ?? null,
+        filingType: input.filingType ?? null,
+        status: input.status,
+        issueDate: input.issueDate,
+        dueDate: input.dueDate,
+        notes: input.notes ?? null,
+        // `sentAt` is set by a successful delivery and nothing else.
+        createdById: actorStaffId,
+      })
+      .returning();
+
+    const lineValues = buildLineValues(
+      organizationId,
+      invoice!.id,
+      input.lineItems,
+      entries,
+    );
+
+    if (lineValues.length === 0) {
+      throw new BadRequestError("An invoice needs at least one line item");
+    }
+
+    await db.insert(invoiceLineItems).values(lineValues);
+
+    if (entries.length) {
+      await db
+        .update(timeEntries)
+        .set({ invoicedAt: new Date(), updatedAt: new Date() })
+        .where(
+          and(
+            eq(timeEntries.organizationId, organizationId),
+            inArray(
+              timeEntries.id,
+              entries.map((e) => e.id),
+            ),
+          ),
+        );
+    }
+
+    const totals = await recalculateInvoiceTotals(organizationId, invoice!.id);
+
+    await logFinanceEvent({
+      organizationId,
+      eventType: "invoice_created",
+      title: `${invoiceNumber} — draft created`,
+      description: null,
+      amount: totals.totalAmount,
+      invoiceId: invoice!.id,
+      caseId: input.caseId ?? null,
+      clientId: input.clientId,
+      actorId: actorStaffId,
+    });
+
+    // Bridge to the matter timeline when there is one, so the case's own
+    // activity trail shows the billing event too.
+    if (input.caseId) {
+      await logCaseEvent({
+        organizationId,
+        caseId: input.caseId,
+        eventType: "case_invoice_created",
+        title: `Invoice ${invoiceNumber} drafted`,
+        description: `Total ${totals.totalAmount.toFixed(2)}`,
+        actorId: actorStaffId,
+      });
+    }
+
+    return getById(organizationId, invoice!.id, access);
+  });
+};
+
+// ── Lifecycle ────────────────────────────────────────────────────────────────
+
+export const voidInvoice = async (
+  organizationId: string,
+  invoiceId: string,
+  reason: string | undefined,
+  actorStaffId: string | null,
+  access: AccountAccess,
+) => {
+  const [existing] = await db
+    .select({
+      status: invoices.status,
+      invoiceNumber: invoices.invoiceNumber,
+      totalAmount: invoices.totalAmount,
+    })
+    .from(invoices)
+    .where(
+      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+    )
+    .limit(1);
+
+  if (!existing) throw new NotFoundError("Invoice not found");
+  if (existing.status === "void") {
+    throw new BadRequestError("Invoice is already void");
+  }
+
+  return withTransaction(db, async () => {
+    await db
+      .update(invoices)
+      .set({ status: "void", voidedAt: new Date(), updatedAt: new Date() })
+      .where(
+        and(
+          eq(invoices.organizationId, organizationId),
+          eq(invoices.id, invoiceId),
+        ),
+      );
+
+    // Release the time entries so the work can be re-billed on a correct
+    // invoice. The line items stay — the voided invoice remains readable.
+    const lines = await db
+      .select({ timeEntryId: invoiceLineItems.timeEntryId })
+      .from(invoiceLineItems)
+      .where(
+        and(
+          eq(invoiceLineItems.organizationId, organizationId),
+          eq(invoiceLineItems.invoiceId, invoiceId),
+        ),
+      );
+    const entryIds = lines
+      .map((l) => l.timeEntryId)
+      .filter((id): id is string => id != null);
+    if (entryIds.length) {
+      await db
+        .update(timeEntries)
+        .set({ invoicedAt: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(timeEntries.organizationId, organizationId),
+            inArray(timeEntries.id, entryIds),
+          ),
+        );
+      await db
+        .update(invoiceLineItems)
+        .set({ timeEntryId: null })
+        .where(
+          and(
+            eq(invoiceLineItems.organizationId, organizationId),
+            eq(invoiceLineItems.invoiceId, invoiceId),
+          ),
+        );
+    }
+
+    await logFinanceEvent({
+      organizationId,
+      eventType: "invoice_voided",
+      title: `${existing.invoiceNumber} — invoice voided`,
+      description: reason ?? null,
+      amount: num(existing.totalAmount),
+      invoiceId,
+      actorId: actorStaffId,
+    });
+
+    return getById(organizationId, invoiceId, access);
+  });
+};
+
+export type UpdateInvoiceInput = {
+  dueDate?: string;
+  notes?: string;
+  attorneyId?: string | null;
+  filingType?: string;
+  /** Draft-only, below. */
+  issueDate?: string;
+  caseId?: string | null;
+  practiceAreaId?: string | null;
+  lineItems?: CreateInvoiceLine[];
+  timeEntryIds?: string[];
+};
+
+/**
+ * Edit an invoice.
+ *
+ * Header fields (due date, notes, attorney, filing type) apply to any live
+ * invoice. Anything that changes what the invoice *says it charges* — lines,
+ * time entries, the matter, the issue date — is refused on anything but a
+ * draft: once a client has been sent an invoice it is a legal statement of what
+ * they owe, and the correction for that is a void plus a reissue, not a silent
+ * rewrite of a document someone already has a copy of.
+ */
+export const update = async (
+  organizationId: string,
+  invoiceId: string,
+  input: UpdateInvoiceInput,
+  actorStaffId: string | null,
+  access: AccountAccess,
+) => {
+  const editsContent =
+    input.lineItems !== undefined ||
+    input.timeEntryIds !== undefined ||
+    input.issueDate !== undefined ||
+    input.caseId !== undefined ||
+    input.practiceAreaId !== undefined;
+
+  const [existing] = await db
+    .select({
+      status: invoices.status,
+      invoiceNumber: invoices.invoiceNumber,
+      issueDate: invoices.issueDate,
+      dueDate: invoices.dueDate,
+      caseId: invoices.caseId,
+      practiceAreaId: invoices.practiceAreaId,
+      subtotalTrust: invoices.subtotalTrust,
+    })
+    .from(invoices)
+    .where(
+      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+    )
+    .limit(1);
+
+  if (!existing) throw new NotFoundError("Invoice not found");
+  if (existing.status === "void") {
+    throw new BadRequestError("A voided invoice cannot be edited");
+  }
+
+  if (editsContent) {
+    if (existing.status !== "draft") {
+      throw new BadRequestError(
+        "Only a draft invoice can be edited. Void this one and issue a corrected invoice instead.",
+      );
+    }
+
+    // getById withholds trust lines from a caller without access, so the client
+    // cannot have sent them back — replacing the line set would delete them
+    // without the person doing it ever seeing they existed.
+    if (
+      restrictionsFor(access).trust === "no_access" &&
+      num(existing.subtotalTrust) > 0
+    ) {
+      throw new AuthorizationError(
+        "This draft has trust (IOLTA) lines you do not have access to, so it cannot be edited here",
+      );
+    }
+    if (input.lineItems?.some((l) => l.account === "trust_iolta")) {
+      requireTrustWrite(access);
+    }
+
+    const issueDate = input.issueDate ?? existing.issueDate;
+    const dueDate = input.dueDate ?? existing.dueDate;
+    if (dueDate < issueDate) {
+      throw new BadRequestError("Due date cannot precede the issue date");
+    }
+
+    // Same rule as create: without one or the other, revenue-by-practice-area
+    // silently undercounts the invoice.
+    const caseId = input.caseId !== undefined ? input.caseId : existing.caseId;
+    const practiceAreaId =
+      input.practiceAreaId !== undefined
+        ? input.practiceAreaId
+        : existing.practiceAreaId;
+    if (caseId == null && practiceAreaId == null) {
+      throw new BadRequestError(
+        "A practice area is required when the invoice has no matter",
+      );
+    }
+  }
+
+  return withTransaction(db, async () => {
+    await db
+      .update(invoices)
+      .set({
+        dueDate: input.dueDate,
+        notes: input.notes,
+        attorneyId: input.attorneyId,
+        filingType: input.filingType,
+        issueDate: input.issueDate,
+        caseId: input.caseId,
+        practiceAreaId: input.practiceAreaId,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(invoices.organizationId, organizationId),
+          eq(invoices.id, invoiceId),
+        ),
+      );
+
+    if (input.lineItems !== undefined && input.timeEntryIds !== undefined) {
+      await replaceInvoiceLines(
+        organizationId,
+        invoiceId,
+        input.lineItems,
+        input.timeEntryIds,
+      );
+    }
+
+    const totals = editsContent
+      ? await recalculateInvoiceTotals(organizationId, invoiceId)
+      : null;
+
+    await logFinanceEvent({
+      organizationId,
+      eventType: "invoice_updated",
+      title: `${existing.invoiceNumber} — ${
+        editsContent ? "draft edited" : "invoice updated"
+      }`,
+      amount: totals?.totalAmount ?? null,
+      invoiceId,
+      actorId: actorStaffId,
+    });
+
+    return getById(organizationId, invoiceId, access);
+  });
+};
+
+/**
+ * Swap a draft's line set for a new one, and reconcile which time entries it
+ * holds.
+ *
+ * Replacing wholesale rather than diffing the lines is safe precisely because
+ * this is draft-only: nothing references a line item (payments hang off the
+ * invoice), and a draft cannot have payments. What does need care is
+ * `time_entries.invoicedAt` — an entry dropped from the draft has to be
+ * released, or the work becomes permanently unbillable.
+ *
+ * Must be called inside a transaction.
+ */
+const replaceInvoiceLines = async (
+  organizationId: string,
+  invoiceId: string,
+  lineItems: CreateInvoiceLine[],
+  timeEntryIds: string[],
+) => {
+  const currentLines = await db
+    .select({ timeEntryId: invoiceLineItems.timeEntryId })
+    .from(invoiceLineItems)
+    .where(
+      and(
+        eq(invoiceLineItems.organizationId, organizationId),
+        eq(invoiceLineItems.invoiceId, invoiceId),
+      ),
+    );
+
+  const held = new Set(
+    currentLines
+      .map((l) => l.timeEntryId)
+      .filter((id): id is string => id != null),
+  );
+  const wanted = new Set(timeEntryIds);
+  const released = [...held].filter((id) => !wanted.has(id));
+  const claimed = timeEntryIds.filter((id) => !held.has(id));
+
+  const entries = await loadBillableEntries(organizationId, timeEntryIds, held);
+
+  const lineValues = buildLineValues(
+    organizationId,
+    invoiceId,
+    lineItems,
+    entries,
+  );
+  if (lineValues.length === 0) {
+    throw new BadRequestError("An invoice needs at least one line item");
+  }
+
+  // Delete before insert: the unique index on time_entry_id would otherwise
+  // reject re-inserting a line for an entry the draft already holds.
+  await db
+    .delete(invoiceLineItems)
+    .where(
+      and(
+        eq(invoiceLineItems.organizationId, organizationId),
+        eq(invoiceLineItems.invoiceId, invoiceId),
+      ),
+    );
+  await db.insert(invoiceLineItems).values(lineValues);
+
+  if (released.length) {
+    await db
+      .update(timeEntries)
+      .set({ invoicedAt: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(timeEntries.organizationId, organizationId),
+          inArray(timeEntries.id, released),
+        ),
+      );
+  }
+  if (claimed.length) {
+    await db
+      .update(timeEntries)
+      .set({ invoicedAt: new Date(), updatedAt: new Date() })
+      .where(
+        and(
+          eq(timeEntries.organizationId, organizationId),
+          inArray(timeEntries.id, claimed),
+        ),
+      );
+  }
+};
+
+// ── Unbilled time (feeds the New invoice dialog) ─────────────────────────────
+
+export const getUnbilledTime = async (
+  organizationId: string,
+  filters: { clientId?: string; caseId?: string; forInvoiceId?: string },
+) => {
+  // "Unbilled, plus whatever this draft already holds." Attaching an entry
+  // stamps `invoicedAt`, which is exactly what makes it stop being unbilled —
+  // so without this an edit could only ever remove time, never keep it.
+  const heldByInvoice = filters.forInvoiceId
+    ? db
+        .select({ id: invoiceLineItems.timeEntryId })
+        .from(invoiceLineItems)
+        .where(
+          and(
+            eq(invoiceLineItems.organizationId, organizationId),
+            eq(invoiceLineItems.invoiceId, filters.forInvoiceId),
+            sql`${invoiceLineItems.timeEntryId} IS NOT NULL`,
+          ),
+        )
+    : null;
+
+  const rows = await db
+    .select({
+      id: timeEntries.id,
+      entryDate: timeEntries.entryDate,
+      hoursWorked: timeEntries.hoursWorked,
+      hourlyRate: timeEntries.hourlyRate,
+      amount: timeEntries.amount,
+      description: timeEntries.description,
+      caseId: timeEntries.caseId,
+      caseNumber: cases.caseNumber,
+      staffFirstName: staff.firstName,
+      staffLastName: staff.lastName,
+    })
+    .from(timeEntries)
+    .leftJoin(staff, eq(staff.id, timeEntries.staffId))
+    .leftJoin(cases, eq(cases.id, timeEntries.caseId))
+    .where(
+      and(
+        eq(timeEntries.organizationId, organizationId),
+        eq(timeEntries.status, "approved"),
+        eq(timeEntries.billable, true),
+        heldByInvoice
+          ? or(
+              sql`${timeEntries.invoicedAt} IS NULL`,
+              inArray(timeEntries.id, heldByInvoice),
+            )
+          : sql`${timeEntries.invoicedAt} IS NULL`,
+        filters.caseId ? eq(timeEntries.caseId, filters.caseId) : undefined,
+        filters.clientId ? eq(cases.clientId, filters.clientId) : undefined,
+      ),
+    )
+    .orderBy(desc(timeEntries.entryDate));
+
+  return rows.map((r) => ({
+    id: r.id,
+    entryDate: r.entryDate,
+    hours: num(r.hoursWorked),
+    rate: r.hourlyRate == null ? null : num(r.hourlyRate),
+    amount: r.amount == null ? null : num(r.amount),
+    description: r.description,
+    caseId: r.caseId,
+    caseNumber: r.caseNumber,
+    staffName: `${r.staffFirstName ?? ""} ${r.staffLastName ?? ""}`.trim() || null,
+    rateUnset: r.hourlyRate == null,
+  }));
+};
+
+// ── Case defaults (prefills the New invoice dialog) ──────────────────────────
+
+/**
+ * Who should be billed as the attorney on an invoice for this matter.
+ *
+ * A case is assigned to a *team*, not a person, so there is no attorney to read
+ * off it directly. The resolution order, and why:
+ *
+ *   1. **The team lead, when they are an attorney.** This is the "if there are
+ *      several attorneys, pick the lead" rule — the lead is the person who owns
+ *      the matter.
+ *   2. **The team's only attorney.** With exactly one there is nothing to
+ *      disambiguate, and it holds even when the team lead is a paralegal.
+ *   3. **The team lead, whatever their role.** A team with no attorney at all
+ *      still has someone answerable for it.
+ *   4. Nothing. Better an empty select than a confident wrong name on a bill.
+ *
+ * `source` and `attorneyCount` come back so the dialog can say *why* a name was
+ * filled in — a prefill nobody can account for is one nobody will correct.
+ */
+export const getCaseDefaults = async (
+  organizationId: string,
+  caseId: string,
+) => {
+  const [row] = await db
+    .select({ teamId: cases.assignedTeamId })
+    .from(cases)
+    .where(and(eq(cases.organizationId, organizationId), eq(cases.id, caseId)))
+    .limit(1);
+
+  if (!row) throw new NotFoundError("Matter not found");
+
+  const empty = {
+    caseId,
+    attorneyId: null as string | null,
+    attorneyName: null as string | null,
+    source: null as "team_lead" | "sole_attorney" | null,
+    attorneyCount: 0,
+  };
+
+  if (!row.teamId) return empty;
+
+  // team.leadId is text holding a staff uuid — there is no FK on it, hence the
+  // cast rather than a normal join condition.
+  const [leadRow] = await db
+    .select({
+      id: staff.id,
+      firstName: staff.firstName,
+      lastName: staff.lastName,
+      role: staff.role,
+    })
+    .from(team)
+    .innerJoin(
+      staff,
+      and(
+        sql`${staff.id}::text = ${team.leadId}`,
+        eq(staff.organizationId, organizationId),
+        eq(staff.status, "active"),
+      ),
+    )
+    .where(and(eq(team.id, row.teamId), eq(team.organizationId, organizationId)))
+    .limit(1);
+
+  const attorneys = await db
+    .select({
+      id: staff.id,
+      firstName: staff.firstName,
+      lastName: staff.lastName,
+    })
+    .from(teamMembers)
+    .innerJoin(staff, eq(staff.id, teamMembers.staffId))
+    .where(
+      and(
+        eq(teamMembers.teamId, row.teamId),
+        eq(staff.organizationId, organizationId),
+        eq(staff.status, "active"),
+        eq(staff.role, "attorney"),
+      ),
+    );
+
+  const named = (p: { firstName: string; lastName: string }) =>
+    `${p.firstName} ${p.lastName}`.trim();
+
+  if (leadRow?.role === "attorney") {
+    return {
+      caseId,
+      attorneyId: leadRow.id,
+      attorneyName: named(leadRow),
+      source: "team_lead" as const,
+      attorneyCount: attorneys.length,
+    };
+  }
+
+  if (attorneys.length === 1) {
+    return {
+      caseId,
+      attorneyId: attorneys[0]!.id,
+      attorneyName: named(attorneys[0]!),
+      source: "sole_attorney" as const,
+      attorneyCount: 1,
+    };
+  }
+
+  if (leadRow) {
+    return {
+      caseId,
+      attorneyId: leadRow.id,
+      attorneyName: named(leadRow),
+      source: "team_lead" as const,
+      attorneyCount: attorneys.length,
+    };
+  }
+
+  return { ...empty, attorneyCount: attorneys.length };
+};
+
+// ── Export ───────────────────────────────────────────────────────────────────
+
+export const exportInvoices = async (
+  organizationId: string,
+  access: AccountAccess,
+  options: ListInvoicesOptions,
+  format: "csv" | "pdf",
+) => {
+  const page = await list(organizationId, access, {
+    ...options,
+    page: 1,
+    limit: EXPORT_MAX,
+  });
+
+  type Row = InvoiceListRow;
+  const columns: ReportColumn<Row>[] = [
+      { header: "Invoice #", value: (r) => r.invoiceNumber },
+      { header: "Client", value: (r) => r.clientName, weight: 1.6 },
+      { header: "Matter", value: (r) => r.caseNumber ?? "" },
+      { header: "Operating", value: (r) => r.operatingAmount.toFixed(2) },
+      // Dropped from the spec entirely — not emitted blank — when the caller
+      // has no trust access. One spec drives CSV and PDF, so both stay correct.
+      ...(restrictionsFor(access).trust === "no_access"
+        ? []
+        : [
+            {
+              header: "Trust",
+              value: (r: Row) => (r.trustAmount ?? 0).toFixed(2),
+            },
+          ]),
+      { header: "Total", value: (r) => r.totalAmount.toFixed(2) },
+      { header: "Paid", value: (r) => r.amountPaid.toFixed(2) },
+      { header: "Balance", value: (r) => r.balanceDue.toFixed(2) },
+      { header: "Status", value: (r) => r.status },
+      { header: "Issued", value: (r) => r.issueDate },
+    { header: "Due", value: (r) => r.dueDate },
+  ];
+
+  const report = await renderReport(format, page.data, columns, {
+    title: "Invoices",
+    subtitle: `${page.data.length} invoice(s) · exported ${new Date().toISOString().slice(0, 10)}`,
+  });
+
+  return {
+    filename: `invoices.${report.extension}`,
+    mime: report.mime,
+    body: report.body,
+  };
+};

@@ -24,6 +24,17 @@ export class ResendEmailService extends BaseEmailService {
         to: [options.to],
         subject: options.subject,
         html: options.html,
+        // Mapped explicitly rather than spread: Resend takes `content` as the
+        // raw buffer and has no contentType field, inferring it from the
+        // filename extension.
+        ...(options.attachments?.length
+          ? {
+              attachments: options.attachments.map((file) => ({
+                filename: file.filename,
+                content: file.content,
+              })),
+            }
+          : {}),
       });
 
       if (error) {
