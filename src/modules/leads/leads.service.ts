@@ -34,6 +34,10 @@ import {
   consultationFee,
   raiseConsultationInvoice,
 } from "../finance/consultation-billing.service";
+import {
+  feeInvoiceSatisfied,
+  raiseFeeAgreementInvoice,
+} from "../finance/fee-agreement-billing.service";
 import { consultationLocations } from "../../db/schema/consultation-locations";
 import { consultationSettings } from "../../db/schema/consultation-settings";
 import {
@@ -1192,7 +1196,7 @@ const advanceLeadStage = async (
             "Fee agreement must be signed before opening a case",
           );
         }
-        if (!feeAgreementPaymentSatisfied(fa.details)) {
+        if (!(await feeAgreementPaymentSatisfied(organizationId, fa))) {
           throw new ConflictError(
             "Payment must be received before opening a case",
           );
@@ -3739,17 +3743,38 @@ const cancelConsultation = async (
 
 // ─── Fee Agreement ─────────────────────────────────────────────────────────────
 
-// True when the case-opening payment requirement is met. Contingency
-// agreements never require an upfront payment; legacy rows without details
-// predate payment tracking and are never blocked. FEE_PAYMENT_GATE_BYPASS is
-// the dev-only escape hatch (forced off in production).
-const feeAgreementPaymentSatisfied = (
-  details: FeeAgreementDetails | null | undefined,
-): boolean =>
-  env.FEE_PAYMENT_GATE_BYPASS ||
-  !details ||
-  details.attorneyFee.type === "contingency" ||
-  Boolean(details.paymentReceivedAt);
+/**
+ * True when the case-opening payment requirement is met.
+ *
+ * The invoice is the source of truth when there is one: satisfied while nothing
+ * on it is overdue and something has been received. A firm agreeing a deposit
+ * plus three monthly payments opens the case on the deposit — waiting for the
+ * whole plan would make offering one pointless — and a later missed instalment
+ * does not close the case again, because this is only consulted at open time.
+ *
+ * Everything else is a fallback for agreements that predate invoicing:
+ *
+ *   - no invoice and no details → legacy row, never blocked
+ *   - no invoice, contingency → nothing is charged upfront
+ *   - no invoice, otherwise → the old `paymentReceivedAt` flag
+ *
+ * Note the contingency short-circuit now only applies when there is NO invoice.
+ * A contingency agreement with client-upfront government fees has a real
+ * `totalDue`, and skipping the check on the word "contingency" alone is why
+ * that money was never gated and never asked for.
+ */
+const feeAgreementPaymentSatisfied = async (
+  organizationId: string,
+  agreement: { invoiceId: string | null; details: FeeAgreementDetails | null },
+): Promise<boolean> => {
+  if (env.FEE_PAYMENT_GATE_BYPASS) return true;
+  if (agreement.invoiceId) {
+    return feeInvoiceSatisfied(organizationId, agreement.invoiceId);
+  }
+  if (!agreement.details) return true;
+  if (agreement.details.attorneyFee.type === "contingency") return true;
+  return Boolean(agreement.details.paymentReceivedAt);
+};
 
 const generateFeeAgreement = async (
   leadId: string,
@@ -4069,6 +4094,65 @@ const sendFeeAgreement = async (
 };
 
 /**
+ * Bill what a newly signed agreement charges upfront.
+ *
+ * Lives beside `advanceLeadToCaseOpening` and for the same reason: two flows
+ * reach "signed" — the Dropbox Sign webhook and a staff member marking it
+ * received by hand — and a billing step that only one of them performed would
+ * be a gap nobody notices until a case opens unpaid.
+ *
+ * Idempotent on `invoiceId`: the webhook retries, and the manual path can run
+ * after it. A second invoice for the same agreement would be a second demand
+ * for the same money.
+ *
+ * Failure is logged, not thrown. The signature is valid and recorded; refusing
+ * to acknowledge it because an invoice could not be raised would lose the more
+ * important fact.
+ */
+const billSignedFeeAgreement = async (
+  agreementId: string,
+  organizationId: string,
+  actorId?: string | null,
+): Promise<void> => {
+  try {
+    const [agreement] = await db
+      .select()
+      .from(feeAgreements)
+      .where(
+        and(
+          eq(feeAgreements.id, agreementId),
+          eq(feeAgreements.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!agreement || agreement.invoiceId) return;
+
+    const document = await assembleFeeAgreementDocument(
+      agreement,
+      organizationId,
+    );
+
+    await raiseFeeAgreementInvoice(organizationId, actorId ?? null, {
+      agreementId,
+      leadId: agreement.leadId,
+      feeLines: document.feeLines,
+      totalDue: document.totalDue,
+      paymentPlan: document.paymentPlan,
+      twoPaymentsSchedule: document.twoPaymentsSchedule,
+      installmentSchedule: document.installmentSchedule,
+      applyConsultationCredit: document.applyConsultationCredit,
+      consultationFeeAmount: document.consultationFeeAmount,
+    });
+  } catch (err) {
+    console.error(
+      `[leads] could not raise fee-agreement invoice for ${agreementId}:`,
+      err,
+    );
+  }
+};
+
+/**
  * Move a lead to case_opening, emitting the stage_changed event the funnel
  * metrics depend on. Several flows reach this stage (manual receipt, the
  * e-signature webhook, payment landing last), so the read-then-write lives in
@@ -4151,7 +4235,16 @@ const markFeeAgreementReceived = async (
   // Advance only once the payment gate is also satisfied; otherwise the lead
   // stays in the consultation stage, whose agreement card offers the
   // "Mark payment received" action.
-  if (feeAgreementPaymentSatisfied(agreement.details)) {
+  // Bill before gating: the invoice raised here is exactly what the gate is
+  // about to consult, and `billSignedFeeAgreement` re-reads the row itself.
+  await billSignedFeeAgreement(agreementId, organizationId, actorId);
+  const [billed] = await db
+    .select({ invoiceId: feeAgreements.invoiceId, details: feeAgreements.details })
+    .from(feeAgreements)
+    .where(eq(feeAgreements.id, agreementId))
+    .limit(1);
+
+  if (await feeAgreementPaymentSatisfied(organizationId, billed ?? agreement)) {
     await advanceLeadToCaseOpening(
       agreement.leadId,
       organizationId,
@@ -4461,7 +4554,19 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
     // Auto-advance the lead to case_opening only when the payment gate is also
     // satisfied; otherwise it stays in the consultation stage until staff mark
     // the payment received.
-    if (feeAgreementPaymentSatisfied(agreement.details)) {
+    await billSignedFeeAgreement(agreement.id, agreement.organizationId, null);
+    const [billedByWebhook] = await db
+      .select({ invoiceId: feeAgreements.invoiceId, details: feeAgreements.details })
+      .from(feeAgreements)
+      .where(eq(feeAgreements.id, agreement.id))
+      .limit(1);
+
+    if (
+      await feeAgreementPaymentSatisfied(
+        agreement.organizationId,
+        billedByWebhook ?? agreement,
+      )
+    ) {
       await advanceLeadToCaseOpening(
         agreement.leadId,
         agreement.organizationId,
@@ -4587,7 +4692,7 @@ const openCase = async (
         "Fee agreement must be signed before opening a case",
       );
     }
-    if (!feeAgreementPaymentSatisfied(fa.details)) {
+    if (!(await feeAgreementPaymentSatisfied(organizationId, fa))) {
       throw new ConflictError("Payment must be received before opening a case");
     }
   }

@@ -29,6 +29,7 @@ import { invoiceFollowups } from "../../src/db/schema/invoice-followups";
 import { invoiceNumberSequences } from "../../src/db/schema/invoice-number-sequences";
 import { invoicePayments } from "../../src/db/schema/invoice-payments";
 import { invoiceLineItems, invoices } from "../../src/db/schema/invoices";
+import { leads } from "../../src/db/schema/leads";
 import { practiceAreaCaseTypes } from "../../src/db/schema/practice-area-case-types";
 import { practiceAreaSubcategories } from "../../src/db/schema/practice-area-subcategories";
 import { practiceAreas } from "../../src/db/schema/practice-areas";
@@ -50,6 +51,7 @@ import { firmToday } from "../../src/modules/finance/status";
 import * as paymentsService from "../../src/modules/finance/payments.service";
 import * as deliveriesService from "../../src/modules/finance/deliveries.service";
 import { invoiceDeliveries } from "../../src/db/schema/invoice-deliveries";
+import * as feeAgreementBilling from "../../src/modules/finance/fee-agreement-billing.service";
 import * as reportsService from "../../src/modules/finance/reports.service";
 import * as timeBilling from "../../src/modules/finance/time-billing.service";
 import { deriveStoredStatus } from "../../src/modules/finance/totals";
@@ -68,6 +70,7 @@ const daysFromNow = (n: number) =>
 const main = async () => {
   const orgId = `fin-check-${randomUUID()}`;
   const userId = `user-${randomUUID()}`;
+  let leadId = "";
   let staffAId = "";
   let staffBId = "";
   let clientId = "";
@@ -154,6 +157,23 @@ const main = async () => {
     })
     .returning();
   clientId = client!.id;
+
+  // Intake-stage party. Consultation fees and fee agreements are billed to a
+  // lead, because no client row exists until openCase — which is itself gated
+  // on the fee agreement being paid.
+  const [lead] = await systemDb
+    .insert(leads)
+    .values({
+      organizationId: orgId,
+      firstName: "Priya",
+      lastName: "Raman",
+      email: `priya-${randomUUID().slice(0, 8)}@example.test`,
+      phone: "+15550111",
+      source: "direct",
+      practiceAreaId,
+    })
+    .returning();
+  leadId = lead!.id;
 
   const [kase] = await systemDb
     .insert(cases)
@@ -1599,6 +1619,239 @@ const main = async () => {
         null,
       );
 
+      // ── Billing a lead ────────────────────────────────────────────────────
+      section("billing a lead");
+
+      const leadInvoice = await invoicesService.create(orgId, staffBId, FULL, {
+        leadId,
+        practiceAreaId,
+        issueDate: daysFromNow(0),
+        dueDate: daysFromNow(14),
+        status: "draft",
+        lineItems: [
+          { description: "Consultation", quantity: 1, rate: 250, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      checkEqual("an invoice can bill a lead", leadInvoice.party.type, "lead");
+      checkEqual(
+        "named from the lead record",
+        leadInvoice.party.name,
+        "Priya Raman",
+      );
+      checkEqual(
+        "and reports no client",
+        leadInvoice.client,
+        null,
+      );
+
+      // An inner join on clients would silently drop this row rather than
+      // erroring — the failure this change could most easily have shipped with.
+      const withLeadRows = await invoicesService.list(orgId, FULL, {
+        status: "all",
+        includeDrafts: true,
+      });
+      check(
+        "a lead-billed invoice appears in the list",
+        withLeadRows.data.some((r) => r.id === leadInvoice.id),
+      );
+      check(
+        "and is findable by the lead's name",
+        (
+          await invoicesService.list(orgId, FULL, {
+            status: "all",
+            includeDrafts: true,
+            search: "Raman",
+          })
+        ).data.some((r) => r.id === leadInvoice.id),
+      );
+
+      // The check constraint is the only place "exactly one party" can be
+      // guaranteed, so it is worth proving it actually fires.
+      let bothPartiesRejected = false;
+      try {
+        await systemDb
+          .update(invoices)
+          .set({ clientId })
+          .where(eq(invoices.id, leadInvoice.id));
+      } catch {
+        bothPartiesRejected = true;
+      }
+      check("an invoice cannot bill both parties", bothPartiesRejected);
+
+      let noPartyRejected = false;
+      try {
+        await systemDb
+          .update(invoices)
+          .set({ leadId: null })
+          .where(eq(invoices.id, leadInvoice.id));
+      } catch {
+        noPartyRejected = true;
+      }
+      check("nor neither", noPartyRejected);
+
+      // What openCase does on conversion.
+      await systemDb
+        .update(invoices)
+        .set({ clientId, leadId: null })
+        .where(eq(invoices.id, leadInvoice.id));
+      const repointed = await invoicesService.getById(orgId, leadInvoice.id, FULL);
+      checkEqual("repointing moves it to the client", repointed.party.type, "client");
+      checkEqual("with the client's name", repointed.party.name, "Amara Chen");
+
+      // ── Fee agreement billing ─────────────────────────────────────────────
+      section("fee agreement billing");
+
+      // Government fees are the client's money on its way to an agency, so they
+      // belong in trust. Everything else is the firm's income.
+      const feeLines = feeAgreementBilling.linesFromDocument([
+        { description: "Legal services", amount: 2000, kind: "fee" },
+        { description: "USCIS filing fee", amount: 675, kind: "government" },
+        { description: "Courier", amount: 40, kind: "cost" },
+        // Deferred: the firm is advancing it, so nobody owes it today.
+        { description: "Expert report — advanced by firm", amount: 500, kind: "cost", deferred: true },
+        // Pure contingency: no amount at all.
+        { description: "Contingency — 33%", amount: null, kind: "fee", deferred: true },
+      ]);
+      checkEqual("only billable lines are invoiced", feeLines.length, 3);
+      checkEqual(
+        "government fees go to trust",
+        feeLines.find((l) => l.description.includes("USCIS"))?.account,
+        "trust_iolta",
+      );
+      checkEqual(
+        "attorney fees go to operating",
+        feeLines.find((l) => l.description === "Legal services")?.account,
+        "operating",
+      );
+      checkEqual(
+        "other costs go to operating",
+        feeLines.find((l) => l.description === "Courier")?.account,
+        "operating",
+      );
+
+      // The wizard lets an attorney promise 3 x 333.33 against a 1000 total.
+      // The plan's shape is honoured; the amounts are recomputed so they sum.
+      const planRows = feeAgreementBilling.scheduleFromPlan(
+        1000,
+        "installments",
+        null,
+        { numberOfPayments: 3, firstPaymentDate: "2026-09-01" },
+        "2026-08-15",
+      );
+      checkEqual("an instalment plan becomes a schedule", planRows?.length, 3);
+      checkEqual(
+        "whose amounts sum to the total exactly",
+        toMoney((planRows ?? []).reduce((s, r) => s + r.amount, 0)),
+        1000,
+      );
+
+      const twoRows = feeAgreementBilling.scheduleFromPlan(
+        1500,
+        "two_payments",
+        { firstAmount: 500, secondDueDate: "2026-10-01" },
+        null,
+        "2026-08-15",
+      );
+      checkEqual("two payments become two instalments", twoRows?.length, 2);
+      checkEqual(
+        "the first falls on the signing date",
+        twoRows?.[0]?.dueDate,
+        "2026-08-15",
+      );
+      checkEqual(
+        "and the second carries the remainder",
+        twoRows?.[1]?.amount,
+        1000,
+      );
+      checkEqual(
+        "pay in full needs no schedule",
+        feeAgreementBilling.scheduleFromPlan(1000, "pay_in_full", null, null, "2026-08-15"),
+        null,
+      );
+
+      // ── The case-opening gate ─────────────────────────────────────────────
+      section("case-opening gate");
+
+      checkEqual(
+        "no invoice means nothing to satisfy",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, null),
+        true,
+      );
+
+      const gateInvoice = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(-10),
+        dueDate: daysFromNow(60),
+        status: "draft",
+        lineItems: [
+          { description: "Retainer", quantity: 1, rate: 4000, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await invoicesService.update(
+        orgId,
+        gateInvoice.id,
+        {
+          instalments: [
+            { dueDate: daysFromNow(-5), amount: 1000 },
+            { dueDate: daysFromNow(25), amount: 1000 },
+            { dueDate: daysFromNow(55), amount: 1000 },
+            { dueDate: daysFromNow(60), amount: 1000 },
+          ],
+        },
+        staffBId,
+        FULL,
+      );
+      // A draft has not been sent, so the client has not been asked.
+      checkEqual(
+        "a draft invoice does not block the case",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, gateInvoice.id),
+        true,
+      );
+
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, gateInvoice.id));
+      checkEqual(
+        "an unpaid deposit does block it",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, gateInvoice.id),
+        false,
+      );
+
+      await paymentsService.recordPayment(orgId, gateInvoice.id, staffBId, FULL, {
+        amount: 1000,
+        paymentDate: daysFromNow(-4),
+        method: "bank_transfer",
+      });
+      // The whole point of allowing a plan: the deposit opens the case, the
+      // remaining three payments are not yet due.
+      checkEqual(
+        "a paid deposit opens it with nothing overdue",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, gateInvoice.id),
+        true,
+      );
+
+      await instalmentsService.setSchedule(
+        orgId,
+        gateInvoice.id,
+        [
+          { dueDate: daysFromNow(-5), amount: 1000 },
+          { dueDate: daysFromNow(-2), amount: 1000 },
+          { dueDate: daysFromNow(55), amount: 1000 },
+          { dueDate: daysFromNow(60), amount: 1000 },
+        ],
+        staffBId,
+        FULL,
+      );
+      checkEqual(
+        "a missed instalment blocks it again",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, gateInvoice.id),
+        false,
+      );
+
       // ── Activity trail ────────────────────────────────────────────────────
       section("activity trail");
 
@@ -1647,6 +1900,8 @@ const main = async () => {
     // After cases: cases.assigned_team_id references team.
     await systemDb.delete(team).where(eq(team.organizationId, orgId));
     await systemDb.delete(clients).where(eq(clients.organizationId, orgId));
+    // After invoices: invoices.lead_id references leads with no cascade.
+    await systemDb.delete(leads).where(eq(leads.organizationId, orgId));
     await systemDb.delete(staff).where(eq(staff.organizationId, orgId));
     await systemDb
       .delete(practiceAreaCaseTypes)
