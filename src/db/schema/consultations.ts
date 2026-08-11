@@ -108,9 +108,21 @@ export const consultations = pgTable("consultations", {
   // External calendar event id from the Google Meet integration.
   meetExternalId: text("meet_external_id"),
   status: consultationStatusEnum("status").notNull().default("scheduled"),
-  // Fee gate (config-only this phase; payment link is a dummy).
+  /**
+   * Legacy fee columns. The INVOICE is authoritative once `invoiceId` is set —
+   * `feeStatus` then means whatever the ledger says, not an enum somebody
+   * flipped. These stay populated for consultations that predate invoicing,
+   * which is why reads coalesce rather than switch.
+   */
   feeAmount: numeric("fee_amount", { precision: 10, scale: 2 }),
   feeStatus: consultationFeeStatusEnum("fee_status").notNull().default("none"),
+  /**
+   * The invoice raised for this fee. Deliberately not a foreign key with a
+   * cascade: voiding or removing an invoice must never take the consultation
+   * with it, and the leads module already keeps `clientId`/`convertedCaseId` as
+   * unlinked ids for the same reason.
+   */
+  invoiceId: uuid("invoice_id"),
   // Token-gated lead-facing booking link (mirrors questionnaire sends).
   bookingTokenHash: text("booking_token_hash"),
   bookingExpiresAt: timestamp("booking_expires_at"),

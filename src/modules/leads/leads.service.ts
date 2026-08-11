@@ -30,6 +30,10 @@ import { clientContacts } from "../../db/schema/client-contacts";
 import { clients } from "../../db/schema/clients";
 import { conflictChecks } from "../../db/schema/conflict-checks";
 import { invoices } from "../../db/schema/invoices";
+import {
+  consultationFee,
+  raiseConsultationInvoice,
+} from "../finance/consultation-billing.service";
 import { consultationLocations } from "../../db/schema/consultation-locations";
 import { consultationSettings } from "../../db/schema/consultation-settings";
 import {
@@ -2426,6 +2430,14 @@ const initiateConsultation = async (
 
   let feeStatus: "none" | "unpaid" = "none";
   let feeAmount: string | null = null;
+  // Kept so the invoice line can name the surcharge rather than presenting a
+  // multiplied figure with no explanation.
+  let baseFee: number | null = null;
+  const emergencyMultiplier =
+    startNow && data.isEmergency && data.emergencyMultiplier != null
+      ? data.emergencyMultiplier
+      : null;
+
   if (settings?.chargesFee) {
     const defaultAmount =
       settings.defaultAmount != null ? Number(settings.defaultAmount) : null;
@@ -2436,8 +2448,17 @@ const initiateConsultation = async (
         ? (data.feeAmount ?? defaultAmount)
         : defaultAmount;
     if (resolved != null) {
+      // The multiplier is now APPLIED, not merely recorded. The column comment
+      // has always said "the multiplied amount is persisted in feeAmount" and
+      // the code never did it, so an emergency surcharge only ever took effect
+      // if the caller happened to pre-multiply the amount it sent.
+      baseFee = resolved;
+      const charged =
+        emergencyMultiplier != null
+          ? Math.round(resolved * emergencyMultiplier * 100) / 100
+          : resolved;
       feeStatus = "unpaid";
-      feeAmount = String(resolved);
+      feeAmount = String(charged);
     }
   }
 
@@ -2524,6 +2545,36 @@ const initiateConsultation = async (
           staffId: member.id,
           roleSnapshot: member.role ?? null,
         })),
+      );
+    }
+  }
+
+  // A chargeable consultation gets a real invoice, against the LEAD — there is
+  // no client at this stage of the pipeline and there may never be one.
+  //
+  // Failure is swallowed on purpose: the consultation is booked, the lead has
+  // been told, and losing that over a billing record would be the wrong trade.
+  // The fee columns above still hold the amount, so nothing is lost — it just
+  // is not on the ledger, which is the state every consultation was in before
+  // this existed.
+  if (feeAmount != null && feeStatus === "unpaid") {
+    try {
+      await raiseConsultationInvoice(organizationId, scheduledById ?? null, {
+        consultationId: consultation!.id,
+        leadId,
+        amount: Number(feeAmount),
+        baseAmount: baseFee,
+        emergencyMultiplier,
+        mode: data.mode,
+        scheduledAt,
+        // pay_now holds the consultation until the fee is settled, so it is
+        // due the moment it is raised.
+        dueImmediately: data.paymentTiming === "pay_now" || !startNow,
+      });
+    } catch (err) {
+      console.error(
+        `[leads] could not raise consultation invoice for ${consultation!.id}:`,
+        err,
       );
     }
   }
@@ -2764,7 +2815,12 @@ const getConsultation = async (leadId: string, organizationId: string) => {
       .orderBy(desc(consultations.createdAt))
   ).filter((c) => c.id !== consultation.id);
 
-  return { ...consultation, participants, consultationHistory };
+  // The invoice is authoritative once one exists: "paid" then means a payment
+  // is on the ledger, not that somebody flipped an enum. `feeStatus` and
+  // `feeAmount` are still returned unchanged for callers that predate this.
+  const fee = await consultationFee(organizationId, consultation);
+
+  return { ...consultation, fee, participants, consultationHistory };
 };
 
 const updateConsultation = async (
@@ -3122,11 +3178,9 @@ const getConsultationBooking = async (token: string) => {
     requiresPayment,
     isUrgent: consultation.isUrgent,
     status: consultation.status,
-    fee: {
-      status: consultation.feeStatus,
-      amount:
-        consultation.feeAmount != null ? Number(consultation.feeAmount) : null,
-    },
+    // From the invoice when there is one, so the lead is quoted the amount the
+    // firm is actually owed rather than a column that may predate it.
+    fee: await consultationFee(consultation.organizationId, consultation),
     scheduledAt: consultation.scheduledAt,
     bookingStatus: consultation.bookingStatus,
     slots,
@@ -3147,6 +3201,27 @@ const getLeadTimezone = async (
   return lead?.timezone ?? getFirmTimezone(organizationId);
 };
 
+/**
+ * The lead-facing "pay" action on the booking page.
+ *
+ * **This does not take money and must not write to the ledger.** There is no
+ * payment provider wired anywhere in this repo; the button has always been a
+ * dummy that flips flags. What changed is that consultation fees are now real
+ * invoices, so pretending here would put payments in `invoice_payments` that
+ * never happened — turning a UI that overstates itself into accounts that do.
+ *
+ * So the split is deliberate:
+ *
+ *   - `consultations.feeStatus` is flipped, because it gates the consultation
+ *     LIFECYCLE — whether the call starts, whether a slot can be picked. That
+ *     is a product decision already made and this keeps the demo flow working.
+ *   - The invoice is left alone. It stays outstanding and keeps appearing in
+ *     receivables, which is the truth: nobody has paid. Staff record the real
+ *     payment through the finance module when it arrives.
+ *
+ * Phase 3 replaces this with a provider, at which point the webhook records the
+ * payment and the two stop disagreeing.
+ */
 const payConsultationFee = async (token: string) => {
   const consultation = await getConsultationByBookingToken(token);
   if (consultation.feeStatus !== "unpaid")
@@ -3177,6 +3252,10 @@ const payConsultationFee = async (token: string) => {
         consultationId: consultation.id,
         amount: Number(consultation.feeAmount),
         instant: true,
+        // No provider is wired, so no money actually moved and the invoice is
+        // deliberately untouched. Recorded so the trail does not read as a
+        // settled payment.
+        demo: true,
       },
     });
 
