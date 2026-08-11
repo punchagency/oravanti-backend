@@ -67,6 +67,43 @@ export class ClientsRouter {
       this.ctrl.uploadClientAvatar,
     );
 
+    // Converted clients (must be before /:id routes)
+    this.router.get("/converted", this.ctrl.listConvertedClients);
+    this.router.get(
+      "/converted/:clientId",
+      validateRequest({ params: this.validation.params("clientId") }),
+      this.ctrl.getConvertedClientDetail,
+    );
+
+    // Portal management
+    this.router.post(
+      "/:clientId/invite",
+      validateRequest({ params: this.validation.params("clientId") }),
+      this.ctrl.sendPortalInvitation,
+    );
+    this.router.post(
+      "/:clientId/reset-password",
+      validateRequest({ params: this.validation.params("clientId") }),
+      this.ctrl.resetClientPassword,
+    );
+    this.router.get(
+      "/:clientId/sessions",
+      validateRequest({ params: this.validation.params("clientId") }),
+      this.ctrl.getClientSessions,
+    );
+    this.router.delete(
+      "/:clientId/sessions/:token",
+      validateRequest({
+        params: this.validation.params("clientId").extend({ token: this.validation.nonEmptyString }),
+      }),
+      this.ctrl.revokeClientSession,
+    );
+    this.router.get(
+      "/:clientId/portal-status",
+      validateRequest({ params: this.validation.params("clientId") }),
+      this.ctrl.getPortalStatus,
+    );
+
     // Clients
     this.router.get("/", this.ctrl.getAllClients);
     this.router.get("/:id", validateRequest({ params: this.validation.idParams }), this.ctrl.getClientById);
