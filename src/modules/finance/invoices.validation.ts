@@ -83,7 +83,13 @@ const lineItemSchema = z.object({
 
 export const createInvoiceBodySchema = z
   .object({
-    clientId: z.string().uuid(),
+    /**
+     * Exactly one of `clientId` / `leadId`, matched by the check constraint on
+     * the table. A lead is billed during intake — consultation fees and fee
+     * agreements are charged before a client record exists at all.
+     */
+    clientId: z.string().uuid().optional(),
+    leadId: z.string().uuid().optional(),
     caseId: z.string().uuid().optional(),
     practiceAreaId: z.string().uuid().optional(),
     attorneyId: z.string().uuid().optional(),
@@ -99,6 +105,10 @@ export const createInvoiceBodySchema = z
     timeEntryIds: z.array(z.string().uuid()).default([]),
     /** Optional payment schedule; the service checks it sums to the total. */
     instalments: instalmentsSchema.optional(),
+  })
+  .refine((v) => (v.clientId != null) !== (v.leadId != null), {
+    message: "An invoice bills either a client or a lead, not both and not neither",
+    path: ["clientId"],
   })
   .refine((v) => v.lineItems.length > 0 || v.timeEntryIds.length > 0, {
     message: "An invoice needs at least one line item or time entry",

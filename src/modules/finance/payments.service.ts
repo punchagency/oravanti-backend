@@ -2,6 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import { organization } from "../../db/schema/auth-schema";
 import { clients } from "../../db/schema/clients";
+import { leads } from "../../db/schema/leads";
 import { invoiceFollowups } from "../../db/schema/invoice-followups";
 import { invoicePayments } from "../../db/schema/invoice-payments";
 import { invoices, type PaymentMethod } from "../../db/schema/invoices";
@@ -15,6 +16,7 @@ import { agingOverDues } from "./dues";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
 import { money, num, proRateSplit, toMoney } from "./money";
+import { onClient, onLead, partyEmail, partyName, partyPhone } from "./party";
 import { dueBy, firmToday } from "./status";
 import { recalculateInvoiceTotals } from "./totals";
 import type { AccountAccess, FollowupChannelInput } from "./types";
@@ -214,13 +216,14 @@ export const sendFollowUp = async (
       // not late yet — or, once the last instalment passes, one that is far
       // later than any single missed payment.
       dueDate: dueBy,
-      clientEmail: clients.email,
-      clientPhone: clients.phone,
-      clientName: clients.displayName,
+      clientEmail: partyEmail,
+      clientPhone: partyPhone,
+      clientName: partyName,
       firmName: organization.name,
     })
     .from(invoices)
-    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
     .leftJoin(organization, eq(organization.id, invoices.organizationId))
     .where(
       and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),

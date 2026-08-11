@@ -10,6 +10,7 @@ import {
   type NewInvoiceLineItem,
 } from "../../db/schema/invoices";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
+import { leads } from "../../db/schema/leads";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
 import { team } from "../../db/schema/auth-schema";
@@ -36,6 +37,7 @@ import {
 import { sendScheduleUpdate } from "./deliveries.service";
 import { agingOverDues, scheduleSummaries } from "./dues";
 import { logFinanceEvent } from "./finance-events.service";
+import { onClient, onLead, partyEmail, partyName, toParty } from "./party";
 import { allocate, type ScheduleRow } from "./instalments";
 import {
   assertScheduleBalances,
@@ -154,11 +156,18 @@ export const getAging = async (
 
 // ── List ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Both sides of the billed party, or searching for a lead by name would return
+ * nothing while their invoice sits in the list.
+ */
 const searchPredicate = (search: string) =>
   or(
     ilike(invoices.invoiceNumber, `%${search}%`),
     ilike(clients.displayName, `%${search}%`),
     ilike(clients.email, `%${search}%`),
+    ilike(leads.firstName, `%${search}%`),
+    ilike(leads.lastName, `%${search}%`),
+    ilike(leads.email, `%${search}%`),
     ilike(cases.caseNumber, `%${search}%`),
   );
 
@@ -206,8 +215,9 @@ export const list = async (
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
       clientId: invoices.clientId,
-      clientName: clients.displayName,
-      clientEmail: clients.email,
+      leadId: invoices.leadId,
+      partyName,
+      partyEmail,
       caseId: invoices.caseId,
       caseNumber: cases.caseNumber,
       caseTypeLabel: practiceAreaCaseTypes.name,
@@ -219,7 +229,8 @@ export const list = async (
       status: effectiveStatusSql(today),
     })
     .from(invoices)
-    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
     .leftJoin(cases, eq(cases.id, invoices.caseId))
     .leftJoin(
       practiceAreaCaseTypes,
@@ -233,7 +244,8 @@ export const list = async (
   const [{ total }] = await db
     .select({ total: count() })
     .from(invoices)
-    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
     .leftJoin(cases, eq(cases.id, invoices.caseId))
     .where(where);
 
@@ -247,9 +259,7 @@ export const list = async (
     invoiceNumber: r.invoiceNumber,
     issueDate: r.issueDate,
     dueDate: r.dueDate,
-    clientId: r.clientId,
-    clientName: r.clientName,
-    clientEmail: r.clientEmail,
+    party: toParty(r),
     caseId: r.caseId,
     caseNumber: r.caseNumber,
     caseTypeLabel: r.caseTypeLabel,
@@ -291,7 +301,8 @@ const listTotals = async (
       draftCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'draft')::int`,
     })
     .from(invoices)
-    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
     .leftJoin(cases, eq(cases.id, invoices.caseId))
     .where(where);
 
@@ -302,7 +313,8 @@ const listTotals = async (
       total: sql<string>`coalesce(sum(${invoices.totalAmount}), 0)`,
     })
     .from(invoices)
-    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
     .leftJoin(cases, eq(cases.id, invoices.caseId))
     .where(and(where, countableInvoices()));
 
@@ -335,8 +347,9 @@ export const getById = async (
       notes: invoices.notes,
       filingType: invoices.filingType,
       clientId: invoices.clientId,
-      clientName: clients.displayName,
-      clientEmail: clients.email,
+      leadId: invoices.leadId,
+      partyName,
+      partyEmail,
       caseId: invoices.caseId,
       caseNumber: cases.caseNumber,
       caseTypeLabel: practiceAreaCaseTypes.name,
@@ -357,7 +370,8 @@ export const getById = async (
       createdAt: invoices.createdAt,
     })
     .from(invoices)
-    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
     .leftJoin(cases, eq(cases.id, invoices.caseId))
     .leftJoin(
       practiceAreaCaseTypes,
@@ -432,11 +446,15 @@ export const getById = async (
     // The design's "filing type" is the case-type label when there is a matter,
     // and the free-text column otherwise.
     filingType: row.caseTypeLabel ?? row.filingType,
-    client: {
-      id: row.clientId,
-      name: row.clientName,
-      email: row.clientEmail,
-    },
+    party: toParty(row),
+    /**
+     * Kept for callers that predate lead billing. Null on an invoice raised
+     * against a lead — reading it is how you find code that still assumes a
+     * client exists.
+     */
+    client: row.clientId
+      ? { id: row.clientId, name: row.partyName, email: row.partyEmail }
+      : null,
     matter: row.caseId
       ? { id: row.caseId, reference: row.caseNumber, type: row.caseTypeLabel }
       : null,
@@ -615,7 +633,9 @@ const buildLineValues = (
 };
 
 export type CreateInvoiceInput = {
-  clientId: string;
+  /** Exactly one of these. A lead is billed during intake, a client after. */
+  clientId?: string;
+  leadId?: string;
   caseId?: string;
   practiceAreaId?: string;
   attorneyId?: string;
@@ -654,7 +674,8 @@ export const create = async (
       .values({
         organizationId,
         invoiceNumber,
-        clientId: input.clientId,
+        clientId: input.clientId ?? null,
+        leadId: input.leadId ?? null,
         caseId: input.caseId ?? null,
         practiceAreaId: input.practiceAreaId ?? null,
         attorneyId: input.attorneyId ?? null,
@@ -711,7 +732,7 @@ export const create = async (
       amount: totals.totalAmount,
       invoiceId: invoice!.id,
       caseId: input.caseId ?? null,
-      clientId: input.clientId,
+      clientId: input.clientId ?? null,
       actorId: actorStaffId,
     });
 
@@ -1336,7 +1357,7 @@ export const exportInvoices = async (
   type Row = InvoiceListRow;
   const columns: ReportColumn<Row>[] = [
       { header: "Invoice #", value: (r) => r.invoiceNumber },
-      { header: "Client", value: (r) => r.clientName, weight: 1.6 },
+      { header: "Billed to", value: (r) => r.party.name, weight: 1.6 },
       { header: "Matter", value: (r) => r.caseNumber ?? "" },
       { header: "Operating", value: (r) => r.operatingAmount.toFixed(2) },
       // Dropped from the spec entirely — not emitted blank — when the caller

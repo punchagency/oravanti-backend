@@ -2,6 +2,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import { organization } from "../../db/schema/auth-schema";
 import { clients } from "../../db/schema/clients";
+import { leads } from "../../db/schema/leads";
 import { invoiceDeliveries } from "../../db/schema/invoice-deliveries";
 import { invoices } from "../../db/schema/invoices";
 import { staff } from "../../db/schema/staff";
@@ -11,6 +12,7 @@ import { storageService } from "../../utils/storage/storage.service";
 import { logCaseEvent } from "../cases/case-events.service";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
+import { onClient, onLead, partyEmail, partyName } from "./party";
 import { renderInvoicePdf, type InvoicePdfInput } from "./invoice-pdf";
 import type { AccountAccess } from "./types";
 
@@ -119,8 +121,8 @@ const loadForDelivery = async (organizationId: string, invoiceId: string) => {
       dueDate: invoices.dueDate,
       caseId: invoices.caseId,
       clientId: invoices.clientId,
-      clientName: clients.displayName,
-      clientEmail: clients.email,
+      clientName: partyName,
+      clientEmail: partyEmail,
       firmName: organization.name,
       firmEmail: organization.emailAddress,
       firmPhone: organization.phoneNumber,
@@ -130,7 +132,8 @@ const loadForDelivery = async (organizationId: string, invoiceId: string) => {
       firmZip: organization.zipCode,
     })
     .from(invoices)
-    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
     .leftJoin(organization, eq(organization.id, invoices.organizationId))
     .where(
       and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
@@ -169,7 +172,9 @@ export const buildInvoicePdf = async (
     dueDate: detail.dueDate,
     notes: detail.notes,
     filingType: detail.filingType,
-    client: { name: detail.client.name, email: detail.client.email },
+    // The party, not the client: an invoice raised during intake is billed to a
+    // lead, and the PDF still has to say who it is addressed to.
+    client: { name: detail.party.name, email: detail.party.email },
     matter: detail.matter ? { reference: detail.matter.reference } : null,
     attorney: detail.attorney,
     lineItems: detail.lineItems.map((l) => ({

@@ -4,12 +4,14 @@ import { cases } from "../../db/schema/cases";
 import { clients } from "../../db/schema/clients";
 import { invoicePayments } from "../../db/schema/invoice-payments";
 import { invoices } from "../../db/schema/invoices";
+import { leads } from "../../db/schema/leads";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import { renderReport, type ReportColumn } from "../../utils/report-export";
 import { dayjs } from "../../utils/date";
 import { canReadTrust, restrictionsFor } from "./account-access";
 import { agingOverDues } from "./dues";
 import { num, toMoney } from "./money";
+import { onClient, onLead, partyName } from "./party";
 import { countableInvoices, dueBy, firmToday } from "./status";
 import type { AccountAccess } from "./types";
 
@@ -343,12 +345,13 @@ const fetchTrustInvoices = async (
     .select({
       id: invoices.id,
       invoiceNumber: invoices.invoiceNumber,
-      clientName: clients.displayName,
+      clientName: partyName,
       trustAmount: invoices.subtotalTrust,
       status: invoices.status,
     })
     .from(invoices)
-    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
     .where(
       and(
         eq(invoices.organizationId, organizationId),

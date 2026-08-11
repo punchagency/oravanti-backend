@@ -16,6 +16,7 @@ import { organization } from "./auth-schema";
 import { cases } from "./cases";
 import { clients } from "./clients";
 import { accountTypeEnum } from "./financial-access-controls";
+import { leads } from "./leads";
 import { practiceAreas } from "./practice-areas";
 import { staff } from "./staff";
 import { timeEntries } from "./time-entries";
@@ -75,9 +76,31 @@ export const invoices = pgTable(
     /** `INV-2026-0042`. Unique per organization — see the index note below. */
     invoiceNumber: text("invoice_number").notNull(),
 
-    clientId: uuid("client_id")
-      .notNull()
-      .references(() => clients.id, { onDelete: "cascade" }),
+    /**
+     * Who the invoice bills. Exactly one of `clientId` / `leadId` is set — see
+     * the check constraint below.
+     *
+     * `restrict`, not `cascade`. Deleting a client used to delete their entire
+     * billing history along with them, which is not something a finance module
+     * should permit: an invoice is a record that the firm asked for money.
+     */
+    clientId: uuid("client_id").references(() => clients.id, {
+      onDelete: "restrict",
+    }),
+    /**
+     * The party before they became a client.
+     *
+     * Consultation fees and fee agreements are charged during intake, and a
+     * `clients` row is only created by `openCase` — which is itself gated on the
+     * fee agreement being paid. Billing a lead is what breaks that circle. A
+     * lead who never converts (`close_no_case`, `refer_elsewhere`) can still be
+     * invoiced for the consultation they had.
+     *
+     * `openCase` repoints these to the new client on conversion. No cascade
+     * deliberately: a lead carrying money cannot be deleted out from under its
+     * invoice.
+     */
+    leadId: uuid("lead_id").references(() => leads.id),
     /**
      * Nullable: an invoice need not hang off a matter (a standalone
      * consultation fee, say). `set null` rather than cascade — a financial
@@ -195,9 +218,19 @@ export const invoices = pgTable(
       table.issueDate,
     ),
     index("invoices_client_idx").on(table.clientId),
+    index("invoices_lead_idx").on(table.leadId),
     index("invoices_case_idx").on(table.caseId),
     check("invoices_amount_paid_nonneg", sql`${table.amountPaid} >= 0`),
     check("invoices_total_amount_nonneg", sql`${table.totalAmount} >= 0`),
+    /**
+     * Exactly one billed party, never both and never neither. `<>` on the two
+     * null-tests is the same shape `billing_rates` uses for its staff/role
+     * exclusivity — the DB is the only place this can actually be guaranteed.
+     */
+    check(
+      "invoices_one_billed_party",
+      sql`(${table.clientId} IS NOT NULL) <> (${table.leadId} IS NOT NULL)`,
+    ),
   ],
 );
 

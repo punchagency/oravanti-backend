@@ -29,6 +29,7 @@ import { cases } from "../../db/schema/cases";
 import { clientContacts } from "../../db/schema/client-contacts";
 import { clients } from "../../db/schema/clients";
 import { conflictChecks } from "../../db/schema/conflict-checks";
+import { invoices } from "../../db/schema/invoices";
 import { consultationLocations } from "../../db/schema/consultation-locations";
 import { consultationSettings } from "../../db/schema/consultation-settings";
 import {
@@ -4618,6 +4619,27 @@ const openCase = async (
         updatedAt: now,
       })
       .where(eq(leads.id, leadId));
+
+    // Money raised during intake was billed to the lead, because a client row
+    // did not exist yet — this is the moment one does. Repointing here, inside
+    // the same transaction that creates the client, is what keeps the invoice
+    // list showing one party per invoice rather than a lead who has since
+    // become a client. Same reasoning as the questionnaire and document
+    // relinking below.
+    //
+    // `client_id IS NULL` rather than a blanket update: an invoice already
+    // pointing at a client is not this lead's to move, and the check constraint
+    // requires exactly one of the two.
+    await db
+      .update(invoices)
+      .set({ clientId: client.id, leadId: null, updatedAt: now })
+      .where(
+        and(
+          eq(invoices.organizationId, organizationId),
+          eq(invoices.leadId, leadId),
+          isNull(invoices.clientId),
+        ),
+      );
 
     await logStageChange({
       organizationId,
