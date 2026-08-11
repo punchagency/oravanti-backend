@@ -4,6 +4,10 @@ import { FinanceReportsController } from "./reports.controller";
 import { FinanceReportsRouter } from "./reports.routes";
 import { TimeBillingController } from "./time-billing.controller";
 import { TimeBillingRouter } from "./time-billing.routes";
+import {
+  PaymentPublicRouter,
+  PaymentWebhookRouter,
+} from "./payments-public.routes";
 
 /**
  * Three modules from one directory, following the leads module's precedent.
@@ -46,6 +50,36 @@ export class FinanceReportsModule {
   constructor() {
     const controller = new FinanceReportsController();
     const router = new FinanceReportsRouter(controller);
+    this.router = router.router;
+    this.path = router.path;
+  }
+}
+
+/**
+ * Public, token-gated client payment page. No auth — the token is the
+ * credential, following the consultation-booking and document-request routers.
+ */
+export class PaymentPublicModule {
+  public router: import("express").Router;
+  public path: string;
+
+  constructor() {
+    const router = new PaymentPublicRouter();
+    this.router = router.router;
+    this.path = router.path;
+  }
+}
+
+/**
+ * Provider webhooks. Mounted at a path app.ts gives `express.raw`, because the
+ * signature covers the exact bytes and a parsed body cannot reproduce them.
+ */
+export class PaymentWebhookModule {
+  public router: import("express").Router;
+  public path: string;
+
+  constructor() {
+    const router = new PaymentWebhookRouter();
     this.router = router.router;
     this.path = router.path;
   }

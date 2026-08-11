@@ -5,6 +5,7 @@ import {
   index,
   numeric,
   pgTable,
+  uniqueIndex,
   text,
   timestamp,
   uuid,
@@ -51,11 +52,33 @@ export const invoicePayments = pgTable(
     reference: text("reference"),
     notes: text("notes"),
 
+    /**
+     * Which payment provider reported this, and its id for the payment.
+     *
+     * Null on a payment a member of staff entered by hand, which is every row
+     * today. Set by a provider webhook.
+     *
+     * The unique index below is the point of both columns: a webhook that is
+     * replayed — and providers do replay, that is what "at least once delivery"
+     * means — hits a constraint violation instead of recording the same money
+     * twice. Retrofitting that onto a ledger already full of live payments is
+     * the kind of migration nobody wants to write, which is why it lands before
+     * anything writes to it.
+     */
+    provider: text("provider"),
+    providerReference: text("provider_reference"),
+
     recordedById: uuid("recorded_by_id").references(() => staff.id),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [
     index("invoice_payments_invoice_idx").on(table.invoiceId),
+    // Partial: hand-entered rows leave both columns null, and Postgres treats
+    // NULLs as distinct, but stating the predicate makes the intent explicit
+    // and keeps the index to the rows it is actually for.
+    uniqueIndex("invoice_payments_provider_ref_uidx")
+      .on(table.provider, table.providerReference)
+      .where(sql`provider IS NOT NULL AND provider_reference IS NOT NULL`),
     index("invoice_payments_org_date_idx").on(
       table.organizationId,
       table.paymentDate,

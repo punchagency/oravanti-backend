@@ -1,11 +1,13 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../../db/client";
+import { invoiceInstalments } from "../../db/schema/invoice-instalments";
 import { invoicePayments } from "../../db/schema/invoice-payments";
 import {
   invoiceLineItems,
   invoices,
   type InvoiceStatus,
 } from "../../db/schema/invoices";
+import { nextDueDateFrom } from "./instalments";
 import { money, num } from "./money";
 
 /**
@@ -47,6 +49,8 @@ export type InvoiceTotals = {
   amountPaid: number;
   balanceDue: number;
   status: InvoiceStatus;
+  /** Null when the invoice has no schedule, or every instalment is covered. */
+  nextDueDate: string | null;
 };
 
 export const recalculateInvoiceTotals = async (
@@ -100,6 +104,35 @@ export const recalculateInvoiceTotals = async (
     amountPaid,
   );
 
+  // The earliest instalment the payments have not reached. Recomputed here
+  // rather than anywhere else because it is a fold over (schedule, amountPaid),
+  // and this function is the single writer of the folds — a second writer is
+  // how a cached date starts pointing at a day nobody can see.
+  const schedule = await db
+    .select({
+      sequence: invoiceInstalments.sequence,
+      dueDate: invoiceInstalments.dueDate,
+      amount: invoiceInstalments.amount,
+    })
+    .from(invoiceInstalments)
+    .where(
+      and(
+        eq(invoiceInstalments.organizationId, organizationId),
+        eq(invoiceInstalments.invoiceId, invoiceId),
+      ),
+    );
+
+  const nextDueDate = schedule.length
+    ? nextDueDateFrom(
+        schedule.map((s) => ({
+          sequence: s.sequence,
+          dueDate: s.dueDate,
+          amount: num(s.amount),
+        })),
+        amountPaid,
+      )
+    : null;
+
   // The most recent payment's method, for the detail view's single
   // "payment method" field. Partial payments can arrive by different methods;
   // the full ledger lives in invoice_payments.
@@ -126,6 +159,7 @@ export const recalculateInvoiceTotals = async (
       totalAmount: money(totalAmount),
       amountPaid: money(amountPaid),
       status,
+      nextDueDate,
       lastPaymentMethod: latest?.method ?? null,
       lastPaymentDate: latest?.paymentDate ?? null,
       paidAt: status === "paid" ? new Date() : null,
@@ -142,5 +176,6 @@ export const recalculateInvoiceTotals = async (
     amountPaid,
     balanceDue: totalAmount - amountPaid,
     status,
+    nextDueDate,
   };
 };

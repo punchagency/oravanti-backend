@@ -10,6 +10,7 @@ import {
   type NewInvoiceLineItem,
 } from "../../db/schema/invoices";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
+import { leads } from "../../db/schema/leads";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
 import { team } from "../../db/schema/auth-schema";
@@ -33,7 +34,17 @@ import {
   requireTrustWrite,
   restrictionsFor,
 } from "./account-access";
+import { sendScheduleUpdate } from "./deliveries.service";
+import { agingOverDues, scheduleSummaries } from "./dues";
 import { logFinanceEvent } from "./finance-events.service";
+import { onClient, onLead, partyEmail, partyName, toParty } from "./party";
+import { allocate, type ScheduleRow } from "./instalments";
+import {
+  assertScheduleBalances,
+  clearSchedules,
+  listInstalments,
+  writeSchedule,
+} from "./instalments.service";
 import { allocateInvoiceNumber, currentInvoiceYear } from "./invoice-number";
 import { money, num } from "./money";
 import {
@@ -72,6 +83,12 @@ export const EXPORT_MAX = 5000;
  * One query, one table, no joins — the payoff for denormalizing the folds onto
  * the invoice header. Drafts and voided invoices are excluded from every
  * figure; a draft is not invoiced revenue and a void is not revenue at all.
+ *
+ * The overdue pair comes from a SECOND query rather than joining the schedule
+ * in. On a scheduled invoice the amount past due is the sum of its overdue
+ * slices, not its whole balance — but joining `invoice_instalments` here would
+ * multiply every one of the ten figures above it by the number of instalments.
+ * Two queries, the same reason `fetchTrustReconciliation` uses two subqueries.
  */
 export const getStats = async (
   organizationId: string,
@@ -87,13 +104,13 @@ export const getStats = async (
       collectedCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'paid')::int`,
       outstanding: sql<string>`coalesce(sum(${invoices.balanceDue}), 0)`,
       outstandingCount: sql<number>`count(*) FILTER (WHERE ${invoices.balanceDue} > 0)::int`,
-      overdueCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${invoices.dueDate} < ${today})::int`,
-      pastDueAmount: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${invoices.status} IN ('sent','partial') AND ${invoices.dueDate} < ${today}), 0)`,
       operatingTotal: sql<string>`coalesce(sum(${invoices.subtotalOperating}), 0)`,
       trustTotal: sql<string>`coalesce(sum(${invoices.subtotalTrust}), 0)`,
     })
     .from(invoices)
     .where(and(eq(invoices.organizationId, organizationId), countableInvoices()));
+
+  const overdue = await agingOverDues(organizationId, today);
 
   return {
     invoiceCount: row?.invoiceCount ?? 0,
@@ -102,8 +119,8 @@ export const getStats = async (
     collectedCount: row?.collectedCount ?? 0,
     outstanding: num(row?.outstanding),
     outstandingCount: row?.outstandingCount ?? 0,
-    overdueCount: row?.overdueCount ?? 0,
-    pastDueAmount: num(row?.pastDueAmount),
+    overdueCount: overdue.overdueInvoices,
+    pastDueAmount: num(overdue.pastDue),
     operatingTotal: num(row?.operatingTotal),
     // Omitted, not zeroed, when the caller cannot see trust money. The
     // `totalInvoiced` above still includes it, so the visible rows and the
@@ -115,6 +132,11 @@ export const getStats = async (
 /**
  * Aging buckets over outstanding balance.
  *
+ * Bucketed per SLICE, not per invoice: an invoice can have $500 forty days late
+ * and $500 not due for two months, and those belong in different buckets.
+ * `duesFrom` yields one row per unpaid instalment, or a single synthetic row
+ * for an invoice with no schedule, so both shapes bucket identically.
+ *
  * The design labels these "1-15 / 16-30 / 30+", which puts day 30 in two
  * buckets. Implemented as `> 30` and surfaced to the UI as "31+ days".
  */
@@ -122,38 +144,30 @@ export const getAging = async (
   organizationId: string,
 ): Promise<AgingBucket[]> => {
   const today = await firmToday(organizationId);
-  const age = sql`(${today}::date - ${invoices.dueDate})`;
-
-  const [row] = await db
-    .select({
-      current: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} <= 0), 0)`,
-      d1_15: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} BETWEEN 1 AND 15), 0)`,
-      d16_30: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} BETWEEN 16 AND 30), 0)`,
-      d31_plus: sql<string>`coalesce(sum(${invoices.balanceDue}) FILTER (WHERE ${age} > 30), 0)`,
-    })
-    .from(invoices)
-    .where(
-      and(
-        eq(invoices.organizationId, organizationId),
-        inArray(invoices.status, ["sent", "partial"]),
-      ),
-    );
+  const row = await agingOverDues(organizationId, today);
 
   return [
-    { key: "current", label: "Current", amount: num(row?.current) },
-    { key: "1_15", label: "1–15 days", amount: num(row?.d1_15) },
-    { key: "16_30", label: "16–30 days", amount: num(row?.d16_30) },
-    { key: "31_plus", label: "31+ days", amount: num(row?.d31_plus) },
+    { key: "current", label: "Current", amount: num(row.current) },
+    { key: "1_15", label: "1–15 days", amount: num(row.d1_15) },
+    { key: "16_30", label: "16–30 days", amount: num(row.d16_30) },
+    { key: "31_plus", label: "31+ days", amount: num(row.d31_plus) },
   ];
 };
 
 // ── List ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Both sides of the billed party, or searching for a lead by name would return
+ * nothing while their invoice sits in the list.
+ */
 const searchPredicate = (search: string) =>
   or(
     ilike(invoices.invoiceNumber, `%${search}%`),
     ilike(clients.displayName, `%${search}%`),
     ilike(clients.email, `%${search}%`),
+    ilike(leads.firstName, `%${search}%`),
+    ilike(leads.lastName, `%${search}%`),
+    ilike(leads.email, `%${search}%`),
     ilike(cases.caseNumber, `%${search}%`),
   );
 
@@ -201,8 +215,9 @@ export const list = async (
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
       clientId: invoices.clientId,
-      clientName: clients.displayName,
-      clientEmail: clients.email,
+      leadId: invoices.leadId,
+      partyName,
+      partyEmail,
       caseId: invoices.caseId,
       caseNumber: cases.caseNumber,
       caseTypeLabel: practiceAreaCaseTypes.name,
@@ -214,7 +229,8 @@ export const list = async (
       status: effectiveStatusSql(today),
     })
     .from(invoices)
-    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
     .leftJoin(cases, eq(cases.id, invoices.caseId))
     .leftJoin(
       practiceAreaCaseTypes,
@@ -228,18 +244,22 @@ export const list = async (
   const [{ total }] = await db
     .select({ total: count() })
     .from(invoices)
-    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
     .leftJoin(cases, eq(cases.id, invoices.caseId))
     .where(where);
+
+  const schedules = await scheduleSummaries(
+    organizationId,
+    rows.map((r) => r.id),
+  );
 
   const data: InvoiceListRow[] = rows.map((r) => ({
     id: r.id,
     invoiceNumber: r.invoiceNumber,
     issueDate: r.issueDate,
     dueDate: r.dueDate,
-    clientId: r.clientId,
-    clientName: r.clientName,
-    clientEmail: r.clientEmail,
+    party: toParty(r),
     caseId: r.caseId,
     caseNumber: r.caseNumber,
     caseTypeLabel: r.caseTypeLabel,
@@ -249,6 +269,7 @@ export const list = async (
     amountPaid: num(r.amountPaid),
     balanceDue: num(r.balanceDue),
     status: r.status as EffectiveInvoiceStatus,
+    schedule: schedules.get(r.id) ?? null,
   }));
 
   return {
@@ -280,7 +301,8 @@ const listTotals = async (
       draftCount: sql<number>`count(*) FILTER (WHERE ${invoices.status} = 'draft')::int`,
     })
     .from(invoices)
-    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
     .leftJoin(cases, eq(cases.id, invoices.caseId))
     .where(where);
 
@@ -291,7 +313,8 @@ const listTotals = async (
       total: sql<string>`coalesce(sum(${invoices.totalAmount}), 0)`,
     })
     .from(invoices)
-    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
     .leftJoin(cases, eq(cases.id, invoices.caseId))
     .where(and(where, countableInvoices()));
 
@@ -324,8 +347,9 @@ export const getById = async (
       notes: invoices.notes,
       filingType: invoices.filingType,
       clientId: invoices.clientId,
-      clientName: clients.displayName,
-      clientEmail: clients.email,
+      leadId: invoices.leadId,
+      partyName,
+      partyEmail,
       caseId: invoices.caseId,
       caseNumber: cases.caseNumber,
       caseTypeLabel: practiceAreaCaseTypes.name,
@@ -346,7 +370,8 @@ export const getById = async (
       createdAt: invoices.createdAt,
     })
     .from(invoices)
-    .innerJoin(clients, eq(clients.id, invoices.clientId))
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
     .leftJoin(cases, eq(cases.id, invoices.caseId))
     .leftJoin(
       practiceAreaCaseTypes,
@@ -387,6 +412,29 @@ export const getById = async (
     ? `${row.attorneyFirstName} ${row.attorneyLastName ?? ""}`.trim()
     : null;
 
+  // Per-instalment state is derived here rather than in the browser, for the
+  // same reason `effectiveStatus` is: the firm's timezone decides what is
+  // overdue, and a client-side recomputation would disagree either side of
+  // midnight.
+  const scheduleRows = await listInstalments(organizationId, invoiceId);
+  const instalments = allocate(
+    scheduleRows.map((s) => ({
+      id: s.id,
+      sequence: s.sequence,
+      dueDate: s.dueDate,
+      amount: num(s.amount),
+    })),
+    num(row.amountPaid),
+  ).map((i) => ({
+    ...i,
+    state:
+      i.state === "paid"
+        ? ("paid" as const)
+        : i.dueDate < today
+          ? ("overdue" as const)
+          : i.state,
+  }));
+
   return {
     id: row.id,
     invoiceNumber: row.invoiceNumber,
@@ -398,11 +446,15 @@ export const getById = async (
     // The design's "filing type" is the case-type label when there is a matter,
     // and the free-text column otherwise.
     filingType: row.caseTypeLabel ?? row.filingType,
-    client: {
-      id: row.clientId,
-      name: row.clientName,
-      email: row.clientEmail,
-    },
+    party: toParty(row),
+    /**
+     * Kept for callers that predate lead billing. Null on an invoice raised
+     * against a lead — reading it is how you find code that still assumes a
+     * client exists.
+     */
+    client: row.clientId
+      ? { id: row.clientId, name: row.partyName, email: row.partyEmail }
+      : null,
     matter: row.caseId
       ? { id: row.caseId, reference: row.caseNumber, type: row.caseTypeLabel }
       : null,
@@ -443,6 +495,7 @@ export const getById = async (
       amountPaid: num(row.amountPaid),
       balanceDue: num(row.balanceDue),
     },
+    instalments,
     lastPaymentMethod: row.lastPaymentMethod,
     lastPaymentDate: row.lastPaymentDate,
     sentAt: row.sentAt,
@@ -580,7 +633,9 @@ const buildLineValues = (
 };
 
 export type CreateInvoiceInput = {
-  clientId: string;
+  /** Exactly one of these. A lead is billed during intake, a client after. */
+  clientId?: string;
+  leadId?: string;
   caseId?: string;
   practiceAreaId?: string;
   attorneyId?: string;
@@ -591,6 +646,8 @@ export type CreateInvoiceInput = {
   status: "draft";
   lineItems: CreateInvoiceLine[];
   timeEntryIds: string[];
+  /** Optional payment schedule; must sum to the resulting invoice total. */
+  instalments?: ScheduleRow[];
 };
 
 export const create = async (
@@ -617,7 +674,8 @@ export const create = async (
       .values({
         organizationId,
         invoiceNumber,
-        clientId: input.clientId,
+        clientId: input.clientId ?? null,
+        leadId: input.leadId ?? null,
         caseId: input.caseId ?? null,
         practiceAreaId: input.practiceAreaId ?? null,
         attorneyId: input.attorneyId ?? null,
@@ -659,7 +717,12 @@ export const create = async (
         );
     }
 
+    if (input.instalments?.length) {
+      await writeSchedule(organizationId, invoice!.id, input.instalments);
+    }
+
     const totals = await recalculateInvoiceTotals(organizationId, invoice!.id);
+    await assertScheduleBalances(organizationId, invoice!.id, totals.totalAmount);
 
     await logFinanceEvent({
       organizationId,
@@ -669,7 +732,7 @@ export const create = async (
       amount: totals.totalAmount,
       invoiceId: invoice!.id,
       caseId: input.caseId ?? null,
-      clientId: input.clientId,
+      clientId: input.clientId ?? null,
       actorId: actorStaffId,
     });
 
@@ -762,6 +825,12 @@ export const voidInvoice = async (
         );
     }
 
+    // A voided invoice owes nothing, so its schedule is meaningless. Dropping
+    // it also keeps `duesFrom` honest: it emits instalment rows for any invoice
+    // that has a schedule, and the status filter is the only thing that would
+    // otherwise be holding those slices out of the aging report.
+    await clearSchedules(organizationId, [invoiceId]);
+
     await logFinanceEvent({
       organizationId,
       eventType: "invoice_voided",
@@ -787,6 +856,11 @@ export type UpdateInvoiceInput = {
   practiceAreaId?: string | null;
   lineItems?: CreateInvoiceLine[];
   timeEntryIds?: string[];
+  /**
+   * Replaces the whole schedule. Unlike the rest of the content set this is
+   * allowed on a sent invoice — see the note in `update()`.
+   */
+  instalments?: ScheduleRow[];
 };
 
 /**
@@ -811,7 +885,8 @@ export const update = async (
     input.timeEntryIds !== undefined ||
     input.issueDate !== undefined ||
     input.caseId !== undefined ||
-    input.practiceAreaId !== undefined;
+    input.practiceAreaId !== undefined ||
+    input.instalments !== undefined;
 
   const [existing] = await db
     .select({
@@ -834,8 +909,45 @@ export const update = async (
     throw new BadRequestError("A voided invoice cannot be edited");
   }
 
+  const scheduled =
+    (await listInstalments(organizationId, invoiceId)).length > 0;
+
+  // A schedule's rows have to keep summing to the total, so a line edit that
+  // moves the total has to arrive with the schedule that matches it. Refusing
+  // outright ("delete the schedule first") would make nudging a rate by $50 a
+  // three-step dance; the dialog sends both together.
+  if (
+    scheduled &&
+    input.instalments === undefined &&
+    (input.lineItems !== undefined || input.timeEntryIds !== undefined)
+  ) {
+    throw new BadRequestError(
+      "This invoice has a payment schedule. Send the updated schedule with the line changes, or remove the schedule first.",
+    );
+  }
+
+  // The header due date belongs to the schedule once one exists — writeSchedule
+  // pins it to the final instalment. Accepting a bare due-date change here would
+  // let the invoice claim a date its own schedule contradicts.
+  if (scheduled && input.dueDate !== undefined && input.instalments === undefined) {
+    throw new BadRequestError(
+      "This invoice's due date follows its payment schedule. Revise the schedule instead.",
+    );
+  }
+
   if (editsContent) {
-    if (existing.status !== "draft") {
+    // A schedule may be revised after sending — plans get renegotiated, and
+    // that is the point of offering one. Only the rest of the content set is
+    // draft-only.
+    const scheduleOnly =
+      input.instalments !== undefined &&
+      input.lineItems === undefined &&
+      input.timeEntryIds === undefined &&
+      input.issueDate === undefined &&
+      input.caseId === undefined &&
+      input.practiceAreaId === undefined;
+
+    if (!scheduleOnly && existing.status !== "draft") {
       throw new BadRequestError(
         "Only a draft invoice can be edited. Void this one and issue a corrected invoice instead.",
       );
@@ -876,7 +988,7 @@ export const update = async (
     }
   }
 
-  return withTransaction(db, async () => {
+  const result = await withTransaction(db, async () => {
     await db
       .update(invoices)
       .set({
@@ -905,15 +1017,37 @@ export const update = async (
       );
     }
 
-    const totals = editsContent
-      ? await recalculateInvoiceTotals(organizationId, invoiceId)
-      : null;
+    // After the lines, so the header due date it pins survives the write above.
+    if (input.instalments !== undefined) {
+      await writeSchedule(organizationId, invoiceId, input.instalments);
+    }
+
+    // Also on a bare due-date change: `next_due_date` is a fold this function is
+    // the sole writer of, and skipping it there would leave the invoice
+    // overdue-or-not according to a date nobody can see.
+    const totals =
+      editsContent || input.dueDate !== undefined
+        ? await recalculateInvoiceTotals(organizationId, invoiceId)
+        : null;
+
+    if (totals) {
+      await assertScheduleBalances(organizationId, invoiceId, totals.totalAmount);
+    }
 
     await logFinanceEvent({
       organizationId,
-      eventType: "invoice_updated",
+      eventType:
+        input.instalments !== undefined
+          ? scheduled
+            ? "invoice_schedule_revised"
+            : "invoice_schedule_set"
+          : "invoice_updated",
       title: `${existing.invoiceNumber} — ${
-        editsContent ? "draft edited" : "invoice updated"
+        input.instalments !== undefined
+          ? `payment schedule ${scheduled ? "revised" : "set"}`
+          : editsContent
+            ? "draft edited"
+            : "invoice updated"
       }`,
       amount: totals?.totalAmount ?? null,
       invoiceId,
@@ -922,6 +1056,18 @@ export const update = async (
 
     return getById(organizationId, invoiceId, access);
   });
+
+  // Same rule as the dedicated schedule endpoint: if this edit changed a plan
+  // on an invoice the client already holds, tell them. AFTER the commit, since
+  // an email cannot be rolled back. A draft is a no-op inside — the schedule
+  // ships with the invoice when it is first sent.
+  if (input.instalments !== undefined) {
+    await sendScheduleUpdate(organizationId, invoiceId, actorStaffId, access, {
+      revised: scheduled,
+    });
+  }
+
+  return result;
 };
 
 /**
@@ -1211,7 +1357,7 @@ export const exportInvoices = async (
   type Row = InvoiceListRow;
   const columns: ReportColumn<Row>[] = [
       { header: "Invoice #", value: (r) => r.invoiceNumber },
-      { header: "Client", value: (r) => r.clientName, weight: 1.6 },
+      { header: "Billed to", value: (r) => r.party.name, weight: 1.6 },
       { header: "Matter", value: (r) => r.caseNumber ?? "" },
       { header: "Operating", value: (r) => r.operatingAmount.toFixed(2) },
       // Dropped from the spec entirely — not emitted blank — when the caller

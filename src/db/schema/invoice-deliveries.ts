@@ -22,6 +22,23 @@ export const deliveryStatusEnum = pgEnum("invoice_delivery_status", [
 ]);
 
 /**
+ * What the client was sent.
+ *
+ * `invoice` is the invoice itself. `schedule_update` is a payment plan being
+ * set or revised on an invoice they already hold — same archived document, a
+ * different thing to say about it.
+ *
+ * Kept as a column rather than inferred from timing because `canChaseInvoice`
+ * asks "has this invoice reached the client", and only an `invoice` delivery
+ * answers that. A schedule update proves they received *something*, not that
+ * they ever got the bill.
+ */
+export const deliveryKindEnum = pgEnum("invoice_delivery_kind", [
+  "invoice",
+  "schedule_update",
+]);
+
+/**
  * A record of each attempt to deliver an invoice to a client.
  *
  * The point of the table is that it stays truthful when a send FAILS. A row is
@@ -52,6 +69,7 @@ export const invoiceDeliveries = pgTable(
       .references(() => invoices.id, { onDelete: "cascade" }),
 
     channel: deliveryChannelEnum("channel").notNull().default("email"),
+    kind: deliveryKindEnum("kind").notNull().default("invoice"),
 
     /** Snapshotted, so the record stays defensible after the client moves address. */
     recipientEmail: text("recipient_email").notNull(),
@@ -85,3 +103,4 @@ export const invoiceDeliveries = pgTable(
 export type InvoiceDelivery = typeof invoiceDeliveries.$inferSelect;
 export type NewInvoiceDelivery = typeof invoiceDeliveries.$inferInsert;
 export type DeliveryStatus = (typeof deliveryStatusEnum.enumValues)[number];
+export type DeliveryKind = (typeof deliveryKindEnum.enumValues)[number];

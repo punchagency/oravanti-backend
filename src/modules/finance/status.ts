@@ -1,4 +1,4 @@
-import { SQL, and, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { SQL, and, eq, inArray, sql } from "drizzle-orm";
 import { invoices } from "../../db/schema/invoices";
 import { dayjs } from "../../utils/date";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
@@ -32,6 +32,23 @@ export const firmToday = async (organizationId: string): Promise<string> => {
 };
 
 /**
+ * The date an invoice is next owed money on.
+ *
+ * `next_due_date` is the earliest instalment not yet covered by `amount_paid`,
+ * and NULL when the invoice has no payment schedule — which is most of them, and
+ * every row that predates schedules. So every predicate reads through this
+ * coalesce rather than either column directly: a bare `next_due_date < today` is
+ * false on NULL, and so is `next_due_date >= today`, which would drop
+ * unscheduled invoices out of the overdue bucket AND the partial and unpaid
+ * buckets simultaneously — visible in the list, findable by no filter.
+ *
+ * coalesce over two columns is IMMUTABLE, so `invoices_org_status_due_idx` is
+ * declared on this same expression and the predicates below stay sargable. That
+ * is the only reason `next_due_date` is stored rather than derived.
+ */
+export const dueBy = sql`coalesce(${invoices.nextDueDate}, ${invoices.dueDate})`;
+
+/**
  * The single bucket a row belongs to, for the SELECT list.
  *
  * Note the ordering: `overdue` outranks `partial`. The UI filter is
@@ -45,7 +62,7 @@ export const effectiveStatusSql = (today: string) => sql<string>`
     WHEN ${invoices.status} = 'void'    THEN 'void'
     WHEN ${invoices.status} = 'draft'   THEN 'draft'
     WHEN ${invoices.status} = 'paid'    THEN 'paid'
-    WHEN ${invoices.dueDate} < ${today} THEN 'overdue'
+    WHEN ${dueBy} < ${today}            THEN 'overdue'
     WHEN ${invoices.status} = 'partial' THEN 'partial'
     ELSE 'unpaid'
   END`;
@@ -71,18 +88,15 @@ export const statusFilter = (
     case "overdue":
       return and(
         inArray(invoices.status, ["sent", "partial"]),
-        lt(invoices.dueDate, today),
+        sql`${dueBy} < ${today}`,
       );
     case "partial":
-      return and(
-        eq(invoices.status, "partial"),
-        gte(invoices.dueDate, today),
-      );
+      return and(eq(invoices.status, "partial"), sql`${dueBy} >= ${today}`);
     case "unpaid":
       return and(
         eq(invoices.status, "sent"),
         eq(invoices.amountPaid, "0"),
-        gte(invoices.dueDate, today),
+        sql`${dueBy} >= ${today}`,
       );
     default:
       return undefined; // "all"
@@ -110,6 +124,14 @@ export const listableInvoices = (includeDrafts: boolean) =>
     ? inArray(invoices.status, ["draft", "sent", "partial", "paid"])
     : countableInvoices();
 
-/** The overdue predicate, shared by the stats tile and the aging buckets. */
+/**
+ * The overdue predicate at INVOICE granularity — "this invoice has something
+ * past due".
+ *
+ * Note what it is not: the amount overdue. On a scheduled invoice only some
+ * slices are past due, so anything summing money reaches for `agingOverDues` in
+ * dues.ts instead. This is for counting invoices and for bucketing an invoice
+ * as a whole.
+ */
 export const overdueCondition = (today: string) =>
-  and(inArray(invoices.status, ["sent", "partial"]), lt(invoices.dueDate, today));
+  and(inArray(invoices.status, ["sent", "partial"]), sql`${dueBy} < ${today}`);

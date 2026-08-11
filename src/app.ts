@@ -87,6 +87,20 @@ export class App {
      * Better Auth Initialization
      */
     this.express.all("/api/auth/*splat", toNodeHandler(auth));
+    /**
+     * Payment webhooks need the RAW body, and must be mounted before the JSON
+     * parser to get it.
+     *
+     * Every payment provider signs the exact bytes it sent. Once
+     * `express.json()` has parsed and discarded them, re-serialising the object
+     * will not reproduce the original — key order and whitespace both differ —
+     * so signature verification fails on legitimate events. The Dropbox Sign
+     * webhook avoids this only because it receives multipart and uses multer.
+     */
+    this.express.use(
+      "/webhooks/payments",
+      express.raw({ type: "application/json" }),
+    );
     this.express.use(express.json());
     this.express.use(requestContextMiddleware);
   }

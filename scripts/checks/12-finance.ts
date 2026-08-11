@@ -29,6 +29,7 @@ import { invoiceFollowups } from "../../src/db/schema/invoice-followups";
 import { invoiceNumberSequences } from "../../src/db/schema/invoice-number-sequences";
 import { invoicePayments } from "../../src/db/schema/invoice-payments";
 import { invoiceLineItems, invoices } from "../../src/db/schema/invoices";
+import { leads } from "../../src/db/schema/leads";
 import { practiceAreaCaseTypes } from "../../src/db/schema/practice-area-case-types";
 import { practiceAreaSubcategories } from "../../src/db/schema/practice-area-subcategories";
 import { practiceAreas } from "../../src/db/schema/practice-areas";
@@ -40,12 +41,24 @@ import {
   resolveBillingRate,
   setBillingRate,
 } from "../../src/modules/finance/billing-rates.service";
+import { agingOverDues } from "../../src/modules/finance/dues";
+import { allocate, generateSchedule } from "../../src/modules/finance/instalments";
+import * as instalmentsService from "../../src/modules/finance/instalments.service";
 import * as invoicesService from "../../src/modules/finance/invoices.service";
 import { formatInvoiceNumber } from "../../src/modules/finance/invoice-number";
-import { proRateSplit, toMoney } from "../../src/modules/finance/money";
+import { num, proRateSplit, toMoney } from "../../src/modules/finance/money";
+import { firmToday } from "../../src/modules/finance/status";
 import * as paymentsService from "../../src/modules/finance/payments.service";
 import * as deliveriesService from "../../src/modules/finance/deliveries.service";
 import { invoiceDeliveries } from "../../src/db/schema/invoice-deliveries";
+import * as feeAgreementBilling from "../../src/modules/finance/fee-agreement-billing.service";
+import * as paymentLinks from "../../src/modules/finance/payment-links.service";
+import * as paymentWebhooks from "../../src/modules/finance/payment-webhooks.service";
+import {
+  getPaymentProvider,
+  isPaymentProviderConfigured,
+} from "../../src/modules/finance/payment.provider";
+import { paymentWebhookEvents } from "../../src/db/schema/payment-webhook-events";
 import * as reportsService from "../../src/modules/finance/reports.service";
 import * as timeBilling from "../../src/modules/finance/time-billing.service";
 import { deriveStoredStatus } from "../../src/modules/finance/totals";
@@ -64,6 +77,7 @@ const daysFromNow = (n: number) =>
 const main = async () => {
   const orgId = `fin-check-${randomUUID()}`;
   const userId = `user-${randomUUID()}`;
+  let leadId = "";
   let staffAId = "";
   let staffBId = "";
   let clientId = "";
@@ -150,6 +164,23 @@ const main = async () => {
     })
     .returning();
   clientId = client!.id;
+
+  // Intake-stage party. Consultation fees and fee agreements are billed to a
+  // lead, because no client row exists until openCase — which is itself gated
+  // on the fee agreement being paid.
+  const [lead] = await systemDb
+    .insert(leads)
+    .values({
+      organizationId: orgId,
+      firstName: "Priya",
+      lastName: "Raman",
+      email: `priya-${randomUUID().slice(0, 8)}@example.test`,
+      phone: "+15550111",
+      source: "direct",
+      practiceAreaId,
+    })
+    .returning();
+  leadId = lead!.id;
 
   const [kase] = await systemDb
     .insert(cases)
@@ -1088,6 +1119,911 @@ const main = async () => {
         blindTrustEditRejected,
       );
 
+      // ── Schedule arithmetic (pure) ────────────────────────────────────────
+      section("schedule arithmetic");
+
+      // The remainder is PLACED, not lost. Dividing without placing it gives
+      // 333.33 x 3 = 999.99, which fails the balance check by construction —
+      // the bug the fee-agreement wizard has today.
+      const thirds = generateSchedule(1000, 3, "2026-09-01", "monthly");
+      checkEqual(
+        "an indivisible total still sums exactly",
+        thirds.reduce((s, r) => s + r.amount, 0),
+        1000,
+      );
+      checkEqual("the remainder lands on the last row", thirds[2]!.amount, 333.34);
+      checkEqual(
+        "monthly dates step by month",
+        thirds.map((r) => r.dueDate),
+        ["2026-09-01", "2026-10-01", "2026-11-01"],
+      );
+
+      // 31 Jan + 1 month is 28 Feb, not 3 March — rolling over would put an
+      // instalment in the wrong month and out of order against its neighbours.
+      checkEqual(
+        "month-end clamps rather than rolling over",
+        generateSchedule(300, 3, "2026-01-31", "monthly").map((r) => r.dueDate),
+        ["2026-01-31", "2026-02-28", "2026-03-31"],
+      );
+      checkEqual(
+        "fortnightly steps by 14 days",
+        generateSchedule(200, 2, "2026-09-01", "fortnightly")[1]!.dueDate,
+        "2026-09-15",
+      );
+
+      const rows3 = [
+        { sequence: 1, dueDate: "2026-09-01", amount: 500 },
+        { sequence: 2, dueDate: "2026-10-01", amount: 500 },
+        { sequence: 3, dueDate: "2026-11-01", amount: 500 },
+      ];
+      const allocated = allocate(rows3, 500);
+      checkEqual(
+        "a payment settles the oldest instalment first",
+        allocated.map((a) => a.state),
+        ["paid", "due", "due"],
+      );
+      checkEqual("and leaves the rest owing in full", allocated[1]!.outstanding, 500);
+
+      const partAllocated = allocate(rows3, 700);
+      checkEqual(
+        "a payment that spans two lands partially on the second",
+        partAllocated[1]!.outstanding,
+        300,
+      );
+      checkEqual("with the overlap recorded as paid", partAllocated[1]!.amountPaid, 200);
+
+      // An overpayment must not produce a negative receivable anywhere.
+      check(
+        "overpayment leaves nothing outstanding",
+        allocate(rows3, 2000).every((a) => a.outstanding === 0),
+      );
+
+      // ── Payment schedules ─────────────────────────────────────────────────
+      section("payment schedules");
+
+      // Its own invoice: the money assertions above are chained, so a schedule
+      // hung off any of them would move figures the rest of this file asserts.
+      const planned = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(-80),
+        dueDate: daysFromNow(30),
+        status: "draft",
+        lineItems: [
+          { description: "Retainer", quantity: 1, rate: 1500, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+
+      let unbalancedRejected = false;
+      try {
+        await invoicesService.update(
+          orgId,
+          planned.id,
+          {
+            instalments: [
+              { dueDate: daysFromNow(-70), amount: 500 },
+              { dueDate: daysFromNow(-40), amount: 500 },
+            ],
+          },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        unbalancedRejected = true;
+      }
+      check("a schedule that undershoots the total is refused", unbalancedRejected);
+
+      const withPlan = await invoicesService.update(
+        orgId,
+        planned.id,
+        {
+          instalments: [
+            { dueDate: daysFromNow(-70), amount: 500 },
+            { dueDate: daysFromNow(-40), amount: 500 },
+            { dueDate: daysFromNow(30), amount: 500 },
+          ],
+        },
+        staffBId,
+        FULL,
+      );
+      checkEqual("the schedule is stored", withPlan.instalments.length, 3);
+      checkEqual(
+        "sequence is assigned in due-date order",
+        withPlan.instalments.map((i) => i.sequence),
+        [1, 2, 3],
+      );
+
+      const [plannedRow] = await systemDb
+        .select({ nextDueDate: invoices.nextDueDate, dueDate: invoices.dueDate })
+        .from(invoices)
+        .where(eq(invoices.id, planned.id));
+      checkEqual(
+        "next due date is the first unpaid instalment",
+        plannedRow?.nextDueDate,
+        daysFromNow(-70),
+      );
+      // Otherwise the invoice could read "due in 30 days" while its own
+      // schedule says two payments are already late.
+      checkEqual(
+        "the header due date follows the final instalment",
+        plannedRow?.dueDate,
+        daysFromNow(30),
+      );
+
+      // A draft's schedule reaches nobody: the client has not been sent the
+      // invoice, so there is no plan to notify them about yet.
+      const draftDeliveries = await systemDb
+        .select({ id: invoiceDeliveries.id })
+        .from(invoiceDeliveries)
+        .where(eq(invoiceDeliveries.invoiceId, planned.id));
+      checkEqual(
+        "scheduling a draft notifies nobody",
+        draftDeliveries.length,
+        0,
+      );
+
+      // Sent, so it counts as owed. Set directly rather than through the
+      // delivery path, which would send a real email for a fixture.
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, planned.id));
+
+      await paymentsService.recordPayment(orgId, planned.id, staffBId, FULL, {
+        amount: 500,
+        paymentDate: daysFromNow(-65),
+        method: "bank_transfer",
+      });
+
+      const afterFirst = await invoicesService.getById(orgId, planned.id, FULL);
+      checkEqual(
+        "the first instalment reads as paid",
+        afterFirst.instalments[0]!.state,
+        "paid",
+      );
+      checkEqual(
+        "the second reads as overdue",
+        afterFirst.instalments[1]!.state,
+        "overdue",
+      );
+      checkEqual(
+        "and the third is not yet due",
+        afterFirst.instalments[2]!.state,
+        "due",
+      );
+      checkEqual("the invoice is overdue", afterFirst.status, "overdue");
+
+      const [afterPay] = await systemDb
+        .select({ nextDueDate: invoices.nextDueDate })
+        .from(invoices)
+        .where(eq(invoices.id, planned.id));
+      checkEqual(
+        "next due date advances to the second instalment",
+        afterPay?.nextDueDate,
+        daysFromNow(-40),
+      );
+
+      // The whole point of slice-level aging: this invoice owes 1000, but only
+      // 500 of it is late. Bucketing by the header date would report all 1000
+      // as 31+ days overdue, which is a position the firm does not have.
+      const plannedAging = await agingOverDues(
+        orgId,
+        await firmToday(orgId),
+        eq(invoices.id, planned.id),
+      );
+      checkEqual("the late slice ages alone", num(plannedAging.d31_plus), 500);
+      checkEqual("the future slice stays current", num(plannedAging.current), 500);
+      checkEqual("and the paid slice ages nowhere", num(plannedAging.total), 1000);
+      checkEqual("one invoice is counted overdue", plannedAging.overdueInvoices, 1);
+
+      // The list summary comes from its own query, never a join — a join would
+      // duplicate rows on the page and inflate the count that drives pagination.
+      const listed = await invoicesService.list(orgId, FULL, { status: "all" });
+      const plannedRowInList = listed.data.find((r) => r.id === planned.id);
+      checkEqual(
+        "the list reports the schedule size",
+        plannedRowInList?.schedule?.count,
+        3,
+      );
+      checkEqual(
+        "and how many instalments are settled",
+        plannedRowInList?.schedule?.paidCount,
+        1,
+      );
+      checkEqual(
+        "and which one is next",
+        plannedRowInList?.schedule?.nextDueDate,
+        daysFromNow(-40),
+      );
+      checkEqual(
+        "an unscheduled invoice reports no schedule",
+        listed.data.find((r) => r.id === second.id)?.schedule,
+        null,
+      );
+      // One row per invoice: a fan-out join would have duplicated `planned`.
+      checkEqual(
+        "the page has one row per invoice",
+        listed.data.filter((r) => r.id === planned.id).length,
+        1,
+      );
+
+      // ── Instalment edge cases ─────────────────────────────────────────────
+      section("instalment edge cases");
+
+      // Two instalments on one date: the running total has to walk them one at
+      // a time. (This does not exercise the ROWS vs RANGE frame — `sequence` is
+      // in the window ordering and unique, so the two rows are never peers and
+      // both frames agree. The frame is stated in dues.ts for the edit that
+      // would remove that tiebreaker, which no test can reach from here.)
+      const sameDay = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(-10),
+        dueDate: daysFromNow(10),
+        status: "draft",
+        lineItems: [
+          { description: "Pair", quantity: 1, rate: 1000, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await invoicesService.update(
+        orgId,
+        sameDay.id,
+        {
+          instalments: [
+            { dueDate: daysFromNow(-5), amount: 500 },
+            { dueDate: daysFromNow(-5), amount: 500 },
+          ],
+        },
+        staffBId,
+        FULL,
+      );
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, sameDay.id));
+      await paymentsService.recordPayment(orgId, sameDay.id, staffBId, FULL, {
+        amount: 500,
+        paymentDate: daysFromNow(-4),
+        method: "cash",
+      });
+
+      const sameDayAging = await agingOverDues(
+        orgId,
+        await firmToday(orgId),
+        eq(invoices.id, sameDay.id),
+      );
+      checkEqual(
+        "same-day instalments do not double-count",
+        num(sameDayAging.total),
+        500,
+      );
+
+      // An invoice whose only late instalment is settled must leave the overdue
+      // count, or the tile disagrees with the list filter forever.
+      const settledEarly = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(-60),
+        dueDate: daysFromNow(45),
+        status: "draft",
+        lineItems: [
+          { description: "Deposit plan", quantity: 1, rate: 800, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await invoicesService.update(
+        orgId,
+        settledEarly.id,
+        {
+          instalments: [
+            { dueDate: daysFromNow(-50), amount: 400 },
+            { dueDate: daysFromNow(45), amount: 400 },
+          ],
+        },
+        staffBId,
+        FULL,
+      );
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, settledEarly.id));
+      await paymentsService.recordPayment(orgId, settledEarly.id, staffBId, FULL, {
+        amount: 400,
+        paymentDate: daysFromNow(-49),
+        method: "cash",
+      });
+
+      const settledAging = await agingOverDues(
+        orgId,
+        await firmToday(orgId),
+        eq(invoices.id, settledEarly.id),
+      );
+      checkEqual(
+        "a paid-up deposit leaves the overdue count",
+        settledAging.overdueInvoices,
+        0,
+      );
+      checkEqual(
+        "even though the instalment date is long past",
+        num(settledAging.pastDue),
+        0,
+      );
+      const settledDetail = await invoicesService.getById(
+        orgId,
+        settledEarly.id,
+        FULL,
+      );
+      checkEqual(
+        "and the invoice is not overdue",
+        settledDetail.status,
+        "partial",
+      );
+
+      // An invoice with no schedule must behave exactly as it did before
+      // schedules existed.
+      const [plainRow] = await systemDb
+        .select({ nextDueDate: invoices.nextDueDate })
+        .from(invoices)
+        .where(eq(invoices.id, second.id));
+      checkEqual(
+        "an unscheduled invoice has no next due date",
+        plainRow?.nextDueDate,
+        null,
+      );
+      const plainAging = await agingOverDues(
+        orgId,
+        await firmToday(orgId),
+        eq(invoices.id, second.id),
+      );
+      const plainDetail = await invoicesService.getById(orgId, second.id, FULL);
+      checkEqual(
+        "and ages as a single slice of its whole balance",
+        num(plainAging.total),
+        plainDetail.totals.balanceDue,
+      );
+      checkEqual("with no schedule to show", plainDetail.instalments.length, 0);
+
+      // ── Revising a schedule ───────────────────────────────────────────────
+      section("revising a schedule");
+
+      // Line items freeze on send; a schedule does not. Renegotiating a plan is
+      // the point of offering one.
+      const revised = await invoicesService.update(
+        orgId,
+        planned.id,
+        {
+          instalments: [
+            { dueDate: daysFromNow(-70), amount: 500 },
+            { dueDate: daysFromNow(20), amount: 500 },
+            { dueDate: daysFromNow(50), amount: 500 },
+          ],
+        },
+        staffBId,
+        FULL,
+      );
+      checkEqual("a sent invoice's schedule can be revised", revised.instalments.length, 3);
+      checkEqual(
+        "and the revision clears the overdue state",
+        revised.status,
+        "partial",
+      );
+
+      // The client holds this invoice, so a changed plan has to reach them.
+      // Recorded as its own delivery kind, with the regenerated PDF archived.
+      const scheduleSends = await systemDb
+        .select({
+          kind: invoiceDeliveries.kind,
+          status: invoiceDeliveries.status,
+          documentKey: invoiceDeliveries.documentKey,
+          recipientEmail: invoiceDeliveries.recipientEmail,
+        })
+        .from(invoiceDeliveries)
+        .where(
+          and(
+            eq(invoiceDeliveries.invoiceId, planned.id),
+            eq(invoiceDeliveries.kind, "schedule_update"),
+          ),
+        );
+      checkEqual("revising notifies the client", scheduleSends.length, 1);
+      checkEqual(
+        "at the address on file",
+        scheduleSends[0]?.recipientEmail,
+        CLIENT_EMAIL,
+      );
+      check(
+        "with the revised invoice archived",
+        Boolean(scheduleSends[0]?.documentKey),
+      );
+
+      // A schedule email proves the client received something, not that they
+      // ever got the bill, so it must not unlock chasing on its own. `sentAt`
+      // is cleared for the length of this assertion because it would otherwise
+      // satisfy the legacy allowance and the check would pass without ever
+      // exercising the kind filter.
+      await systemDb
+        .update(invoices)
+        .set({ sentAt: null })
+        .where(eq(invoices.id, planned.id));
+      const chaseOnScheduleOnly = await deliveriesService.canChaseInvoice(
+        orgId,
+        planned.id,
+      );
+      await systemDb
+        .update(invoices)
+        .set({ sentAt: new Date() })
+        .where(eq(invoices.id, planned.id));
+      checkEqual(
+        "a schedule email is not evidence the invoice arrived",
+        chaseOnScheduleOnly,
+        false,
+      );
+
+      let sentLineEditRejected = false;
+      try {
+        await invoicesService.update(
+          orgId,
+          planned.id,
+          {
+            lineItems: [
+              { description: "Rewritten", quantity: 1, rate: 1500, account: "operating" },
+            ],
+            timeEntryIds: [],
+            instalments: [{ dueDate: daysFromNow(20), amount: 1500 }],
+          },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        sentLineEditRejected = true;
+      }
+      check(
+        "but its line items still cannot be",
+        sentLineEditRejected,
+      );
+
+      // The header due date belongs to the schedule once one exists.
+      let bareDueDateRejected = false;
+      try {
+        await invoicesService.update(
+          orgId,
+          planned.id,
+          { dueDate: daysFromNow(90) },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        bareDueDateRejected = true;
+      }
+      check(
+        "a bare due-date change on a scheduled invoice is refused",
+        bareDueDateRejected,
+      );
+
+      let paidRescheduleRejected = false;
+      try {
+        await instalmentsService.setSchedule(
+          orgId,
+          invoice.id,
+          [{ dueDate: daysFromNow(30), amount: 100 }],
+          staffBId,
+          FULL,
+        );
+      } catch {
+        paidRescheduleRejected = true;
+      }
+      check("a paid invoice cannot be scheduled", paidRescheduleRejected);
+
+      await instalmentsService.removeSchedule(orgId, sameDay.id, staffBId);
+      const [afterRemove] = await systemDb
+        .select({ nextDueDate: invoices.nextDueDate })
+        .from(invoices)
+        .where(eq(invoices.id, sameDay.id));
+      checkEqual(
+        "removing a schedule clears the next due date",
+        afterRemove?.nextDueDate,
+        null,
+      );
+
+      // ── Billing a lead ────────────────────────────────────────────────────
+      section("billing a lead");
+
+      const leadInvoice = await invoicesService.create(orgId, staffBId, FULL, {
+        leadId,
+        practiceAreaId,
+        issueDate: daysFromNow(0),
+        dueDate: daysFromNow(14),
+        status: "draft",
+        lineItems: [
+          { description: "Consultation", quantity: 1, rate: 250, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      checkEqual("an invoice can bill a lead", leadInvoice.party.type, "lead");
+      checkEqual(
+        "named from the lead record",
+        leadInvoice.party.name,
+        "Priya Raman",
+      );
+      checkEqual(
+        "and reports no client",
+        leadInvoice.client,
+        null,
+      );
+
+      // An inner join on clients would silently drop this row rather than
+      // erroring — the failure this change could most easily have shipped with.
+      const withLeadRows = await invoicesService.list(orgId, FULL, {
+        status: "all",
+        includeDrafts: true,
+      });
+      check(
+        "a lead-billed invoice appears in the list",
+        withLeadRows.data.some((r) => r.id === leadInvoice.id),
+      );
+      check(
+        "and is findable by the lead's name",
+        (
+          await invoicesService.list(orgId, FULL, {
+            status: "all",
+            includeDrafts: true,
+            search: "Raman",
+          })
+        ).data.some((r) => r.id === leadInvoice.id),
+      );
+
+      // The check constraint is the only place "exactly one party" can be
+      // guaranteed, so it is worth proving it actually fires.
+      let bothPartiesRejected = false;
+      try {
+        await systemDb
+          .update(invoices)
+          .set({ clientId })
+          .where(eq(invoices.id, leadInvoice.id));
+      } catch {
+        bothPartiesRejected = true;
+      }
+      check("an invoice cannot bill both parties", bothPartiesRejected);
+
+      let noPartyRejected = false;
+      try {
+        await systemDb
+          .update(invoices)
+          .set({ leadId: null })
+          .where(eq(invoices.id, leadInvoice.id));
+      } catch {
+        noPartyRejected = true;
+      }
+      check("nor neither", noPartyRejected);
+
+      // What openCase does on conversion.
+      await systemDb
+        .update(invoices)
+        .set({ clientId, leadId: null })
+        .where(eq(invoices.id, leadInvoice.id));
+      const repointed = await invoicesService.getById(orgId, leadInvoice.id, FULL);
+      checkEqual("repointing moves it to the client", repointed.party.type, "client");
+      checkEqual("with the client's name", repointed.party.name, "Amara Chen");
+
+      // ── Fee agreement billing ─────────────────────────────────────────────
+      section("fee agreement billing");
+
+      // Government fees are the client's money on its way to an agency, so they
+      // belong in trust. Everything else is the firm's income.
+      const feeLines = feeAgreementBilling.linesFromDocument([
+        { description: "Legal services", amount: 2000, kind: "fee" },
+        { description: "USCIS filing fee", amount: 675, kind: "government" },
+        { description: "Courier", amount: 40, kind: "cost" },
+        // Deferred: the firm is advancing it, so nobody owes it today.
+        { description: "Expert report — advanced by firm", amount: 500, kind: "cost", deferred: true },
+        // Pure contingency: no amount at all.
+        { description: "Contingency — 33%", amount: null, kind: "fee", deferred: true },
+      ]);
+      checkEqual("only billable lines are invoiced", feeLines.length, 3);
+      checkEqual(
+        "government fees go to trust",
+        feeLines.find((l) => l.description.includes("USCIS"))?.account,
+        "trust_iolta",
+      );
+      checkEqual(
+        "attorney fees go to operating",
+        feeLines.find((l) => l.description === "Legal services")?.account,
+        "operating",
+      );
+      checkEqual(
+        "other costs go to operating",
+        feeLines.find((l) => l.description === "Courier")?.account,
+        "operating",
+      );
+
+      // The wizard lets an attorney promise 3 x 333.33 against a 1000 total.
+      // The plan's shape is honoured; the amounts are recomputed so they sum.
+      const planRows = feeAgreementBilling.scheduleFromPlan(
+        1000,
+        "installments",
+        null,
+        { numberOfPayments: 3, firstPaymentDate: "2026-09-01" },
+        "2026-08-15",
+      );
+      checkEqual("an instalment plan becomes a schedule", planRows?.length, 3);
+      checkEqual(
+        "whose amounts sum to the total exactly",
+        toMoney((planRows ?? []).reduce((s, r) => s + r.amount, 0)),
+        1000,
+      );
+
+      const twoRows = feeAgreementBilling.scheduleFromPlan(
+        1500,
+        "two_payments",
+        { firstAmount: 500, secondDueDate: "2026-10-01" },
+        null,
+        "2026-08-15",
+      );
+      checkEqual("two payments become two instalments", twoRows?.length, 2);
+      checkEqual(
+        "the first falls on the signing date",
+        twoRows?.[0]?.dueDate,
+        "2026-08-15",
+      );
+      checkEqual(
+        "and the second carries the remainder",
+        twoRows?.[1]?.amount,
+        1000,
+      );
+      checkEqual(
+        "pay in full needs no schedule",
+        feeAgreementBilling.scheduleFromPlan(1000, "pay_in_full", null, null, "2026-08-15"),
+        null,
+      );
+
+      // ── The case-opening gate ─────────────────────────────────────────────
+      section("case-opening gate");
+
+      checkEqual(
+        "no invoice means nothing to satisfy",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, null),
+        true,
+      );
+
+      const gateInvoice = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(-10),
+        dueDate: daysFromNow(60),
+        status: "draft",
+        lineItems: [
+          { description: "Retainer", quantity: 1, rate: 4000, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await invoicesService.update(
+        orgId,
+        gateInvoice.id,
+        {
+          instalments: [
+            { dueDate: daysFromNow(-5), amount: 1000 },
+            { dueDate: daysFromNow(25), amount: 1000 },
+            { dueDate: daysFromNow(55), amount: 1000 },
+            { dueDate: daysFromNow(60), amount: 1000 },
+          ],
+        },
+        staffBId,
+        FULL,
+      );
+      // A draft has not been sent, so the client has not been asked.
+      checkEqual(
+        "a draft invoice does not block the case",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, gateInvoice.id),
+        true,
+      );
+
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, gateInvoice.id));
+      checkEqual(
+        "an unpaid deposit does block it",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, gateInvoice.id),
+        false,
+      );
+
+      await paymentsService.recordPayment(orgId, gateInvoice.id, staffBId, FULL, {
+        amount: 1000,
+        paymentDate: daysFromNow(-4),
+        method: "bank_transfer",
+      });
+      // The whole point of allowing a plan: the deposit opens the case, the
+      // remaining three payments are not yet due.
+      checkEqual(
+        "a paid deposit opens it with nothing overdue",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, gateInvoice.id),
+        true,
+      );
+
+      await instalmentsService.setSchedule(
+        orgId,
+        gateInvoice.id,
+        [
+          { dueDate: daysFromNow(-5), amount: 1000 },
+          { dueDate: daysFromNow(-2), amount: 1000 },
+          { dueDate: daysFromNow(55), amount: 1000 },
+          { dueDate: daysFromNow(60), amount: 1000 },
+        ],
+        staffBId,
+        FULL,
+      );
+      checkEqual(
+        "a missed instalment blocks it again",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, gateInvoice.id),
+        false,
+      );
+
+      // ── Payment provider seam ─────────────────────────────────────────────
+      section("payment provider seam");
+
+      // Nothing is configured in any environment yet, and every path that could
+      // take money has to say so rather than pretend.
+      checkEqual(
+        "no provider is configured",
+        isPaymentProviderConfigured(),
+        false,
+      );
+      // The e-signature stub returns true here; this one must not. It guards an
+      // unauthenticated endpoint that writes to the ledger, so "I cannot verify
+      // this" has to mean refuse, not accept.
+      checkEqual(
+        "the stub verifies nothing",
+        getPaymentProvider().verifyWebhook(Buffer.from("{}"), "sig"),
+        false,
+      );
+
+      let unconfiguredCheckoutRefused = false;
+      try {
+        await paymentLinks.startCheckout("whatever");
+      } catch {
+        unconfiguredCheckoutRefused = true;
+      }
+      check(
+        "checkout is refused while no provider exists",
+        unconfiguredCheckoutRefused,
+      );
+
+      let unconfiguredWebhookRefused = false;
+      try {
+        await paymentWebhooks.handlePaymentWebhook(Buffer.from("{}"), "sig");
+      } catch {
+        unconfiguredWebhookRefused = true;
+      }
+      check(
+        "and so is the webhook",
+        unconfiguredWebhookRefused,
+      );
+
+      // ── Payment links ─────────────────────────────────────────────────────
+      section("payment links");
+
+      const linkToken = await paymentLinks.mintPaymentLink(orgId, second.id);
+      const payable = await paymentLinks.invoiceByPaymentToken(linkToken);
+      checkEqual("a link resolves its invoice", payable.invoiceId, second.id);
+      checkEqual(
+        "and reports payment unavailable",
+        payable.paymentsEnabled,
+        false,
+      );
+
+      // Rotation is the price of storing only the hash: there is no way to
+      // resend the old link, so minting a new one has to retire it.
+      const rotated = await paymentLinks.mintPaymentLink(orgId, second.id);
+      check("re-minting produces a different token", rotated !== linkToken);
+      let staleTokenRejected = false;
+      try {
+        await paymentLinks.invoiceByPaymentToken(linkToken);
+      } catch {
+        staleTokenRejected = true;
+      }
+      check("and the previous one stops working", staleTokenRejected);
+
+      let unknownTokenRejected = false;
+      try {
+        await paymentLinks.invoiceByPaymentToken("not-a-real-token");
+      } catch {
+        unknownTokenRejected = true;
+      }
+      check("an unknown token is refused", unknownTokenRejected);
+
+      // Paying a settled invoice must not be possible — `invoice` was paid in
+      // full earlier, then voided, so it is refused twice over.
+      const paidToken = await paymentLinks.mintPaymentLink(orgId, invoice.id);
+      let settledRejected = false;
+      try {
+        await paymentLinks.invoiceByPaymentToken(paidToken);
+      } catch {
+        settledRejected = true;
+      }
+      check("a settled invoice cannot be paid again", settledRejected);
+
+      // ── Ledger idempotency ────────────────────────────────────────────────
+      section("ledger idempotency");
+
+      // The provision that is genuinely painful to retrofit: a redelivered
+      // webhook must hit a constraint rather than record the same money twice.
+      await systemDb.insert(invoicePayments).values({
+        organizationId: orgId,
+        invoiceId: second.id,
+        amount: "10.00",
+        amountOperating: "10.00",
+        amountTrust: "0.00",
+        paymentDate: daysFromNow(0),
+        method: "credit_card",
+        provider: "stripe",
+        providerReference: "pi_check_duplicate",
+      });
+
+      let duplicatePaymentRejected = false;
+      try {
+        await systemDb.insert(invoicePayments).values({
+          organizationId: orgId,
+          invoiceId: second.id,
+          amount: "10.00",
+          amountOperating: "10.00",
+          amountTrust: "0.00",
+          paymentDate: daysFromNow(0),
+          method: "credit_card",
+          provider: "stripe",
+          providerReference: "pi_check_duplicate",
+        });
+      } catch {
+        duplicatePaymentRejected = true;
+      }
+      check(
+        "the same provider payment cannot be recorded twice",
+        duplicatePaymentRejected,
+      );
+
+      // Hand-entered rows leave both columns null and must stay unaffected —
+      // otherwise the index would stop staff recording two cash payments.
+      await systemDb.insert(invoicePayments).values([
+        {
+          organizationId: orgId,
+          invoiceId: second.id,
+          amount: "5.00",
+          amountOperating: "5.00",
+          amountTrust: "0.00",
+          paymentDate: daysFromNow(0),
+          method: "cash",
+        },
+        {
+          organizationId: orgId,
+          invoiceId: second.id,
+          amount: "5.00",
+          amountOperating: "5.00",
+          amountTrust: "0.00",
+          paymentDate: daysFromNow(0),
+          method: "cash",
+        },
+      ]);
+      check("but two manual payments still can be", true);
+
+      // The event store is the first line of defence, and it has to be its own
+      // mechanism: signing has a terminal state to guard on, payments do not.
+      await systemDb.insert(paymentWebhookEvents).values({
+        provider: "stripe",
+        eventId: "evt_check_1",
+        eventType: "payment",
+      });
+      let duplicateEventRejected = false;
+      try {
+        await systemDb.insert(paymentWebhookEvents).values({
+          provider: "stripe",
+          eventId: "evt_check_1",
+          eventType: "payment",
+        });
+      } catch {
+        duplicateEventRejected = true;
+      }
+      check("a replayed event id is rejected", duplicateEventRejected);
+
       // ── Activity trail ────────────────────────────────────────────────────
       section("activity trail");
 
@@ -1102,6 +2038,9 @@ const main = async () => {
       check("follow-up is recorded", types.has("payment_followup_sent"));
       check("void is recorded", types.has("invoice_voided"));
       check("time approval is recorded", types.has("time_entry_approved"));
+      check("a schedule being set is recorded", types.has("invoice_schedule_set"));
+      check("a revision is recorded", types.has("invoice_schedule_revised"));
+      check("a removal is recorded", types.has("invoice_schedule_removed"));
     });
   } finally {
     // ── Cleanup ──────────────────────────────────────────────────────────────
@@ -1122,6 +2061,10 @@ const main = async () => {
         .delete(invoiceLineItems)
         .where(inArray(invoiceLineItems.invoiceId, invoiceIds));
     }
+    // Not org-scoped by design, so cleaned by the ids this check invents.
+    await systemDb
+      .delete(paymentWebhookEvents)
+      .where(eq(paymentWebhookEvents.eventId, "evt_check_1"));
     await systemDb.delete(financeEvents).where(eq(financeEvents.organizationId, orgId));
     await systemDb.delete(invoices).where(eq(invoices.organizationId, orgId));
     await systemDb
@@ -1133,6 +2076,8 @@ const main = async () => {
     // After cases: cases.assigned_team_id references team.
     await systemDb.delete(team).where(eq(team.organizationId, orgId));
     await systemDb.delete(clients).where(eq(clients.organizationId, orgId));
+    // After invoices: invoices.lead_id references leads with no cascade.
+    await systemDb.delete(leads).where(eq(leads.organizationId, orgId));
     await systemDb.delete(staff).where(eq(staff.organizationId, orgId));
     await systemDb
       .delete(practiceAreaCaseTypes)

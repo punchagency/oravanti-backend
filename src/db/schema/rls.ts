@@ -47,12 +47,13 @@
 //
 // ─── Coverage ───────────────────────────────────────────────────────────────
 //
-// Currently covered tables (19):
+// Currently covered tables (20):
 //   cases, case_events, case_record_notes, clients,
 //   leads, lead_events, lead_notes,
 //   case_issues, case_issue_documents, case_issue_events, ai_scan_jobs,
-//   invoices, invoice_line_items, invoice_payments, invoice_followups,
-//   invoice_deliveries, finance_events, billing_rates, time_entries
+//   invoices, invoice_line_items, invoice_payments, invoice_instalments,
+//   invoice_followups, invoice_deliveries, finance_events, billing_rates,
+//   time_entries
 //
 // See .agents/plan-rls-remaining-tables.md for the full audit of uncovered tables.
 //
@@ -87,6 +88,7 @@ import { financeEvents } from "./finance-events";
 import { invoiceDeliveries } from "./invoice-deliveries";
 import { invoiceFollowups } from "./invoice-followups";
 import { invoiceNumberSequences } from "./invoice-number-sequences";
+import { invoiceInstalments } from "./invoice-instalments";
 import { invoicePayments } from "./invoice-payments";
 import { invoices, invoiceLineItems } from "./invoices";
 import { leads, leadEvents, leadNotes } from "./leads";
@@ -582,8 +584,8 @@ export const rlsAiScanJobsOrg = pgPolicy("rls_ai_scan_jobs_org", {
 // =============================================================================
 // Finance tables
 // =============================================================================
-// invoices, invoice_line_items, invoice_payments, invoice_followups,
-// finance_events, billing_rates, time_entries
+// invoices, invoice_line_items, invoice_payments, invoice_instalments,
+// invoice_followups, finance_events, billing_rates, time_entries
 //
 // Staff only. Billing is firm-internal: an invoice names what the firm charged
 // and what a client still owes, and the trust lines carry client money the firm
@@ -622,6 +624,16 @@ export const rlsInvoicePaymentsOrg = pgPolicy("rls_invoice_payments_org", {
   using: sql`organization_id = ${currentOrgId}`,
   withCheck: sql`organization_id = ${currentOrgId}`,
 }).link(invoicePayments);
+
+export const rlsInvoiceInstalmentsOrg = pgPolicy(
+  "rls_invoice_instalments_org",
+  {
+    as: "permissive",
+    for: "all",
+    using: sql`organization_id = ${currentOrgId}`,
+    withCheck: sql`organization_id = ${currentOrgId}`,
+  },
+).link(invoiceInstalments);
 
 /**
  * Only a counter, but the count is how many invoices a firm has issued this

@@ -126,6 +126,26 @@ export const pickFinanceRole = (
 };
 
 /** Resolve the caller's access from the ambient request context. */
+/**
+ * Access for an invoice the system raises on its own behalf — a consultation
+ * fee from firm settings, a fee agreement from a signed document — rather than
+ * one a member of staff is composing by hand.
+ *
+ * This is NOT a person's permission and must never be reached from a route that
+ * takes user input for the lines. `requireTrustWrite` exists to stop someone
+ * without IOLTA rights typing a trust line into the invoice form; here the
+ * amounts come from an agreement an attorney has already signed off, and the
+ * government fees on it are genuinely trust money. Denying trust would simply
+ * make every fee-agreement invoice fail.
+ *
+ * The human gate for these is upstream: composing the fee agreement, and the
+ * client signing it.
+ */
+export const systemAccess = (): AccountAccess => ({
+  operating: "full_access",
+  trust: "full_access",
+});
+
 export const accessForRequest = async (): Promise<AccountAccess> => {
   const { organizationId, userId } = getRequestContext();
   if (!organizationId) {
