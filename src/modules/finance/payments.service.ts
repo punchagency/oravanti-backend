@@ -30,6 +30,13 @@ export type RecordPaymentInput = {
   method: PaymentMethod;
   reference?: string;
   notes?: string;
+  /**
+   * Set only by a provider webhook. The unique index on
+   * (provider, provider_reference) is what makes a redelivered event a
+   * constraint violation instead of the same money recorded twice.
+   */
+  provider?: string;
+  providerReference?: string;
 };
 
 export const recordPayment = async (
@@ -111,6 +118,8 @@ export const recordPayment = async (
       method: input.method,
       reference: input.reference ?? null,
       notes: input.notes ?? null,
+      provider: input.provider ?? null,
+      providerReference: input.providerReference ?? null,
       recordedById: actorStaffId,
     });
 

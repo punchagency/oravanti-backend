@@ -187,6 +187,20 @@ export const invoices = pgTable(
 
     notes: text("notes"),
 
+    /**
+     * The client-facing payment link, stored as a SHA-256 of the token.
+     *
+     * Hash-only, following consultation booking and document requests rather
+     * than the fee-agreement signing token, which stores a `randomUUID()` in
+     * plaintext with no expiry. Storing only the hash means the link cannot be
+     * recovered from the database — and it means resending has to mint a fresh
+     * token, which retires the previous link. Rotation is the price of never
+     * holding the raw value, and it is the right price for a link that takes
+     * money.
+     */
+    paymentTokenHash: text("payment_token_hash"),
+    paymentLinkExpiresAt: timestamp("payment_link_expires_at"),
+
     sentAt: timestamp("sent_at"),
     paidAt: timestamp("paid_at"),
     voidedAt: timestamp("voided_at"),

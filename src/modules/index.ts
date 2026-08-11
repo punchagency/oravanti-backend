@@ -15,6 +15,8 @@ import { QuestionnairesModule } from "./questionnaires/questionnaires.module";
 import {
   FinanceReportsModule,
   InvoicesModule,
+  PaymentPublicModule,
+  PaymentWebhookModule,
   TimeBillingModule,
 } from "./finance/finance.module";
 import { RevenueAnalyticsModule } from "./revenue-analytics/revenue-analytics.module";
@@ -61,6 +63,9 @@ export const modules: Module[] = [
   new InvoicesModule(),
   new TimeBillingModule(),
   new FinanceReportsModule(),
+  // Public: the token is the credential, no requireAuth.
+  new PaymentPublicModule(),
+  new PaymentWebhookModule(),
   new PermissionAuditLogModule(),
   new FirmInfoModule(),
   new FirmProfileModule(),

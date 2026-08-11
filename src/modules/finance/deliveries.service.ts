@@ -12,6 +12,8 @@ import { storageService } from "../../utils/storage/storage.service";
 import { logCaseEvent } from "../cases/case-events.service";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
+import { mintPaymentLink, paymentLinkFor } from "./payment-links.service";
+import { isPaymentProviderConfigured } from "./payment.provider";
 import { onClient, onLead, partyEmail, partyName } from "./party";
 import { renderInvoicePdf, type InvoicePdfInput } from "./invoice-pdf";
 import type { AccountAccess } from "./types";
@@ -59,6 +61,8 @@ const invoiceEmailTemplate = (opts: {
   matterReference: string | null;
   instalmentCount: number;
   firstInstalment: { dueDate: string; amount: number } | null;
+  /** Null while no payment provider is configured — no button is shown. */
+  paymentUrl: string | null;
 }): string => {
   const scheduled = opts.instalmentCount > 0 && opts.firstInstalment !== null;
 
@@ -101,6 +105,13 @@ const invoiceEmailTemplate = (opts: {
     ${
       scheduled
         ? `<p style="margin: 0 0 16px;">The full payment schedule is set out in the attached invoice.</p>`
+        : ""
+    }
+    ${
+      opts.paymentUrl
+        ? `<p style="margin: 0 0 24px;">
+      <a href="${escapeHtml(opts.paymentUrl)}" style="display: inline-block; padding: 10px 20px; background: #1a1a1a; color: #fff; border-radius: 6px; text-decoration: none;">Pay this invoice online</a>
+    </p>`
         : ""
     }
     <p style="margin: 0 0 16px;">
@@ -264,6 +275,12 @@ const deliver = async (
     contentType: "application/pdf",
   });
 
+  // A link is only offered when it can actually take money. Sending one that
+  // leads to "payment is not available" is worse than sending none.
+  const paymentUrl = isPaymentProviderConfigured()
+    ? paymentLinkFor(await mintPaymentLink(organizationId, invoiceId))
+    : null;
+
   // 2. Commit the attempt BEFORE sending, so a crash leaves evidence.
   const [delivery] = await db
     .insert(invoiceDeliveries)
@@ -284,6 +301,9 @@ const deliver = async (
     await emailService.sendEmail({
       to: meta.clientEmail,
       subject: `Invoice ${invoiceNumber} from ${meta.firmName ?? "your legal team"}`,
+      // Minted on every send, which retires the previous link. Only the hash
+      // is stored, so there is no way to resend the old one — rotation is the
+      // price of never holding the raw token.
       html: invoiceEmailTemplate({
         clientName: meta.clientName,
         firmName: meta.firmName ?? "Your legal team",
@@ -296,6 +316,7 @@ const deliver = async (
         // is the next one due, not the one already settled.
         firstInstalment:
           detail.instalments.find((i) => i.outstanding > 0) ?? null,
+        paymentUrl,
       }),
       attachments: [
         {

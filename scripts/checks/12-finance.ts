@@ -52,6 +52,13 @@ import * as paymentsService from "../../src/modules/finance/payments.service";
 import * as deliveriesService from "../../src/modules/finance/deliveries.service";
 import { invoiceDeliveries } from "../../src/db/schema/invoice-deliveries";
 import * as feeAgreementBilling from "../../src/modules/finance/fee-agreement-billing.service";
+import * as paymentLinks from "../../src/modules/finance/payment-links.service";
+import * as paymentWebhooks from "../../src/modules/finance/payment-webhooks.service";
+import {
+  getPaymentProvider,
+  isPaymentProviderConfigured,
+} from "../../src/modules/finance/payment.provider";
+import { paymentWebhookEvents } from "../../src/db/schema/payment-webhook-events";
 import * as reportsService from "../../src/modules/finance/reports.service";
 import * as timeBilling from "../../src/modules/finance/time-billing.service";
 import { deriveStoredStatus } from "../../src/modules/finance/totals";
@@ -1852,6 +1859,171 @@ const main = async () => {
         false,
       );
 
+      // ── Payment provider seam ─────────────────────────────────────────────
+      section("payment provider seam");
+
+      // Nothing is configured in any environment yet, and every path that could
+      // take money has to say so rather than pretend.
+      checkEqual(
+        "no provider is configured",
+        isPaymentProviderConfigured(),
+        false,
+      );
+      // The e-signature stub returns true here; this one must not. It guards an
+      // unauthenticated endpoint that writes to the ledger, so "I cannot verify
+      // this" has to mean refuse, not accept.
+      checkEqual(
+        "the stub verifies nothing",
+        getPaymentProvider().verifyWebhook(Buffer.from("{}"), "sig"),
+        false,
+      );
+
+      let unconfiguredCheckoutRefused = false;
+      try {
+        await paymentLinks.startCheckout("whatever");
+      } catch {
+        unconfiguredCheckoutRefused = true;
+      }
+      check(
+        "checkout is refused while no provider exists",
+        unconfiguredCheckoutRefused,
+      );
+
+      let unconfiguredWebhookRefused = false;
+      try {
+        await paymentWebhooks.handlePaymentWebhook(Buffer.from("{}"), "sig");
+      } catch {
+        unconfiguredWebhookRefused = true;
+      }
+      check(
+        "and so is the webhook",
+        unconfiguredWebhookRefused,
+      );
+
+      // ── Payment links ─────────────────────────────────────────────────────
+      section("payment links");
+
+      const linkToken = await paymentLinks.mintPaymentLink(orgId, second.id);
+      const payable = await paymentLinks.invoiceByPaymentToken(linkToken);
+      checkEqual("a link resolves its invoice", payable.invoiceId, second.id);
+      checkEqual(
+        "and reports payment unavailable",
+        payable.paymentsEnabled,
+        false,
+      );
+
+      // Rotation is the price of storing only the hash: there is no way to
+      // resend the old link, so minting a new one has to retire it.
+      const rotated = await paymentLinks.mintPaymentLink(orgId, second.id);
+      check("re-minting produces a different token", rotated !== linkToken);
+      let staleTokenRejected = false;
+      try {
+        await paymentLinks.invoiceByPaymentToken(linkToken);
+      } catch {
+        staleTokenRejected = true;
+      }
+      check("and the previous one stops working", staleTokenRejected);
+
+      let unknownTokenRejected = false;
+      try {
+        await paymentLinks.invoiceByPaymentToken("not-a-real-token");
+      } catch {
+        unknownTokenRejected = true;
+      }
+      check("an unknown token is refused", unknownTokenRejected);
+
+      // Paying a settled invoice must not be possible — `invoice` was paid in
+      // full earlier, then voided, so it is refused twice over.
+      const paidToken = await paymentLinks.mintPaymentLink(orgId, invoice.id);
+      let settledRejected = false;
+      try {
+        await paymentLinks.invoiceByPaymentToken(paidToken);
+      } catch {
+        settledRejected = true;
+      }
+      check("a settled invoice cannot be paid again", settledRejected);
+
+      // ── Ledger idempotency ────────────────────────────────────────────────
+      section("ledger idempotency");
+
+      // The provision that is genuinely painful to retrofit: a redelivered
+      // webhook must hit a constraint rather than record the same money twice.
+      await systemDb.insert(invoicePayments).values({
+        organizationId: orgId,
+        invoiceId: second.id,
+        amount: "10.00",
+        amountOperating: "10.00",
+        amountTrust: "0.00",
+        paymentDate: daysFromNow(0),
+        method: "credit_card",
+        provider: "stripe",
+        providerReference: "pi_check_duplicate",
+      });
+
+      let duplicatePaymentRejected = false;
+      try {
+        await systemDb.insert(invoicePayments).values({
+          organizationId: orgId,
+          invoiceId: second.id,
+          amount: "10.00",
+          amountOperating: "10.00",
+          amountTrust: "0.00",
+          paymentDate: daysFromNow(0),
+          method: "credit_card",
+          provider: "stripe",
+          providerReference: "pi_check_duplicate",
+        });
+      } catch {
+        duplicatePaymentRejected = true;
+      }
+      check(
+        "the same provider payment cannot be recorded twice",
+        duplicatePaymentRejected,
+      );
+
+      // Hand-entered rows leave both columns null and must stay unaffected —
+      // otherwise the index would stop staff recording two cash payments.
+      await systemDb.insert(invoicePayments).values([
+        {
+          organizationId: orgId,
+          invoiceId: second.id,
+          amount: "5.00",
+          amountOperating: "5.00",
+          amountTrust: "0.00",
+          paymentDate: daysFromNow(0),
+          method: "cash",
+        },
+        {
+          organizationId: orgId,
+          invoiceId: second.id,
+          amount: "5.00",
+          amountOperating: "5.00",
+          amountTrust: "0.00",
+          paymentDate: daysFromNow(0),
+          method: "cash",
+        },
+      ]);
+      check("but two manual payments still can be", true);
+
+      // The event store is the first line of defence, and it has to be its own
+      // mechanism: signing has a terminal state to guard on, payments do not.
+      await systemDb.insert(paymentWebhookEvents).values({
+        provider: "stripe",
+        eventId: "evt_check_1",
+        eventType: "payment",
+      });
+      let duplicateEventRejected = false;
+      try {
+        await systemDb.insert(paymentWebhookEvents).values({
+          provider: "stripe",
+          eventId: "evt_check_1",
+          eventType: "payment",
+        });
+      } catch {
+        duplicateEventRejected = true;
+      }
+      check("a replayed event id is rejected", duplicateEventRejected);
+
       // ── Activity trail ────────────────────────────────────────────────────
       section("activity trail");
 
@@ -1889,6 +2061,10 @@ const main = async () => {
         .delete(invoiceLineItems)
         .where(inArray(invoiceLineItems.invoiceId, invoiceIds));
     }
+    // Not org-scoped by design, so cleaned by the ids this check invents.
+    await systemDb
+      .delete(paymentWebhookEvents)
+      .where(eq(paymentWebhookEvents.eventId, "evt_check_1"));
     await systemDb.delete(financeEvents).where(eq(financeEvents.organizationId, orgId));
     await systemDb.delete(invoices).where(eq(invoices.organizationId, orgId));
     await systemDb
