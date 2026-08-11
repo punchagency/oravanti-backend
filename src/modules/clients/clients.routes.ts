@@ -1,11 +1,35 @@
 import { Router } from "express";
+import multer from "multer";
+import { z } from "zod";
 
 import { requireAuth } from "../../middleware/auth.middleware";
 import { resolveActorContext } from "../../middleware/resolve-actor-context";
+import { preserveRequestContext } from "../../middleware/request-context";
 import { CommonValidation } from "../../validation/common.validation";
 
 import { validateRequest } from "../../middleware/validate.middleware";
 import { ClientsController } from "./clients.controller";
+
+const updateClientProfileBody = z
+  .object({
+    firstName: z.string().trim().min(2, "First name is required").optional(),
+    lastName: z.string().trim().min(2, "Last name is required").optional(),
+    phone: z.string().trim().nullable().optional(),
+  })
+  .strict();
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (_req, file, cb) => {
+    const allowed = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only JPEG, PNG, GIF, and WebP images are allowed"));
+    }
+  },
+});
 
 export class ClientsRouter {
   public router: Router;
@@ -29,6 +53,19 @@ export class ClientsRouter {
     // Utilities
     this.router.get("/certifications", this.ctrl.getCertifications);
     this.router.get("/teams/:teamId/staff", this.ctrl.getTeamStaff);
+
+    // Client profile (self-service)
+    this.router.get("/profile", this.ctrl.getClientProfile);
+    this.router.patch(
+      "/profile",
+      validateRequest({ body: updateClientProfileBody }),
+      this.ctrl.updateClientProfile,
+    );
+    this.router.post(
+      "/profile/avatar",
+      preserveRequestContext(upload.single("avatar")),
+      this.ctrl.uploadClientAvatar,
+    );
 
     // Clients
     this.router.get("/", this.ctrl.getAllClients);

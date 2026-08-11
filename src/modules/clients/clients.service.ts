@@ -25,6 +25,8 @@ import {
   PaginationParams,
 } from "../../utils/pagination";
 import { db as _db } from "../../db/client";
+import { resolveAvatarUrl } from "../../utils/storage/avatar-url";
+import { storageService } from "../../utils/storage/storage.service";
 import { generateCaseNumber } from "../cases/cases.service";
 import { ensureCaseTypeBelongsToPracticeArea } from "../practice-areas/practice-areas.utils";
 
@@ -339,4 +341,106 @@ export class ClientsService {
   getClientCases = getClientCases;
   getCertifications = getCertifications;
   getTeamStaff = getTeamStaff;
+
+  // ─── Client Profile (self-service) ─────────────────────────────────────────
+
+  async getClientProfile(userId: string) {
+    const [row] = await db
+      .select({
+        id: clients.id,
+        firstName: clients.firstName,
+        lastName: clients.lastName,
+        displayName: clients.displayName,
+        email: clients.email,
+        phone: clients.phone,
+        avatarUrl: clients.avatarUrl,
+        entityType: clients.entityType,
+        status: clients.status,
+        createdAt: clients.createdAt,
+        updatedAt: clients.updatedAt,
+      })
+      .from(clients)
+      .where(eq(clients.userId, userId))
+      .limit(1);
+
+    if (!row) return null;
+
+    return {
+      ...row,
+      avatarUrl: await resolveAvatarUrl(row.avatarUrl),
+    };
+  }
+
+  async updateClientProfile(
+    userId: string,
+    data: { firstName?: string; lastName?: string; phone?: string | null },
+  ) {
+    const [existing] = await db
+      .select({
+        id: clients.id,
+        firstName: clients.firstName,
+        lastName: clients.lastName,
+        displayName: clients.displayName,
+        entityType: clients.entityType,
+      })
+      .from(clients)
+      .where(eq(clients.userId, userId))
+      .limit(1);
+
+    if (!existing) return null;
+
+    const firstName = data.firstName ?? existing.firstName;
+    const lastName = data.lastName ?? existing.lastName;
+    const displayName =
+      existing.entityType === "individual"
+        ? `${firstName} ${lastName}`.trim()
+        : existing.displayName;
+
+    const [updated] = await db
+      .update(clients)
+      .set({
+        ...(data.firstName !== undefined ? { firstName } : {}),
+        ...(data.lastName !== undefined ? { lastName } : {}),
+        ...(data.phone !== undefined ? { phone: data.phone || null } : {}),
+        displayName,
+        updatedAt: new Date(),
+      })
+      .where(eq(clients.id, existing.id))
+      .returning();
+
+    return updated ?? null;
+  }
+
+  async uploadClientAvatar(
+    userId: string,
+    file: { buffer: Buffer; mimetype: string; originalname: string },
+  ) {
+    const [clientRecord] = await db
+      .select({ id: clients.id, avatarUrl: clients.avatarUrl })
+      .from(clients)
+      .where(eq(clients.userId, userId))
+      .limit(1);
+
+    if (!clientRecord) return null;
+
+    const ext = file.mimetype.split("/")[1] ?? "png";
+    const key = `client-avatars/${clientRecord.id}.${ext}`;
+
+    await storageService.upload({
+      key,
+      body: file.buffer,
+      contentType: file.mimetype,
+    });
+
+    const avatarUrl = await storageService.getSignedDownloadUrl(key);
+
+    // Persist the R2 key, not the signed URL — presigned URLs expire (1h) and
+    // the browser fetches avatars directly from R2, so each read re-signs.
+    await db
+      .update(clients)
+      .set({ avatarUrl: key, updatedAt: new Date() })
+      .where(eq(clients.id, clientRecord.id));
+
+    return { avatarUrl };
+  }
 }

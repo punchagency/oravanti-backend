@@ -138,4 +138,38 @@ export class ClientsController {
       sendSuccess(res, r.data, "Client cases retrieved successfully", 200, { pagination: r.pagination });
     }
   });
+
+  // ─── Client Profile (self-service) ─────────────────────────────────────────
+
+  getClientProfile = asyncWrap(async (req: Request, res: Response) => {
+    const { userId } = getRequestContext();
+    if (!userId) throw new NotFoundError("Unauthorized");
+    const result = await this.svc.getClientProfile(userId);
+    if (!result) throw new NotFoundError("Client profile not found");
+    sendSuccess(res, result, "Profile retrieved successfully");
+  });
+
+  updateClientProfile = asyncWrap(async (req: Request, res: Response) => {
+    const { userId } = getRequestContext();
+    if (!userId) throw new NotFoundError("Unauthorized");
+    const result = await this.svc.updateClientProfile(userId, req.body);
+    if (!result) throw new NotFoundError("Client profile not found");
+    sendSuccess(res, result, "Profile updated successfully");
+  });
+
+  uploadClientAvatar = asyncWrap(async (req: Request, res: Response) => {
+    const { userId } = getRequestContext();
+    if (!userId) throw new NotFoundError("Unauthorized");
+
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+    const result = await this.svc.uploadClientAvatar(userId, {
+      buffer: file.buffer,
+      mimetype: file.mimetype,
+      originalname: file.originalname,
+    });
+    if (!result) throw new NotFoundError("Client profile not found");
+    sendSuccess(res, {}, "Avatar uploaded successfully");
+  });
 }
