@@ -138,4 +138,119 @@ export class ClientsController {
       sendSuccess(res, r.data, "Client cases retrieved successfully", 200, { pagination: r.pagination });
     }
   });
+
+  // ─── Client Profile (self-service) ────────────────────────────────────────
+
+  getClientProfile = asyncWrap(async (req: Request, res: Response) => {
+    const { userId } = getRequestContext();
+    if (!userId) throw new NotFoundError("Unauthorized");
+    const result = await this.svc.getClientProfile(userId);
+    if (!result) throw new NotFoundError("Client profile not found");
+    sendSuccess(res, result, "Profile retrieved successfully");
+  });
+
+  updateClientProfile = asyncWrap(async (req: Request, res: Response) => {
+    const { userId } = getRequestContext();
+    if (!userId) throw new NotFoundError("Unauthorized");
+    const result = await this.svc.updateClientProfile(userId, req.body);
+    if (!result) throw new NotFoundError("Client profile not found");
+    sendSuccess(res, result, "Profile updated successfully");
+  });
+
+  uploadClientAvatar = asyncWrap(async (req: Request, res: Response) => {
+    const { userId } = getRequestContext();
+    if (!userId) throw new NotFoundError("Unauthorized");
+
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+    const result = await this.svc.uploadClientAvatar(userId, {
+      buffer: file.buffer,
+      mimetype: file.mimetype,
+      originalname: file.originalname,
+    });
+    if (!result) throw new NotFoundError("Client profile not found");
+    sendSuccess(res, {}, "Avatar uploaded successfully");
+  });
+
+  // ─── Portal Methods (lead-converted clients) ──────────────────────────────
+
+  listConvertedClients = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const { search, practiceAreaId, portalStatus, page, limit, all } = req.query;
+    const bypassPagination = parseBooleanQuery(all, "all");
+
+    const result = await this.svc.listConvertedClients(organizationId!, {
+      search: search as string | undefined,
+      practiceAreaId: practiceAreaId as string | undefined,
+      portalStatus: portalStatus as string | undefined,
+      all: bypassPagination,
+      ...(!bypassPagination ? parsePaginationQuery({ page, limit }) : {}),
+    });
+
+    if (bypassPagination) {
+      sendSuccess(res, result, "Clients retrieved successfully");
+    } else {
+      const r = result as { data: unknown; pagination: unknown };
+      sendSuccess(res, r.data, "Clients retrieved successfully", 200, {
+        pagination: r.pagination,
+      });
+    }
+  });
+
+  getConvertedClientDetail = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.svc.getConvertedClientDetail(
+      req.params.clientId as string,
+      organizationId!,
+    );
+    sendSuccess(res, result, "Client retrieved successfully");
+  });
+
+  sendPortalInvitation = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.svc.sendPortalInvitation(
+      req.params.clientId as string,
+      organizationId!,
+      req.headers as Record<string, string>,
+    );
+    sendSuccess(res, result, "Portal invitation sent successfully");
+  });
+
+  resetClientPassword = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.svc.resetClientPassword(
+      req.params.clientId as string,
+      organizationId!,
+    );
+    sendSuccess(res, result, "Password reset email sent successfully");
+  });
+
+  getClientSessions = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.svc.getClientSessions(
+      req.params.clientId as string,
+      organizationId!,
+    );
+    sendSuccess(res, result, "Portal sessions retrieved successfully");
+  });
+
+  revokeClientSession = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.svc.revokeClientSession(
+      req.params.clientId as string,
+      req.params.token as string,
+      organizationId!,
+    );
+    sendSuccess(res, result, "Session revoked successfully");
+  });
+
+  getPortalStatus = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.svc.getPortalStatus(
+      req.params.clientId as string,
+      organizationId!,
+    );
+    sendSuccess(res, result, "Portal status retrieved successfully");
+  });
 }

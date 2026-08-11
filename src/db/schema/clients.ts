@@ -66,6 +66,7 @@ export const clients = pgTable("clients", {
   displayName: text("display_name").notNull(), // e.g., "John Doe" or "Stark Industries Inc"
   email: text("email").notNull(),
   phone: text("phone"),
+  avatarUrl: text("avatar_url"),
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
