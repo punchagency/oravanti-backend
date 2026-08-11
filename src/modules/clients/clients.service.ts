@@ -23,8 +23,8 @@ import { staff } from "../../db/schema/staff";
 import { teamMembers } from "../../db/schema/team-members";
 import { user, session } from "../../db/schema/auth-schema";
 import { auth } from "../../auth";
+import { env } from "../../config/env";
 import { emailService } from "../../utils/email/email.service";
-import { getEmailVerificationCallbackUrl } from "../../utils/portal";
 import { ConflictError, NotFoundError, BadRequestError } from "../../utils/error/app-error";
 import { resolveAvatarUrl } from "../../utils/storage/avatar-url";
 import { storageService } from "../../utils/storage/storage.service";
@@ -701,7 +701,7 @@ export class ClientsService {
           password: tempPassword,
           accountType: "client",
           onboardingState: "email_unverified",
-          callbackURL: getEmailVerificationCallbackUrl("client"),
+          callbackURL: env.EMAIL_VERIFICATION_CALLBACK_URL,
         },
         headers: headers as any,
       });
