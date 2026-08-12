@@ -19,6 +19,10 @@ import {
   PaymentWebhookModule,
   TimeBillingModule,
 } from "./finance/finance.module";
+import {
+  ResendWebhookModule,
+  TwilioWebhookModule,
+} from "./notifications/notifications.module";
 import { RevenueAnalyticsModule } from "./revenue-analytics/revenue-analytics.module";
 import { AccessControlModule } from "./settings/access-control/access-control.module";
 import { ApprovalWorkflowsModule } from "./settings/approval-workflows/approval-workflows.module";
@@ -67,6 +71,8 @@ export const modules: Module[] = [
   // Public: the token is the credential, no requireAuth.
   new PaymentPublicModule(),
   new PaymentWebhookModule(),
+  new TwilioWebhookModule(),
+  new ResendWebhookModule(),
   new PermissionAuditLogModule(),
   new FirmInfoModule(),
   new FirmProfileModule(),

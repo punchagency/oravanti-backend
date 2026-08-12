@@ -101,6 +101,25 @@ export class App {
       "/webhooks/payments",
       express.raw({ type: "application/json" }),
     );
+    /**
+     * Resend signs the raw body too, via Svix, so it needs the same treatment
+     * and for the same reason.
+     */
+    this.express.use(
+      "/webhooks/resend",
+      express.raw({ type: "application/json" }),
+    );
+    /**
+     * Twilio is the odd one out: it posts application/x-www-form-urlencoded and
+     * signs the request URL concatenated with its form params sorted by key —
+     * not the bytes. So it needs a parser rather than the raw body, but it
+     * still has to come before express.json(), which would otherwise leave
+     * req.body empty for a content type it does not handle.
+     */
+    this.express.use(
+      "/webhooks/twilio",
+      express.urlencoded({ extended: false }),
+    );
     this.express.use(express.json());
     this.express.use(requestContextMiddleware);
   }
