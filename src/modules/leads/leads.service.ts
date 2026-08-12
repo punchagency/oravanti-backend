@@ -2325,6 +2325,11 @@ const initiateConsultation = async (
     mode: "video" | "in_person" | "phone_call";
     duration: number;
     locationId?: string;
+    /**
+     * The fee BEFORE any emergency surcharge. `emergencyMultiplier` is applied
+     * here, not by the caller — send the standard fee and the multiplier
+     * separately. A caller that pre-multiplies gets the surcharge applied twice.
+     */
     feeAmount?: number;
     preConsultationNotes?: string;
     notifyChannels?: ("email" | "sms")[];
