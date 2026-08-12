@@ -75,7 +75,12 @@ import {
   scheduleQuestionnaireReminder,
 } from "../../queue/queues";
 import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
+import {
+  cancelConsultationReminders,
+  scheduleConsultationReminders,
+} from "../../notifications/consultation-reminders";
 import { notify } from "../../notifications/notification.service";
+import { staffRecipientsForFirm } from "../../notifications/recipients";
 import { emailService } from "../../utils/email/email.service";
 import {
   AuthorizationError,
@@ -513,6 +518,34 @@ const createLead = async (
   // immediately populated without requiring a manual init click.
   const wfSvc = new LeadWorkflowService();
   await wfSvc.initializePipelineSteps(lead.id, organizationId);
+
+  /**
+   * Tell the firm a lead arrived.
+   *
+   * Firm-wide rather than to one person, because a new lead belongs to nobody
+   * yet — `respondentId` is whoever happened to create the record, which for a
+   * web-form submission is a system actor rather than someone waiting to
+   * respond.
+   *
+   * Preference-gated under `new_lead_submitted`, so a firm drowning in leads
+   * can switch it off. Email and in-app only: no firm wants every intake
+   * arriving as a text.
+   */
+  void notify({
+    organizationId,
+    event: "new_lead_submitted",
+    recipients: await staffRecipientsForFirm(organizationId),
+    context: {
+      leadName: `${lead.firstName} ${lead.lastName}`.trim(),
+      source: data.source,
+      link: `${env.FRONTEND_APP_URL}/admin/leads/${lead.id}`,
+    },
+    scenario: { leadId: lead.id },
+    actorStaffId: creatorStaffId,
+    dedupeKey: `new-lead-${lead.id}`,
+  }).catch((error: unknown) =>
+    console.error("[leads] new-lead notify failed", error),
+  );
 
   return lead;
 };
@@ -2949,6 +2982,38 @@ const updateConsultation = async (
     });
   }
 
+  /**
+   * Keep the reminders honest about whatever just changed.
+   *
+   * A reschedule re-arms them at the new time (the scheduler cancels before
+   * re-adding, so the old times cannot survive). A consultation that has
+   * completed, been cancelled or been marked no-show has no future to remind
+   * anyone about — and a "your consultation is in an hour" text after a no-show
+   * is the kind of thing a client remembers.
+   */
+  const becameTerminal =
+    data.status !== undefined &&
+    data.status !== existing.status &&
+    ["completed", "cancelled", "no_show"].includes(data.status);
+
+  if (becameTerminal) {
+    await cancelConsultationReminders(organizationId, updated.id).catch(
+      (error: unknown) =>
+        console.error("[leads] failed to cancel consultation reminders", error),
+    );
+  } else if (
+    data.scheduledAt &&
+    existing.scheduledAt?.getTime() !== data.scheduledAt.getTime()
+  ) {
+    void scheduleConsultationReminders(organizationId, updated.id).catch(
+      (error: unknown) =>
+        console.error(
+          "[leads] failed to reschedule consultation reminders",
+          error,
+        ),
+    );
+  }
+
   if (data.feeStatus === "paid" && existing.feeStatus === "unpaid") {
     await logLeadEvent({
       organizationId,
@@ -3589,6 +3654,26 @@ const finalizeConsultation = async (
   }
 
   await sendConsultationConfirmation(updated);
+
+  /**
+   * Every scheduling path funnels through here — slot selection, urgent
+   * auto-schedule, instant start, and payment completion — so this is the one
+   * place reminders need to be armed.
+   *
+   * It reschedules rather than merely schedules: a lead who moves their
+   * appointment reaches this again, and scheduleConsultationReminders cancels
+   * before re-adding so the old times cannot survive.
+   *
+   * An instant consultation begins now, so both reminder times are already in
+   * the past and none are created — handled inside, not special-cased here.
+   */
+  void scheduleConsultationReminders(
+    updated.organizationId,
+    updated.id,
+  ).catch((error: unknown) =>
+    console.error("[leads] failed to schedule consultation reminders", error),
+  );
+
   return updated;
 };
 
@@ -3696,6 +3781,13 @@ const cancelConsultation = async (
         eq(calendarEvents.organizationId, organizationId),
       ),
     );
+
+  // Awaited, unlike the scheduling side: a reminder telling someone to attend a
+  // consultation the firm has just cancelled is worse than a slow request.
+  await cancelConsultationReminders(organizationId, consultation.id).catch(
+    (error: unknown) =>
+      console.error("[leads] failed to cancel consultation reminders", error),
+  );
 
   await logLeadEvent({
     organizationId,
@@ -4490,6 +4582,58 @@ type DropboxSignEvent = {
 // Authoritative completion signal. The controller parses the multipart `json`
 // field and passes the decoded event here. Must be idempotent — Dropbox Sign
 // retries and may deliver duplicates.
+/**
+ * Tell the firm what became of a fee agreement.
+ *
+ * Reached from the Dropbox Sign webhook, which has no request context — so the
+ * lead is re-read here rather than passed in, and the recipient is the staff
+ * member handling the lead rather than "whoever is logged in", because nobody
+ * is.
+ *
+ * Falls back to the whole firm when the lead has no respondent: a signed fee
+ * agreement is the moment a matter becomes real, and it is better for several
+ * people to hear about it than nobody.
+ */
+const notifyAgreementOutcome = async (
+  agreement: typeof feeAgreements.$inferSelect,
+  event: "fee_agreement_signed" | "fee_agreement_declined",
+  extra: Record<string, unknown> = {},
+) => {
+  try {
+    const [lead] = await db
+      .select({
+        firstName: leads.firstName,
+        lastName: leads.lastName,
+        respondentId: leads.respondentId,
+      })
+      .from(leads)
+      .where(eq(leads.id, agreement.leadId))
+      .limit(1);
+
+    if (!lead) return;
+
+    const recipients = lead.respondentId
+      ? [{ type: "staff" as const, id: lead.respondentId }]
+      : await staffRecipientsForFirm(agreement.organizationId);
+
+    await notify({
+      organizationId: agreement.organizationId,
+      event,
+      recipients,
+      context: {
+        leadName: `${lead.firstName} ${lead.lastName}`.trim(),
+        link: `${env.FRONTEND_APP_URL}/admin/leads/${agreement.leadId}`,
+        ...extra,
+      },
+      scenario: { leadId: agreement.leadId },
+      // Keyed on the agreement, so a redelivered webhook does not re-alert.
+      dedupeKey: `${event}-${agreement.id}`,
+    });
+  } catch (error) {
+    console.error("[leads] fee agreement outcome notify failed", error);
+  }
+};
+
 const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
   const event = payload?.event;
   if (!event?.event_time || !event?.event_type || !event?.event_hash) {
@@ -4601,6 +4745,12 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
       );
     }
 
+    // Both branches of this webhook used to end in silence: the lead signed,
+    // or refused to, and nobody at the firm was told. The signing itself is
+    // Dropbox Sign's own email to the lead; this is the half about the firm
+    // learning what happened.
+    void notifyAgreementOutcome(agreement, "fee_agreement_signed");
+
     return { processed: true, agreementId: agreement.id };
   }
 
@@ -4620,6 +4770,15 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
         type: "fee_agreement_voided",
         actorId: null,
         metadata: { agreementId: agreement.id, reason: event.event_type },
+      });
+
+      // A declined fee agreement stalls the whole pipeline, and the firm has
+      // no other way to find out — the lead simply stops progressing.
+      void notifyAgreementOutcome(agreement, "fee_agreement_declined", {
+        reason:
+          event.event_type === "signature_request_declined"
+            ? "Declined by signer"
+            : "Cancelled",
       });
     }
     return { processed: true, agreementId: agreement.id, voided: true };
@@ -4917,31 +5076,37 @@ const openCase = async (
     }
 
     /**
-     * TODO: Notify assigned team lead of new case. This is commented out for now because the assigned team may not be set at the time of case opening, and we don't want to send notifications to the wrong person. We will revisit this logic once we have a clearer understanding of how team assignments will work in the future.
+     * Tell the staff member who owns this lead that it became a case.
+     *
+     * The previous attempt at this was commented out because the assigned team
+     * may not be set at case-opening time and nobody wanted to notify the wrong
+     * person — a sound worry, and the commented code had the bug that proves
+     * it: `data.assignedTeamId ?? lead.respondentId` passed a TEAM id where a
+     * staff id was expected, so it would have looked up a staff row that does
+     * not exist, or worse, one that coincidentally does.
+     *
+     * Resolved by notifying `respondentId` instead: the staff member who has
+     * actually been handling this lead through intake. That person is known,
+     * correct, and interested. Team-lead routing stays unresolved, which is the
+     * honest state — it depends on how team assignment ends up working.
      */
-    // 7. Notify
-    // const assignedStaffId = data.assignedTeamId ?? lead.respondentId;
-    //     if (assignedStaffId) {
-    //       const [assignedStaff] = await db
-    //         .select({ email: user.email, firstName: staff.firstName })
-    //         .from(staff)
-    //         .leftJoin(user, eq(staff.userId, user.id))
-    //         .where(eq(staff.id, assignedStaffId))
-    //         .limit(1);
-    //
-    //       if (assignedStaff) {
-    //         emailService
-    //           .sendEmail({
-    //             to: assignedStaff.email!,
-    //             subject: `New case opened: ${newCase.caseNumber}`,
-    //             html: `<p>Hi ${assignedStaff.firstName},</p>
-    //               <p>A new case has been opened for ${leadName}.</p>
-    //               <p><strong>Case Number:</strong> ${newCase.caseNumber}</p>
-    //               <p><strong>Case Type:</strong> ${caseType.name}</p>`,
-    //           })
-    //           .catch(console.error);
-    //       }
-    //     }
+    if (lead.respondentId) {
+      void notify({
+        organizationId,
+        event: "case_opened_staff",
+        recipients: [{ type: "staff", id: lead.respondentId }],
+        context: {
+          caseNumber: newCase.caseNumber,
+          clientName: leadName,
+          link: `${env.FRONTEND_APP_URL}/admin/cases/${newCase.id}`,
+        },
+        scenario: { leadId: lead.id, caseId: newCase.id },
+        actorStaffId: creatorStaffId,
+        dedupeKey: `case-opened-${newCase.id}`,
+      }).catch((error: unknown) =>
+        console.error("[leads] case-opened notify failed", error),
+      );
+    }
 
     emailService
       .sendEmail({
