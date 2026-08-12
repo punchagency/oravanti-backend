@@ -324,6 +324,20 @@ export const cancelNotifications = async (
     .set({
       status: "cancelled",
       skipReason: "cancelled",
+      /**
+       * Cancelling RELEASES the dedupe key.
+       *
+       * The row is kept — "this was scheduled and then called off" is part of
+       * the record — but its key is not, because the key's only job was to stop
+       * a live send being duplicated and there is no longer a live send.
+       *
+       * Without this, cancel-then-reschedule silently loses the new
+       * notification: the insert would collide with the cancelled row on the
+       * partial unique index and be dropped by onConflictDoNothing, leaving a
+       * consultation with no reminders at all. That failure is invisible —
+       * nothing errors, a reminder simply never arrives.
+       */
+      dedupeKey: null,
       updatedAt: new Date(),
     })
     .where(
