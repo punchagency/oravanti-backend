@@ -14,6 +14,7 @@ import { env } from "../../src/config/env";
 import { systemDb } from "../../src/db/client";
 import { smsInboundMessages } from "../../src/db/schema/sms-inbound-messages";
 import { consultationSettings } from "../../src/db/schema/consultation-settings";
+import { consultations } from "../../src/db/schema/consultations";
 import { emailSuppressions } from "../../src/db/schema/email-suppressions";
 import { leads } from "../../src/db/schema/leads";
 import { notifications } from "../../src/db/schema/notifications";
@@ -22,6 +23,10 @@ import {
   suppressEmail,
   unsuppressEmail,
 } from "../../src/notifications/consent.service";
+import {
+  cancelConsultationReminders,
+  scheduleConsultationReminders,
+} from "../../src/notifications/consultation-reminders";
 import { notify } from "../../src/notifications/notification.service";
 import {
   handleResendWebhook,
@@ -775,6 +780,154 @@ const main = async () => {
     } finally {
       (emailService as { sendEmail: unknown }).sendEmail = realSendEmail;
     }
+  });
+
+  // ─── Consultation reminders ────────────────────────────────────────────────
+
+  section("consultation reminders");
+
+  await withTempFixture({}, async (fixture) => {
+    const orgId = fixture.organizationId;
+
+    const makeConsultation = async (scheduledAt: Date | null, status = "scheduled") => {
+      const [row] = await systemDb
+        .insert(consultations)
+        .values({
+          organizationId: orgId,
+          leadId: fixture.leadId,
+          scheduledAt,
+          duration: 30,
+          mode: "video",
+          status: status as "scheduled",
+        })
+        .returning();
+      return row;
+    };
+
+    const remindersFor = async (consultationId: string) =>
+      systemDb
+        .select()
+        .from(notifications)
+        .where(
+          and(
+            eq(notifications.organizationId, orgId),
+            eq(notifications.consultationId, consultationId),
+          ),
+        );
+
+    /**
+     * Rows that will still fire.
+     *
+     * A `skipped` row is terminal and truthful — "we did not send this because
+     * SMS is unconfigured" — so a cancel must not touch it, and it is not
+     * pending either. Only pending/queued count as live.
+     */
+    const liveRemindersFor = async (consultationId: string) =>
+      (await remindersFor(consultationId)).filter(
+        (r) => r.status === "pending" || r.status === "queued",
+      );
+
+    // Comfortably in the future: both offsets apply.
+    const future = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+    const c1 = await makeConsultation(future);
+    await scheduleConsultationReminders(orgId, c1.id);
+
+    let rows = await remindersFor(c1.id);
+    const events = rows.map((r) => r.event).sort();
+    check(
+      "both reminders are scheduled",
+      events.includes("consultation_reminder_24h") &&
+        events.includes("consultation_reminder_1h"),
+      events,
+    );
+    const r24 = rows.find((r) => r.event === "consultation_reminder_24h")!;
+    checkEqual(
+      "the 24h reminder is timed 24 hours before",
+      r24.sendAt?.getTime(),
+      future.getTime() - 24 * 60 * 60 * 1000,
+    );
+    check(
+      "the reminder renders the time in context",
+      typeof (r24.payload as { when?: string }).when === "string",
+    );
+    const [c1After] = await systemDb
+      .select()
+      .from(consultations)
+      .where(eq(consultations.id, c1.id));
+    check("remindersScheduledAt is stamped", c1After.remindersScheduledAt !== null);
+
+    // Rescheduling must not leave the old times behind. This is the case that
+    // a schedule-only implementation gets wrong, because BullMQ silently
+    // ignores an add whose job id is still in the completed set.
+    const moved = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000);
+    await systemDb
+      .update(consultations)
+      .set({ scheduledAt: moved })
+      .where(eq(consultations.id, c1.id));
+    await scheduleConsultationReminders(orgId, c1.id);
+
+    const live = await liveRemindersFor(c1.id);
+    checkEqual("a reschedule leaves exactly two live reminders", live.length, 2);
+    checkEqual(
+      "and the originals are cancelled rather than deleted",
+      (await remindersFor(c1.id)).filter((r) => r.status === "cancelled").length,
+      2,
+    );
+    const movedR24 = live.find((r) => r.event === "consultation_reminder_24h")!;
+    checkEqual(
+      "the live reminder uses the new time",
+      movedR24.sendAt?.getTime(),
+      moved.getTime() - 24 * 60 * 60 * 1000,
+    );
+
+    // Re-running the scheduler unchanged must be an exact no-op, or every
+    // finalize would churn the reminders.
+    await scheduleConsultationReminders(orgId, c1.id);
+    checkEqual(
+      "rescheduling to the same time changes nothing",
+      (await liveRemindersFor(c1.id)).length,
+      2,
+    );
+
+    // Cancelling marks them cancelled, so "scheduled then called off" stays in
+    // the record rather than vanishing.
+    await cancelConsultationReminders(orgId, c1.id);
+    checkEqual(
+      "cancelling leaves nothing live",
+      (await liveRemindersFor(c1.id)).length,
+      0,
+    );
+
+    // Two hours away: the 1-hour reminder applies, the 24-hour one does not.
+    const soon = new Date(Date.now() + 2 * 60 * 60 * 1000);
+    const c2 = await makeConsultation(soon);
+    await scheduleConsultationReminders(orgId, c2.id);
+    const soonEvents = new Set(
+      (await remindersFor(c2.id)).map((r) => r.event),
+    );
+    checkEqual(
+      "a consultation two hours out gets only the 1-hour reminder",
+      [...soonEvents].join(","),
+      "consultation_reminder_1h",
+    );
+
+    // A past consultation gets none — scheduling a send in the past would fire
+    // immediately, telling someone their consultation is "tomorrow".
+    const past = new Date(Date.now() - 60 * 60 * 1000);
+    const c3 = await makeConsultation(past);
+    await scheduleConsultationReminders(orgId, c3.id);
+    checkEqual("a past consultation gets no reminders", (await remindersFor(c3.id)).length, 0);
+
+    // Not yet booked: no agreed time to remind anyone about.
+    const c4 = await makeConsultation(future, "pending_payment");
+    await scheduleConsultationReminders(orgId, c4.id);
+    checkEqual(
+      "an unbooked consultation gets no reminders",
+      (await remindersFor(c4.id)).length,
+      0,
+    );
+
+    await systemDb.delete(consultations).where(eq(consultations.organizationId, orgId));
   });
 
   // ─── Keywords ──────────────────────────────────────────────────────────────
