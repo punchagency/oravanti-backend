@@ -1,4 +1,4 @@
-import { html, smsBody } from "../render";
+import { html, raw, smsBody } from "../render";
 import type { TemplateDef, TemplateMeta } from "./index";
 
 /**
@@ -64,40 +64,85 @@ export const intakeTemplates = {
   },
 
   missing_documents_requested: {
-    email: (ctx: { link: string; documents?: string[] }, meta) => ({
-      subject: `${meta.firmName} needs a few more documents`,
+    // `link` is optional: the questionnaire flow asks for outstanding documents
+    // without minting a fresh access token, so it can only point the lead back
+    // at the link they already hold.
+    email: (ctx: { link?: string; documents?: string[] }, meta) => ({
+      subject: "Outstanding documents for your intake",
       html: layout(
         `Hello ${meta.recipientName},`,
-        html`<p>To continue with your matter, ${meta.firmName} needs the following:</p>` +
+        html`<p>To continue with your intake, ${meta.firmName} still needs the following:</p>` +
           (ctx.documents?.length
-            ? html`<ul>${{
-                __raw: ctx.documents
-                  .map((doc) => html`<li>${doc}</li>`)
-                  .join(""),
-              }}</ul>`
+            ? html`<ul>${raw(
+                ctx.documents.map((doc) => html`<li>${doc}</li>`).join(""),
+              )}</ul>`
             : "") +
-          button(ctx.link, "Upload documents"),
+          (ctx.link
+            ? button(ctx.link, "Upload documents")
+            : html`<p>Please upload them using your intake questionnaire link. If you have misplaced it, contact the office and we will send a new one.</p>`),
         meta,
       ),
     }),
-    sms: (ctx: { link: string }, meta) =>
-      smsBody(meta.firmName, `We need a few more documents for your matter: ${ctx.link}`),
+    sms: (ctx: { link?: string }, meta) =>
+      smsBody(
+        meta.firmName,
+        ctx.link
+          ? `We still need some documents for your intake: ${ctx.link}`
+          : "We still need some documents for your intake. Please use your questionnaire link.",
+      ),
   },
 
   consultation_booking_link: {
-    email: (ctx: { link: string; requiresPayment?: boolean; amount?: string }, meta) => ({
-      subject: `Book your consultation with ${meta.firmName}`,
+    email: (
+      ctx: {
+        link: string;
+        requiresPayment?: boolean;
+        amount?: string;
+        /**
+         * An urgent consultation is scheduled for the earliest slot rather than
+         * chosen by the lead, so the copy must not tell them to pick a time
+         * they will never be offered.
+         */
+        urgent?: boolean;
+      },
+      meta,
+    ) => ({
+      subject: ctx.requiresPayment
+        ? "Action needed: pay your consultation fee"
+        : "Pick a time for your consultation",
       html: layout(
         `Hello ${meta.recipientName},`,
-        html`<p>${meta.firmName} is ready to schedule your consultation.</p>` +
-          (ctx.requiresPayment && ctx.amount
-            ? html`<p>A consultation fee of ${ctx.amount} is payable when you book.</p>`
-            : "") +
-          button(ctx.link, ctx.requiresPayment ? "Pay and book" : "Choose a time"),
+        (ctx.requiresPayment
+          ? html`<p>Please pay your consultation fee${
+              ctx.amount ? html` of <strong>${ctx.amount}</strong>` : ""
+            }${
+              ctx.urgent
+                ? " to be connected with an attorney as soon as possible"
+                : " and then choose a time that works for you"
+            }.</p>`
+          : ctx.urgent
+            ? html`<p>${meta.firmName} will connect you with an attorney as soon as possible.</p>`
+            : html`<p>Please choose a time that works for your consultation.</p>`) +
+          button(
+            ctx.link,
+            ctx.requiresPayment
+              ? "Pay now"
+              : ctx.urgent
+                ? "View your consultation"
+                : "Choose a time",
+          ) +
+          (ctx.urgent && ctx.requiresPayment
+            ? html`<p>You'll receive your confirmation with the scheduled time immediately after payment.</p>`
+            : ""),
         meta,
       ),
     }),
-    sms: (ctx: { link: string }, meta) =>
-      smsBody(meta.firmName, `Book your consultation here: ${ctx.link}`),
+    sms: (ctx: { link: string; requiresPayment?: boolean }, meta) =>
+      smsBody(
+        meta.firmName,
+        ctx.requiresPayment
+          ? `Please pay your consultation fee to book: ${ctx.link}`
+          : `Book your consultation here: ${ctx.link}`,
+      ),
   },
 } satisfies Partial<Record<string, TemplateDef>>;

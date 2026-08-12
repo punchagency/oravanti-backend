@@ -75,6 +75,7 @@ import {
   scheduleQuestionnaireReminder,
 } from "../../queue/queues";
 import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
+import { notify } from "../../notifications/notification.service";
 import { emailService } from "../../utils/email/email.service";
 import {
   AuthorizationError,
@@ -2275,25 +2276,22 @@ const sendQuestionnaire = async (
   const orgSlug = encodeURIComponent(organizationId);
   const clientLink = `${baseUrl}/questionnaire/${orgSlug}/${accessToken}`;
 
-  // Fire-and-forget delivery to lead via the configured channels.
-  if (deliveryChannels.includes("email")) {
-    emailService
-      .sendEmail({
-        to: lead.email,
-        subject: "Please complete your intake questionnaire",
-        html: `<p>Dear ${lead.firstName},</p>
-          <p>Please complete your intake questionnaire using the link below:</p>
-          <p><a href="${clientLink}">Complete Questionnaire</a></p>
-          <p>This link is unique to you. Please do not share it.</p>`,
-      })
-      .catch(console.error);
-  }
-  if (deliveryChannels.includes("sms") && lead.phone) {
-    // SMS provider not yet wired — log the intent for now.
-    console.log(
-      `[sms-stub] questionnaire link to ${lead.phone}: ${clientLink}`,
-    );
-  }
+  // Delivery via the configured channels. Still fire-and-forget from the
+  // caller's point of view, but every outcome — including a channel that was
+  // deliberately skipped — is now a row in `notifications` rather than a log
+  // line, so "did they get it?" has an answer.
+  void notify({
+    organizationId,
+    event: "questionnaire_sent",
+    recipients: [{ type: "lead", id: leadId }],
+    context: { link: clientLink },
+    channels: deliveryChannels as ("email" | "sms")[],
+    scenario: { leadId },
+    actorStaffId: sentById,
+    // Scoped to the send, not the lead: re-sending a questionnaire creates a
+    // new questionnaire_sends row and must be able to message the lead again.
+    dedupeKey: `questionnaire-sent-${send.id}`,
+  }).catch((error: unknown) => console.error("[leads] questionnaire notify failed", error));
 
   return { send: { ...send, accessToken }, clientLink, sentAt: send.sentAt };
 };
@@ -2774,43 +2772,32 @@ const initiateConsultation = async (
     ? data.notifyChannels
     : ["email"];
 
-  // Instant pay_now consultations can only begin once the client pays, so the
-  // payment link is always emailed regardless of the chosen channels.
-  if (notifyChannels.includes("email") || startNow) {
-    const needsPayment = feeStatus === "unpaid";
-    const urgent = Boolean(data.urgent);
-    emailService;
-    const leadName = `${lead.firstName} ${lead.lastName}`;
-    emailService
-      .sendEmail({
-        to: lead.email,
-        subject: needsPayment
-          ? "Action needed: pay your consultation fee"
-          : "Pick a time for your consultation",
-        html: needsPayment
-          ? `<p>Dear ${leadName},</p>
-            <p>Please pay your consultation fee of <strong>$${feeAmount}</strong>${
-              urgent
-                ? " to be connected with an attorney as soon as possible"
-                : " and then choose a time that works for you"
-            }:</p>
-            <p><a href="${bookingLink}">${bookingLink}</a></p>${
-              urgent
-                ? "<p>You'll receive your confirmation with the scheduled time immediately after payment.</p>"
-                : ""
-            }`
-          : `<p>Dear ${leadName},</p>
-            <p>Please choose a time that works for your consultation:</p>
-            <p><a href="${bookingLink}">${bookingLink}</a></p>`,
-      })
-      .catch(console.error);
-  }
+  const needsPayment = feeStatus === "unpaid";
 
-  if (notifyChannels.includes("sms") && lead.phone) {
-    console.log(
-      `[sms-stub] consultation booking link to ${lead.phone}: ${bookingLink}`,
-    );
-  }
+  // Instant pay_now consultations cannot begin until the client pays, so the
+  // payment link is always emailed regardless of the chosen channels — a
+  // consultation nobody was told to pay for would simply never start.
+  const channels = startNow
+    ? Array.from(new Set([...notifyChannels, "email"]))
+    : notifyChannels;
+
+  void notify({
+    organizationId,
+    event: "consultation_booking_link",
+    recipients: [{ type: "lead", id: leadId }],
+    context: {
+      link: bookingLink,
+      requiresPayment: needsPayment,
+      amount: needsPayment ? `$${feeAmount}` : undefined,
+      urgent: Boolean(data.urgent),
+    },
+    channels: channels as ("email" | "sms")[],
+    scenario: { leadId, consultationId: consultation.id },
+    actorStaffId: scheduledById,
+    dedupeKey: `consultation-booking-${consultation.id}`,
+  }).catch((error: unknown) =>
+    console.error("[leads] consultation booking notify failed", error),
+  );
 
   return { consultation, bookingToken: accessToken };
 };
