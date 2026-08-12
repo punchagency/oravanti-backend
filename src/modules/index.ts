@@ -23,6 +23,7 @@ import { RevenueAnalyticsModule } from "./revenue-analytics/revenue-analytics.mo
 import { AccessControlModule } from "./settings/access-control/access-control.module";
 import { ApprovalWorkflowsModule } from "./settings/approval-workflows/approval-workflows.module";
 import { ConsultationSettingsModule } from "./settings/consultation/consultation-settings.module";
+import { NotificationSettingsModule } from "./settings/notifications/notification-settings.module";
 import { DataAccessModule } from "./settings/data-access/data-access.module";
 import { FinancialAccessModule } from "./settings/financial-access/financial-access.module";
 import { FirmInfoModule } from "./settings/firm-info/firm-info.module";
@@ -70,6 +71,7 @@ export const modules: Module[] = [
   new FirmInfoModule(),
   new FirmProfileModule(),
   new ConsultationSettingsModule(),
+  new NotificationSettingsModule(),
   new AccessControlModule(),
   new FinancialAccessModule(),
   new ApprovalWorkflowsModule(),
