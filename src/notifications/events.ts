@@ -77,3 +77,164 @@ export const isFirmPreferenceEvent = (
   value: string,
 ): value is FirmPreferenceEventKey =>
   (FIRM_PREFERENCE_EVENTS as readonly string[]).includes(value);
+
+// ─── Event catalog ────────────────────────────────────────────────────────────
+
+export type NotificationEventDef = {
+  /**
+   * `transactional` ignores firm preferences entirely; `preference` is gated on
+   * the toggle named by `prefKey`. See the header for why this distinction is
+   * what reconciles ten toggles with two dozen events.
+   */
+  tier: "transactional" | "preference";
+  /** Required when tier is "preference"; meaningless otherwise. */
+  prefKey?: FirmPreferenceEventKey;
+  /** Who this is for. Staff-facing events resolve recipients differently. */
+  audience: "recipient" | "staff";
+  /** Channels this event supports at all. A per-send picker may only narrow this. */
+  channels: readonly ("email" | "sms" | "in_app")[];
+  label: string;
+  /**
+   * Whether anything actually emits this yet.
+   *
+   * Four of the ten firm toggles describe things the product does not detect
+   * (RFEs, certification expiry, leave requests, client messages). The settings
+   * screen still shows them, so this field lets the check assert exactly which
+   * are wired — a number that should only ever go up, and never silently down.
+   */
+  producer: "wired" | "none";
+};
+
+export const NOTIFICATION_EVENTS = {
+  // ── Intake: transactional. The lead is waiting for these. ──────────────────
+  questionnaire_sent: {
+    tier: "transactional",
+    audience: "recipient",
+    channels: ["email", "sms"],
+    label: "Intake questionnaire sent",
+    producer: "wired",
+  },
+  questionnaire_reminder: {
+    tier: "transactional",
+    audience: "recipient",
+    channels: ["email", "sms"],
+    label: "Questionnaire reminder",
+    producer: "wired",
+  },
+  missing_documents_requested: {
+    tier: "transactional",
+    audience: "recipient",
+    channels: ["email", "sms"],
+    label: "Missing documents requested",
+    producer: "wired",
+  },
+  consultation_booking_link: {
+    tier: "transactional",
+    audience: "recipient",
+    channels: ["email", "sms"],
+    label: "Consultation booking link",
+    producer: "wired",
+  },
+
+  // ── Consultation reminders: transactional, and time-critical. ──────────────
+  consultation_reminder_24h: {
+    tier: "transactional",
+    audience: "recipient",
+    channels: ["email", "sms"],
+    label: "Consultation reminder (24 hours)",
+    producer: "wired",
+  },
+  consultation_reminder_1h: {
+    tier: "transactional",
+    audience: "recipient",
+    channels: ["email", "sms"],
+    label: "Consultation reminder (1 hour)",
+    producer: "wired",
+  },
+
+  // ── Finance ────────────────────────────────────────────────────────────────
+  payment_followup: {
+    tier: "transactional",
+    audience: "recipient",
+    channels: ["email", "sms"],
+    label: "Payment follow-up",
+    producer: "wired",
+  },
+  /**
+   * The client half of a payment landing. Transactional: someone who paid is
+   * owed a receipt regardless of what the firm has toggled.
+   */
+  payment_receipt_sent: {
+    tier: "transactional",
+    audience: "recipient",
+    channels: ["email"],
+    label: "Payment receipt",
+    producer: "wired",
+  },
+  /** The staff half of the same moment — an alert, which a firm may not want. */
+  payment_received_staff: {
+    tier: "preference",
+    prefKey: "payment_received",
+    audience: "staff",
+    channels: ["email", "in_app"],
+    label: "Payment received",
+    producer: "wired",
+  },
+
+  // ── Staff alerts: preference-gated. ────────────────────────────────────────
+  new_lead_submitted: {
+    tier: "preference",
+    prefKey: "new_lead_submitted",
+    audience: "staff",
+    channels: ["email", "in_app"],
+    label: "New lead submitted",
+    producer: "wired",
+  },
+  task_assigned: {
+    tier: "preference",
+    prefKey: "case_stage_changed",
+    audience: "staff",
+    channels: ["email", "in_app"],
+    label: "Task assigned",
+    producer: "wired",
+  },
+  case_opened_staff: {
+    tier: "preference",
+    prefKey: "case_stage_changed",
+    audience: "staff",
+    channels: ["email", "in_app"],
+    label: "Case opened",
+    producer: "wired",
+  },
+  document_uploaded_staff: {
+    tier: "preference",
+    prefKey: "document_uploaded",
+    audience: "staff",
+    channels: ["email", "in_app"],
+    label: "Document uploaded",
+    producer: "wired",
+  },
+
+  // ── Fee agreement ──────────────────────────────────────────────────────────
+  fee_agreement_signed: {
+    tier: "preference",
+    prefKey: "case_stage_changed",
+    audience: "staff",
+    channels: ["email", "in_app"],
+    label: "Fee agreement signed",
+    producer: "wired",
+  },
+  fee_agreement_declined: {
+    tier: "preference",
+    prefKey: "case_stage_changed",
+    audience: "staff",
+    channels: ["email", "in_app"],
+    label: "Fee agreement declined",
+    producer: "wired",
+  },
+} as const satisfies Record<string, NotificationEventDef>;
+
+export type NotificationEventKey = keyof typeof NOTIFICATION_EVENTS;
+
+export const getEventDef = (event: NotificationEventKey): NotificationEventDef =>
+  NOTIFICATION_EVENTS[event];
