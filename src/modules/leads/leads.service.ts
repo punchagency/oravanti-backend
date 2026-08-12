@@ -459,6 +459,7 @@ const createLead = async (
     lastName: string;
     email: string;
     phone?: string;
+    smsConsent?: boolean;
     entityType?: "individual" | "company";
     source: string;
     practiceAreaId?: string;
@@ -489,6 +490,13 @@ const createLead = async (
       intakeAdversePartyEmail: data.intakeAdversePartyEmail,
       language: data.language,
       timezone: data.timezone,
+      // Consent is only recorded when it was actually given. Absent means
+      // false, and false carries no timestamp — a consent date that does not
+      // correspond to an act of consenting is worse than no date at all.
+      smsConsent: data.smsConsent === true,
+      ...(data.smsConsent === true
+        ? { smsConsentAt: new Date(), smsConsentSource: "intake_form" }
+        : {}),
     })
     .returning();
 
@@ -778,6 +786,7 @@ const updateLead = async (
       caseTypeId: string;
       notes: string;
       noteContext: string;
+      smsConsent: boolean;
     }
   >,
   actorId?: string,
@@ -822,6 +831,27 @@ const updateLead = async (
 
     patch[column] = next;
     changes[column] = { from: prev ?? null, to: next };
+  }
+
+  // SMS consent is handled outside the generic allowlist: it needs its own
+  // timestamp and source, and it has a rule the other columns do not.
+  //
+  // Staff may GRANT consent but may never revoke an opt-out. Once smsOptOutAt
+  // is set the recipient has told us to stop, and that is their decision to
+  // reverse — by texting START — not the firm's to overwrite from an admin
+  // screen. The switch is rendered read-only in that state; this is the server
+  // side of the same rule, because a UI-only guard is not a guard.
+  if (data.smsConsent !== undefined && data.smsConsent !== existing.smsConsent) {
+    if (existing.smsOptOutAt && data.smsConsent === true) {
+      throw new BadRequestError(
+        "This contact opted out of SMS. They must text START to opt back in.",
+      );
+    }
+
+    patch.smsConsent = data.smsConsent;
+    patch.smsConsentAt = data.smsConsent ? new Date() : null;
+    patch.smsConsentSource = data.smsConsent ? "staff_manual" : null;
+    changes.smsConsent = { from: existing.smsConsent, to: data.smsConsent };
   }
 
   // Practice area and case type are plain columns, but the activity trail must

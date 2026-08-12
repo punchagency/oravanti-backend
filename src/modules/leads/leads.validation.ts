@@ -1,9 +1,11 @@
 import { z } from "zod";
 import { MINIMUM_CONSULTATION_FEE } from "../../config/constants";
 import { isValidTimezone } from "../../utils/date";
+import { phoneSchema } from "../../validation/common.validation";
 
 const uuid = z.string().uuid();
 const optionalUuid = z.string().uuid().optional();
+const phone = phoneSchema;
 const timezone = z
   .string()
   .refine(isValidTimezone, { message: "Invalid IANA timezone" });
@@ -28,7 +30,10 @@ export const createLeadBodySchema = z.object({
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   email: z.string().email(),
-  phone: z.string().optional(),
+  phone: phone.optional(),
+  // Whether the lead agreed to be contacted by text. Defaults to false when
+  // absent: a phone number on file is not permission to text it.
+  smsConsent: z.boolean().optional(),
   entityType: z.enum(["individual", "company"]).optional(),
   practiceAreaId: optionalUuid,
   caseTypeId: optionalUuid,
@@ -53,7 +58,11 @@ export const updateLeadBodySchema = z.object({
   firstName: z.string().min(1).optional(),
   lastName: z.string().min(1).optional(),
   email: z.string().email().optional(),
-  phone: z.string().optional(),
+  phone: phone.optional(),
+  // Staff may grant consent, but never revoke an opt-out — an inbound STOP is
+  // the recipient's decision, not the firm's. The service enforces that; this
+  // only carries the intent.
+  smsConsent: z.boolean().optional(),
   practiceAreaId: optionalUuid,
   caseTypeId: optionalUuid,
   source: z

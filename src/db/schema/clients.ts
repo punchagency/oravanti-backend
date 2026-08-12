@@ -1,4 +1,5 @@
 import {
+  boolean,
   pgEnum,
   pgTable,
   primaryKey,
@@ -67,6 +68,18 @@ export const clients = pgTable("clients", {
   email: text("email").notNull(),
   phone: text("phone"),
   avatarUrl: text("avatar_url"),
+
+  // SMS consent. Sendable ONLY when smsConsent is true and smsOptOutAt is null
+  // — see hasSmsConsent, which owns that invariant for both leads and clients.
+  //
+  // Consent does NOT carry over when a lead converts to a client: the columns
+  // are copied explicitly at conversion, so the fact stays attached to the row
+  // it was recorded against rather than being inferred.
+  smsConsent: boolean("sms_consent").notNull().default(false),
+  smsConsentAt: timestamp("sms_consent_at"),
+  // "intake_form" | "staff_manual" | "sms_start"
+  smsConsentSource: text("sms_consent_source"),
+  smsOptOutAt: timestamp("sms_opt_out_at"),
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
