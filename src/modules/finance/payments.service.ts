@@ -7,8 +7,9 @@ import { invoiceFollowups } from "../../db/schema/invoice-followups";
 import { invoicePayments } from "../../db/schema/invoice-payments";
 import { invoices, type PaymentMethod } from "../../db/schema/invoices";
 import { withTransaction } from "../../db/transaction-context";
+import { notify } from "../../notifications/notification.service";
+import { dispatchNotification } from "../../queue/workers/notification.worker";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
-import { emailService } from "../../utils/email/email.service";
 import { logCaseEvent } from "../cases/case-events.service";
 import { requireTrustWrite } from "./account-access";
 import { canChaseInvoice } from "./deliveries.service";
@@ -189,22 +190,9 @@ export type SendFollowUpInput = {
   channel: FollowupChannelInput;
 };
 
-const followUpTemplate = (opts: {
-  firmName: string;
-  message: string;
-}): string => `
-  <div style="font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; color: #1a1a1a;">
-    <p style="white-space: pre-wrap; margin: 0 0 16px;">${escapeHtml(opts.message)}</p>
-    <p style="margin: 24px 0 0; color: #666; font-size: 13px;">${escapeHtml(opts.firmName)}</p>
-  </div>
-`;
-
-const escapeHtml = (s: string): string =>
-  s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+// The follow-up template moved to src/notifications/templates/finance.templates.ts,
+// along with the local escapeHtml it used — the shared renderer escapes every
+// interpolation by default rather than relying on each template remembering to.
 
 export const sendFollowUp = async (
   organizationId: string,
@@ -218,6 +206,10 @@ export const sendFollowUp = async (
       status: invoices.status,
       caseId: invoices.caseId,
       clientId: invoices.clientId,
+      // An invoice bills a lead OR a client, never both — see ./party. The
+      // notification needs whichever one it is, to resolve consent against the
+      // row the phone number came from.
+      leadId: invoices.leadId,
       balanceDue: invoices.balanceDue,
       amountPaid: invoices.amountPaid,
       // Not `due_date`: on a scheduled invoice the header is the FINAL
@@ -264,35 +256,61 @@ export const sendFollowUp = async (
     throw new BadRequestError("This client has no phone number on file");
   }
 
+  const channels = [
+    ...(wantsEmail ? (["email"] as const) : []),
+    ...(wantsSms ? (["sms"] as const) : []),
+  ];
+
+  /**
+   * Dispatched inline rather than left to the worker.
+   *
+   * Every other caller of notify() is fire-and-forget, but this one is a staff
+   * member pressing "send" and then reading an audit row that claims what
+   * happened. `invoice_followups.emailDelivered` has always recorded the real
+   * outcome; queueing would force it to record an intention instead, and the
+   * one column whose job is to not overstate a delivery would start doing
+   * exactly that.
+   */
+  const { notifications: queued } = await notify({
+    organizationId,
+    event: "payment_followup",
+    recipients: [
+      row.clientId
+        ? { type: "client", id: row.clientId }
+        : { type: "lead", id: row.leadId! },
+    ],
+    context: {
+      message: input.message,
+      invoiceNumber: row.invoiceNumber,
+      // Formatted here, never in the template: the context is persisted as
+      // jsonb and re-rendered later, so a raw number would invite a second,
+      // divergent notion of what an amount looks like.
+      amount: `$${money(num(row.balanceDue))}`,
+      dueDate: row.dueDate,
+    },
+    channels: [...channels],
+    scenario: { invoiceId, clientId: row.clientId ?? undefined },
+    actorStaffId,
+  });
+
   let emailDelivered = false;
-  if (wantsEmail && row.clientEmail) {
-    // A send failure must not lose the record of the attempt, so the row is
-    // written either way with the real outcome in `emailDelivered`.
-    try {
-      await emailService.sendEmail({
-        to: row.clientEmail,
-        subject: `Payment reminder — invoice ${row.invoiceNumber}`,
-        html: followUpTemplate({
-          firmName: row.firmName ?? "Your legal team",
-          message: input.message,
-        }),
-      });
-      emailDelivered = true;
-    } catch (err) {
+  let smsDelivered = false;
+
+  for (const notification of queued) {
+    // A skipped row already carries its reason — consent, suppression, the
+    // firm's SMS switch. Nothing to attempt.
+    if (notification.status === "skipped") continue;
+
+    const ok = await dispatchNotification(notification.id).catch((err: unknown) => {
       console.error(
-        `[finance] follow-up email failed for invoice ${row.invoiceNumber}:`,
+        `[finance] follow-up ${notification.channel} failed for invoice ${row.invoiceNumber}:`,
         err,
       );
-    }
-  }
+      return false;
+    });
 
-  if (wantsSms && row.clientPhone) {
-    // No SMS provider is wired anywhere in this repo yet; every other flow logs
-    // the intent the same way. `smsDelivered` stays false rather than claiming
-    // a delivery that did not happen.
-    console.log(
-      `[sms-stub] payment follow-up to ${row.clientPhone} for invoice ${row.invoiceNumber}`,
-    );
+    if (notification.channel === "email") emailDelivered = ok;
+    if (notification.channel === "sms") smsDelivered = ok;
   }
 
   const [followup] = await db
@@ -305,7 +323,7 @@ export const sendFollowUp = async (
       sentToEmail: wantsEmail ? row.clientEmail : null,
       sentToPhone: wantsSms ? row.clientPhone : null,
       emailDelivered,
-      smsDelivered: false,
+      smsDelivered,
       sentById: actorStaffId,
     })
     .returning();
