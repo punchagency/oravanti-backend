@@ -55,6 +55,48 @@ type AppEnv = Record<RequiredEnvKey, string> & {
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   STRIPE_PUBLISHABLE_KEY?: string;
+  /**
+   * Platform-owned Twilio account and Messaging Service, shared across every
+   * firm — the same arrangement as Dropbox Sign above. Unset everywhere today:
+   * the notification layer falls back to a stub SMS provider that logs and
+   * sends nothing, and `consultation_settings.sms_enabled` defaults to false on
+   * top of that.
+   *
+   * The SID and the auth token are required TOGETHER, and so is a sender.
+   * `isSmsProviderConfigured()` demands all three. The auth token is also what
+   * verifies the status and inbound webhooks, so a configured sender without it
+   * would leave two public endpoints unable to check what they are sent while
+   * the rest of the system believed SMS was live — the same reasoning as
+   * STRIPE_WEBHOOK_SECRET.
+   */
+  TWILIO_ACCOUNT_SID?: string;
+  TWILIO_AUTH_TOKEN?: string;
+  /** Preferred sender: gives sender pools, sticky sender and Advanced Opt-Out. */
+  TWILIO_MESSAGING_SERVICE_SID?: string;
+  /** Single-number fallback for local and trial use, when no Messaging Service is set. */
+  TWILIO_FROM_NUMBER?: string;
+  /**
+   * The EXACT public base URL Twilio is configured to call.
+   *
+   * Twilio's signature is an HMAC over the request URL plus its sorted form
+   * params, so the URL must be reproduced byte for byte. Rebuilding it from
+   * `req.protocol` fails behind a proxy — the app sees "http" while Twilio
+   * signed "https" — and every legitimate request is rejected as forged.
+   */
+  TWILIO_WEBHOOK_BASE_URL?: string;
+  /**
+   * Svix signing secret for Resend's delivery webhooks. Required alongside
+   * RESEND_API_KEY for `isEmailDeliveryTrackingConfigured()`; without it the
+   * webhook endpoint cannot verify anything and email rows simply stop at
+   * "sent" instead of reaching "delivered".
+   */
+  RESEND_WEBHOOK_SECRET?: string;
+  /**
+   * Optional ISO-3166 region ("US") used to parse bare national phone numbers.
+   * Left unset by default so an ambiguous number fails loudly as unsendable
+   * rather than being silently attributed to the wrong country.
+   */
+  PHONE_DEFAULT_REGION?: string;
   // When true (default outside production) signature requests are created in
   // test mode and do not consume signature quota.
   DROPBOX_SIGN_TEST_MODE: boolean;
@@ -117,6 +159,13 @@ const validateEnv = (): AppEnv => {
   const stripePublishableKey = readEnv("STRIPE_PUBLISHABLE_KEY");
   const dropboxSignApiKey = readEnv("DROPBOX_SIGN_API_KEY");
   const dropboxSignClientId = readEnv("DROPBOX_SIGN_CLIENT_ID");
+  const twilioAccountSid = readEnv("TWILIO_ACCOUNT_SID");
+  const twilioAuthToken = readEnv("TWILIO_AUTH_TOKEN");
+  const twilioMessagingServiceSid = readEnv("TWILIO_MESSAGING_SERVICE_SID");
+  const twilioFromNumber = readEnv("TWILIO_FROM_NUMBER");
+  const twilioWebhookBaseUrl = readEnv("TWILIO_WEBHOOK_BASE_URL");
+  const resendWebhookSecret = readEnv("RESEND_WEBHOOK_SECRET");
+  const phoneDefaultRegion = readEnv("PHONE_DEFAULT_REGION");
   // Defaults to test mode everywhere except production so quota is never
   // consumed accidentally; set DROPBOX_SIGN_TEST_MODE=false to override.
   const dropboxSignTestMode = isProduction
@@ -142,6 +191,19 @@ const validateEnv = (): AppEnv => {
       : {}),
     ...(dropboxSignApiKey ? { DROPBOX_SIGN_API_KEY: dropboxSignApiKey } : {}),
     ...(dropboxSignClientId ? { DROPBOX_SIGN_CLIENT_ID: dropboxSignClientId } : {}),
+    ...(twilioAccountSid ? { TWILIO_ACCOUNT_SID: twilioAccountSid } : {}),
+    ...(twilioAuthToken ? { TWILIO_AUTH_TOKEN: twilioAuthToken } : {}),
+    ...(twilioMessagingServiceSid
+      ? { TWILIO_MESSAGING_SERVICE_SID: twilioMessagingServiceSid }
+      : {}),
+    ...(twilioFromNumber ? { TWILIO_FROM_NUMBER: twilioFromNumber } : {}),
+    ...(twilioWebhookBaseUrl
+      ? { TWILIO_WEBHOOK_BASE_URL: twilioWebhookBaseUrl }
+      : {}),
+    ...(resendWebhookSecret
+      ? { RESEND_WEBHOOK_SECRET: resendWebhookSecret }
+      : {}),
+    ...(phoneDefaultRegion ? { PHONE_DEFAULT_REGION: phoneDefaultRegion } : {}),
     DROPBOX_SIGN_TEST_MODE: dropboxSignTestMode,
     FEE_PAYMENT_GATE_BYPASS: feePaymentGateBypass,
     databaseUrl: isProduction ? prodDatabaseUrl! : values.DATABASE_URL,
