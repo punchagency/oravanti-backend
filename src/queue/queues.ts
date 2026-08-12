@@ -5,6 +5,8 @@ import { redisConnection } from "./connection";
 // ─── Queue names ──────────────────────────────────────────────────────────────
 
 export const QUESTIONNAIRE_REMINDERS_QUEUE = "questionnaire-reminders";
+/** Every outbound message — email, SMS and in-app alike. */
+export const NOTIFICATIONS_QUEUE = "notifications";
 /** Backend → Python worker: scenario scan requests. */
 export const AI_SCAN_QUEUE = "ai-scan";
 /** Python worker → backend: scan results (consumed in a later Phase 3 task). */
@@ -15,6 +17,17 @@ export const AI_SCAN_RESULTS_QUEUE = "ai-scan-results";
 export type QuestionnaireReminderJob = {
   /** questionnaire_sends.id whose response is awaited */
   sendId: string;
+};
+
+/**
+ * Carries only the row id: the `notifications` row is the source of truth for
+ * what to send, to whom, and whether it still should be. A payload carrying the
+ * message would go stale between scheduling and sending — which for a
+ * consultation reminder is a full day.
+ */
+export type NotificationJob = {
+  notificationId: string;
+  organizationId: string;
 };
 
 // ─── Producers ────────────────────────────────────────────────────────────────
@@ -54,6 +67,42 @@ export const scheduleQuestionnaireReminder = async (
 /** Cancel a previously-scheduled reminder (no-op if it already ran / is gone). */
 export const cancelQuestionnaireReminder = async (jobId: string) => {
   const job = await questionnaireRemindersQueue.getJob(jobId);
+  if (job) await job.remove();
+};
+
+// ─── Notifications ──────────────────────────────────────────────────────────
+
+export const notificationsQueue = new Queue<NotificationJob, void, string>(
+  NOTIFICATIONS_QUEUE,
+  { connection: redisConnection, defaultJobOptions },
+);
+
+/**
+ * Enqueue a notification for delivery.
+ *
+ * The deterministic `notif-<uuid>` job id is safe here, unlike the ai-scan case
+ * below: a notification row id is unique per attempt, so a completed job
+ * lingering under that id can never block a later one — there is no later one
+ * for the same row.
+ */
+export const enqueueNotification = async (
+  notification: { id: string; organizationId: string },
+  delayMs = 0,
+): Promise<string | undefined> => {
+  const job = await notificationsQueue.add(
+    "notification",
+    {
+      notificationId: notification.id,
+      organizationId: notification.organizationId,
+    },
+    { jobId: `notif-${notification.id}`, delay: delayMs },
+  );
+  return job.id;
+};
+
+/** Remove a scheduled notification job (no-op if it already ran or is gone). */
+export const cancelNotificationJob = async (notificationId: string) => {
+  const job = await notificationsQueue.getJob(`notif-${notificationId}`);
   if (job) await job.remove();
 };
 
