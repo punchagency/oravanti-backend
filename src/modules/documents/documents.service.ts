@@ -42,6 +42,7 @@ import { storageService } from "../../utils/storage/storage.service";
 import { emailService } from "../../utils/email/email.service";
 import { generateDocumentRequestEmailTemplate } from "../../utils/email/email.types";
 import { env } from "../../config/env";
+import { notify } from "../../notifications/notification.service";
 import {
   triggerScanForDocument,
   triggerScenarioScan,
@@ -1190,10 +1191,60 @@ export class DocumentsService {
       // External submission adds a document to the request's case — scan it.
       void triggerScanForDocument(result.document.id, "upload");
 
+      /**
+       * Tell the firm the client uploaded something.
+       *
+       * This path had no notification at all: a client responded to a document
+       * request and the firm found out by happening to look. The request itself
+       * was emailed, so the silence was one-directional in the worst way —
+       * we asked, they answered, nobody heard.
+       *
+       * The requester is the right recipient rather than the whole firm: they
+       * raised the request and are waiting on it.
+       */
+      void this.notifyUploadReceived(request, title, data.uploadedByName);
+
       return result;
     } catch (error) {
       await this.removeFromStorage(storagePath).catch(() => undefined);
       throw error;
+    }
+  };
+
+  /**
+   * Notify the staff member who raised a document request that it was answered.
+   *
+   * The recipient is a `user` rather than `staff`: document requests record
+   * `requestedByUserId`, a Better Auth user id, and mapping it back to a staff
+   * row would be a lookup that can fail for an admin who has no staff record.
+   */
+  private notifyUploadReceived = async (
+    request: typeof documentRequests.$inferSelect,
+    documentTitle: string,
+    uploadedByName: string,
+  ) => {
+    try {
+      await notify({
+        organizationId: request.organizationId,
+        event: "document_uploaded_staff",
+        recipients: [{ type: "user", id: request.requestedByUserId }],
+        context: {
+          documentTitle,
+          uploadedBy: uploadedByName,
+          link: request.caseId
+            ? `${env.FRONTEND_APP_URL}/admin/cases/${request.caseId}`
+            : `${env.FRONTEND_APP_URL}/admin/leads/${request.leadId}`,
+        },
+        scenario: {
+          caseId: request.caseId ?? undefined,
+          leadId: request.leadId ?? undefined,
+        },
+        // Keyed on the request: it is marked SUBMITTED once, so this fires once
+        // even if the upload is retried.
+        dedupeKey: `document-uploaded-${request.id}`,
+      });
+    } catch (error) {
+      console.error("[documents] upload notify failed", error);
     }
   };
 
