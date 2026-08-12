@@ -4,6 +4,7 @@ import {
   BaseEmailService,
   EMAIL_CONFIG,
   SendEmailOptions,
+  SendEmailResult,
 } from "./email.types";
 
 export class GmailEmailService extends BaseEmailService {
@@ -20,14 +21,19 @@ export class GmailEmailService extends BaseEmailService {
     });
   }
 
-  async sendEmail(options: SendEmailOptions): Promise<void> {
+  async sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
     // `attachments` needs no mapping: nodemailer's attachment shape is exactly
     // { filename, content, contentType }, so the spread carries it through.
     const mailOptions = { ...options, from: EMAIL_CONFIG.fromAddress };
 
     try {
-      await this.transporter.sendMail(mailOptions);
+      const info = await this.transporter.sendMail(mailOptions);
       console.log(`[Gmail] Email sent to ${options.to}`);
+
+      // A real SMTP Message-ID, but nothing will ever reference it: Gmail SMTP
+      // emits no delivery callbacks, so email notifications sent in
+      // development correctly stop at `sent` and never reach `delivered`.
+      return { providerMessageId: info.messageId ?? null };
     } catch (error) {
       console.error(`[Gmail] Failed to send email to ${options.to}:`, error);
       throw error;
