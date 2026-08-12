@@ -1,7 +1,10 @@
+import { NotificationsController } from "./notifications.controller";
 import {
+  NotificationsRouter,
   ResendWebhookRouter,
   TwilioWebhookRouter,
 } from "./notifications.routes";
+import { NotificationsService } from "./notifications.service";
 
 /**
  * Provider webhooks, one module per provider so each gets its own body parser
@@ -25,6 +28,20 @@ export class ResendWebhookModule {
 
   constructor() {
     const router = new ResendWebhookRouter();
+    this.router = router.router;
+    this.path = router.path;
+  }
+}
+
+/** Authenticated read side: the communications panel. */
+export class NotificationsModule {
+  public router: import("express").Router;
+  public path: string;
+
+  constructor() {
+    const service = new NotificationsService();
+    const controller = new NotificationsController(service);
+    const router = new NotificationsRouter(controller);
     this.router = router.router;
     this.path = router.path;
   }

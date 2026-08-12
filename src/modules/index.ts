@@ -20,6 +20,7 @@ import {
   TimeBillingModule,
 } from "./finance/finance.module";
 import {
+  NotificationsModule,
   ResendWebhookModule,
   TwilioWebhookModule,
 } from "./notifications/notifications.module";
@@ -73,6 +74,7 @@ export const modules: Module[] = [
   new PaymentWebhookModule(),
   new TwilioWebhookModule(),
   new ResendWebhookModule(),
+  new NotificationsModule(),
   new PermissionAuditLogModule(),
   new FirmInfoModule(),
   new FirmProfileModule(),

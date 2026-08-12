@@ -6,11 +6,14 @@
  */
 import { Router, type Request, type Response } from "express";
 import { env } from "../../config/env";
+import { requireAuth } from "../../middleware/auth.middleware";
+import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import {
   handleResendWebhook,
   handleTwilioInbound,
   handleTwilioStatusCallback,
 } from "../../notifications/notifications.webhooks.service";
+import { NotificationsController } from "./notifications.controller";
 
 /**
  * Provider webhooks. Public and unauthenticated — the SIGNATURE is the
@@ -136,6 +139,58 @@ export class ResendWebhookRouter {
 
       res.status(204).end();
     });
+  }
+}
+
+/**
+ * Authenticated read side of the ledger — the communications panel.
+ *
+ * Separate from the webhook routers above so it gets the normal auth chain and
+ * the ordinary JSON body parser.
+ */
+export class NotificationsRouter {
+  public router: Router;
+  public path: string;
+  private controller: NotificationsController;
+
+  constructor(controller: NotificationsController) {
+    this.router = Router();
+    this.path = "/notifications";
+    this.controller = controller;
+    this.initializeRoutes();
+  }
+
+  private initializeRoutes() {
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
+
+    /**
+     * @openapi
+     * /notifications:
+     *   get:
+     *     tags: [Notifications (webhooks)]
+     *     summary: Delivery history for a lead, client, invoice or case
+     *     description: >
+     *       Includes skipped and failed rows deliberately — those are the
+     *       interesting ones. "Skipped — no SMS consent" is the answer to
+     *       "why didn't they get the text".
+     *     responses:
+     *       200:
+     *         description: Paginated notifications, newest first
+     */
+    this.router.get("/", this.controller.list);
+
+    /**
+     * @openapi
+     * /notifications/capabilities:
+     *   get:
+     *     tags: [Notifications (webhooks)]
+     *     summary: What this deployment can confirm about delivery
+     *     responses:
+     *       200:
+     *         description: Per-channel delivery tracking availability
+     */
+    this.router.get("/capabilities", this.controller.capabilities);
   }
 }
 
