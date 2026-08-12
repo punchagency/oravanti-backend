@@ -129,9 +129,16 @@ let cached: SmsProvider | null = null;
  */
 export const getSmsProvider = (): SmsProvider => {
   if (cached) return cached;
-  // The Twilio implementation slots in here, exactly as DropboxSignProvider
-  // does in getESignatureProvider.
-  cached = stubProvider;
+
+  if (isSmsProviderConfigured()) {
+    // Required lazily so an unconfigured environment never constructs a Twilio
+    // client, and so importing this module stays free of that dependency.
+    const { TwilioSmsProvider } = require("./twilio.provider") as typeof import("./twilio.provider");
+    cached = new TwilioSmsProvider();
+  } else {
+    cached = stubProvider;
+  }
+
   return cached;
 };
 
