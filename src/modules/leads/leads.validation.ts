@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MINIMUM_CONSULTATION_FEE } from "../../config/constants";
 import { isValidTimezone } from "../../utils/date";
 
 const uuid = z.string().uuid();
@@ -195,7 +196,7 @@ export const initiateConsultationBodySchema = z
     locationId: optionalUuid,
     // Used when the firm's fee structure is custom_per_case_type, or as an
     // urgency surcharge/override when urgent.
-    feeAmount: z.number().positive().optional(),
+    feeAmount: z.number().min(MINIMUM_CONSULTATION_FEE, `Minimum consultation fee amount is $${MINIMUM_CONSULTATION_FEE}.00`).optional(),
     preConsultationNotes: z.string().optional(),
     notifyChannels: z.array(z.enum(["email", "sms"])).optional(),
     // Urgent (admin fast-track): auto-scheduled ASAP, skips the slot queue.
