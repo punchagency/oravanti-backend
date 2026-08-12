@@ -7,20 +7,34 @@
  *
  *   npm run check 13-notifications
  */
+import { createHmac } from "crypto";
 import { and, eq } from "drizzle-orm";
+import { Webhook } from "svix";
 import { env } from "../../src/config/env";
 import { systemDb } from "../../src/db/client";
+import { smsInboundMessages } from "../../src/db/schema/sms-inbound-messages";
 import { consultationSettings } from "../../src/db/schema/consultation-settings";
 import { emailSuppressions } from "../../src/db/schema/email-suppressions";
 import { leads } from "../../src/db/schema/leads";
 import { notifications } from "../../src/db/schema/notifications";
 import {
+  getEmailSuppression,
   suppressEmail,
   unsuppressEmail,
 } from "../../src/notifications/consent.service";
 import { notify } from "../../src/notifications/notification.service";
+import {
+  handleResendWebhook,
+  handleTwilioInbound,
+  handleTwilioStatusCallback,
+} from "../../src/notifications/notifications.webhooks.service";
 import { resolveChannelDecision } from "../../src/notifications/preferences.service";
-import { isSmsProviderConfigured } from "../../src/notifications/sms/sms.provider";
+import { classifyKeyword } from "../../src/notifications/sms/keywords";
+import {
+  getSmsProvider,
+  isSmsProviderConfigured,
+  resetSmsProviderCache,
+} from "../../src/notifications/sms/sms.provider";
 import { dispatchNotification } from "../../src/queue/workers/notification.worker";
 import { emailService } from "../../src/utils/email/email.service";
 import {
@@ -47,6 +61,26 @@ import { NotificationSettingsService } from "../../src/modules/settings/notifica
 import { updateNotificationSettingsSchema } from "../../src/modules/settings/notifications/notification-settings.validation";
 import { isE164, maskPhone, toE164 } from "../../src/utils/phone";
 import { check, checkEqual, report, section, withTempFixture, withOrgContext } from "./_bootstrap";
+
+/**
+ * Reproduces Twilio's request signature: HMAC-SHA1, base64, over the URL
+ * followed by each form parameter sorted by key and concatenated as key+value.
+ *
+ * Written out rather than imported from the SDK on purpose — using the same
+ * helper to sign and to verify would pass even if both were wrong. This is the
+ * documented algorithm, so the provider is checked against the spec.
+ */
+const twilioSignature = (
+  authToken: string,
+  url: string,
+  params: Record<string, string>,
+): string => {
+  const payload = Object.keys(params)
+    .sort()
+    .reduce((acc, key) => acc + key + params[key], url);
+
+  return createHmac("sha1", authToken).update(Buffer.from(payload, "utf-8")).digest("base64");
+};
 
 const main = async () => {
   // ─── Phone normalisation ───────────────────────────────────────────────────
@@ -740,6 +774,423 @@ const main = async () => {
       checkEqual("the mailer was still called only once", sentEmails.length, 1);
     } finally {
       (emailService as { sendEmail: unknown }).sendEmail = realSendEmail;
+    }
+  });
+
+  // ─── Keywords ──────────────────────────────────────────────────────────────
+
+  section("keywords");
+
+  checkEqual("STOP is recognised", classifyKeyword("STOP"), "STOP");
+  checkEqual("lowercase stop is recognised", classifyKeyword("stop"), "STOP");
+  checkEqual("trailing punctuation is tolerated", classifyKeyword(" Stop. "), "STOP");
+  checkEqual("UNSUBSCRIBE is a stop word", classifyKeyword("unsubscribe"), "STOP");
+  checkEqual("START is recognised", classifyKeyword("START"), "START");
+  checkEqual("HELP is recognised", classifyKeyword("help"), "HELP");
+  // The important negative: a sentence containing "stop" is a complaint to act
+  // on, not an opt-out to apply silently. Treating it as one would drop a
+  // client's SMS without them ever asking.
+  checkEqual(
+    "a sentence containing stop is not an opt-out",
+    classifyKeyword("please stop sending me so many forms"),
+    null,
+  );
+  checkEqual("unrelated text matches nothing", classifyKeyword("thanks!"), null);
+
+  // ─── Webhooks ──────────────────────────────────────────────────────────────
+
+  section("webhooks");
+
+  await withTempFixture({}, async (fixture) => {
+    const orgId = fixture.organizationId;
+
+    // A row to be delivered against, with a known provider id.
+    const [row] = await systemDb
+      .insert(notifications)
+      .values({
+        organizationId: orgId,
+        event: "questionnaire_sent",
+        tier: "transactional",
+        channel: "sms",
+        status: "sent",
+        recipientType: "lead",
+        recipientId: fixture.leadId,
+        recipientAddress: "+14155552671",
+        providerMessageId: "SMcheck123",
+        sentAt: new Date(),
+      })
+      .returning();
+
+    const url = "https://api.example.test/webhooks/twilio/status";
+    const params = {
+      MessageSid: "SMcheck123",
+      MessageStatus: "delivered",
+      To: "+14155552671",
+    };
+
+    // The stub rejects everything, which is what keeps an unconfigured
+    // deployment from accepting forged callbacks.
+    resetSmsProviderCache();
+    check(
+      "the stub provider verifies nothing",
+      !getSmsProvider().verifyWebhook(url, params, "anything"),
+    );
+
+    // Switch to a real Twilio provider so signature verification is exercised
+    // for real, using the SDK to produce a signature the same way Twilio would.
+    const savedEnv = {
+      sid: env.TWILIO_ACCOUNT_SID,
+      token: env.TWILIO_AUTH_TOKEN,
+      from: env.TWILIO_FROM_NUMBER,
+      base: env.TWILIO_WEBHOOK_BASE_URL,
+    };
+    const authToken = "check-auth-token";
+    (env as Record<string, unknown>).TWILIO_ACCOUNT_SID = "ACcheck";
+    (env as Record<string, unknown>).TWILIO_AUTH_TOKEN = authToken;
+    (env as Record<string, unknown>).TWILIO_FROM_NUMBER = "+15005550006";
+    (env as Record<string, unknown>).TWILIO_WEBHOOK_BASE_URL =
+      "https://api.example.test";
+    resetSmsProviderCache();
+
+    try {
+      const signature = twilioSignature(authToken, url, params);
+
+      check(
+        "a valid Twilio signature verifies",
+        getSmsProvider().verifyWebhook(url, params, signature),
+      );
+      check(
+        "a tampered param invalidates the signature",
+        !getSmsProvider().verifyWebhook(
+          url,
+          { ...params, MessageStatus: "failed" },
+          signature,
+        ),
+      );
+      // The reason TWILIO_WEBHOOK_BASE_URL exists: the URL is part of what is
+      // signed, so http-vs-https behind a proxy fails every real request.
+      check(
+        "a different URL invalidates the signature",
+        !getSmsProvider().verifyWebhook(
+          url.replace("https", "http"),
+          params,
+          signature,
+        ),
+      );
+
+      await handleTwilioStatusCallback(url, params, signature);
+      let [after] = await systemDb
+        .select()
+        .from(notifications)
+        .where(eq(notifications.id, row.id));
+      checkEqual("delivered status is applied", after.status, "delivered");
+      check("deliveredAt is stamped", after.deliveredAt !== null);
+
+      // Out-of-order callbacks are normal. A late "sent" must not undo it.
+      const lateParams = { ...params, MessageStatus: "sent" };
+      await handleTwilioStatusCallback(
+        url,
+        lateParams,
+        twilioSignature(authToken, url, lateParams),
+      );
+      [after] = await systemDb
+        .select()
+        .from(notifications)
+        .where(eq(notifications.id, row.id));
+      checkEqual(
+        "a late sent does not regress a delivery",
+        after.status,
+        "delivered",
+      );
+
+      // An unverifiable payload must throw rather than be accepted.
+      let rejected = false;
+      await handleTwilioStatusCallback(url, params, "bogus").catch(() => {
+        rejected = true;
+      });
+      check("an invalid signature is rejected", rejected);
+
+      // Inbound STOP opts the lead out — and does so across organizations,
+      // because the sending number is shared.
+      await systemDb
+        .update(leads)
+        .set({ phone: "+14155552671", smsConsent: true, smsOptOutAt: null })
+        .where(eq(leads.id, fixture.leadId));
+
+      const inboundUrl = "https://api.example.test/webhooks/twilio/inbound";
+      const stopParams = {
+        MessageSid: "SMstop1",
+        From: "+1 (415) 555-2671",
+        To: "+15005550006",
+        Body: "STOP",
+      };
+      const stopResult = await handleTwilioInbound(
+        inboundUrl,
+        stopParams,
+        twilioSignature(authToken, inboundUrl, stopParams),
+      );
+      checkEqual("inbound STOP is classified", stopResult.keyword, "STOP");
+      checkEqual("STOP is not replied to", stopResult.reply, null);
+
+      let [lead] = await systemDb
+        .select()
+        .from(leads)
+        .where(eq(leads.id, fixture.leadId));
+      checkEqual("STOP clears consent", lead.smsConsent, false);
+      check("STOP stamps the opt-out date", lead.smsOptOutAt !== null);
+
+      // Matching is on the normalised form: the stored phone and the inbound
+      // arrived in different formats above, and it still matched.
+      const [inboundRow] = await systemDb
+        .select()
+        .from(smsInboundMessages)
+        .where(eq(smsInboundMessages.providerMessageId, "SMstop1"));
+      checkEqual(
+        "the opt-out records what it affected",
+        (inboundRow.affected as { leads?: number }).leads,
+        1,
+      );
+      checkEqual("the inbound phone is stored E.164", inboundRow.fromPhone, "+14155552671");
+
+      // Redelivery is at-least-once; the unique provider id makes it a no-op.
+      const repeat = await handleTwilioInbound(
+        inboundUrl,
+        stopParams,
+        twilioSignature(authToken, inboundUrl, stopParams),
+      );
+      checkEqual("a redelivered STOP is still classified", repeat.keyword, "STOP");
+      const inboundCount = await systemDb
+        .select()
+        .from(smsInboundMessages)
+        .where(eq(smsInboundMessages.providerMessageId, "SMstop1"));
+      checkEqual("but writes no second row", inboundCount.length, 1);
+
+      // START is the only way back, and it must be.
+      const startParams = {
+        MessageSid: "SMstart1",
+        From: "+14155552671",
+        To: "+15005550006",
+        Body: "start",
+      };
+      await handleTwilioInbound(
+        inboundUrl,
+        startParams,
+        twilioSignature(authToken, inboundUrl, startParams),
+      );
+      [lead] = await systemDb
+        .select()
+        .from(leads)
+        .where(eq(leads.id, fixture.leadId));
+      checkEqual("START restores consent", lead.smsConsent, true);
+      checkEqual("START clears the opt-out", lead.smsOptOutAt, null);
+      checkEqual("START records its source", lead.smsConsentSource, "sms_start");
+
+      // HELP is answered, because carriers require an identifiable reply.
+      const helpParams = {
+        MessageSid: "SMhelp1",
+        From: "+14155552671",
+        To: "+15005550006",
+        Body: "HELP",
+      };
+      const helpResult = await handleTwilioInbound(
+        inboundUrl,
+        helpParams,
+        twilioSignature(authToken, inboundUrl, helpParams),
+      );
+      check("HELP gets a reply", Boolean(helpResult.reply));
+      checkEqual(
+        "the HELP reply fits one segment",
+        gsmSegments(helpResult.reply ?? ""),
+        1,
+      );
+
+      // Twilio error 21610 is the second opt-out path, for when Advanced
+      // Opt-Out absorbs the STOP and never forwards it.
+      const errParams = {
+        MessageSid: "SMcheck123",
+        MessageStatus: "failed",
+        ErrorCode: "21610",
+        To: "+14155552671",
+      };
+      await handleTwilioStatusCallback(
+        url,
+        errParams,
+        twilioSignature(authToken, url, errParams),
+      );
+      [lead] = await systemDb
+        .select()
+        .from(leads)
+        .where(eq(leads.id, fixture.leadId));
+      checkEqual("error 21610 opts the recipient out", lead.smsConsent, false);
+      check("and stamps the opt-out date", lead.smsOptOutAt !== null);
+
+      await systemDb
+        .delete(smsInboundMessages)
+        .where(eq(smsInboundMessages.fromPhone, "+14155552671"));
+    } finally {
+      (env as Record<string, unknown>).TWILIO_ACCOUNT_SID = savedEnv.sid;
+      (env as Record<string, unknown>).TWILIO_AUTH_TOKEN = savedEnv.token;
+      (env as Record<string, unknown>).TWILIO_FROM_NUMBER = savedEnv.from;
+      (env as Record<string, unknown>).TWILIO_WEBHOOK_BASE_URL = savedEnv.base;
+      resetSmsProviderCache();
+    }
+  });
+
+  // ─── Resend webhooks ───────────────────────────────────────────────────────
+
+  section("resend webhooks");
+
+  await withTempFixture({}, async (fixture) => {
+    const orgId = fixture.organizationId;
+    const secret = "whsec_" + Buffer.from("check-secret-key-here").toString("base64");
+    const savedSecret = env.RESEND_WEBHOOK_SECRET;
+    (env as Record<string, unknown>).RESEND_WEBHOOK_SECRET = secret;
+
+    try {
+      const [row] = await systemDb
+        .insert(notifications)
+        .values({
+          organizationId: orgId,
+          event: "questionnaire_sent",
+          tier: "transactional",
+          channel: "email",
+          status: "sent",
+          recipientType: "lead",
+          recipientId: fixture.leadId,
+          recipientAddress: "bouncy@example.test",
+          providerMessageId: "resend-email-1",
+          sentAt: new Date(),
+        })
+        .returning();
+
+      const send = async (payload: unknown) => {
+        const body = JSON.stringify(payload);
+        const msgId = `msg_${Math.random().toString(36).slice(2)}`;
+        const wh = new Webhook(secret);
+        const headers = wh.sign(msgId, new Date(), body) as unknown as string;
+        return handleResendWebhook(Buffer.from(body), {
+          "svix-id": msgId,
+          "svix-timestamp": String(Math.floor(Date.now() / 1000)),
+          "svix-signature": headers,
+        });
+      };
+
+      await send({
+        type: "email.delivered",
+        data: { email_id: "resend-email-1", to: ["bouncy@example.test"] },
+      });
+      let [after] = await systemDb
+        .select()
+        .from(notifications)
+        .where(eq(notifications.id, row.id));
+      checkEqual("email.delivered marks delivered", after.status, "delivered");
+      check("and stamps deliveredAt", after.deliveredAt !== null);
+
+      await send({
+        type: "email.sent",
+        data: { email_id: "resend-email-1", to: ["bouncy@example.test"] },
+      });
+      [after] = await systemDb
+        .select()
+        .from(notifications)
+        .where(eq(notifications.id, row.id));
+      checkEqual(
+        "a late email.sent does not regress a delivery",
+        after.status,
+        "delivered",
+      );
+
+      // A tampered body must not verify.
+      let rejected = false;
+      await handleResendWebhook(Buffer.from('{"type":"email.delivered"}'), {
+        "svix-id": "msg_x",
+        "svix-timestamp": String(Math.floor(Date.now() / 1000)),
+        "svix-signature": "v1,bogus",
+      }).catch(() => {
+        rejected = true;
+      });
+      check("an invalid Svix signature is rejected", rejected);
+
+      // A bounce suppresses the address platform-wide.
+      const [bounceRow] = await systemDb
+        .insert(notifications)
+        .values({
+          organizationId: orgId,
+          event: "questionnaire_reminder",
+          tier: "transactional",
+          channel: "email",
+          status: "sent",
+          recipientType: "lead",
+          recipientId: fixture.leadId,
+          recipientAddress: "bouncy@example.test",
+          providerMessageId: "resend-email-2",
+          sentAt: new Date(),
+        })
+        .returning();
+
+      await send({
+        type: "email.bounced",
+        data: {
+          email_id: "resend-email-2",
+          to: ["bouncy@example.test"],
+          bounce: { type: "Permanent", subType: "General", message: "mailbox does not exist" },
+        },
+      });
+
+      const [bounced] = await systemDb
+        .select()
+        .from(notifications)
+        .where(eq(notifications.id, bounceRow.id));
+      checkEqual("a bounce marks the row failed", bounced.status, "failed");
+      check(
+        "and records the provider's reason",
+        (bounced.failureReason ?? "").includes("mailbox"),
+      );
+      checkEqual(
+        "the address is now suppressed",
+        await getEmailSuppression("bouncy@example.test"),
+        "bounced",
+      );
+      // Case-insensitive, because addresses arrive however the sender typed them.
+      checkEqual(
+        "suppression lookup is case-insensitive",
+        await getEmailSuppression("Bouncy@Example.TEST"),
+        "bounced",
+      );
+
+      await send({
+        type: "suppression.removed",
+        data: { email_id: "resend-email-2", to: ["bouncy@example.test"] },
+      });
+      checkEqual(
+        "suppression.removed lifts it",
+        await getEmailSuppression("bouncy@example.test"),
+        null,
+      );
+
+      // A complaint is the more serious signal and replaces a bounce.
+      await send({
+        type: "email.complained",
+        data: { email_id: "resend-email-2", to: ["bouncy@example.test"] },
+      });
+      checkEqual(
+        "a complaint suppresses with its own reason",
+        await getEmailSuppression("bouncy@example.test"),
+        "complained",
+      );
+
+      // Open and click tracking are deliberately ignored.
+      const ignored = await send({
+        type: "email.opened",
+        data: { email_id: "resend-email-1", to: ["bouncy@example.test"] },
+      });
+      checkEqual("email.opened is ignored", ignored.handled, false);
+
+      await systemDb
+        .delete(emailSuppressions)
+        .where(eq(emailSuppressions.email, "bouncy@example.test"));
+    } finally {
+      (env as Record<string, unknown>).RESEND_WEBHOOK_SECRET = savedSecret;
     }
   });
 
