@@ -7,7 +7,9 @@ import { invoiceFollowups } from "../../db/schema/invoice-followups";
 import { invoicePayments } from "../../db/schema/invoice-payments";
 import { invoices, type PaymentMethod } from "../../db/schema/invoices";
 import { withTransaction } from "../../db/transaction-context";
+import { env } from "../../config/env";
 import { notify } from "../../notifications/notification.service";
+import { staffRecipientsForFirm } from "../../notifications/recipients";
 import { dispatchNotification } from "../../queue/workers/notification.worker";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { logCaseEvent } from "../cases/case-events.service";
@@ -158,7 +160,120 @@ export const recordPayment = async (
       });
     }
 
+    /**
+     * Both halves of a payment landing. Until now this moment was entirely
+     * silent: money arrived, the ledger moved, and neither the payer nor the
+     * firm was told — whether recorded by hand or by the payment webhook.
+     *
+     * Deliberately two events. The receipt is transactional, because someone
+     * who paid is owed one no matter what the firm has switched off; the staff
+     * alert is preference-gated, because it is an alert. Modelling them as one
+     * would force a choice between spamming staff and withholding receipts.
+     *
+     * Fire-and-forget, and outside the caller's error path: a notification
+     * failure must never roll back a recorded payment.
+     */
+    void notifyPaymentRecorded({
+      organizationId,
+      invoiceId,
+      invoiceNumber: invoice.invoiceNumber,
+      amount: input.amount,
+      paymentDate: input.paymentDate,
+      fullySettled,
+      actorStaffId,
+    }).catch((error: unknown) =>
+      console.error("[finance] payment notify failed", error),
+    );
+
     return getById(organizationId, invoiceId, access);
+  });
+};
+
+/**
+ * Receipt to the payer, alert to the firm.
+ *
+ * Re-reads the party rather than taking it from the caller because
+ * `recordPayment` selects only what the ledger maths needs, and the payer of an
+ * invoice may be a lead or a client (see ./party) — which determines whose
+ * consent and suppression state applies.
+ */
+const notifyPaymentRecorded = async (args: {
+  organizationId: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  amount: number;
+  paymentDate: string;
+  fullySettled: boolean;
+  actorStaffId: string | null;
+}): Promise<void> => {
+  const [row] = await db
+    .select({
+      clientId: invoices.clientId,
+      leadId: invoices.leadId,
+      caseId: invoices.caseId,
+      balanceDue: invoices.balanceDue,
+      partyName: partyName,
+    })
+    .from(invoices)
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
+    .where(
+      and(
+        eq(invoices.organizationId, args.organizationId),
+        eq(invoices.id, args.invoiceId),
+      ),
+    )
+    .limit(1);
+
+  if (!row) return;
+
+  const amount = `$${money(args.amount)}`;
+
+  await notify({
+    organizationId: args.organizationId,
+    event: "payment_receipt_sent",
+    recipients: [
+      row.clientId
+        ? { type: "client", id: row.clientId }
+        : { type: "lead", id: row.leadId! },
+    ],
+    context: {
+      amount,
+      invoiceNumber: args.invoiceNumber,
+      paidAt: args.paymentDate,
+      // Omitted once settled: "remaining balance: $0.00" reads as a demand.
+      ...(args.fullySettled
+        ? {}
+        : { balance: `$${money(num(row.balanceDue))}` }),
+    },
+    scenario: {
+      invoiceId: args.invoiceId,
+      clientId: row.clientId ?? undefined,
+      caseId: row.caseId ?? undefined,
+    },
+    actorStaffId: args.actorStaffId,
+    // Not keyed on the invoice: instalment plans pay the same invoice several
+    // times, and each payment earns its own receipt.
+    dedupeKey: `payment-receipt-${args.invoiceId}-${args.paymentDate}-${amount}`,
+  });
+
+  await notify({
+    organizationId: args.organizationId,
+    event: "payment_received_staff",
+    recipients: await staffRecipientsForFirm(args.organizationId),
+    context: {
+      amount,
+      invoiceNumber: args.invoiceNumber,
+      clientName: row.partyName,
+      link: `${env.FRONTEND_APP_URL}/admin/finance/invoices/${args.invoiceId}`,
+    },
+    scenario: {
+      invoiceId: args.invoiceId,
+      clientId: row.clientId ?? undefined,
+      caseId: row.caseId ?? undefined,
+    },
+    actorStaffId: args.actorStaffId,
+    dedupeKey: `payment-staff-${args.invoiceId}-${args.paymentDate}-${amount}`,
   });
 };
 
