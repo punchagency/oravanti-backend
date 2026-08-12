@@ -6,7 +6,7 @@ import {
   questionnaireResponses,
   questionnaireSends,
 } from "../../db/schema/questionnaires";
-import { emailService } from "../../utils/email/email.service";
+import { notify } from "../../notifications/notification.service";
 import { redisConnection } from "../connection";
 import {
   QUESTIONNAIRE_REMINDERS_QUEUE,
@@ -48,33 +48,33 @@ export const sendQuestionnaireReminder = async (
     .limit(1);
   if (!lead) return false;
 
-  const baseUrl =
-    process.env.APP_URL ??
-    process.env.BETTER_AUTH_URL ??
-    "http://localhost:3000";
+  // Delivered on the same channels the original send used: a lead who was only
+  // ever emailed should not first hear from us by text at reminder time.
+  const channels = ((send.deliveryChannels as string[] | null) ?? ["email"]) as (
+    | "email"
+    | "sms"
+  )[];
 
-  emailService
-    .sendEmail({
-      to: lead.email,
-      subject: "Reminder: please complete your intake questionnaire",
-      html: `<p>Dear ${lead.firstName},</p>
-        <p>This is a friendly reminder to complete your intake questionnaire.</p>
-        <p>If you have misplaced your link, please contact your attorney's office.</p>`,
-    })
-    .catch(console.error);
-
-  // SMS delivery is stubbed until a provider is wired.
-  const channels = (send.deliveryChannels as string[] | null) ?? [];
-  if (channels.includes("sms") && lead.phone) {
-    console.log(`[sms-stub] reminder to ${lead.phone} for send ${sendId}`);
-  }
+  await notify({
+    organizationId: lead.organizationId,
+    event: "questionnaire_reminder",
+    recipients: [{ type: "lead", id: lead.id }],
+    // No link: the access token is not recoverable here, and the previous
+    // implementation said the same thing in prose. The template falls back to
+    // "contact the office" when it has none.
+    context: {},
+    channels,
+    scenario: { leadId: lead.id },
+    // Keyed on the reminder count, so a manual "send reminder" after an
+    // automatic one is a new message rather than a silent no-op.
+    dedupeKey: `questionnaire-reminder-${sendId}-${send.lastReminderAt?.getTime() ?? 0}`,
+  }).catch((error: unknown) => console.error("[reminder] notify failed", error));
 
   await db
     .update(questionnaireSends)
     .set({ lastReminderAt: new Date(), updatedAt: new Date() })
     .where(eq(questionnaireSends.id, sendId));
 
-  void baseUrl;
   return true;
 };
 
