@@ -8,3 +8,5 @@ export const EMAIL_VERIFICATION_EXEMPT_ACCOUNT_TYPES = new Set<AccountType>([
   "client",
   "staff",
 ]);
+/** Minimum consultation fee amount in dollars. */
+export const MINIMUM_CONSULTATION_FEE = 5;

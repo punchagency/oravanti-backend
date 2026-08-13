@@ -1,11 +1,12 @@
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "../../../db/client";
+import { MINIMUM_CONSULTATION_FEE } from "../../../config/constants";
 import {
   consultationSettings,
   ConsultationSettings,
 } from "../../../db/schema/consultation-settings";
 import { consultationLocations } from "../../../db/schema/consultation-locations";
-import { NotFoundError } from "../../../utils/error/app-error";
+import { BadRequestError, NotFoundError } from "../../../utils/error/app-error";
 import {
   CreateConsultationLocationBody,
   UpdateConsultationLocationBody,
@@ -93,6 +94,10 @@ export class ConsultationSettingsService {
   ) => {
     const chargesFee = body.chargesFee;
     const feeStructure = chargesFee ? body.feeStructure ?? null : null;
+
+    if (chargesFee && body.defaultAmount != null && body.defaultAmount < MINIMUM_CONSULTATION_FEE) {
+      throw new BadRequestError(`Minimum consultation fee amount is $${MINIMUM_CONSULTATION_FEE}.00`);
+    }
 
     const values = {
       chargesFee,

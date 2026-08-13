@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
+import { MINIMUM_CONSULTATION_FEE } from "../../config/constants";
 import {
   aliasedTable,
   and,
@@ -2325,6 +2326,11 @@ const initiateConsultation = async (
     mode: "video" | "in_person" | "phone_call";
     duration: number;
     locationId?: string;
+    /**
+     * The fee BEFORE any emergency surcharge. `emergencyMultiplier` is applied
+     * here, not by the caller — send the standard fee and the multiplier
+     * separately. A caller that pre-multiplies gets the surcharge applied twice.
+     */
     feeAmount?: number;
     preConsultationNotes?: string;
     notifyChannels?: ("email" | "sms")[];
@@ -2451,6 +2457,9 @@ const initiateConsultation = async (
       urgent || settings.feeStructure === "custom_per_case_type"
         ? (data.feeAmount ?? defaultAmount)
         : defaultAmount;
+    if (resolved != null && resolved < MINIMUM_CONSULTATION_FEE) {
+      throw new BadRequestError(`Minimum consultation fee amount is $${MINIMUM_CONSULTATION_FEE}.00`);
+    }
     if (resolved != null) {
       // The multiplier is now APPLIED, not merely recorded. The column comment
       // has always said "the multiplied amount is persisted in feeAmount" and
