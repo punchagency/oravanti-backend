@@ -45,6 +45,16 @@ async function getOrgId(userId: string) {
 
 export const databaseHooks = {
   user: {
+    create: {
+      before: async (data: any) => {
+        if (data.accountType === "client") {
+          return {
+            data: { ...data, emailVerified: true },
+          };
+        }
+        return { data };
+      },
+    },
     update: {
       after: async (user) => {
         await systemDb

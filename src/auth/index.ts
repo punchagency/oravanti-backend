@@ -10,6 +10,7 @@ import {
 } from "better-auth/plugins";
 import { and, eq } from "drizzle-orm";
 import { env } from "../config/env";
+import { EMAIL_VERIFICATION_EXEMPT_ACCOUNT_TYPES } from "../config/constants";
 import { systemDb } from "../db/client";
 import { clients as clientsSchema, staff } from "../db/schema";
 import {
@@ -79,8 +80,7 @@ export const auth = betterAuth({
   },
   emailVerification: {
     sendVerificationEmail: async ({ user, url }) => {
-      console.log({ user });
-
+      if (EMAIL_VERIFICATION_EXEMPT_ACCOUNT_TYPES.has((user as any).accountType)) return;
       await emailService.sendVerificationEmail({ email: user.email, url });
     },
     sendOnSignUp: true,
