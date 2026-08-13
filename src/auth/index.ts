@@ -11,7 +11,7 @@ import {
 import { and, eq } from "drizzle-orm";
 import { env } from "../config/env";
 import { systemDb } from "../db/client";
-import { staff } from "../db/schema";
+import { clients as clientsSchema, staff } from "../db/schema";
 import {
   account,
   invitation,
@@ -278,11 +278,30 @@ export const auth = betterAuth({
         .where(eq(staff.userId, user.id))
         .limit(1);
 
+      // Portal access status for client/staff portal gating.
+      let portalStatus: string | null = null;
+      if ((user as any).accountType === "client") {
+        const [clientRecord] = await systemDb
+          .select({ portalStatus: clientsSchema.portalStatus })
+          .from(clientsSchema)
+          .where(eq(clientsSchema.userId, user.id))
+          .limit(1);
+        portalStatus = clientRecord?.portalStatus ?? null;
+      } else if ((user as any).accountType === "staff") {
+        const [staffRecord] = await systemDb
+          .select({ portalStatus: staff.portalStatus })
+          .from(staff)
+          .where(eq(staff.userId, user.id))
+          .limit(1);
+        portalStatus = staffRecord?.portalStatus ?? null;
+      }
+
       return {
         user: { ...user, timezone: staffTimezone?.timezone ?? null },
         session,
         memberRole,
         firmTimezone,
+        portalStatus,
       };
     }),
   ],

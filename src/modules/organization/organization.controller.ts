@@ -98,6 +98,16 @@ export class OrganizationController {
     sendSuccess(res, null, "Role updated successfully");
   });
 
+  updateStaffPortalStatus = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    if (!organizationId) return res.status(400).json({ error: "No active organization" });
+    const targetStaffId = req.params.staffId as string;
+    const { status } = req.body;
+    if (!status) return res.status(400).json({ error: "status is required" });
+    const result = await this.organizationService.updateStaffPortalStatus(targetStaffId, organizationId, status);
+    sendSuccess(res, result, "Portal status updated successfully");
+  });
+
   removeStaffMember = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     if (!organizationId) return res.status(400).json({ error: "No active organization" });
@@ -184,8 +194,15 @@ export class OrganizationController {
   needsSetup = asyncWrap(async (req: Request, res: Response) => {
     const { userId } = getRequestContext();
     if (!userId) return res.status(401).json({ error: "Not authenticated" });
-    const result = await this.organizationService.needsSetup(userId);
-    sendSuccess(res, result);
+
+    try {
+      const result = await this.organizationService.needsSetup(userId);
+      sendSuccess(res, result);
+    } catch {
+      // This is a status fetch, not an error condition. Always answer 200
+      // with safe defaults so the frontend can proceed.
+      sendSuccess(res, { needsAcceptInvitation: false, needsPasswordChange: false });
+    }
   });
 
   setPassword = asyncWrap(async (req: Request, res: Response) => {

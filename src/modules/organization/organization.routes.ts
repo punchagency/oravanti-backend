@@ -135,6 +135,12 @@ export class OrganizationRouter {
       requirePermission("staffs", "update"),
       this.organizationController.updateStaffMemberRole,
     );
+    this.router.patch(
+      "/staffs/:staffId/portal-status",
+      requireAuth,
+      requirePermission("staffs", "update"),
+      this.organizationController.updateStaffPortalStatus,
+    );
     this.router.post(
       "/resend-invitation",
       requireAuth,

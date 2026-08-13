@@ -253,4 +253,15 @@ export class ClientsController {
     );
     sendSuccess(res, result, "Portal status retrieved successfully");
   });
+
+  updatePortalStatus = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const { status } = req.body;
+    const result = await this.svc.updatePortalStatus(
+      req.params.clientId as string,
+      organizationId!,
+      status,
+    );
+    sendSuccess(res, result, "Portal status updated successfully");
+  });
 }

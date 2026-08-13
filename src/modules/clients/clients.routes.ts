@@ -103,6 +103,11 @@ export class ClientsRouter {
       validateRequest({ params: this.validation.params("clientId") }),
       this.ctrl.getPortalStatus,
     );
+    this.router.patch(
+      "/:clientId/portal-status",
+      validateRequest({ params: this.validation.params("clientId") }),
+      this.ctrl.updatePortalStatus,
+    );
 
     // Clients
     this.router.get("/", this.ctrl.getAllClients);

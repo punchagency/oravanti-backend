@@ -83,7 +83,7 @@ export type PortalStatusDTO = {
   emailVerified: boolean;
   lastLoginAt: Date | null;
   activeSessionCount: number;
-  accountStatus: "invited" | "active" | "never_invited";
+  accountStatus: "invited" | "active" | "disabled";
 };
 
 // ─── Standalone Functions ────────────────────────────────────────────────────
@@ -700,7 +700,7 @@ export class ClientsService {
           email: client.email,
           password: tempPassword,
           accountType: "client",
-          onboardingState: "email_unverified",
+          onboardingState: "completed",
           callbackURL: env.EMAIL_VERIFICATION_CALLBACK_URL,
         },
         headers: headers as any,
@@ -907,7 +907,7 @@ export class ClientsService {
         emailVerified: false,
         lastLoginAt: null,
         activeSessionCount: 0,
-        accountStatus: "never_invited",
+        accountStatus: "invited" as const,
       };
     }
 
@@ -929,14 +929,14 @@ export class ClientsService {
         ),
       );
 
-    let accountStatus: "invited" | "active" | "never_invited" = "never_invited";
-    if (userRecord) {
-      if (Number(activeCount) > 0) {
+    let accountStatus: "invited" | "active" | "disabled" = "invited";
+
+    // Check portalStatus column first
+    if (client.portalStatus === "disabled") {
+      accountStatus = "disabled";
+    } else if (userRecord) {
+      if (Number(activeCount) > 0 || userRecord.emailVerified) {
         accountStatus = "active";
-      } else if (userRecord.emailVerified) {
-        accountStatus = "active";
-      } else {
-        accountStatus = "invited";
       }
     }
 
@@ -954,6 +954,31 @@ export class ClientsService {
       activeSessionCount: Number(activeCount),
       accountStatus,
     };
+  }
+
+  async updatePortalStatus(
+    clientId: string,
+    organizationId: string,
+    status: "none" | "pending" | "active" | "disabled",
+  ) {
+    const [client] = await db
+      .select()
+      .from(clients)
+      .where(
+        and(
+          eq(clients.id, clientId),
+          eq(clients.organizationId, organizationId),
+        ),
+      );
+
+    if (!client) throw new NotFoundError("Client not found");
+
+    await db
+      .update(clients)
+      .set({ portalStatus: status, updatedAt: new Date() })
+      .where(eq(clients.id, clientId));
+
+    return { clientId, portalStatus: status };
   }
 
   // ─── Private Helpers ───────────────────────────────────────────────────────

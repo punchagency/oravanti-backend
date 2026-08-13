@@ -14,6 +14,7 @@ import {
   NotFoundError,
 } from "../../utils/error/app-error";
 import {
+  clients,
   practiceAreaCaseTypes,
   practiceAreas,
   practiceAreaSubcategories,
@@ -535,7 +536,7 @@ export class OrganizationService {
 
   async needsSetup(userId: string) {
     const [userRecord] = await db
-      .select({ email: user.email })
+      .select({ email: user.email, accountType: user.accountType })
       .from(user)
       .where(eq(user.id, userId))
       .limit(1);
@@ -552,13 +553,17 @@ export class OrganizationService {
 
     const needsAcceptInvitation = (pendingResult?.count ?? 0) > 0;
 
-    const [staffRecord] = await db
-      .select({ tempPassword: staff.tempPassword })
-      .from(staff)
-      .where(eq(staff.userId, userId))
-      .limit(1);
+    // Only staff need password change (clients manage their own)
+    let needsPasswordChange = false;
 
-    const needsPasswordChange = !!staffRecord?.tempPassword;
+    if (userRecord?.accountType !== "client") {
+      const [staffRecord] = await db
+        .select({ tempPassword: staff.tempPassword })
+        .from(staff)
+        .where(eq(staff.userId, userId))
+        .limit(1);
+      needsPasswordChange = !!staffRecord?.tempPassword;
+    }
 
     return { needsAcceptInvitation, needsPasswordChange };
   }
@@ -588,6 +593,12 @@ export class OrganizationService {
       .update(staff)
       .set({ tempPassword: null })
       .where(eq(staff.userId, userId));
+
+    // Also clear client temp password if this is a client user
+    await db
+      .update(clients)
+      .set({ tempPassword: null })
+      .where(eq(clients.userId, userId));
 
     return { message: "Password set successfully" };
   }
@@ -751,6 +762,29 @@ export class OrganizationService {
     });
 
     return { message: "Role updated successfully" };
+  }
+
+  async updateStaffPortalStatus(
+    staffId: string,
+    organizationId: string,
+    status: "none" | "pending" | "active" | "disabled",
+  ) {
+    const [staffRecord] = await db
+      .select()
+      .from(staff)
+      .where(
+        and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)),
+      )
+      .limit(1);
+
+    if (!staffRecord) throw new NotFoundError("Staff member not found");
+
+    await db
+      .update(staff)
+      .set({ portalStatus: status })
+      .where(eq(staff.id, staffId));
+
+    return { staffId, portalStatus: status };
   }
 
   async listTeams(
@@ -1088,6 +1122,8 @@ export class OrganizationService {
         name: `${firstName} ${lastName}`,
         email: formattedEmail,
         password: tempPassword,
+        accountType: "staff",
+        onboardingState: "completed",
       },
     });
 
@@ -1125,6 +1161,7 @@ export class OrganizationService {
           orgEmail: orgEmail?.toLowerCase().trim() ?? formattedEmail,
           maxCaseload: maxCaseload ?? 7,
           tempPassword: encryptedPassword,
+          portalStatus: "active",
         })
         .returning({ id: staff.id });
 
