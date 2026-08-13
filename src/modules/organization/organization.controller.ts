@@ -61,7 +61,7 @@ export class OrganizationController {
     if (!firstName || !lastName || !email || !role) return res.status(400).json({ error: "firstName, lastName, email, and role are required" });
     if (!organizationId) return res.status(400).json({ error: "No active organization" });
     const result = await this.organizationService.invite({ organizationId, firstName, lastName, email, orgEmail, phone, role, startDate, maxCaseload, caseTypeIds, teamIds }, req.headers as any);
-    sendSuccess(res, { staffId: result.staffId, invitationId: result.invitationId }, "Invitation sent successfully", 201);
+    sendSuccess(res, { staffId: result.staffId }, "Invitation sent successfully", 201);
   });
 
   getInvitations = asyncWrap(async (req: Request, res: Response) => {

@@ -1,10 +1,11 @@
-import { symmetricEncrypt } from "better-auth/crypto";
+import { symmetricEncrypt, symmetricDecrypt } from "better-auth/crypto";
 import { fromNodeHeaders } from "better-auth/node";
 import { aliasedTable, and, desc, eq, inArray, sql } from "drizzle-orm";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Request } from "express";
 import { auth } from "../../auth";
 import { env } from "../../config/env";
+import { emailService } from "../../utils/email/email.service";
 import { db } from "../../db/client";
 import {
   AuthorizationError,
@@ -444,17 +445,72 @@ export class OrganizationService {
     organizationId: string,
     headers: Record<string, string | string[] | undefined>,
   ) {
-    const result = await auth.api.createInvitation({
-      body: {
-        email,
-        role: role as "admin" | "attorney" | "paralegal",
-        organizationId,
-        resend: true,
-      },
-      headers: fromNodeHeaders(headers as Record<string, string>),
-    });
+    const formattedEmail = email.toLowerCase().trim();
 
-    return result;
+    // Find the pending invitation to get the inviter (mirrors Better Auth's
+    // sendInvitationEmail callback, which passes data.inviter.user)
+    const [inviterRecord] = await db
+      .select({ name: user.name, email: user.email })
+      .from(invitation)
+      .innerJoin(user, eq(user.id, invitation.inviterId))
+      .where(
+        and(
+          eq(invitation.email, formattedEmail),
+          eq(invitation.organizationId, organizationId),
+          eq(invitation.status, "pending"),
+        ),
+      )
+      .limit(1);
+
+    const [orgRecord] = await db
+      .select({ name: organization.name })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .limit(1);
+
+    const loginUrl = `${env.FRONTEND_APP_URL || "http://localhost:5173"}/login?email=${encodeURIComponent(formattedEmail)}`;
+
+    const invitedByUsername = inviterRecord?.name ?? "Your team";
+    const invitedByEmail = inviterRecord?.email ?? "";
+    const orgName = orgRecord?.name ?? "your organization";
+
+    // Find the staff record to get the temp password
+    const [staffRecord] = await db
+      .select({ tempPassword: staff.tempPassword })
+      .from(staff)
+      .where(
+        and(
+          eq(staff.email, formattedEmail),
+          eq(staff.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (staffRecord?.tempPassword) {
+      const plaintextPassword = await symmetricDecrypt({
+        key: env.BETTER_AUTH_SECRET,
+        data: staffRecord.tempPassword,
+      });
+
+      await emailService.sendInvitationWithCredentials({
+        email: formattedEmail,
+        tempPassword: plaintextPassword,
+        inviteLink: `${loginUrl}&password=${encodeURIComponent(plaintextPassword)}`,
+        invitedByUsername,
+        invitedByEmail,
+        orgName,
+      });
+    } else {
+      await emailService.sendOrganizationInvitationEmail({
+        email: formattedEmail,
+        invitedByUsername,
+        invitedByEmail,
+        orgName,
+        inviteLink: loginUrl,
+      });
+    }
+
+    return { sent: true };
   }
 
   async cancelInvite(
@@ -1188,31 +1244,25 @@ export class OrganizationService {
       }
     });
 
-    try {
-      const createdInvitation = await auth.api.createInvitation({
-        body: {
-          organizationId,
-          email: formattedEmail,
-          role: role as "admin" | "attorney" | "paralegal",
-          resend: true,
-        },
-        headers: fromNodeHeaders(headers as Record<string, string>),
-      });
+    // Send invitation email with login credentials
+    const [orgRecord] = await db
+      .select({ name: organization.name })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .limit(1);
 
-      return {
-        staffId,
-        invitationId: createdInvitation?.id,
-      };
-    } catch (e) {
-      console.log({ error: e });
+    const loginUrl = `${env.FRONTEND_APP_URL || "http://localhost:5173"}/login?email=${encodeURIComponent(formattedEmail)}&password=${encodeURIComponent(tempPassword)}`;
 
-      await db.transaction(async (tx) => {
-        await tx.delete(staff).where(eq(staff.id, staffId));
-        await tx.delete(user).where(eq(user.id, createdUser.id));
-      });
+    await emailService.sendInvitationWithCredentials({
+      email: formattedEmail,
+      tempPassword,
+      inviteLink: loginUrl,
+      invitedByUsername: "Your team",
+      invitedByEmail: "",
+      orgName: orgRecord?.name ?? "your organization",
+    });
 
-      throw e;
-    }
+    return { staffId };
   }
 
   async deleteTeam(teamId: string, organizationId: string) {

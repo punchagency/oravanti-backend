@@ -142,7 +142,7 @@ export const auth = betterAuth({
         defaultTeam: { enabled: false },
       },
       async sendInvitationEmail(data) {
-        const inviteLink = `http://localhost:5137/accept-invitation?id=${data.id}`;
+        const loginUrl = `${env.FRONTEND_APP_URL || "http://localhost:5173"}/login?email=${encodeURIComponent(data.email)}`;
 
         const [staffRecord] = await systemDb
           .select({ tempPassword: staff.tempPassword })
@@ -164,10 +164,10 @@ export const auth = betterAuth({
           await emailService.sendInvitationWithCredentials({
             email: data.email,
             tempPassword: plaintextPassword,
-            inviteLink,
+            inviteLink: `${loginUrl}&password=${encodeURIComponent(plaintextPassword)}`,
             invitedByUsername: data.inviter.user.name,
             invitedByEmail: data.inviter.user.email,
-            teamName: data.organization.name,
+            orgName: data.organization.name,
           });
           return;
         }
@@ -176,8 +176,8 @@ export const auth = betterAuth({
           email: data.email,
           invitedByUsername: data.inviter.user.name,
           invitedByEmail: data.inviter.user.email,
-          teamName: data.organization.name,
-          inviteLink,
+          orgName: data.organization.name,
+          inviteLink: loginUrl,
         });
       },
       organizationHooks: {

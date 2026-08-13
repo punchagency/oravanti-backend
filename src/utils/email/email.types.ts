@@ -33,7 +33,7 @@ export interface InvitationEmailProps {
   email: string;
   invitedByUsername: string;
   invitedByEmail: string;
-  teamName: string;
+  orgName: string;
   inviteLink: string;
 }
 
@@ -85,7 +85,7 @@ export abstract class BaseEmailService {
   ): Promise<void> {
     await this.sendEmail({
       to: props.email,
-      subject: `Invitation to join ${props.teamName} on Oravanti`,
+      subject: `Invitation to join ${props.orgName} on Oravanti`,
       html: generateOrganizationInvitationEmailTemplate(props),
     });
   }
@@ -95,7 +95,7 @@ export abstract class BaseEmailService {
   ): Promise<void> {
     await this.sendEmail({
       to: props.email,
-      subject: `Welcome to ${props.teamName} — Your account is ready`,
+      subject: `Welcome to ${props.orgName} — Your account is ready`,
       html: generateInvitationWithCredentialsTemplate(props),
     });
   }
@@ -177,14 +177,14 @@ export const generateSignInOTPEmailTemplate = (otp: string): string => `
 export const generateOrganizationInvitationEmailTemplate = ({
   invitedByUsername,
   invitedByEmail,
-  teamName,
+  orgName,
   inviteLink,
 }: InvitationEmailProps): string => `
   <div style="background-color: #ffffff; color: #374151; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 40px 20px; text-align: center; border-radius: 12px; max-width: 500px; margin: 0 auto; border: 1px solid #e5e7eb; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);">
     
     <!-- Workspace Initials Badge -->
     <div style="background-color: #06b6d4; color: #ffffff; width: 56px; height: 56px; line-height: 56px; border-radius: 16px; font-weight: bold; font-size: 20px; margin: 0 auto 24px auto; text-transform: uppercase; box-shadow: 0px 4px 12px rgba(6, 182, 212, 0.25);">
-      ${teamName.substring(0, 2).toUpperCase()}
+      ${orgName.substring(0, 2).toUpperCase()}
     </div>
 
     <!-- Main Message -->
@@ -192,7 +192,7 @@ export const generateOrganizationInvitationEmailTemplate = ({
       ${invitedByUsername} has invited you to join
     </h2>
     <h1 style="color: #0891b2; font-size: 26px; font-weight: 700; margin-top: 0; margin-bottom: 20px;">
-      ${teamName}
+      ${orgName}
     </h1>
 
     <p style="color: #4b5563; font-size: 14px; line-height: 1.6; margin-bottom: 32px; padding: 0 15px;">
@@ -216,7 +216,7 @@ export const generateOrganizationInvitationEmailTemplate = ({
 
 export const generateInvitationWithCredentialsTemplate = ({
   invitedByUsername,
-  teamName,
+  orgName,
   email,
   tempPassword,
   inviteLink,
@@ -224,15 +224,15 @@ export const generateInvitationWithCredentialsTemplate = ({
   <div style="background-color: #ffffff; color: #374151; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; padding: 40px 20px; text-align: center; border-radius: 12px; max-width: 500px; margin: 0 auto; border: 1px solid #e5e7eb; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);">
 
     <div style="background-color: #06b6d4; color: #ffffff; width: 56px; height: 56px; line-height: 56px; border-radius: 16px; font-weight: bold; font-size: 20px; margin: 0 auto 24px auto; text-transform: uppercase; box-shadow: 0px 4px 12px rgba(6, 182, 212, 0.25);">
-      ${teamName.substring(0, 2).toUpperCase()}
+      ${orgName.substring(0, 2).toUpperCase()}
     </div>
 
     <h2 style="color: #1f2937; font-size: 20px; font-weight: 600; margin-bottom: 6px; line-height: 1.4;">
-      Welcome to ${teamName}
+      Welcome to ${orgName}
     </h2>
 
     <p style="color: #4b5563; font-size: 14px; line-height: 1.6; margin-bottom: 24px;">
-      ${invitedByUsername} has created an account for you. Use the credentials below to sign in and accept your invitation.
+      ${invitedByUsername} has created an account for you. Click below to sign in with your credentials.
     </p>
 
     <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin-bottom: 24px; text-align: left;">
@@ -242,13 +242,13 @@ export const generateInvitationWithCredentialsTemplate = ({
       <p style="margin: 0; font-size: 15px; font-weight: 600; color: #1f2937; font-family: 'Courier New', monospace; letter-spacing: 1px;">${tempPassword}</p>
     </div>
 
-    <p style="color: #ef4444; font-size: 13px; line-height: 1.5; margin-bottom: 24px;">
-      For security reasons, you will be required to set a new password after logging in.
+    <p style="color: #6b7280; font-size: 13px; line-height: 1.5; margin-bottom: 24px;">
+      We recommend changing your password after signing in for added security.
     </p>
 
     <div style="margin-bottom: 16px;">
       <a href="${inviteLink}" target="_blank" style="background-color: #2563eb; color: #ffffff; padding: 14px 32px; font-size: 15px; font-weight: 600; text-decoration: none; border-radius: 8px; display: inline-block; box-shadow: 0px 4px 14px rgba(37, 99, 235, 0.3);">
-        Accept Invitation
+        Sign in to your account
       </a>
     </div>
 

@@ -217,15 +217,6 @@ export class ClientsController {
     sendSuccess(res, result, "Portal invitation sent successfully");
   });
 
-  resetClientPassword = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
-    const result = await this.svc.resetClientPassword(
-      req.params.clientId as string,
-      organizationId!,
-    );
-    sendSuccess(res, result, "Password reset email sent successfully");
-  });
-
   getClientSessions = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     const result = await this.svc.getClientSessions(

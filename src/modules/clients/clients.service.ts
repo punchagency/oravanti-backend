@@ -21,9 +21,10 @@ import { practiceAreas } from "../../db/schema/practice-areas";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { staff } from "../../db/schema/staff";
 import { teamMembers } from "../../db/schema/team-members";
-import { user, session } from "../../db/schema/auth-schema";
+import { organization, user, session } from "../../db/schema/auth-schema";
 import { auth } from "../../auth";
 import { env } from "../../config/env";
+import { symmetricEncrypt, symmetricDecrypt } from "better-auth/crypto";
 import { emailService } from "../../utils/email/email.service";
 import { ConflictError, NotFoundError, BadRequestError } from "../../utils/error/app-error";
 import { resolveAvatarUrl } from "../../utils/storage/avatar-url";
@@ -656,11 +657,9 @@ export class ClientsService {
 
     if (!client) throw new NotFoundError("Client not found");
 
-    const portalUrl = process.env.CLIENT_PORTAL_URL || "http://clients.localhost:5173";
-    const loginUrl = `${portalUrl}/login`;
     const fullName = client.displayName;
 
-    // If user already exists, send them a password reset email
+    // If user already exists, send magic link
     if (client.userId) {
       const [existingUser] = await systemDb
         .select({ id: user.id, email: user.email })
@@ -669,17 +668,11 @@ export class ClientsService {
         .limit(1);
 
       if (existingUser) {
-        const portalUrl = process.env.CLIENT_PORTAL_URL || "http://clients.localhost:5173";
-        const resetUrl = `${portalUrl}/forgot-password`;
-
-        await emailService.sendEmail({
-          to: client.email,
-          subject: "Reset Your Oravanti Password",
-          html: this.generatePasswordResetTemplate({
-            clientName: fullName,
-            resetUrl,
-          }),
-        });
+        // Ensure portal status is active
+        await db
+          .update(clients)
+          .set({ portalStatus: "active", updatedAt: new Date() })
+          .where(eq(clients.id, clientId));
 
         return {
           invited: true,
@@ -726,22 +719,37 @@ export class ClientsService {
           });
         }
 
-        // Link user to the client record
+        // Link user to the client record + store temp password + set portal active
+        const encryptedPassword = await symmetricEncrypt({
+          key: env.BETTER_AUTH_SECRET,
+          data: tempPassword,
+        });
         await db
           .update(clients)
-          .set({ userId: result.user.id, updatedAt: new Date() })
+          .set({
+            userId: result.user.id,
+            tempPassword: encryptedPassword,
+            portalStatus: "active",
+            updatedAt: new Date(),
+          })
           .where(eq(clients.id, clientId));
 
-        // Send invitation email with credentials
-        await emailService.sendEmail({
-          to: client.email,
-          subject: `Welcome to Oravanti — Your client portal is ready`,
-          html: this.generateClientInvitationTemplate({
-            clientName: fullName,
-            email: client.email,
-            tempPassword,
-            loginUrl,
-          }),
+        // Send invitation email with login credentials
+        const [orgRecord] = await db
+          .select({ name: organization.name })
+          .from(organization)
+          .where(eq(organization.id, client.organizationId))
+          .limit(1);
+
+        const loginUrl = `${env.FRONTEND_APP_URL || "http://localhost:5173"}/login?email=${encodeURIComponent(client.email)}&password=${encodeURIComponent(tempPassword)}`;
+
+        await emailService.sendInvitationWithCredentials({
+          email: client.email,
+          tempPassword,
+          inviteLink: loginUrl,
+          invitedByUsername: "Your team",
+          invitedByEmail: "",
+          orgName: orgRecord?.name ?? "your organization",
         });
 
         return {
@@ -765,18 +773,6 @@ export class ClientsService {
             .set({ userId: existingUser.id, updatedAt: new Date() })
             .where(eq(clients.id, clientId));
 
-          const portalUrl = process.env.CLIENT_PORTAL_URL || "http://clients.localhost:5173";
-          const resetUrl = `${portalUrl}/forgot-password`;
-
-          await emailService.sendEmail({
-            to: client.email,
-            subject: "Reset Your Oravanti Password",
-            html: this.generatePasswordResetTemplate({
-              clientName: fullName,
-              resetUrl,
-            }),
-          });
-
           return {
             invited: true,
             sentAt: new Date().toISOString(),
@@ -789,34 +785,6 @@ export class ClientsService {
     }
 
     throw new BadRequestError("Failed to send invitation");
-  }
-
-  async resetClientPassword(
-    clientId: string,
-    organizationId: string,
-  ) {
-    const [client] = await db
-      .select()
-      .from(clients)
-      .where(
-        and(
-          eq(clients.id, clientId),
-          eq(clients.organizationId, organizationId),
-        ),
-      );
-
-    if (!client) throw new NotFoundError("Client not found");
-    if (!client.userId) throw new BadRequestError("Client does not have a portal account");
-
-    // Send a verification OTP that the client can use to reset their password
-    await auth.api.sendVerificationOTP({
-      body: {
-        email: client.email,
-        type: "forget-password",
-      },
-    });
-
-    return { resetSent: true, sentAt: new Date().toISOString() };
   }
 
   async getClientSessions(
