@@ -173,7 +173,7 @@ export class AuthService {
           password: body.password,
           name: displayName,
           accountType: accountType,
-          onboardingState: "email_unverified",
+          onboardingState: accountType === "client" ? "completed" : "email_unverified",
           callbackURL: env.EMAIL_VERIFICATION_CALLBACK_URL,
         },
         asResponse: true,

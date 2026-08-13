@@ -8,6 +8,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { organization, user } from "./auth-schema";
+import { portalStatusEnum } from "../../modules/auth/enums";
 
 export const staffRoleEnum = pgEnum("staff_role", [
   "admin",
@@ -58,6 +59,7 @@ export const staff = pgTable("staff", {
   orgEmail: text("org_email"),
   maxCaseload: integer("max_caseload").default(7),
   tempPassword: text("temp_password"),
+  portalStatus: portalStatusEnum("portal_status").notNull().default("none"),
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),

@@ -10,8 +10,9 @@ import {
 } from "better-auth/plugins";
 import { and, eq } from "drizzle-orm";
 import { env } from "../config/env";
+import { EMAIL_VERIFICATION_EXEMPT_ACCOUNT_TYPES } from "../config/constants";
 import { systemDb } from "../db/client";
-import { staff } from "../db/schema";
+import { clients as clientsSchema, staff } from "../db/schema";
 import {
   account,
   invitation,
@@ -79,8 +80,7 @@ export const auth = betterAuth({
   },
   emailVerification: {
     sendVerificationEmail: async ({ user, url }) => {
-      console.log({ user });
-
+      if (EMAIL_VERIFICATION_EXEMPT_ACCOUNT_TYPES.has((user as any).accountType)) return;
       await emailService.sendVerificationEmail({ email: user.email, url });
     },
     sendOnSignUp: true,
@@ -142,7 +142,7 @@ export const auth = betterAuth({
         defaultTeam: { enabled: false },
       },
       async sendInvitationEmail(data) {
-        const inviteLink = `http://localhost:5137/accept-invitation?id=${data.id}`;
+        const loginUrl = `${env.FRONTEND_APP_URL || "http://localhost:5173"}/login?email=${encodeURIComponent(data.email)}`;
 
         const [staffRecord] = await systemDb
           .select({ tempPassword: staff.tempPassword })
@@ -164,10 +164,10 @@ export const auth = betterAuth({
           await emailService.sendInvitationWithCredentials({
             email: data.email,
             tempPassword: plaintextPassword,
-            inviteLink,
+            inviteLink: `${loginUrl}&password=${encodeURIComponent(plaintextPassword)}`,
             invitedByUsername: data.inviter.user.name,
             invitedByEmail: data.inviter.user.email,
-            teamName: data.organization.name,
+            orgName: data.organization.name,
           });
           return;
         }
@@ -176,8 +176,8 @@ export const auth = betterAuth({
           email: data.email,
           invitedByUsername: data.inviter.user.name,
           invitedByEmail: data.inviter.user.email,
-          teamName: data.organization.name,
-          inviteLink,
+          orgName: data.organization.name,
+          inviteLink: loginUrl,
         });
       },
       organizationHooks: {
@@ -278,11 +278,33 @@ export const auth = betterAuth({
         .where(eq(staff.userId, user.id))
         .limit(1);
 
+      // Portal access status for client/staff portal gating.
+      let portalStatus: string | null = null;
+      if ((user as any).accountType === "client") {
+        const [clientRecord] = await systemDb
+          .select({ portalStatus: clientsSchema.portalStatus })
+          .from(clientsSchema)
+          .where(eq(clientsSchema.userId, user.id))
+          .limit(1);
+        portalStatus = clientRecord?.portalStatus ?? null;
+      } else if (
+        (user as any).accountType === "staff" ||
+        (user as any).accountType === "firm_admin"
+      ) {
+        const [staffRecord] = await systemDb
+          .select({ portalStatus: staff.portalStatus })
+          .from(staff)
+          .where(eq(staff.userId, user.id))
+          .limit(1);
+        portalStatus = staffRecord?.portalStatus ?? null;
+      }
+
       return {
         user: { ...user, timezone: staffTimezone?.timezone ?? null },
         session,
         memberRole,
         firmTimezone,
+        portalStatus,
       };
     }),
   ],

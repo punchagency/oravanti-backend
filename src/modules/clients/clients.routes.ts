@@ -81,11 +81,6 @@ export class ClientsRouter {
       validateRequest({ params: this.validation.params("clientId") }),
       this.ctrl.sendPortalInvitation,
     );
-    this.router.post(
-      "/:clientId/reset-password",
-      validateRequest({ params: this.validation.params("clientId") }),
-      this.ctrl.resetClientPassword,
-    );
     this.router.get(
       "/:clientId/sessions",
       validateRequest({ params: this.validation.params("clientId") }),
@@ -102,6 +97,11 @@ export class ClientsRouter {
       "/:clientId/portal-status",
       validateRequest({ params: this.validation.params("clientId") }),
       this.ctrl.getPortalStatus,
+    );
+    this.router.patch(
+      "/:clientId/portal-status",
+      validateRequest({ params: this.validation.params("clientId") }),
+      this.ctrl.updatePortalStatus,
     );
 
     // Clients
