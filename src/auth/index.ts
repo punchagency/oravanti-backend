@@ -287,7 +287,10 @@ export const auth = betterAuth({
           .where(eq(clientsSchema.userId, user.id))
           .limit(1);
         portalStatus = clientRecord?.portalStatus ?? null;
-      } else if ((user as any).accountType === "staff") {
+      } else if (
+        (user as any).accountType === "staff" ||
+        (user as any).accountType === "firm_admin"
+      ) {
         const [staffRecord] = await systemDb
           .select({ portalStatus: staff.portalStatus })
           .from(staff)
