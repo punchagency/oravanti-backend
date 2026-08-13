@@ -8,7 +8,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { organization, user } from "./auth-schema";
-import { portalStatusEnum } from "../../modules/auth/enums";
+import { portalStatusEnum } from "./enums";
 
 export const staffRoleEnum = pgEnum("staff_role", [
   "admin",
