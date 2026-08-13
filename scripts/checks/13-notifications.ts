@@ -640,13 +640,18 @@ const main = async () => {
         firm,
       });
 
+    // The firm owns the channel choice, so never having opted in is NOT a
+    // refusal — otherwise choosing SMS in a picker would silently skip every
+    // send. This is the assertion that would fail if per-lead opt-in were
+    // reintroduced as a gate.
     checkEqual(
-      "no consent is recorded as no_consent",
-      (await decide({ ...consented, smsConsent: false })),
-      { allowed: false, skipReason: "no_consent" },
+      "an absent opt-in does not block a send",
+      await decide({ ...consented, smsConsent: false }),
+      { allowed: true },
     );
     // THE assertion: an opt-out beats a transactional event. questionnaire_sent
-    // is transactional, and it still must not go out by SMS.
+    // is transactional, and it still must not go out by SMS — Twilio rejects it
+    // with 21610 whatever we decide here.
     checkEqual(
       "an opt-out blocks even a transactional event",
       await decide({
@@ -775,7 +780,16 @@ const main = async () => {
      */
     await systemDb
       .update(leads)
-      .set({ phone: "+1 (415) 555-2671" })
+      .set({
+        phone: "+1 (415) 555-2671",
+        // Explicitly NOT opted in — the firm chose the channel, and that is
+        // enough. This is the end-to-end version of the decision assertion
+        // above: a lead who never opted in still gets a real, queued SMS row.
+        smsConsent: false,
+        smsConsentAt: null,
+        smsConsentSource: null,
+        smsOptOutAt: null,
+      })
       .where(eq(leads.id, fixture.leadId));
     await notify({
       organizationId: orgId,

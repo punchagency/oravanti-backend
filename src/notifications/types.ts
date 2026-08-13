@@ -87,6 +87,11 @@ export type NotifyResult = {
  */
 export type SkipReason =
   | "provider_unconfigured"
+  /**
+   * Retained for rows written while per-lead opt-in still gated sends. Nothing
+   * produces it now — the firm chooses the channel — but historical rows carry
+   * it and the UI must keep explaining them.
+   */
   | "no_consent"
   | "opted_out"
   | "email_suppressed_bounce"

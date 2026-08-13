@@ -35,9 +35,29 @@ import type { ResolvedRecipient } from "./types";
  * Both halves are load-bearing. `smsConsent` alone would let a stale true
  * survive an opt-out; `smsOptOutAt` alone could not distinguish "never asked"
  * from "asked and agreed".
+ *
+ * NOT used to gate sends — see `canReceiveSms`. Retained because the columns
+ * still record when and how a lead affirmatively agreed, which is the evidence
+ * an A2P 10DLC campaign registration asks for.
  */
 export const hasSmsConsent = (recipient: ResolvedRecipient): boolean =>
   recipient.smsConsent && recipient.smsOptOutAt === null;
+
+/**
+ * Whether we may text this recipient.
+ *
+ * The FIRM decides whether a given message goes by email, SMS or both — leads
+ * have no preference model, and requiring per-lead opt-in meant a firm could
+ * choose SMS in the picker and have every send silently skipped.
+ *
+ * The one thing a firm cannot overrule is an opt-out. That is not this
+ * system being cautious: a number that replied STOP is suppressed at the
+ * carrier layer, and Twilio rejects the send with error 21610 whatever our
+ * database says. Sending anyway would spend money to generate a failure and
+ * degrade the sender reputation shared by every firm on the number.
+ */
+export const canReceiveSms = (recipient: ResolvedRecipient): boolean =>
+  recipient.smsOptOutAt === null;
 
 export type ConsentSource = "intake_form" | "staff_manual" | "sms_start";
 

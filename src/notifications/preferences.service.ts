@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { systemDb } from "../db/client";
 import { consultationSettings } from "../db/schema/consultation-settings";
 import { notificationPreferences } from "../db/schema/notification-settings";
-import { getEmailSuppression, hasSmsConsent } from "./consent.service";
+import { canReceiveSms, getEmailSuppression } from "./consent.service";
 import {
   DEFAULT_CHANNEL_PREFERENCES,
   type FirmPreferenceEventKey,
@@ -22,11 +22,17 @@ import type {
  * the provider (can we send at all), then the RECIPIENT (did they refuse), then
  * the FIRM (do they want this), then reality (is there an address).
  *
- * The consequential part is that the recipient outranks the firm AND outranks
- * the transactional tier. A contact who texted STOP does not receive their
- * payment link by SMS. That is not a preference being respected, it is a
- * refusal being obeyed, and a transactional exception here is precisely the
- * exception that produces a TCPA complaint.
+ * The consequential part is that a REFUSAL outranks the firm and outranks the
+ * transactional tier. A contact who texted STOP does not receive their payment
+ * link by SMS, and a hard-bounced address receives no email. Neither is a
+ * preference being respected — they are refusals being obeyed, and both are
+ * enforced by the provider regardless of what we decide here.
+ *
+ * Note what is NOT a refusal: never having opted in. Leads have no preference
+ * model, so the firm chooses the channel and an absent opt-in does not block a
+ * send. The consent columns still record affirmative agreement where it was
+ * given, which is what A2P 10DLC registration asks about — they simply do not
+ * gate.
  */
 
 export type ChannelPreferences = Record<
@@ -107,11 +113,12 @@ export const resolveChannelDecision = async (opts: {
 
   // 2. Did the recipient refuse? Beats everything below, including the
   //    transactional tier.
-  if (channel === "sms" && !hasSmsConsent(recipient)) {
-    return {
-      allowed: false,
-      skipReason: recipient.smsOptOutAt ? "opted_out" : "no_consent",
-    };
+  //
+  //    Only an explicit opt-out blocks. The firm chooses the channel; leads
+  //    have no preference model to consult, so an absent opt-in is not a
+  //    refusal. An opt-out is, and it is enforced at the carrier layer anyway.
+  if (channel === "sms" && !canReceiveSms(recipient)) {
+    return { allowed: false, skipReason: "opted_out" };
   }
 
   if (channel === "email" && recipient.email) {

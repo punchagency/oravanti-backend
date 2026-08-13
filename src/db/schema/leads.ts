@@ -165,16 +165,16 @@ export const leads = pgTable("leads", {
   // unset — see getLeadTimezone.
   timezone:       text("timezone"),
 
-  // SMS consent. A lead is sendable ONLY when smsConsent is true and
-  // smsOptOutAt is null — see hasSmsConsent, which is the one place that
-  // invariant lives.
+  // SMS consent.
   //
-  // Both columns exist because they answer different questions: smsOptOutAt is
-  // the audit fact ("they told us to stop, on this date"), smsConsent is the
-  // current decision. An opt-out sets both, so a later consent toggle cannot
-  // quietly resurrect a number its owner asked us to leave alone.
+  // `smsOptOutAt` is what GATES a send — see canReceiveSms. A lead is textable
+  // unless they have explicitly opted out, because the firm decides whether a
+  // given message goes by email or SMS and leads have no preference model.
   //
-  // Defaults to false: a phone number on file is not permission to text it.
+  // `smsConsent` / `smsConsentAt` / `smsConsentSource` record affirmative
+  // agreement where it was given (an intake-form tick, a texted START). They no
+  // longer gate anything, but they are the evidence an A2P 10DLC campaign
+  // registration asks for, so they are still written.
   smsConsent:       boolean("sms_consent").notNull().default(false),
   smsConsentAt:     timestamp("sms_consent_at"),
   // "intake_form" | "staff_manual" | "sms_start"
