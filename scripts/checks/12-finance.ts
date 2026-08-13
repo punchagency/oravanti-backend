@@ -19,7 +19,7 @@
  */
 import { randomUUID } from "crypto";
 import { and, eq, inArray } from "drizzle-orm";
-import { closeDb, systemDb } from "../../src/db/client";
+import { closeDb, db, systemDb } from "../../src/db/client";
 import { organization, team, user } from "../../src/db/schema/auth-schema";
 import { billingRates } from "../../src/db/schema/billing-rates";
 import { cases } from "../../src/db/schema/cases";
@@ -28,6 +28,7 @@ import { financeEvents } from "../../src/db/schema/finance-events";
 import { invoiceFollowups } from "../../src/db/schema/invoice-followups";
 import { invoiceNumberSequences } from "../../src/db/schema/invoice-number-sequences";
 import { invoicePayments } from "../../src/db/schema/invoice-payments";
+import { invoiceLinePresets } from "../../src/db/schema/invoice-line-presets";
 import { invoiceLineItems, invoices } from "../../src/db/schema/invoices";
 import { leads } from "../../src/db/schema/leads";
 import { practiceAreaCaseTypes } from "../../src/db/schema/practice-area-case-types";
@@ -42,6 +43,7 @@ import {
   setBillingRate,
 } from "../../src/modules/finance/billing-rates.service";
 import { agingOverDues } from "../../src/modules/finance/dues";
+import * as linePresets from "../../src/modules/finance/line-presets.service";
 import { allocate, generateSchedule } from "../../src/modules/finance/instalments";
 import * as instalmentsService from "../../src/modules/finance/instalments.service";
 import * as invoicesService from "../../src/modules/finance/invoices.service";
@@ -84,6 +86,10 @@ const main = async () => {
   let caseId = "";
   let practiceAreaId = "";
   let subcategoryId = "";
+  // Shipped presets are not org-scoped, so cleanup has to be by the exact ids
+  // this check invents — a blanket delete of NULL-org rows would wipe a real
+  // catalog off a shared database.
+  const presetIdsToClean: string[] = [];
 
   // ── Fixture ────────────────────────────────────────────────────────────────
   await systemDb.insert(organization).values({
@@ -2024,6 +2030,306 @@ const main = async () => {
       }
       check("a replayed event id is rejected", duplicateEventRejected);
 
+      // ── Line preset catalog ───────────────────────────────────────────────
+      // Placed here deliberately: the money assertions earlier in this file are
+      // chained and absolute (totalInvoiced 2240, statsAfterVoid 300), so the
+      // invoice this section raises must come after all of them.
+      section("line preset catalog");
+
+      // Shipped rows are written with systemDb because RLS forbids a tenant
+      // from creating one — which is itself asserted below.
+      const [shippedGeneral] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: null,
+          name: "Check — postage",
+          account: "operating",
+          defaultRate: "12.0000",
+        })
+        .returning();
+      const [shippedArea] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: null,
+          name: "Check — area filing fee",
+          account: "trust_iolta",
+          defaultRate: "405.0000",
+          practiceAreaId,
+        })
+        .returning();
+      const [shippedCaseType] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: null,
+          name: "Check — I-485 filing fee",
+          account: "trust_iolta",
+          defaultRate: "1440.0000",
+          practiceAreaId,
+          caseTypeId: caseType!.id,
+        })
+        .returning();
+      const [shippedToShadow] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: null,
+          name: "Check — superseded fee",
+          account: "operating",
+          defaultRate: "99.0000",
+          practiceAreaId,
+        })
+        .returning();
+      presetIdsToClean.push(
+        shippedGeneral!.id,
+        shippedArea!.id,
+        shippedCaseType!.id,
+        shippedToShadow!.id,
+      );
+
+      // A firm that has authored nothing still gets a working catalog. This
+      // reads through the TENANT connection, so it is the RLS `using` clause
+      // being exercised, not a bypass.
+      const scoped = await linePresets.listPresets(orgId, FULL, {
+        practiceAreaId,
+        caseTypeId: caseType!.id,
+      });
+      const scopedNames = scoped.map((p) => p.name);
+      check(
+        "a firm with no presets of its own still sees the shipped catalog",
+        scopedNames.includes("Check — postage") &&
+          scopedNames.includes("Check — area filing fee") &&
+          scopedNames.includes("Check — I-485 filing fee"),
+        scopedNames,
+      );
+      checkEqual(
+        "shipped rows report their origin",
+        scoped.find((p) => p.name === "Check — postage")?.origin,
+        "shipped",
+      );
+
+      // Most-specific first, so the picker's group headings come straight off
+      // the response.
+      const rankOf = (name: string) =>
+        scoped.find((p) => p.name === name)?.rank;
+      checkEqual("a case-type preset ranks as one", rankOf("Check — I-485 filing fee"), "case_type");
+      checkEqual("a practice-area preset ranks as one", rankOf("Check — area filing fee"), "practice_area");
+      checkEqual("an unscoped preset ranks general", rankOf("Check — postage"), "general");
+      check(
+        "and they arrive in that order",
+        scoped.findIndex((p) => p.name === "Check — I-485 filing fee") <
+          scoped.findIndex((p) => p.name === "Check — area filing fee") &&
+          scoped.findIndex((p) => p.name === "Check — area filing fee") <
+            scoped.findIndex((p) => p.name === "Check — postage"),
+      );
+
+      // Widening is one-directional: a narrower preset must not leak upward.
+      const areaOnly = await linePresets.listPresets(orgId, FULL, {
+        practiceAreaId,
+      });
+      check(
+        "a case-type preset is withheld from a matter without that case type",
+        !areaOnly.some((p) => p.name === "Check — I-485 filing fee"),
+      );
+      const unscopedOnly = await linePresets.listPresets(orgId, FULL, {});
+      checkEqual(
+        "an invoice with no matter sees only the general tier",
+        unscopedOnly.every((p) => p.rank === "general"),
+        true,
+      );
+
+      // Trust visibility. The list is a UX filter; the write path below is the
+      // boundary that actually matters.
+      const withoutTrust = await linePresets.listPresets(orgId, NO_TRUST, {
+        practiceAreaId,
+        caseTypeId: caseType!.id,
+      });
+      checkEqual(
+        "a caller without trust access is shown no trust presets",
+        withoutTrust.some((p) => p.account === "trust_iolta"),
+        false,
+      );
+      check(
+        "but still sees the operating ones",
+        withoutTrust.some((p) => p.name === "Check — postage"),
+      );
+
+      // ── Saving a custom line ──────────────────────────────────────────────
+      const savedFirst = await linePresets.saveFirmPreset(
+        orgId,
+        staffBId,
+        FULL,
+        {
+          name: "Check — bespoke drafting",
+          account: "operating",
+          defaultRate: 400,
+          practiceAreaId,
+        },
+      );
+      presetIdsToClean.push(savedFirst.id);
+      checkEqual("a saved custom line is firm-owned", savedFirst.origin, "firm");
+
+      // Re-saving the same name is an update, not a duplicate and not an error.
+      // It is the only way to correct an amount until the edit screen exists.
+      const savedAgain = await linePresets.saveFirmPreset(
+        orgId,
+        staffBId,
+        FULL,
+        {
+          name: "Check — bespoke drafting",
+          account: "operating",
+          defaultRate: 450,
+          practiceAreaId,
+        },
+      );
+      checkEqual("re-saving updates in place", savedAgain.id, savedFirst.id);
+      checkEqual("and takes the newer amount", savedAgain.defaultRate, 450);
+
+      const afterSave = await linePresets.listPresets(orgId, FULL, {
+        practiceAreaId,
+      });
+      checkEqual(
+        "the firm's list holds it exactly once",
+        afterSave.filter((p) => p.name === "Check — bespoke drafting").length,
+        1,
+      );
+      // A firm's own entry outranks the shipped rows it sits beside.
+      check(
+        "a firm entry sorts ahead of shipped ones at the same rank",
+        afterSave.findIndex((p) => p.name === "Check — bespoke drafting") <
+          afterSave.findIndex((p) => p.name === "Check — area filing fee"),
+      );
+
+      let trustPresetRefused = false;
+      try {
+        await linePresets.saveFirmPreset(orgId, staffBId, NO_TRUST, {
+          name: "Check — forbidden trust line",
+          account: "trust_iolta",
+          defaultRate: 100,
+        });
+      } catch {
+        trustPresetRefused = true;
+      }
+      check(
+        "saving a trust preset without trust access is refused",
+        trustPresetRefused,
+      );
+
+      // ── Shadowing ─────────────────────────────────────────────────────────
+      const [shadowRow] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: orgId,
+          shadowsPresetId: shippedToShadow!.id,
+          name: "Check — superseded fee",
+          account: "operating",
+          defaultRate: "150.0000",
+          practiceAreaId,
+        })
+        .returning();
+      presetIdsToClean.push(shadowRow!.id);
+
+      const afterShadow = await linePresets.listPresets(orgId, FULL, {
+        practiceAreaId,
+      });
+      const supersededRows = afterShadow.filter(
+        (p) => p.name === "Check — superseded fee",
+      );
+      checkEqual(
+        "a shadowed shipped preset drops out of the list",
+        supersededRows.length,
+        1,
+      );
+      checkEqual(
+        "leaving the firm's own in its place",
+        supersededRows[0]?.defaultRate,
+        150,
+      );
+      // The shipped row is untouched — that is the whole point of shadowing
+      // rather than editing, and it is what lets a CLI correction still land.
+      const [shippedStillThere] = await systemDb
+        .select({ rate: invoiceLinePresets.defaultRate })
+        .from(invoiceLinePresets)
+        .where(eq(invoiceLinePresets.id, shippedToShadow!.id));
+      checkEqual(
+        "while the shipped row itself is unchanged",
+        num(shippedStillThere!.rate),
+        99,
+      );
+
+      // ── RLS: the read admits NULL, the write does not ─────────────────────
+      let shippedWriteRefused = false;
+      try {
+        // `db` is the TENANT connection inside withOrgContext. A firm minting a
+        // row every other firm would then see is exactly what the withCheck
+        // clause exists to stop.
+        await db.insert(invoiceLinePresets).values({
+          organizationId: null,
+          name: "Check — smuggled shipped row",
+          account: "operating",
+          defaultRate: "1.0000",
+        });
+      } catch {
+        shippedWriteRefused = true;
+      }
+      check(
+        "a firm cannot author a shipped preset",
+        shippedWriteRefused,
+      );
+
+      // ── Provenance on the line ────────────────────────────────────────────
+      const presetInvoice = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(0),
+        dueDate: daysFromNow(30),
+        status: "draft",
+        timeEntryIds: [],
+        lineItems: [
+          {
+            description: "Check — postage",
+            quantity: 1,
+            rate: 12,
+            account: "operating",
+            presetId: shippedGeneral!.id,
+          },
+        ],
+      });
+      const presetLine = presetInvoice.lineItems[0];
+      checkEqual(
+        "a line composed from a preset records which one",
+        presetLine?.presetId,
+        shippedGeneral!.id,
+      );
+
+      // Retiring a preset must not reach into an invoice the client holds. This
+      // is why the reference is `set null` and why the rate is copied, never
+      // read back.
+      await systemDb
+        .delete(invoiceLinePresets)
+        .where(eq(invoiceLinePresets.id, shippedGeneral!.id));
+      const [orphaned] = await systemDb
+        .select({
+          description: invoiceLineItems.description,
+          rate: invoiceLineItems.rate,
+          presetId: invoiceLineItems.presetId,
+        })
+        .from(invoiceLineItems)
+        .where(eq(invoiceLineItems.id, presetLine!.id));
+      checkEqual(
+        "deleting the preset leaves the billed description intact",
+        orphaned!.description,
+        "Check — postage",
+      );
+      checkEqual(
+        "and the billed rate intact",
+        num(orphaned!.rate),
+        12,
+      );
+      checkEqual(
+        "clearing only the provenance link",
+        orphaned!.presetId,
+        null,
+      );
+
       // ── Activity trail ────────────────────────────────────────────────────
       section("activity trail");
 
@@ -2060,6 +2366,13 @@ const main = async () => {
       await systemDb
         .delete(invoiceLineItems)
         .where(inArray(invoiceLineItems.invoiceId, invoiceIds));
+    }
+    // Before the practice area, whose cascade would otherwise reach the scoped
+    // ones and leave the unscoped shipped row behind.
+    if (presetIdsToClean.length) {
+      await systemDb
+        .delete(invoiceLinePresets)
+        .where(inArray(invoiceLinePresets.id, presetIdsToClean));
     }
     // Not org-scoped by design, so cleaned by the ids this check invents.
     await systemDb
