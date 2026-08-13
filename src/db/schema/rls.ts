@@ -47,13 +47,17 @@
 //
 // ─── Coverage ───────────────────────────────────────────────────────────────
 //
-// Currently covered tables (20):
+// Currently covered tables (21):
 //   cases, case_events, case_record_notes, clients,
 //   leads, lead_events, lead_notes,
 //   case_issues, case_issue_documents, case_issue_events, ai_scan_jobs,
 //   invoices, invoice_line_items, invoice_payments, invoice_instalments,
-//   invoice_followups, invoice_deliveries, finance_events, billing_rates,
-//   time_entries
+//   invoice_followups, invoice_deliveries, invoice_line_presets,
+//   finance_events, billing_rates, time_entries
+//
+// One of these — invoice_line_presets — holds shared rows with a NULL
+// organization_id, so its read and write clauses are not the same expression.
+// See the note above its policy.
 //
 // See .agents/plan-rls-remaining-tables.md for the full audit of uncovered tables.
 //
@@ -87,6 +91,7 @@ import { clients } from "./clients";
 import { financeEvents } from "./finance-events";
 import { invoiceDeliveries } from "./invoice-deliveries";
 import { invoiceFollowups } from "./invoice-followups";
+import { invoiceLinePresets } from "./invoice-line-presets";
 import { invoiceNumberSequences } from "./invoice-number-sequences";
 import { invoiceInstalments } from "./invoice-instalments";
 import { invoicePayments } from "./invoice-payments";
@@ -585,7 +590,8 @@ export const rlsAiScanJobsOrg = pgPolicy("rls_ai_scan_jobs_org", {
 // Finance tables
 // =============================================================================
 // invoices, invoice_line_items, invoice_payments, invoice_instalments,
-// invoice_followups, finance_events, billing_rates, time_entries
+// invoice_followups, invoice_line_presets, finance_events, billing_rates,
+// time_entries
 //
 // Staff only. Billing is firm-internal: an invoice names what the firm charged
 // and what a client still owes, and the trust lines carry client money the firm
@@ -670,6 +676,37 @@ export const rlsFinanceEventsOrg = pgPolicy("rls_finance_events_org", {
   using: sql`organization_id = ${currentOrgId}`,
   withCheck: sql`organization_id = ${currentOrgId}`,
 }).link(financeEvents);
+
+/**
+ * The one policy in this file whose `using` and `withCheck` deliberately
+ * differ, and the asymmetry IS the design.
+ *
+ * `invoice_line_presets` holds two tiers in one table: rows with a NULL
+ * organization_id ship with the product and belong to every firm, rows with
+ * one belong to the firm that saved them.
+ *
+ *   - **Read** admits NULL, so every firm sees the shipped catalog.
+ *   - **Write** does not, so no firm can author, edit or delete a shipped row —
+ *     the only way to override one is to insert a firm-owned row that shadows
+ *     it, which is a write to a row the firm does own.
+ *
+ * Note this means a NULL-org row is invisible to nobody and writable by
+ * nobody through the API. The CLI seeds them outside request context, where no
+ * `app.current_organization_id` is set at all.
+ *
+ * Do NOT "tidy" this into the matching pair every other policy here uses:
+ * making `withCheck` admit NULL would let any firm mint rows for every other
+ * firm, and making `using` reject it would hide the catalog from all of them.
+ */
+export const rlsInvoiceLinePresetsOrg = pgPolicy(
+  "rls_invoice_line_presets_org",
+  {
+    as: "permissive",
+    for: "all",
+    using: sql`organization_id IS NULL OR organization_id = ${currentOrgId}`,
+    withCheck: sql`organization_id = ${currentOrgId}`,
+  },
+).link(invoiceLinePresets);
 
 /**
  * Billing rates are what every staff member's earnings are computed from, so
