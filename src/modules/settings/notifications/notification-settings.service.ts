@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db } from "../../../db/client";
+import { consultationSettings } from "../../../db/schema/consultation-settings";
 import {
   notificationPreferences,
   notificationSettings,
@@ -30,6 +31,16 @@ export type FirmNotificationSettingsDTO = {
     sms: boolean;
     inApp: boolean;
   }[];
+  /**
+   * The firm-wide SMS master switch.
+   *
+   * Physically stored on `consultation_settings.sms_enabled` for historical
+   * reasons, but it belongs to notifications — every SMS send is gated on it,
+   * not just consultation ones. Surfaced here so the notifications screen reads
+   * and writes one endpoint instead of submitting the consultation FEE form to
+   * change a messaging setting.
+   */
+  smsEnabled: boolean;
   updatedAt: Date | null;
 };
 
@@ -75,6 +86,8 @@ export class NotificationSettingsService {
       .where(eq(notificationSettings.organizationId, organizationId))
       .limit(1);
 
+    const smsEnabled = await this.readSmsEnabled(organizationId);
+
     if (!settings) {
       return {
         // The screen only uses `id` as a React key and to detect "saved yet?".
@@ -83,6 +96,7 @@ export class NotificationSettingsService {
         id: "",
         organizationId,
         preferences: buildPreferences([]),
+        smsEnabled,
         updatedAt: null,
       };
     }
@@ -92,7 +106,43 @@ export class NotificationSettingsService {
       .from(notificationPreferences)
       .where(eq(notificationPreferences.organizationId, organizationId));
 
-    return this.toDTO(settings, rows);
+    return this.toDTO(settings, rows, smsEnabled);
+  };
+
+  /**
+   * Flip the firm-wide SMS master switch, and nothing else.
+   *
+   * Deliberately NOT routed through the consultation settings upsert, which is
+   * a full replace: sending it a partial body recomputes every fee field from
+   * what was omitted, so toggling SMS through it would either fail validation
+   * or quietly null out the firm's default amount, fee structure and waiver
+   * window. A messaging switch has no business submitting the fee form.
+   */
+  setSmsEnabled = async (
+    organizationId: string,
+    enabled: boolean,
+  ): Promise<{ smsEnabled: boolean }> => {
+    await db
+      .insert(consultationSettings)
+      .values({ organizationId, smsEnabled: enabled })
+      .onConflictDoUpdate({
+        target: consultationSettings.organizationId,
+        // Only this column. Everything else on the row is left exactly as it
+        // was, which is the whole point.
+        set: { smsEnabled: enabled, updatedAt: new Date() },
+      });
+
+    return { smsEnabled: enabled };
+  };
+
+  private readSmsEnabled = async (organizationId: string): Promise<boolean> => {
+    const [row] = await db
+      .select({ smsEnabled: consultationSettings.smsEnabled })
+      .from(consultationSettings)
+      .where(eq(consultationSettings.organizationId, organizationId))
+      .limit(1);
+
+    return row?.smsEnabled ?? false;
   };
 
   /**
@@ -147,16 +197,22 @@ export class NotificationSettingsService {
       .from(notificationPreferences)
       .where(eq(notificationPreferences.organizationId, organizationId));
 
-    return this.toDTO(settings, rows);
+    return this.toDTO(
+      settings,
+      rows,
+      await this.readSmsEnabled(organizationId),
+    );
   };
 
   private toDTO = (
     settings: NotificationSettingsRow,
     rows: NotificationPreferenceRow[],
+    smsEnabled: boolean,
   ): FirmNotificationSettingsDTO => ({
     id: settings.id,
     organizationId: settings.organizationId,
     preferences: buildPreferences(rows),
+    smsEnabled,
     updatedAt: settings.updatedAt,
   });
 }

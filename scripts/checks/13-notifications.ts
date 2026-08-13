@@ -408,6 +408,82 @@ const main = async () => {
         spoofed.preferences.find((p) => p.event === "invoice_due")!.label,
         FIRM_PREFERENCE_LABELS.invoice_due,
       );
+
+      // ── SMS master switch ──────────────────────────────────────────────
+      //
+      // The switch lives on consultation_settings, whose own upsert is a FULL
+      // REPLACE. Toggling SMS through that endpoint either failed validation or
+      // nulled out the firm's fee configuration as a side effect, which is why
+      // it has its own write path. These assertions exist to stop anyone
+      // routing it back through the fee form.
+
+      checkEqual(
+        "a firm with no consultation settings reads SMS as off",
+        (await service.getSettings(fixture.organizationId)).smsEnabled,
+        false,
+      );
+
+      // Seed a fully-configured fee setup, exactly what a real firm has.
+      await systemDb.insert(consultationSettings).values({
+        organizationId: fixture.organizationId,
+        chargesFee: true,
+        defaultAmount: "150.00",
+        feeStructure: "flat",
+        timezone: "America/New_York",
+      });
+
+      await service.setSmsEnabled(fixture.organizationId, true);
+
+      checkEqual(
+        "enabling SMS is reflected in the settings payload",
+        (await service.getSettings(fixture.organizationId)).smsEnabled,
+        true,
+      );
+
+      const [afterEnable] = await systemDb
+        .select()
+        .from(consultationSettings)
+        .where(
+          eq(consultationSettings.organizationId, fixture.organizationId),
+        );
+
+      // THE regression this endpoint exists to prevent.
+      checkEqual("the fee flag survives the toggle", afterEnable.chargesFee, true);
+      checkEqual(
+        "the default amount survives the toggle",
+        afterEnable.defaultAmount,
+        "150.00",
+      );
+      checkEqual(
+        "the fee structure survives the toggle",
+        afterEnable.feeStructure,
+        "flat",
+      );
+      checkEqual(
+        "the timezone survives the toggle",
+        afterEnable.timezone,
+        "America/New_York",
+      );
+
+      await service.setSmsEnabled(fixture.organizationId, false);
+      const [afterDisable] = await systemDb
+        .select()
+        .from(consultationSettings)
+        .where(
+          eq(consultationSettings.organizationId, fixture.organizationId),
+        );
+      checkEqual("disabling SMS works", afterDisable.smsEnabled, false);
+      checkEqual(
+        "and still leaves the fee configuration alone",
+        afterDisable.defaultAmount,
+        "150.00",
+      );
+
+      await systemDb
+        .delete(consultationSettings)
+        .where(
+          eq(consultationSettings.organizationId, fixture.organizationId),
+        );
     });
   });
 
@@ -454,9 +530,42 @@ const main = async () => {
         dedupeKey: dedupe,
       });
 
-    // No consultation_settings row exists, so smsEnabled defaults false — and
-    // the SMS provider is unconfigured in checks anyway, which is the first
-    // gate. Either way the send is recorded, never silent.
+    /**
+     * Force the provider UNCONFIGURED for this first assertion.
+     *
+     * The original version relied on the ambient environment having no Twilio
+     * credentials, which quietly stopped being true the moment real ones were
+     * added to .env — and the check then failed against correct behaviour. A
+     * check that reads the developer's environment is testing the environment.
+     *
+     * Both directions are controlled here: unset for the provider gate, set
+     * further down for the gates behind it.
+     */
+    const envBackup = {
+      sid: env.TWILIO_ACCOUNT_SID,
+      token: env.TWILIO_AUTH_TOKEN,
+      from: env.TWILIO_FROM_NUMBER,
+      messaging: env.TWILIO_MESSAGING_SERVICE_SID,
+    };
+    const clearTwilioEnv = () => {
+      delete (env as Record<string, unknown>).TWILIO_ACCOUNT_SID;
+      delete (env as Record<string, unknown>).TWILIO_AUTH_TOKEN;
+      delete (env as Record<string, unknown>).TWILIO_FROM_NUMBER;
+      delete (env as Record<string, unknown>).TWILIO_MESSAGING_SERVICE_SID;
+    };
+    const restoreTwilioEnv = () => {
+      (env as Record<string, unknown>).TWILIO_ACCOUNT_SID = envBackup.sid;
+      (env as Record<string, unknown>).TWILIO_AUTH_TOKEN = envBackup.token;
+      (env as Record<string, unknown>).TWILIO_FROM_NUMBER = envBackup.from;
+      (env as Record<string, unknown>).TWILIO_MESSAGING_SERVICE_SID =
+        envBackup.messaging;
+    };
+
+    clearTwilioEnv();
+    check("provider now reads as unconfigured", !isSmsProviderConfigured());
+
+    // No consultation_settings row exists either, so smsEnabled defaults false.
+    // Whichever gate fires, the send is recorded rather than silent.
     await send("gate-1");
     let rows = await rowsFor("questionnaire_sent");
     const smsRow = rows.find((r) => r.channel === "sms");
@@ -492,21 +601,14 @@ const main = async () => {
     checkEqual("a different dedupeKey writes a new row", rows.length, 4);
 
     /**
-     * Pretend a provider is configured, so the gates BEHIND the provider check
-     * become observable.
+     * Now configure a provider, so the gates BEHIND the provider check become
+     * observable.
      *
-     * `isSmsProviderConfigured()` reads these three values and nothing else, so
-     * setting them is enough — and `getSmsProvider()` still returns the stub,
-     * which is what we want: this exercises the decision logic, not delivery.
-     *
-     * That the provider gate masks everything below it when unset is itself
-     * correct, and is what the rows asserted above demonstrate.
+     * Fixed dummy values rather than whatever is in .env, so the assertions
+     * below mean the same thing on every machine. `isSmsProviderConfigured()`
+     * reads these and nothing else, and `getSmsProvider()` still returns the
+     * stub — this exercises the decision logic, not delivery.
      */
-    const savedEnv = {
-      sid: env.TWILIO_ACCOUNT_SID,
-      token: env.TWILIO_AUTH_TOKEN,
-      from: env.TWILIO_FROM_NUMBER,
-    };
     (env as Record<string, unknown>).TWILIO_ACCOUNT_SID = "ACcheck";
     (env as Record<string, unknown>).TWILIO_AUTH_TOKEN = "check-token";
     (env as Record<string, unknown>).TWILIO_FROM_NUMBER = "+15005550006";
@@ -701,9 +803,7 @@ const main = async () => {
       1,
     );
 
-    (env as Record<string, unknown>).TWILIO_ACCOUNT_SID = savedEnv.sid;
-    (env as Record<string, unknown>).TWILIO_AUTH_TOKEN = savedEnv.token;
-    (env as Record<string, unknown>).TWILIO_FROM_NUMBER = savedEnv.from;
+    restoreTwilioEnv();
 
     await systemDb
       .delete(consultationSettings)

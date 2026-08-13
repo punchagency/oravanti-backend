@@ -10,7 +10,10 @@ import { requireAuth } from "../../../middleware/auth.middleware";
 import { resolveActorContext } from "../../../middleware/resolve-actor-context";
 import { validateRequest } from "../../../middleware/validate.middleware";
 import { NotificationSettingsController } from "./notification-settings.controller";
-import { updateNotificationSettingsSchema } from "./notification-settings.validation";
+import {
+  setSmsEnabledSchema,
+  updateNotificationSettingsSchema,
+} from "./notification-settings.validation";
 
 export class NotificationSettingsRouter {
   public router: Router;
@@ -63,6 +66,27 @@ export class NotificationSettingsRouter {
       "/",
       validateRequest({ body: updateNotificationSettingsSchema }),
       this.controller.updateSettings,
+    );
+
+    /**
+     * @openapi
+     * /settings/notifications/sms:
+     *   patch:
+     *     tags: [Settings - Notifications]
+     *     summary: Turn the firm-wide SMS master switch on or off
+     *     description: >
+     *       Writes only consultation_settings.sms_enabled. Deliberately
+     *       separate from the consultation settings upsert, which is a full
+     *       replace — sending it a partial body would null out the firm's fee
+     *       configuration as a side effect of changing a messaging setting.
+     *     responses:
+     *       200:
+     *         description: The new state of the switch
+     */
+    this.router.patch(
+      "/sms",
+      validateRequest({ body: setSmsEnabledSchema }),
+      this.controller.setSmsEnabled,
     );
   }
 }

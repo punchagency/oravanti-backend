@@ -22,4 +22,19 @@ export class NotificationSettingsController {
     const result = await this.service.updateSettings(organizationId!, req.body);
     sendSuccess(res, result, "Notification settings saved successfully");
   });
+
+  setSmsEnabled = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.service.setSmsEnabled(
+      organizationId!,
+      req.body.enabled,
+    );
+    sendSuccess(
+      res,
+      result,
+      result.smsEnabled
+        ? "Text messaging enabled for your firm"
+        : "Text messaging disabled for your firm",
+    );
+  });
 }

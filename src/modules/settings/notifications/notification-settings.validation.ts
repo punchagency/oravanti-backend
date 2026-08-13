@@ -27,6 +27,19 @@ export const updateNotificationSettingsSchema = z.object({
   preferences: z.array(notificationPreferenceSchema).min(1),
 });
 
+/**
+ * The firm-wide SMS master switch, on its own.
+ *
+ * A dedicated body rather than a field on the consultation settings upsert:
+ * that endpoint is a full replace, so a partial body silently recomputes every
+ * fee field from what was omitted.
+ */
+export const setSmsEnabledSchema = z.object({
+  enabled: z.boolean(),
+});
+
+export type SetSmsEnabledBody = z.infer<typeof setSmsEnabledSchema>;
+
 export type NotificationPreferenceInput = z.infer<
   typeof notificationPreferenceSchema
 >;
