@@ -18,7 +18,7 @@
  * org it creates.
  */
 import { randomUUID } from "crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, like } from "drizzle-orm";
 import { closeDb, systemDb } from "../../src/db/client";
 import { organization, team, user } from "../../src/db/schema/auth-schema";
 import { billingRates } from "../../src/db/schema/billing-rates";
@@ -872,6 +872,138 @@ const main = async () => {
         "trust reconciliation is withheld without access",
         maskedReport.trustReconciliation,
         null,
+      );
+
+      // ── Extending a due date ──────────────────────────────────────────────
+      section("extending a due date");
+
+      // `second` is sent and partly paid — the shape the action exists for, and
+      // the one a bare status === 'unpaid' check would have missed.
+      const [beforeExtend] = await systemDb
+        .select({ dueDate: invoices.dueDate, status: invoices.status })
+        .from(invoices)
+        .where(eq(invoices.id, second.id));
+      const extendedTo = daysFromNow(45);
+
+      const extended = await invoicesService.extendDueDate(
+        orgId,
+        second.id,
+        { dueDate: extendedTo, reason: "Client asked for another fortnight" },
+        staffBId,
+        FULL,
+      );
+      checkEqual("the due date moves", extended.dueDate, extendedTo);
+      checkEqual(
+        "and the invoice keeps its status",
+        extended.storedStatus,
+        beforeExtend!.status,
+      );
+
+      // The column now holds the new date, so the trail is the only place the
+      // old one survives. An audit that cannot say what changed is not one.
+      const [extendEvent] = await systemDb
+        .select({
+          title: financeEvents.title,
+          description: financeEvents.description,
+        })
+        .from(financeEvents)
+        .where(
+          and(
+            eq(financeEvents.invoiceId, second.id),
+            like(financeEvents.title, "%due date extended%"),
+          ),
+        );
+      check("the extension is recorded", extendEvent != null);
+      check(
+        "with the date it moved from",
+        extendEvent?.description?.includes(beforeExtend!.dueDate) ?? false,
+        extendEvent?.description,
+      );
+      check(
+        "and the reason given",
+        extendEvent?.description?.includes("another fortnight") ?? false,
+      );
+
+      // Forward only. This is the whole reason it is not just a PATCH.
+      let backwardsRefused = false;
+      try {
+        await invoicesService.extendDueDate(
+          orgId,
+          second.id,
+          { dueDate: daysFromNow(1) },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        backwardsRefused = true;
+      }
+      check("moving a due date backwards is refused", backwardsRefused);
+
+      let sameDateRefused = false;
+      try {
+        await invoicesService.extendDueDate(
+          orgId,
+          second.id,
+          { dueDate: extendedTo },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        sameDateRefused = true;
+      }
+      check("and so is the date it already has", sameDateRefused);
+
+      // A scheduled invoice's header date is pinned to its final instalment, so
+      // a bare change here would leave it contradicting its own schedule.
+      //
+      // It has to be SENT, not a draft: the draft guard fires first, and a
+      // draft would pass this assertion for the wrong reason.
+      const scheduledInvoice = await invoicesService.create(
+        orgId,
+        staffBId,
+        FULL,
+        {
+          clientId,
+          caseId,
+          issueDate: daysFromNow(0),
+          dueDate: daysFromNow(60),
+          status: "draft",
+          timeEntryIds: [],
+          lineItems: [
+            { description: "Scheduled work", quantity: 1, rate: 400, account: "operating" },
+          ],
+        },
+      );
+      await instalmentsService.setSchedule(
+        orgId,
+        scheduledInvoice.id,
+        [
+          { dueDate: daysFromNow(30), amount: 200 },
+          { dueDate: daysFromNow(60), amount: 200 },
+        ],
+        staffBId,
+        FULL,
+      );
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, scheduledInvoice.id));
+
+      let scheduledExtendRefused = false;
+      try {
+        await invoicesService.extendDueDate(
+          orgId,
+          scheduledInvoice.id,
+          { dueDate: daysFromNow(120) },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        scheduledExtendRefused = true;
+      }
+      check(
+        "a scheduled invoice is sent to the schedule editor instead",
+        scheduledExtendRefused,
       );
 
       // ── Void ──────────────────────────────────────────────────────────────

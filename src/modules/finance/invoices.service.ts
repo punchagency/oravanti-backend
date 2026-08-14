@@ -755,6 +755,127 @@ export const create = async (
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
+export type ExtendDueDateInput = {
+  dueDate: string;
+  reason?: string;
+};
+
+/**
+ * Give a client longer to pay.
+ *
+ * Only on a live, unsettled invoice — stored `sent` or `partial`. Note that
+ * covers the *overdue* case too, since overdue is derived from `dueBy < today`
+ * rather than stored, and an invoice already past its date is the main thing
+ * anyone wants to extend.
+ *
+ * Deliberately a separate operation from `update`, which also accepts a
+ * `dueDate`, for three reasons:
+ *
+ *   1. **Forward only.** `update` would happily move a due date backwards and
+ *      make an invoice overdue on the spot. An extension that can shorten is
+ *      not an extension.
+ *   2. It records *why*, and records the date it moved from — an audit trail
+ *      that says only "invoice updated" cannot answer "who gave them another
+ *      fortnight".
+ *   3. `update`'s content edits are draft-only, so its live-invoice surface is
+ *      a handful of header fields nobody has a dedicated screen for. This does.
+ *
+ * A scheduled invoice is refused and pointed at the schedule, matching the rule
+ * `update` already enforces: `writeSchedule` pins the header date to the final
+ * instalment, so a bare change here would leave the invoice claiming a date its
+ * own schedule contradicts.
+ */
+export const extendDueDate = async (
+  organizationId: string,
+  invoiceId: string,
+  input: ExtendDueDateInput,
+  actorStaffId: string | null,
+  access: AccountAccess,
+) => {
+  const [existing] = await db
+    .select({
+      status: invoices.status,
+      invoiceNumber: invoices.invoiceNumber,
+      dueDate: invoices.dueDate,
+      caseId: invoices.caseId,
+      clientId: invoices.clientId,
+    })
+    .from(invoices)
+    .where(
+      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+    )
+    .limit(1);
+
+  if (!existing) throw new NotFoundError("Invoice not found");
+
+  // Named per state rather than one "cannot extend" — each of these is a
+  // different thing to do next.
+  if (existing.status === "draft") {
+    throw new BadRequestError(
+      "This invoice is still a draft. Change its due date by editing it.",
+    );
+  }
+  if (existing.status === "void") {
+    throw new BadRequestError("A voided invoice has no due date to extend");
+  }
+  if (existing.status === "paid") {
+    throw new BadRequestError("This invoice is settled — there is nothing owing");
+  }
+
+  if (input.dueDate <= existing.dueDate) {
+    throw new BadRequestError(
+      `The new due date must be later than the current one (${existing.dueDate})`,
+    );
+  }
+
+  const scheduled =
+    (await listInstalments(organizationId, invoiceId)).length > 0;
+  if (scheduled) {
+    throw new BadRequestError(
+      "This invoice's due date follows its payment schedule. Revise the schedule instead.",
+    );
+  }
+
+  return withTransaction(db, async () => {
+    await db
+      .update(invoices)
+      .set({ dueDate: input.dueDate, updatedAt: new Date() })
+      .where(
+        and(
+          eq(invoices.organizationId, organizationId),
+          eq(invoices.id, invoiceId),
+        ),
+      );
+
+    // `next_due_date` is a fold and recalculateInvoiceTotals is its only writer.
+    // Unscheduled invoices resolve it to null and read through `dueBy`, so this
+    // changes nothing today — but skipping it would put a second writer on the
+    // column the moment schedules and extensions ever meet.
+    await recalculateInvoiceTotals(organizationId, invoiceId);
+
+    await logFinanceEvent({
+      organizationId,
+      eventType: "invoice_updated",
+      title: `${existing.invoiceNumber} — due date extended to ${input.dueDate}`,
+      // The date it moved FROM lives here and nowhere else: the column now
+      // holds the new value, so without this the trail cannot say what changed.
+      description: [
+        `Was due ${existing.dueDate}`,
+        input.reason?.trim() ? `Reason: ${input.reason.trim()}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      amount: null,
+      invoiceId,
+      caseId: existing.caseId,
+      clientId: existing.clientId,
+      actorId: actorStaffId,
+    });
+
+    return getById(organizationId, invoiceId, access);
+  });
+};
+
 /**
  * Cancel an invoice.
  *
