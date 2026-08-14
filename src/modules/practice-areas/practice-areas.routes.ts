@@ -13,6 +13,7 @@ import { CommonValidation } from "../../validation/common.validation";
 
 import { validateRequest } from "../../middleware/validate.middleware";
 import { PracticeAreasController } from "./practice-areas.controller";
+import * as v from "./practice-areas.validation";
 
 export class PracticeAreasRouter {
   public router: Router;
@@ -33,7 +34,6 @@ export class PracticeAreasRouter {
   }
 
   private initializeRoutes() {
-    this.router.use(this.path, this.router);
     this.router.use(requireAuth);
     this.router.use(resolveActorContext);
 
@@ -110,7 +110,7 @@ export class PracticeAreasRouter {
     this.router.post(
       "/subscriptions",
       requireAuth,
-      validateRequest({ body: this.validation.optionalBody() }),
+      validateRequest({ body: v.createSubscriptionsBody }),
       this.practiceAreasController.createSubscriptions,
     );
 
@@ -138,7 +138,7 @@ export class PracticeAreasRouter {
     this.router.patch(
       "/subscriptions/cancel",
       requireAuth,
-      validateRequest({ body: this.validation.optionalBody() }),
+      validateRequest({ body: v.cancelSubscriptionsBody }),
       this.practiceAreasController.cancelSubscriptions,
     );
 

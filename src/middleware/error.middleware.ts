@@ -58,13 +58,20 @@ export const errorMiddleware = (
     });
   }
 
-  // set locals, only providing error in development
-  res.locals.message = error.message;
-  res.locals.error = req.app.get("env") === "development" ? error : {};
-
   const { statusCode, body } = getErrorResponse(error);
 
-  console.log({ body });
+  // The response body is deliberately sparse for non-AppError failures
+  // (see utils/error/index.ts), so the real error is logged here instead —
+  // this is the only place it is recorded.
+  if (statusCode >= 500) {
+    console.error("[error]", {
+      method: req.method,
+      url: req.originalUrl,
+      name: error?.name,
+      message: error?.message,
+      stack: error?.stack,
+    });
+  }
 
   res.status(statusCode).json(body);
 };

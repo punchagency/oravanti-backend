@@ -10,6 +10,11 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import type {
+  CreateContactInput,
+  UpdateClientInput,
+  UpdateContactInput,
+} from "./clients.validation";
 import { db, systemDb } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { certifications } from "../../db/schema/cases";
@@ -177,11 +182,13 @@ export const getClientById = async (id: string, organizationId: string) => {
 export const updateClient = async (
   id: string,
   organizationId: string,
-  data: { displayName?: string; status?: string; entityType?: string },
+  data: UpdateClientInput,
 ) => {
   const [updated] = await db
     .update(clients)
-    .set({ ...data as any, updatedAt: new Date() })
+    // No `as any`. The previous cast defeated the narrow parameter type above
+    // it, so whatever the route passed through reached the column list.
+    .set({ ...data, updatedAt: new Date() })
     .where(and(eq(clients.id, id), eq(clients.organizationId, organizationId)))
     .returning();
   return updated ?? null;
@@ -211,7 +218,7 @@ export const getClientContacts = async (clientId: string, organizationId: string
 export const addClientContact = async (
   clientId: string,
   organizationId: string,
-  data: typeof clientContacts.$inferInsert,
+  data: CreateContactInput,
 ) => {
   await checkContactDuplicate(organizationId, data.email);
 
@@ -226,7 +233,7 @@ export const updateClientContact = async (
   contactId: string,
   clientId: string,
   organizationId: string,
-  data: Partial<typeof clientContacts.$inferInsert>,
+  data: UpdateContactInput,
 ) => {
   if (data.email) await checkContactDuplicate(organizationId, data.email, contactId);
 

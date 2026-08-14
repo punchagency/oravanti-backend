@@ -48,21 +48,41 @@ export const closeDb = () => client.end();
 // Creates a dedicated single-connection client, binds the RLS session variable(s),
 // and returns a drizzle instance scoped to that connection.
 // Supports both org-scoped (staff) and user-scoped (client/contractor) RLS.
+/**
+ * Session identifiers are the only thing standing between tenants, so they are
+ * shape-checked before they are allowed near a connection. Better Auth issues
+ * `text` ids (organization) and cuid/uuid-ish ids (user), so this is a
+ * conservative character-class check rather than a strict UUID match — it
+ * rejects quotes, semicolons and whitespace, which is what matters.
+ */
+const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+const assertSafeId = (value: string, label: string): string => {
+  if (!SAFE_ID.test(value)) {
+    throw new Error(`Refusing to bind malformed ${label} to a tenant session`);
+  }
+  return value;
+};
+
 export async function createTenantDb(
   organizationId: string | null,
   userId: string | null,
 ) {
   const tenantClient = postgres(env.databaseUrl, { max: 1 });
 
+  // `SET` does not accept bind parameters; `set_config()` does. Never
+  // interpolate these values into the statement text.
   if (organizationId) {
     await tenantClient.unsafe(
-      `SET app.current_organization_id = '${organizationId}'`,
+      `SELECT set_config('app.current_organization_id', $1, false)`,
+      [assertSafeId(organizationId, "organization id")],
     );
   }
 
   if (userId) {
     await tenantClient.unsafe(
-      `SET app.current_user_id = '${userId}'`,
+      `SELECT set_config('app.current_user_id', $1, false)`,
+      [assertSafeId(userId, "user id")],
     );
   }
 

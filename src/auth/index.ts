@@ -181,17 +181,31 @@ export const auth = betterAuth({
         });
       },
       organizationHooks: {
+        // Both hooks run on `systemDb`, which bypasses RLS, so the
+        // organization predicate is the only thing scoping the write. Without
+        // it a user who belongs to two firms has their role at BOTH firms
+        // overwritten when their membership changes at one of them.
         afterAcceptInvitation: async ({ member, user }) => {
           await systemDb
             .update(staff)
             .set({ role: member.role as any, status: "active" })
-            .where(eq(staff.userId, user.id));
+            .where(
+              and(
+                eq(staff.userId, user.id),
+                eq(staff.organizationId, member.organizationId),
+              ),
+            );
         },
         afterUpdateMemberRole: async ({ member }) => {
           await systemDb
             .update(staff)
             .set({ role: member.role as any })
-            .where(eq(staff.userId, member.userId));
+            .where(
+              and(
+                eq(staff.userId, member.userId),
+                eq(staff.organizationId, member.organizationId),
+              ),
+            );
         },
       },
       ac,

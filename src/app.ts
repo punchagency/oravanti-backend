@@ -3,7 +3,10 @@ import compression from "compression";
 import cors from "cors";
 import { sql } from "drizzle-orm";
 import express, { Application, Request, Response, Router } from "express";
+import rateLimit from "express-rate-limit";
+import helmet from "helmet";
 import morgan from "morgan";
+import type { Server } from "node:http";
 import swaggerUi from "swagger-ui-express";
 import { auth } from "./auth";
 import { db } from "./db/client";
@@ -18,6 +21,27 @@ export interface Module {
   router: Router;
   path: string;
 }
+
+/**
+ * A fixed-window limiter keyed on client IP.
+ *
+ * `standardHeaders` emits RateLimit-* so clients can back off deliberately;
+ * the legacy X-RateLimit-* headers are dropped. The handler throws through the
+ * normal error pipeline so the 429 carries the same envelope as every other
+ * error response.
+ */
+const makeRateLimit = (limit: number, windowMs = 60_000) =>
+  rateLimit({
+    windowMs,
+    limit,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: {
+      success: false,
+      code: "RATE_LIMITED",
+      message: "Too many requests. Please wait a moment and try again.",
+    },
+  });
 
 export class App {
   public express: Application;
@@ -35,6 +59,24 @@ export class App {
   }
 
   private initiatializeMiddlewares() {
+    // Rate limiting and the request-context IP both read the client address
+    // through the proxy. Trust exactly one hop — `true` would let a client
+    // spoof its own address via X-Forwarded-For and defeat both.
+    this.express.set("trust proxy", 1);
+    this.express.disable("x-powered-by");
+
+    // Content-Security-Policy is switched off globally because every response
+    // this app produces is JSON, where CSP does nothing. The one HTML surface
+    // (/api-docs) gets its own policy at the point it is mounted.
+    this.express.use(
+      helmet({
+        contentSecurityPolicy: false,
+        // The SPA lives on a different origin, so resources served from here
+        // must remain loadable cross-origin.
+        crossOriginResourcePolicy: { policy: "cross-origin" },
+      }),
+    );
+
     this.express.use(morgan("dev"));
 
     // Several read endpoints return large JSON trees (the practice-area
@@ -90,6 +132,20 @@ export class App {
       },
     );
     /**
+     * Credential endpoints are the ones worth brute-forcing: password sign-in,
+     * email OTP, and 2FA verification all live under /api/auth. The limiter is
+     * mounted before the handler so a refused request never reaches Better
+     * Auth — and never costs a database round trip.
+     */
+    this.express.use("/api/auth", makeRateLimit(10));
+
+    /**
+     * The payment link's token IS the credential and the route is
+     * unauthenticated, so an unthrottled endpoint is a token oracle.
+     */
+    this.express.use("/invoice-payment", makeRateLimit(30));
+
+    /**
      * Better Auth Initialization
      */
     this.express.all("/api/auth/*splat", toNodeHandler(auth));
@@ -107,7 +163,10 @@ export class App {
       "/webhooks/payments",
       express.raw({ type: "application/json" }),
     );
-    this.express.use(express.json());
+    // Explicit ceiling. Express defaults to 100kb, but the default is not a
+    // decision — anything larger than this belongs on an upload route, where
+    // middleware/upload.ts applies a per-file limit instead.
+    this.express.use(express.json({ limit: "1mb" }));
     this.express.use(requestContextMiddleware);
   }
 
@@ -118,10 +177,23 @@ export class App {
       });
     });
 
-    this.express.get("/health", (_req: Request, res: Response) => {
-      res.json({
-        status: "Oravanti API up and running",
-      });
+    // A health check that does not touch its dependencies reports healthy while
+    // Postgres is unreachable, which is exactly when the load balancer needs to
+    // know otherwise.
+    this.express.get("/health", async (_req: Request, res: Response) => {
+      try {
+        await db.execute(sql`SELECT 1`);
+        res.json({ status: "ok", database: "ok" });
+      } catch (error) {
+        console.error("[health] database check failed", error);
+        res.status(503).json({ status: "degraded", database: "unreachable" });
+      }
+    });
+
+    // Separate liveness probe: "the process is running", no dependencies. Use
+    // this one for restart decisions, /health for traffic decisions.
+    this.express.get("/health/live", (_req: Request, res: Response) => {
+      res.json({ status: "ok" });
     });
 
     this.express.get("/api", (_req: Request, res: Response) => {
@@ -130,6 +202,17 @@ export class App {
 
     this.express.use(
       "/api-docs",
+      // The only HTML this app serves, and the only place CSP is meaningful.
+      // Swagger UI needs inline script and style to boot.
+      helmet.contentSecurityPolicy({
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", "data:"],
+          connectSrc: ["'self'"],
+        },
+      }),
       swaggerUi.serve,
       swaggerUi.setup(swaggerSpec, {
         customSiteTitle: "Oravanti API Docs",
@@ -158,10 +241,10 @@ export class App {
     console.log("database connection verified");
   }
 
-  public async listen() {
+  public async listen(): Promise<Server> {
     await this.testDbConnection();
 
-    this.express.listen(this.port, () => {
+    return this.express.listen(this.port, () => {
       console.log(`app listening on port ${this.port}`);
     });
   }
