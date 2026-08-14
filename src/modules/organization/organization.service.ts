@@ -81,6 +81,32 @@ export interface UpdateStaffMemberParams {
   teamIds?: string[];
 }
 
+/**
+ * A new hire cannot start before today. Applied on invite only — updating an
+ * existing staff member must stay free to record a genuinely historical start
+ * date.
+ *
+ * The comparison allows one day of slack because the client sends a plain
+ * calendar date from the admin's own timezone, which can legitimately read as
+ * "yesterday" in UTC for anyone far enough west of it.
+ */
+const assertStartDateNotInPast = (startDate?: string) => {
+  if (!startDate) return;
+
+  const parsed = new Date(startDate);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new BadRequestError("startDate must be a valid date");
+  }
+
+  const earliest = new Date();
+  earliest.setUTCHours(0, 0, 0, 0);
+  earliest.setUTCDate(earliest.getUTCDate() - 1);
+
+  if (parsed.getTime() < earliest.getTime()) {
+    throw new BadRequestError("Start date cannot be in the past");
+  }
+};
+
 export class OrganizationService {
   async listStaffs(organizationId: string, filters: GetStaffsFilters = {}) {
     const { search, role, team, status, page = 1, limit = 10 } = filters;
@@ -1171,6 +1197,8 @@ export class OrganizationService {
       caseTypeIds,
       teamIds,
     } = params;
+
+    assertStartDateNotInPast(startDate);
 
     const formattedEmail = email.toLowerCase().trim();
     const tempPassword = generateTempPassword();
