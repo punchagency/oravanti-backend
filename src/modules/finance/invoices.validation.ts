@@ -206,6 +206,18 @@ export const voidInvoiceBodySchema = z.object({
   reason: z.string().trim().max(500).optional(),
 });
 
+/**
+ * Give a client longer to pay.
+ *
+ * "Later than the current due date" cannot be checked here — the current one is
+ * in the database — so the service enforces it. This only guarantees a
+ * well-formed date arrives.
+ */
+export const extendDueDateBodySchema = z.object({
+  dueDate: z.string().date(),
+  reason: z.string().trim().max(500).optional(),
+});
+
 export const recordPaymentBodySchema = z
   .object({
     amount: z.coerce.number().positive(),

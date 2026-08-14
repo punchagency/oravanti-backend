@@ -16,6 +16,7 @@ import {
   createInvoiceBodySchema,
   createLinePresetBodySchema,
   exportInvoicesQuerySchema,
+  extendDueDateBodySchema,
   followUpBodySchema,
   invoiceParamsSchema,
   listInvoicesQuerySchema,
@@ -349,6 +350,34 @@ export class InvoicesRouter {
         body: voidInvoiceBodySchema,
       }),
       controller.void,
+    );
+
+    /**
+     * @openapi
+     * /finance/invoices/{id}/extend-due-date:
+     *   post:
+     *     tags: [Finance — Invoicing]
+     *     summary: Give the client longer to pay
+     *     description: >
+     *       Moves the due date forward on a live, unsettled invoice — stored
+     *       `sent` or `partial`, which includes anything currently overdue.
+     *       Forward only: a date on or before the current one is refused, since
+     *       an extension that can shorten is not an extension. Refused on a
+     *       draft (edit it instead), on a settled invoice, on a void, and on an
+     *       invoice with a payment schedule, whose header date is pinned to the
+     *       final instalment and must be changed by revising the schedule.
+     *     responses:
+     *       200: { description: Due date extended }
+     *       400: { description: Not extendable, scheduled, or not a later date }
+     */
+    this.router.post(
+      "/:id/extend-due-date",
+      update,
+      validateRequest({
+        params: invoiceParamsSchema,
+        body: extendDueDateBodySchema,
+      }),
+      controller.extendDueDate,
     );
 
     /**

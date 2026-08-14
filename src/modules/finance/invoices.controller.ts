@@ -270,6 +270,19 @@ export class InvoicesController {
     sendSuccess(res, invoice, "Invoice voided successfully");
   };
 
+  extendDueDate = async (req: Request, res: Response) => {
+    const { organizationId, staffId } = getRequestContext();
+    const access = await accessForRequest();
+    const invoice = await invoicesService.extendDueDate(
+      organizationId!,
+      req.params.id as string,
+      req.body,
+      staffId ?? null,
+      access,
+    );
+    sendSuccess(res, invoice, "Due date extended");
+  };
+
   recordPayment = async (req: Request, res: Response) => {
     const { organizationId, staffId } = getRequestContext();
     const access = await accessForRequest();
