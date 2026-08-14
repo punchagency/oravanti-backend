@@ -476,6 +476,9 @@ export const getById = async (
         amount: num(l.amount),
         account: l.account,
         timeEntryId: l.timeEntryId,
+        // Returned so editing a draft round-trips provenance instead of
+        // silently orphaning every line the picker composed.
+        presetId: l.presetId,
       })),
     payments: paymentRows.map((p) => ({
       id: p.id,
@@ -512,6 +515,12 @@ export type CreateInvoiceLine = {
   quantity: number;
   rate: number;
   account: "operating" | "trust_iolta";
+  /**
+   * The catalog preset this line was composed from, when it was. Provenance
+   * only: the three fields above are what gets billed, and none of them is
+   * ever read back off the preset. See `line-presets.service.ts`.
+   */
+  presetId?: string;
 };
 
 /**
@@ -605,6 +614,7 @@ const buildLineValues = (
     rate: money(l.rate),
     amount: money(l.quantity * l.rate),
     account: l.account,
+    presetId: l.presetId ?? null,
     sortOrder: sortOrder++,
   }));
 
@@ -1464,13 +1474,22 @@ export const getUnbilledTime = async (
  *
  * `source` and `attorneyCount` come back so the dialog can say *why* a name was
  * filled in — a prefill nobody can account for is one nobody will correct.
+ *
+ * The matter's `practiceAreaId` and `caseTypeId` ride along because the line
+ * preset picker needs them to scope its catalog, and the dialog already calls
+ * this the moment a matter is chosen. Returning them here costs nothing and
+ * saves a second round trip.
  */
 export const getCaseDefaults = async (
   organizationId: string,
   caseId: string,
 ) => {
   const [row] = await db
-    .select({ teamId: cases.assignedTeamId })
+    .select({
+      teamId: cases.assignedTeamId,
+      practiceAreaId: cases.practiceAreaId,
+      caseTypeId: cases.caseTypeId,
+    })
     .from(cases)
     .where(and(eq(cases.organizationId, organizationId), eq(cases.id, caseId)))
     .limit(1);
@@ -1483,6 +1502,8 @@ export const getCaseDefaults = async (
     attorneyName: null as string | null,
     source: null as "team_lead" | "sole_attorney" | null,
     attorneyCount: 0,
+    practiceAreaId: row.practiceAreaId,
+    caseTypeId: row.caseTypeId,
   };
 
   if (!row.teamId) return empty;
@@ -1528,9 +1549,12 @@ export const getCaseDefaults = async (
   const named = (p: { firstName: string; lastName: string }) =>
     `${p.firstName} ${p.lastName}`.trim();
 
+  // Every branch spreads `empty` so the matter's scope rides along whichever
+  // attorney rule fired — the picker needs it on all four paths, and listing
+  // the fields per branch is how one of them would eventually be forgotten.
   if (leadRow?.role === "attorney") {
     return {
-      caseId,
+      ...empty,
       attorneyId: leadRow.id,
       attorneyName: named(leadRow),
       source: "team_lead" as const,
@@ -1540,7 +1564,7 @@ export const getCaseDefaults = async (
 
   if (attorneys.length === 1) {
     return {
-      caseId,
+      ...empty,
       attorneyId: attorneys[0]!.id,
       attorneyName: named(attorneys[0]!),
       source: "sole_attorney" as const,
@@ -1550,7 +1574,7 @@ export const getCaseDefaults = async (
 
   if (leadRow) {
     return {
-      caseId,
+      ...empty,
       attorneyId: leadRow.id,
       attorneyName: named(leadRow),
       source: "team_lead" as const,

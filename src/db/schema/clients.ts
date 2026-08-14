@@ -9,7 +9,7 @@ import {
 import { organization, team, user } from "./auth-schema";
 import { leads } from "./leads";
 import { staff } from "./staff";
-import { portalStatusEnum } from "../../modules/auth/enums";
+import { portalStatusEnum } from "./enums";
 
 // =========================================================================
 // CLIENT ENUMS

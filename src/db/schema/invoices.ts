@@ -16,6 +16,7 @@ import { organization } from "./auth-schema";
 import { cases } from "./cases";
 import { clients } from "./clients";
 import { accountTypeEnum } from "./financial-access-controls";
+import { invoiceLinePresets } from "./invoice-line-presets";
 import { leads } from "./leads";
 import { practiceAreas } from "./practice-areas";
 import { staff } from "./staff";
@@ -281,6 +282,22 @@ export const invoiceLineItems = pgTable(
 
     /** Set when this line was converted from an approved time entry. */
     timeEntryId: uuid("time_entry_id").references(() => timeEntries.id, {
+      onDelete: "set null",
+    }),
+
+    /**
+     * Which catalog preset this line was composed from, when it was composed
+     * from one at all.
+     *
+     * Provenance only. `rate` above is the billed figure and is never re-read
+     * from the preset — see the note on `invoice_line_presets.default_rate`.
+     * `set null` so retiring a preset cannot reach into an invoice the client
+     * already holds.
+     *
+     * Deliberately NOT unique, unlike `time_entry_id` below: the same preset
+     * legitimately appears twice on one invoice (two filings, two copies).
+     */
+    presetId: uuid("preset_id").references(() => invoiceLinePresets.id, {
       onDelete: "set null",
     }),
 
