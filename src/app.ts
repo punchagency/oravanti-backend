@@ -1,4 +1,5 @@
 import { toNodeHandler } from "better-auth/node";
+import compression from "compression";
 import cors from "cors";
 import { sql } from "drizzle-orm";
 import express, { Application, Request, Response, Router } from "express";
@@ -35,6 +36,11 @@ export class App {
 
   private initiatializeMiddlewares() {
     this.express.use(morgan("dev"));
+
+    // Several read endpoints return large JSON trees (the practice-area
+    // taxonomy alone is ~140 KB uncompressed); gzip takes those to a tenth of
+    // the size. Mounted before the auth handler so every response benefits.
+    this.express.use(compression());
 
     const allowedOrigins = env.CORS_ORIGIN;
     const betterAuthUrl = env.BETTER_AUTH_URL;
