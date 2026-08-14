@@ -872,12 +872,17 @@ export const extendDueDate = async (
     );
   }
 
-  // Reordering the plan is a reschedule, not an extension: writeSchedule sorts
-  // by date and renumbers, so letting this through would silently renumber the
-  // instalments under the client.
-  if (plan.after && input.dueDate > plan.after.dueDate) {
+  // Strictly before the next instalment. Reordering the plan is a reschedule,
+  // not an extension: writeSchedule sorts by date and renumbers, so letting one
+  // past would silently renumber the instalments under the client.
+  //
+  // `>=`, not `>`. Landing exactly ON the next instalment's date leaves two
+  // slices due the same day with no ordering between them — the sort's
+  // tiebreak decides which becomes 1 and which becomes 2, and the client sees
+  // two rows on one date where they agreed to a sequence.
+  if (plan.after && input.dueDate >= plan.after.dueDate) {
     throw new BadRequestError(
-      `That would move this instalment past the next one (due ${plan.after.dueDate}). Revise the payment plan instead.`,
+      `This instalment must fall before the next one (due ${plan.after.dueDate}). Revise the payment plan instead.`,
     );
   }
 

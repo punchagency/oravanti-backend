@@ -1061,6 +1061,25 @@ const main = async () => {
         reorderRefused,
       );
 
+      // Landing exactly on the next instalment's date leaves two slices due the
+      // same day with nothing deciding their order.
+      let collisionRefused = false;
+      try {
+        await invoicesService.extendDueDate(
+          orgId,
+          scheduledInvoice.id,
+          { dueDate: daysFromNow(30) },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        collisionRefused = true;
+      }
+      check(
+        "and so is landing exactly on it",
+        collisionRefused,
+      );
+
       // The last instalment has nothing to collide with, and the header date
       // travels with it.
       await paymentsService.recordPayment(
