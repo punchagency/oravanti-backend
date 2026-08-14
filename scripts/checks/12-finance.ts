@@ -953,11 +953,15 @@ const main = async () => {
       }
       check("and so is the date it already has", sameDateRefused);
 
-      // A scheduled invoice's header date is pinned to its final instalment, so
-      // a bare change here would leave it contradicting its own schedule.
+      // ── Scheduled invoices move the NEXT UNPAID instalment ────────────────
       //
-      // It has to be SENT, not a draft: the draft guard fires first, and a
-      // draft would pass this assertion for the wrong reason.
+      // The header date is pinned to the FINAL instalment, so it is not what
+      // anyone means by "extend this". A client who missed instalment 1 of 3
+      // needs longer on instalment 1 — and `dueBy` agrees, since a scheduled
+      // invoice goes overdue on its next unpaid slice, never on its last.
+      //
+      // Sent, not a draft: the draft guard fires first and would make these
+      // pass for the wrong reason.
       const scheduledInvoice = await invoicesService.create(
         orgId,
         staffBId,
@@ -965,12 +969,12 @@ const main = async () => {
         {
           clientId,
           caseId,
-          issueDate: daysFromNow(0),
+          issueDate: daysFromNow(-40),
           dueDate: daysFromNow(60),
           status: "draft",
           timeEntryIds: [],
           lineItems: [
-            { description: "Scheduled work", quantity: 1, rate: 400, account: "operating" },
+            { description: "Scheduled work", quantity: 1, rate: 600, account: "operating" },
           ],
         },
       );
@@ -978,6 +982,8 @@ const main = async () => {
         orgId,
         scheduledInvoice.id,
         [
+          // Already past — the case this whole feature exists for.
+          { dueDate: daysFromNow(-10), amount: 200 },
           { dueDate: daysFromNow(30), amount: 200 },
           { dueDate: daysFromNow(60), amount: 200 },
         ],
@@ -989,21 +995,96 @@ const main = async () => {
         .set({ status: "sent", sentAt: new Date() })
         .where(eq(invoices.id, scheduledInvoice.id));
 
-      let scheduledExtendRefused = false;
+      const [beforeShift] = await systemDb
+        .select({ dueDate: invoices.dueDate, nextDue: invoices.nextDueDate })
+        .from(invoices)
+        .where(eq(invoices.id, scheduledInvoice.id));
+      checkEqual(
+        "the header date is the final instalment",
+        beforeShift!.dueDate,
+        daysFromNow(60),
+      );
+      checkEqual(
+        "and the invoice is next owed on the overdue slice",
+        beforeShift!.nextDue,
+        daysFromNow(-10),
+      );
+
+      const shifted = await invoicesService.extendDueDate(
+        orgId,
+        scheduledInvoice.id,
+        { dueDate: daysFromNow(20), reason: "Missed the first payment" },
+        staffBId,
+        FULL,
+      );
+      const shiftedFirst = shifted.instalments.find((i) => i.sequence === 1);
+      checkEqual(
+        "the overdue instalment moves",
+        shiftedFirst?.dueDate,
+        daysFromNow(20),
+      );
+      checkEqual(
+        "the header date is untouched — it follows the LAST instalment",
+        shifted.dueDate,
+        daysFromNow(60),
+      );
+      const [afterShift] = await systemDb
+        .select({ nextDue: invoices.nextDueDate })
+        .from(invoices)
+        .where(eq(invoices.id, scheduledInvoice.id));
+      checkEqual(
+        "and next_due_date follows it, which is what clears the overdue flag",
+        afterShift!.nextDue,
+        daysFromNow(20),
+      );
+      checkEqual(
+        "the schedule still sums to the total",
+        shifted.instalments.reduce((sum, i) => sum + i.amount, 0),
+        shifted.totals.total,
+      );
+
+      // Reordering the plan is a reschedule, not an extension.
+      let reorderRefused = false;
       try {
         await invoicesService.extendDueDate(
           orgId,
           scheduledInvoice.id,
-          { dueDate: daysFromNow(120) },
+          { dueDate: daysFromNow(45) },
           staffBId,
           FULL,
         );
       } catch {
-        scheduledExtendRefused = true;
+        reorderRefused = true;
       }
       check(
-        "a scheduled invoice is sent to the schedule editor instead",
-        scheduledExtendRefused,
+        "pushing an instalment past the next one is refused",
+        reorderRefused,
+      );
+
+      // The last instalment has nothing to collide with, and the header date
+      // travels with it.
+      await paymentsService.recordPayment(
+        orgId,
+        scheduledInvoice.id,
+        staffBId,
+        FULL,
+        {
+          amount: 400,
+          paymentDate: daysFromNow(0),
+          method: "bank_transfer",
+        },
+      );
+      const lastExtended = await invoicesService.extendDueDate(
+        orgId,
+        scheduledInvoice.id,
+        { dueDate: daysFromNow(90) },
+        staffBId,
+        FULL,
+      );
+      checkEqual(
+        "extending the final instalment carries the header date with it",
+        lastExtended.dueDate,
+        daysFromNow(90),
       );
 
       // ── Void ──────────────────────────────────────────────────────────────

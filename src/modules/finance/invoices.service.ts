@@ -780,10 +780,22 @@ export type ExtendDueDateInput = {
  *   3. `update`'s content edits are draft-only, so its live-invoice surface is
  *      a handful of header fields nobody has a dedicated screen for. This does.
  *
- * A scheduled invoice is refused and pointed at the schedule, matching the rule
- * `update` already enforces: `writeSchedule` pins the header date to the final
- * instalment, so a bare change here would leave the invoice claiming a date its
- * own schedule contradicts.
+ * **On a scheduled invoice it moves the next unpaid instalment**, not the header
+ * date. The header is pinned to the FINAL instalment by `writeSchedule`, so
+ * writing to it directly would leave the invoice claiming a date its own
+ * schedule contradicts — but refusing outright was wrong too. A client who has
+ * missed instalment 1 of 4 needs longer on instalment 1; the invoice as a whole
+ * is not what is late, and rewriting the entire plan to move one date is a poor
+ * answer to "can we have another fortnight".
+ *
+ * That is also what `overdue` already means for these invoices: `dueBy` is
+ * `coalesce(next_due_date, due_date)`, so a scheduled invoice goes overdue on
+ * its next unpaid slice, never on its final one.
+ *
+ * The move is refused when it would push the instalment past the one after it —
+ * `writeSchedule` sorts and renumbers, so allowing it would silently reorder the
+ * plan. That case is a genuine reschedule and says so. Extending the LAST
+ * instalment has nothing to collide with, and carries the header date with it.
  */
 export const extendDueDate = async (
   organizationId: string,
@@ -797,6 +809,7 @@ export const extendDueDate = async (
       status: invoices.status,
       invoiceNumber: invoices.invoiceNumber,
       dueDate: invoices.dueDate,
+      amountPaid: invoices.amountPaid,
       caseId: invoices.caseId,
       clientId: invoices.clientId,
     })
@@ -822,45 +835,99 @@ export const extendDueDate = async (
     throw new BadRequestError("This invoice is settled — there is nothing owing");
   }
 
-  if (input.dueDate <= existing.dueDate) {
+  const schedule = await listInstalments(organizationId, invoiceId);
+
+  // What "the due date" means for this invoice, and what moving it entails.
+  // Resolved before any validation so both shapes report against the date the
+  // caller is actually looking at.
+  const plan = schedule.length
+    ? (() => {
+        const allocated = allocate(
+          schedule.map((row) => ({ ...row, amount: num(row.amount) })),
+          num(existing.amountPaid),
+        );
+        const target = allocated.find((row) => row.outstanding > 0);
+        const after = target
+          ? allocated.find((row) => row.dueDate > target.dueDate)
+          : undefined;
+        return { kind: "scheduled" as const, target, after };
+      })()
+    : { kind: "single" as const, target: undefined, after: undefined };
+
+  const currentDue =
+    plan.kind === "scheduled" ? plan.target?.dueDate : existing.dueDate;
+
+  if (plan.kind === "scheduled" && !plan.target) {
+    // Every slice is covered but the invoice is not marked paid — a state the
+    // payment path should have resolved. Refusing beats guessing which row to
+    // move.
     throw new BadRequestError(
-      `The new due date must be later than the current one (${existing.dueDate})`,
+      "Every instalment on this invoice is already covered",
     );
   }
 
-  const scheduled =
-    (await listInstalments(organizationId, invoiceId)).length > 0;
-  if (scheduled) {
+  if (!currentDue || input.dueDate <= currentDue) {
     throw new BadRequestError(
-      "This invoice's due date follows its payment schedule. Revise the schedule instead.",
+      `The new due date must be later than the current one (${currentDue})`,
+    );
+  }
+
+  // Reordering the plan is a reschedule, not an extension: writeSchedule sorts
+  // by date and renumbers, so letting this through would silently renumber the
+  // instalments under the client.
+  if (plan.after && input.dueDate > plan.after.dueDate) {
+    throw new BadRequestError(
+      `That would move this instalment past the next one (due ${plan.after.dueDate}). Revise the payment plan instead.`,
     );
   }
 
   return withTransaction(db, async () => {
-    await db
-      .update(invoices)
-      .set({ dueDate: input.dueDate, updatedAt: new Date() })
-      .where(
-        and(
-          eq(invoices.organizationId, organizationId),
-          eq(invoices.id, invoiceId),
-        ),
+    if (plan.kind === "scheduled") {
+      // Rewritten through writeSchedule rather than a targeted UPDATE so the
+      // header date stays pinned to the final instalment and `sequence` stays
+      // in due-date order — the two invariants dues.ts relies on.
+      //
+      // Deliberately NOT setSchedule: that announces a revised plan to the
+      // client by email, and this is the same act as extending an unscheduled
+      // invoice, which does not. When notifications land, both should gain one
+      // together.
+      await writeSchedule(
+        organizationId,
+        invoiceId,
+        schedule.map((row) => ({
+          dueDate: row.id === plan.target!.id ? input.dueDate : row.dueDate,
+          amount: num(row.amount),
+        })),
       );
+    } else {
+      await db
+        .update(invoices)
+        .set({ dueDate: input.dueDate, updatedAt: new Date() })
+        .where(
+          and(
+            eq(invoices.organizationId, organizationId),
+            eq(invoices.id, invoiceId),
+          ),
+        );
+    }
 
     // `next_due_date` is a fold and recalculateInvoiceTotals is its only writer.
-    // Unscheduled invoices resolve it to null and read through `dueBy`, so this
-    // changes nothing today — but skipping it would put a second writer on the
-    // column the moment schedules and extensions ever meet.
-    await recalculateInvoiceTotals(organizationId, invoiceId);
+    // On a scheduled invoice this is what actually moves the overdue predicate,
+    // since `dueBy` reads coalesce(next_due_date, due_date).
+    const totals = await recalculateInvoiceTotals(organizationId, invoiceId);
+    await assertScheduleBalances(organizationId, invoiceId, totals.totalAmount);
 
     await logFinanceEvent({
       organizationId,
       eventType: "invoice_updated",
-      title: `${existing.invoiceNumber} — due date extended to ${input.dueDate}`,
-      // The date it moved FROM lives here and nowhere else: the column now
-      // holds the new value, so without this the trail cannot say what changed.
+      title:
+        plan.kind === "scheduled"
+          ? `${existing.invoiceNumber} — instalment ${plan.target!.sequence} extended to ${input.dueDate}`
+          : `${existing.invoiceNumber} — due date extended to ${input.dueDate}`,
+      // The date it moved FROM lives here and nowhere else: the row now holds
+      // the new value, so without this the trail cannot say what changed.
       description: [
-        `Was due ${existing.dueDate}`,
+        `Was due ${currentDue}`,
         input.reason?.trim() ? `Reason: ${input.reason.trim()}` : null,
       ]
         .filter(Boolean)
