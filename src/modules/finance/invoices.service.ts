@@ -755,6 +755,25 @@ export const create = async (
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
+/**
+ * Cancel an invoice.
+ *
+ * Voiding is how a sent invoice is corrected — the document the client holds is
+ * withdrawn and a fresh one issued, rather than rewritten under them.
+ *
+ * **Refused once any money has been recorded against it.** `countableInvoices()`
+ * excludes voids from every tile and report, but the `invoice_payments` rows
+ * survive: voiding a paid invoice would drop the firm's `collected` figure by
+ * money it actually received and still holds, leaving the ledger and the
+ * reports permanently disagreeing with no trace of why. There is no reversing
+ * entry to undo it with either — `invoice_payments_amount_positive` is a check
+ * constraint, so a negative payment cannot be written.
+ *
+ * The proper remedy for "paid, but the invoice was wrong" is a credit note,
+ * which this module does not model yet. Until it does, refusing is the honest
+ * answer: the firm settles it out of band rather than through a number that
+ * silently stops adding up.
+ */
 export const voidInvoice = async (
   organizationId: string,
   invoiceId: string,
@@ -767,6 +786,7 @@ export const voidInvoice = async (
       status: invoices.status,
       invoiceNumber: invoices.invoiceNumber,
       totalAmount: invoices.totalAmount,
+      amountPaid: invoices.amountPaid,
     })
     .from(invoices)
     .where(
@@ -777,6 +797,14 @@ export const voidInvoice = async (
   if (!existing) throw new NotFoundError("Invoice not found");
   if (existing.status === "void") {
     throw new BadRequestError("Invoice is already void");
+  }
+  // Checked on `amount_paid`, not on `status === 'paid'`: a partly paid invoice
+  // carries the same problem for a smaller number, and status alone would let
+  // it through.
+  if (num(existing.amountPaid) > 0) {
+    throw new BadRequestError(
+      "This invoice has payments recorded against it and cannot be voided. Voiding it would remove money the firm has received from every report while the payments themselves remain on the ledger.",
+    );
   }
 
   return withTransaction(db, async () => {

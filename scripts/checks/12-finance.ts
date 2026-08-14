@@ -874,33 +874,108 @@ const main = async () => {
         null,
       );
 
-      // ── Void releases time ────────────────────────────────────────────────
-      section("voiding releases billed time");
+      // ── Void ──────────────────────────────────────────────────────────────
+      section("voiding");
+
+      // `invoice` was paid in full above. Voiding it would drop `collected` by
+      // money the firm actually holds while the invoice_payments rows survive,
+      // and there is no reversing entry to undo that with — the amount_positive
+      // check constraint forbids a negative payment. So it is refused.
+      let paidVoidRefused = false;
+      try {
+        await invoicesService.voidInvoice(
+          orgId,
+          invoice.id,
+          "Issued in error",
+          staffBId,
+          FULL,
+        );
+      } catch {
+        paidVoidRefused = true;
+      }
+      check("a paid invoice cannot be voided", paidVoidRefused);
+
+      const statsBeforeVoid = await invoicesService.getStats(orgId, FULL);
+
+      // A fresh, unpaid, countable invoice to void for real. It bills its own
+      // time entry, so the release assertion below still means something —
+      // `backdated` and `recent` are permanently attached to `invoice`, which
+      // can no longer be voided.
+      const voidableEntry = await timeBilling.create(orgId, staffAId, false, {
+        staffId: staffAId,
+        caseId,
+        entryDate: "2026-06-14",
+        hoursWorked: 1,
+        description: "Work billed on an invoice that gets withdrawn",
+        billable: true,
+      });
+      await timeBilling.approve(orgId, voidableEntry.id, staffBId);
+
+      const toVoid = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(0),
+        dueDate: daysFromNow(30),
+        status: "draft",
+        lineItems: [],
+        timeEntryIds: [voidableEntry.id],
+      });
+      // Countable — a draft is excluded from the tiles anyway, so voiding one
+      // would prove nothing about the revenue figures.
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, toVoid.id));
+
+      const statsWhileLive = await invoicesService.getStats(orgId, FULL);
+      checkEqual(
+        "a sent invoice counts toward revenue",
+        statsWhileLive.totalInvoiced,
+        statsBeforeVoid.totalInvoiced + toVoid.totals.total,
+      );
 
       const voided = await invoicesService.voidInvoice(
         orgId,
-        invoice.id,
+        toVoid.id,
         "Issued in error",
         staffBId,
         FULL,
       );
-      checkEqual("the invoice is void", voided.status, "void");
+      checkEqual("an unpaid invoice can be voided", voided.status, "void");
 
-      const released = await systemDb
+      const [releasedEntry] = await systemDb
         .select({ invoicedAt: timeEntries.invoicedAt })
         .from(timeEntries)
-        .where(inArray(timeEntries.id, [backdated.id, recent.id]));
-      check(
-        "its time entries can be billed again",
-        released.every((e) => e.invoicedAt == null),
+        .where(eq(timeEntries.id, voidableEntry.id));
+      checkEqual(
+        "its time entry can be billed again",
+        releasedEntry?.invoicedAt ?? null,
+        null,
       );
 
+      // Relative, not the absolute 300 this used to assert: that literal was
+      // only correct while this section voided the paid invoice, which is now
+      // refused. "Voiding removes exactly what it added" is the real invariant
+      // and does not go stale when an earlier section changes.
       const statsAfterVoid = await invoicesService.getStats(orgId, FULL);
       checkEqual(
         "a voided invoice leaves the revenue figures",
         statsAfterVoid.totalInvoiced,
-        300,
+        statsBeforeVoid.totalInvoiced,
       );
+      checkEqual(
+        "and the paid one it could not void is still counted",
+        statsAfterVoid.collected > 0,
+        true,
+      );
+
+      let doubleVoidRefused = false;
+      try {
+        await invoicesService.voidInvoice(orgId, toVoid.id, undefined, staffBId, FULL);
+      } catch {
+        doubleVoidRefused = true;
+      }
+      check("and cannot be voided twice", doubleVoidRefused);
 
       // ── Matter defaults (attorney prefill) ────────────────────────────────
       section("matter defaults");
@@ -970,7 +1045,29 @@ const main = async () => {
       // ── Editing a draft ───────────────────────────────────────────────────
       section("draft editing");
 
-      // The void above released these two, so they are billable again.
+      // Two entries of this section's own. This used to reuse `backdated` and
+      // `recent`, relying on the void above having released them — a hidden
+      // coupling that broke the moment voiding a paid invoice became refused.
+      // Owning its fixtures keeps this section about draft editing.
+      const swapOut = await timeBilling.create(orgId, staffAId, false, {
+        staffId: staffAId,
+        caseId,
+        entryDate: "2026-06-16",
+        hoursWorked: 2,
+        description: "Entry the draft starts with",
+        billable: true,
+      });
+      const swapIn = await timeBilling.create(orgId, staffAId, false, {
+        staffId: staffAId,
+        caseId,
+        entryDate: "2026-06-17",
+        hoursWorked: 1,
+        description: "Entry the draft swaps to",
+        billable: true,
+      });
+      await timeBilling.approve(orgId, swapOut.id, staffBId);
+      await timeBilling.approve(orgId, swapIn.id, staffBId);
+
       const draft = await invoicesService.create(orgId, staffBId, FULL, {
         clientId,
         caseId,
@@ -980,10 +1077,10 @@ const main = async () => {
         lineItems: [
           { description: "Consultation", quantity: 1, rate: 100, account: "operating" },
         ],
-        timeEntryIds: [backdated.id],
+        timeEntryIds: [swapOut.id],
       });
-      const backdatedAmount = draft.totals.total - 100;
-      check("the draft folds in its time entry", backdatedAmount > 0);
+      const foldedTimeAmount = draft.totals.total - 100;
+      check("the draft folds in its time entry", foldedTimeAmount > 0);
 
       const edited = await invoicesService.update(
         orgId,
@@ -994,7 +1091,7 @@ const main = async () => {
             { description: "Consultation", quantity: 2, rate: 100, account: "operating" },
           ],
           // Swap which time entry it bills.
-          timeEntryIds: [recent.id],
+          timeEntryIds: [swapIn.id],
         },
         staffBId,
         FULL,
@@ -1004,17 +1101,17 @@ const main = async () => {
       checkEqual("the notes stuck", edited.notes, "Revised before sending");
       checkEqual("the line set was replaced", edited.lineItems.length, 2);
 
-      const [backdatedAfter] = await systemDb
+      const [swapOutAfter] = await systemDb
         .select({ invoicedAt: timeEntries.invoicedAt })
         .from(timeEntries)
-        .where(eq(timeEntries.id, backdated.id));
-      const [recentAfter] = await systemDb
+        .where(eq(timeEntries.id, swapOut.id));
+      const [swapInAfter] = await systemDb
         .select({ invoicedAt: timeEntries.invoicedAt })
         .from(timeEntries)
-        .where(eq(timeEntries.id, recent.id));
+        .where(eq(timeEntries.id, swapIn.id));
       // The dropped entry must become billable again, or the work is stranded.
-      checkEqual("the dropped entry is released", backdatedAfter?.invoicedAt ?? null, null);
-      check("the added entry is claimed", recentAfter?.invoicedAt != null);
+      checkEqual("the dropped entry is released", swapOutAfter?.invoicedAt ?? null, null);
+      check("the added entry is claimed", swapInAfter?.invoicedAt != null);
 
       // Totals are recalculated, not left at what the draft used to say.
       const recentAmount = edited.totals.total - 200;
@@ -1031,7 +1128,7 @@ const main = async () => {
         draft.id,
         {
           lineItems: [],
-          timeEntryIds: [recent.id],
+          timeEntryIds: [swapIn.id],
         },
         staffBId,
         FULL,
@@ -1045,12 +1142,12 @@ const main = async () => {
       });
       check(
         "the held entry is offered back when editing",
-        offered.some((e) => e.id === recent.id),
+        offered.some((e) => e.id === swapIn.id),
       );
       const unbilledOnly = await invoicesService.getUnbilledTime(orgId, { clientId });
       check(
         "but not to a plain unbilled query",
-        !unbilledOnly.some((e) => e.id === recent.id),
+        !unbilledOnly.some((e) => e.id === swapIn.id),
       );
 
       // A sent invoice is a statement the client already holds; correcting it
