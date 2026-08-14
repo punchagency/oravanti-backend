@@ -10,6 +10,7 @@ import type { LeadEventType } from "../../db/schema/leads";
 import { assertAssignableStaff } from "../../utils/assignable-staff";
 import { triggerScenarioScan } from "../ai-scan/scan-triggers";
 import { recordTaskReviewEvent } from "../shared/task-review-events.service";
+import { resolveIntakePipelineSteps } from "./intake-pipeline-template.service";
 import { logLeadEvent } from "./lead-events.service";
 import { documents, documentVersions } from "../../db/schema/documents";
 import { staff } from "../../db/schema/staff";
@@ -557,6 +558,15 @@ export class LeadWorkflowService {
     return { items, pagination: { total, limit, offset } };
   }
 
+  /**
+   * Stamps the firm's intake checklist onto a lead.
+   *
+   * The steps come from `intake_pipeline_templates` — the firm's own active
+   * template if it has one, otherwise the system default — so changing the
+   * checklist is a data edit rather than a deploy. If nothing has been seeded
+   * the system default is created on demand, which stops a fresh database from
+   * silently producing leads with no pipeline at all.
+   */
   async initializePipelineSteps(leadId: string, organizationId: string, assignedToId?: string) {
     const existing = await db
       .select()
@@ -567,70 +577,23 @@ export class LeadWorkflowService {
       .orderBy(asc(leadTasks.orderIndex));
     if (existing.length > 0) return existing;
 
-    const defaultTasks = [
-      {
-        leadId, organizationId, assignedToId,
-        title: "Run conflict check",
-        description: "Check for conflicts of interest with existing clients and adverse parties",
-        orderIndex: 0, pipelineStage: "conflict_check" as const,
-      },
-      {
-        leadId, organizationId, assignedToId,
-        title: "Review conflict results",
-        description: "Analyze conflict check results and determine next steps",
-        orderIndex: 1, pipelineStage: "conflict_check" as const,
-      },
-      {
-        leadId, organizationId, assignedToId,
-        title: "Send intake questionnaire",
-        description: "Send the intake questionnaire to the lead for detailed information",
-        orderIndex: 0, pipelineStage: "questionnaire" as const,
-      },
-      {
-        leadId, organizationId, assignedToId,
-        title: "Review questionnaire responses",
-        description: "Review and analyze the completed intake questionnaire",
-        orderIndex: 1, pipelineStage: "questionnaire" as const,
-      },
-      {
-        leadId, organizationId, assignedToId,
-        title: "Schedule consultation",
-        description: "Book initial consultation with the lead",
-        orderIndex: 0, pipelineStage: "consultation" as const,
-      },
-      {
-        leadId, organizationId, assignedToId,
-        title: "Conduct consultation",
-        description: "Hold the initial consultation meeting",
-        orderIndex: 1, pipelineStage: "consultation" as const,
-      },
-      {
-        leadId, organizationId, assignedToId,
-        title: "Prepare fee agreement",
-        description: "Draft the fee agreement for the lead",
-        orderIndex: 0, pipelineStage: "fee_agreement" as const,
-      },
-      {
-        leadId, organizationId, assignedToId,
-        title: "Send fee agreement",
-        description: "Send fee agreement to lead for signature",
-        orderIndex: 1, pipelineStage: "fee_agreement" as const,
-      },
-      {
-        leadId, organizationId, assignedToId,
-        title: "Receive signed fee agreement",
-        description: "Confirm receipt of the signed fee agreement",
-        orderIndex: 2, pipelineStage: "fee_agreement" as const,
-      },
-      {
-        leadId, organizationId, assignedToId,
-        title: "Open case file",
-        description: "Convert lead to active case and create case file",
-        orderIndex: 0, pipelineStage: "case_opening" as const,
-      },
-    ];
+    const templateSteps = await resolveIntakePipelineSteps(organizationId);
 
-    const steps = await db.insert(leadTasks).values(defaultTasks).returning();
+    const steps = await db
+      .insert(leadTasks)
+      .values(
+        templateSteps.map((step) => ({
+          leadId,
+          organizationId,
+          assignedToId,
+          title: step.title,
+          description: step.description,
+          orderIndex: step.orderIndex,
+          pipelineStage: step.pipelineStage,
+          isRequired: step.isRequired,
+        })),
+      )
+      .returning();
 
     await logLeadEvent({
       organizationId,

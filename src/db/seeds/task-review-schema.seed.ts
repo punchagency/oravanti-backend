@@ -12,6 +12,7 @@ import { db } from "../client";
  * Covers:
  *   - `rejected` on `lead_task_status` and `workflow_step_status`
  *   - `task_review_events` (the append-only review thread)
+ *   - `intake_pipeline_templates` / `_steps` (the DB-backed intake checklist)
  */
 export async function applyTaskReviewSchema() {
   // ─── Enum values ───────────────────────────────────────────────────────────
@@ -66,5 +67,43 @@ export async function applyTaskReviewSchema() {
       ON "task_review_events" ("organization_id", "created_at");
   `);
 
-  console.log("Task review schema applied.");
+  // ─── intake_pipeline_templates ─────────────────────────────────────────────
+  // `organization_id` is nullable on purpose: the null row is the system
+  // default every firm falls back to.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS "intake_pipeline_templates" (
+      "id"              uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+      "organization_id" text REFERENCES "organization"("id"),
+      "name"            text NOT NULL,
+      "description"     text,
+      "is_active"       boolean DEFAULT true NOT NULL,
+      "created_at"      timestamp DEFAULT now() NOT NULL,
+      "updated_at"      timestamp DEFAULT now() NOT NULL
+    );
+  `);
+
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS "intake_pipeline_templates_org_idx"
+      ON "intake_pipeline_templates" ("organization_id", "is_active");
+  `);
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS "intake_pipeline_template_steps" (
+      "id"             uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+      "template_id"    uuid NOT NULL REFERENCES "intake_pipeline_templates"("id") ON DELETE CASCADE,
+      "title"          text NOT NULL,
+      "description"    text,
+      "pipeline_stage" "public"."lead_pipeline_stage" NOT NULL,
+      "order_index"    integer NOT NULL,
+      "is_required"    boolean DEFAULT true NOT NULL,
+      "created_at"     timestamp DEFAULT now() NOT NULL
+    );
+  `);
+
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS "intake_pipeline_template_steps_template_idx"
+      ON "intake_pipeline_template_steps" ("template_id", "pipeline_stage", "order_index");
+  `);
+
+  console.log("Task review + intake pipeline schema applied.");
 }

@@ -37,6 +37,7 @@ export * from "./invoice-payments";
 export * from "./payment-webhook-events";
 export * from "./invoices";
 export * from "./lead-document-links";
+export * from "./intake-pipeline-templates";
 export * from "./lead-tasks";
 export * from "./lead-timeline-events";
 export * from "./task-review-events";
