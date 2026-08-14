@@ -142,9 +142,32 @@ export class PracticeAreasRouter {
       this.practiceAreasController.cancelSubscriptions,
     );
 
-    this.router.get(
-      "/tree-data",
-      this.practiceAreasController.getTreeData,
-    );
+    /**
+     * @openapi
+     * /practice-areas/tree-data:
+     *   get:
+     *     tags: [Practice Areas]
+     *     summary: Practice area taxonomy as a nested tree
+     *     description: >
+     *       Scoped to the practice areas the caller's firm actively subscribes
+     *       to, falling back to the full taxonomy when it subscribes to none.
+     *       Leaf nodes omit `children` rather than carrying an empty array.
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: query
+     *         name: practiceAreaIds
+     *         schema: { type: string }
+     *         description: Comma-separated ids; returns only those subtrees.
+     *       - in: query
+     *         name: depth
+     *         schema: { type: integer, enum: [1, 2, 3], default: 3 }
+     *         description: >
+     *           1 = practice areas only, 2 = + subcategories, 3 = + case types.
+     *           Lower depths skip the corresponding queries entirely.
+     *     responses:
+     *       200:
+     *         description: Tree data retrieved
+     */
+    this.router.get("/tree-data", this.practiceAreasController.getTreeData);
   }
 }
