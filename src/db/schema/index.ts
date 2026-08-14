@@ -39,6 +39,7 @@ export * from "./invoices";
 export * from "./lead-document-links";
 export * from "./lead-tasks";
 export * from "./lead-timeline-events";
+export * from "./task-review-events";
 export * from "./leads";
 export * from "./leave-requests";
 export * from "./module-permissions";

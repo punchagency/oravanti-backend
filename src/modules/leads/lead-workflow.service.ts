@@ -9,6 +9,7 @@ import {
 import type { LeadEventType } from "../../db/schema/leads";
 import { assertAssignableStaff } from "../../utils/assignable-staff";
 import { triggerScenarioScan } from "../ai-scan/scan-triggers";
+import { recordTaskReviewEvent } from "../shared/task-review-events.service";
 import { logLeadEvent } from "./lead-events.service";
 import { documents, documentVersions } from "../../db/schema/documents";
 import { staff } from "../../db/schema/staff";
@@ -306,8 +307,12 @@ export class LeadWorkflowService {
     organizationId: string,
   ) {
     const task = await this.getTask(taskId, organizationId);
-    if (task.status !== "in_progress") {
-      throw new BadRequestError("Only in-progress tasks can be submitted for review");
+    // A rejected task is resubmitted straight from here rather than forcing a
+    // separate "reopen" round trip.
+    if (task.status !== "in_progress" && task.status !== "rejected") {
+      throw new BadRequestError(
+        "Only in-progress or rejected tasks can be submitted for review",
+      );
     }
     const [updated] = await db
       .update(leadTasks)
@@ -315,7 +320,6 @@ export class LeadWorkflowService {
         status: "in_review",
         completedById: submittedById,
         completedAt: new Date(),
-        notes: notes ?? task.notes,
         updatedAt: new Date(),
       })
       .where(
@@ -323,12 +327,74 @@ export class LeadWorkflowService {
       )
       .returning();
 
+    await recordTaskReviewEvent({
+      organizationId,
+      taskKind: "lead_task",
+      taskId,
+      leadId: task.leadId,
+      action: "submitted",
+      note: notes,
+      actorId: submittedById,
+    });
+
     await logLeadEvent({
       organizationId,
       leadId: task.leadId,
       type: "task_submitted_for_review" as LeadEventType,
       actorId: submittedById,
       metadata: { taskId, title: task.title, note: notes },
+    });
+
+    return updated;
+  }
+
+  /**
+   * Puts a rejected task back into the assignee's hands.
+   *
+   * Rejection is terminal until someone acts on the feedback, so returning to
+   * `in_progress` is an explicit step rather than something the reviewer does
+   * on the assignee's behalf.
+   */
+  async reopenTask(
+    taskId: string,
+    actorId: string,
+    notes: string | undefined,
+    organizationId: string,
+  ) {
+    const task = await this.getTask(taskId, organizationId);
+    if (task.status !== "rejected") {
+      throw new BadRequestError("Only rejected tasks can be reopened");
+    }
+
+    const [updated] = await db
+      .update(leadTasks)
+      .set({
+        status: "in_progress",
+        completedById: null,
+        completedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
+      )
+      .returning();
+
+    await recordTaskReviewEvent({
+      organizationId,
+      taskKind: "lead_task",
+      taskId,
+      leadId: task.leadId,
+      action: "reopened",
+      note: notes,
+      actorId,
+    });
+
+    await logLeadEvent({
+      organizationId,
+      leadId: task.leadId,
+      type: "task_status_changed" as LeadEventType,
+      actorId,
+      metadata: { taskId, title: task.title, from: "rejected", to: "in_progress" },
     });
 
     return updated;
@@ -350,13 +416,22 @@ export class LeadWorkflowService {
         status: "completed",
         completedById: approverId,
         completedAt: new Date(),
-        notes: notes ?? task.notes,
         updatedAt: new Date(),
       })
       .where(
         and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
       )
       .returning();
+
+    await recordTaskReviewEvent({
+      organizationId,
+      taskKind: "lead_task",
+      taskId,
+      leadId: task.leadId,
+      action: "approved",
+      note: notes,
+      actorId: approverId,
+    });
 
     await logLeadEvent({
       organizationId,
@@ -382,16 +457,27 @@ export class LeadWorkflowService {
     const [updated] = await db
       .update(leadTasks)
       .set({
-        status: "in_progress",
+        // Terminal until the assignee reopens it: dropping straight back to
+        // `in_progress` gave them no signal that anything had been rejected.
+        status: "rejected",
         completedById: null,
         completedAt: null,
-        notes: feedback,
         updatedAt: new Date(),
       })
       .where(
         and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
       )
       .returning();
+
+    await recordTaskReviewEvent({
+      organizationId,
+      taskKind: "lead_task",
+      taskId,
+      leadId: task.leadId,
+      action: "rejected",
+      note: feedback,
+      actorId: reviewerId,
+    });
 
     await logLeadEvent({
       organizationId,
@@ -410,9 +496,18 @@ export class LeadWorkflowService {
     page = 1,
     limit = 20,
   ) {
+    // `rejected` is in the default set so a reviewer can still see what they
+    // sent back — it leaves the queue only once the assignee resubmits.
     const statuses = (status
       ? status.split(",").filter(Boolean)
-      : ["in_review", "completed"]) as ("pending" | "in_progress" | "in_review" | "completed" | "skipped")[];
+      : ["in_review", "rejected", "completed"]) as (
+      | "pending"
+      | "in_progress"
+      | "in_review"
+      | "completed"
+      | "skipped"
+      | "rejected"
+    )[];
     const offset = (page - 1) * limit;
 
     const [items, [{ total }]] = await Promise.all([

@@ -139,6 +139,23 @@ export class LeadWorkflowRouter {
       ctrl.rejectLeadTask,
     );
 
+    this.router.post(
+      "/:leadId/tasks/:taskId/reopen",
+      requireAuth,
+      validateRequest({
+        params: v.leadTaskIdParamsSchema,
+        body: v.submitReviewBodySchema,
+      }),
+      ctrl.reopenLeadTask,
+    );
+
+    this.router.get(
+      "/:leadId/tasks/:taskId/review-thread",
+      requireAuth,
+      validateRequest({ params: v.leadTaskIdParamsSchema }),
+      ctrl.getLeadTaskReviewThread,
+    );
+
     this.router.delete(
       "/:leadId/tasks/:taskId",
       requireAuth,
