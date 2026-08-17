@@ -76,8 +76,9 @@ page — `recordManualPaymentOnPaymentLink` requires an explicit allocation, so 
 API only ever returns the split we asked for. It runs in two phases:
 
 ```bash
-npm run check 15-confido-partial-payment -- create    # prints a link to pay in a browser
-npm run check 15-confido-partial-payment -- inspect   # reports which rule Confido used
+npm run check 15-confido-partial-payment -- create      # prints a link to pay in a browser
+npm run check 15-confido-partial-payment -- inspect     # reports which rule Confido used
+npm run check 15-confido-partial-payment -- ach-return  # settles an ACH leg, then returns it
 ```
 
 `create` builds a deliberately lopsided link ($500 trust / $1,500 operating) and
@@ -85,6 +86,14 @@ asks for a $200 payment — less than the trust leg alone, so trust-first,
 operating-first and pro-rata each give a visibly different answer. `inspect`
 compares what actually happened against all three and says whether the processor
 agrees with our trust-first policy. Pass `--new` to start a fresh firm.
+
+`ach-return` answers the question that decides the refund schema. It settles an
+`achPayment` leg (`FUNDS_IN_TRANSIT` → `DEPOSITED`) before returning it, because
+returns happen to money that has already landed — firing at a `PENDING`
+transaction would test something that does not occur in production. It then
+reports what the return did: only the returned leg unwinds, the original flips to
+`RETURNED`, and a **separate `achReturn` row with a positive amount** points back
+at it. Needs an ACH payment on the link first.
 
 State lives in `.confido-partial.json` (gitignored, `0600` — it holds a firm API
 token). Delete it to start over.

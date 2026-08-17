@@ -479,6 +479,224 @@ const inspect = async () => {
   await report();
 };
 
+// ─── ach-return ──────────────────────────────────────────────────────────────
+
+type TxnRow = {
+  id: string;
+  type: string;
+  status_v2: string;
+  amountProcessed: number;
+  achReturnCode: string | null;
+  achReturnReason: string | null;
+  originalTransactionId: string | null;
+  bankAccount: { category: string };
+};
+
+const TXN_QUERY = `query T($ids: [String!]) {
+  transactionsList(paymentLinkIds: $ids) {
+    transactions {
+      id type status_v2 amountProcessed achReturnCode achReturnReason originalTransactionId
+      bankAccount { category }
+    }
+  }
+}`;
+
+const BALANCE_QUERY = `query L($id: String) {
+  paymentLink(id: $id) {
+    status
+    balance { totalPaid trustPaid trustOutstanding operatingPaid operatingOutstanding }
+  }
+}`;
+
+type Bal = {
+  totalPaid: number;
+  trustPaid: number;
+  trustOutstanding: number;
+  operatingPaid: number;
+  operatingOutstanding: number;
+};
+
+/**
+ * Settle an ACH payment, then return it — the last open question from the
+ * review.
+ *
+ * ACH returns are the failure mode that makes trust accounting genuinely hard:
+ * money we have already recorded as received, and possibly already opened a case
+ * on, is pulled back out days later. Our `invoice_payments` table cannot express
+ * that today (`check(amount > 0)`, insert-only), so what shape Confido reports a
+ * return in decides what shape our schema needs.
+ *
+ * The transaction is settled first because the docs describe returns as
+ * happening to money that has already landed. Firing at a PENDING transaction
+ * would be testing something that does not occur in production.
+ */
+const achReturn = async () => {
+  const state = readState();
+  if (!state) {
+    console.error(
+      `\x1b[31mNo ${STATE_FILE}.\x1b[0m Run: npm run check 15-confido-partial-payment -- create`,
+    );
+    process.exit(1);
+  }
+
+  const balanceOf = async (): Promise<Bal | null> => {
+    const res = await gql<{ paymentLink: { status: string; balance: Bal } }>(
+      state.firmToken,
+      BALANCE_QUERY,
+      { id: state.linkId },
+    );
+    return res.data?.paymentLink.balance ?? null;
+  };
+
+  const txnsOf = async (): Promise<TxnRow[]> => {
+    const res = await gql<{ transactionsList: { transactions: TxnRow[] } }>(
+      state.firmToken,
+      TXN_QUERY,
+      { ids: [state.linkId] },
+    );
+    return res.data?.transactionsList.transactions ?? [];
+  };
+
+  section("Before");
+
+  const before = await balanceOf();
+  const rowsBefore = await txnsOf();
+  if (!before) {
+    check("paymentLink balance", false, "query failed");
+    return report();
+  }
+
+  console.log(`  trust:     ${usd(before.trustPaid)} paid, ${usd(before.trustOutstanding)} outstanding`);
+  console.log(`  operating: ${usd(before.operatingPaid)} paid, ${usd(before.operatingOutstanding)} outstanding`);
+
+  const target = rowsBefore.find((t) => t.type === "achPayment");
+  check("an achPayment transaction exists to return", Boolean(target), rowsBefore.map((t) => t.type));
+  if (!target) {
+    console.log("\n  Pay a partial by ACH first, then re-run this mode.\n");
+    return report();
+  }
+  console.log(
+    `\n  target: ${target.id}  ${target.bankAccount.category} ${usd(target.amountProcessed)} (${target.status_v2})`,
+  );
+
+  // ── Settle it ─────────────────────────────────────────────────────────────
+  section("Settling the ACH payment");
+
+  for (const mutation of [
+    "sandboxOnlyMoveTransactionToFundsInTransit",
+    "sandboxOnlyMoveTransactionToDeposited",
+  ]) {
+    const res = await gql<Record<string, boolean>>(
+      state.firmToken,
+      `mutation M($input: SandboxOnlyMoveTransactionInput!) { ${mutation}(input: $input) }`,
+      { input: { transactionId: target.id } },
+    );
+    const passed = res.errors.length === 0 && res.data?.[mutation] === true;
+    check(mutation, passed, res.errors.map((e) => e.message));
+    // Keep going even on failure: a return fired at whatever status we reached
+    // is still more informative than stopping here.
+  }
+
+  const settled = (await txnsOf()).find((t) => t.id === target.id);
+  console.log(`  status now: ${settled?.status_v2}`);
+  check(
+    "the ACH payment reached DEPOSITED",
+    settled?.status_v2 === "DEPOSITED",
+    settled?.status_v2,
+  );
+
+  const afterSettle = await balanceOf();
+  console.log(
+    `  balance after settling: trust ${usd(afterSettle?.trustPaid ?? 0)} paid, ` +
+      `${usd(afterSettle?.trustOutstanding ?? 0)} outstanding`,
+  );
+
+  // ── Return it ─────────────────────────────────────────────────────────────
+  section("Triggering the ACH return");
+
+  const returned = await gql<Record<string, boolean>>(
+    state.firmToken,
+    `mutation R($input: SandboxOnlyTriggerAchReturnInput!) { sandboxOnlyTriggerAchReturn(input: $input) }`,
+    { input: { transactionId: target.id } },
+  );
+  check(
+    "sandboxOnlyTriggerAchReturn",
+    returned.errors.length === 0 && returned.data?.sandboxOnlyTriggerAchReturn === true,
+    returned.errors.map((e) => e.message),
+  );
+  if (returned.errors.length) return report();
+
+  section("After");
+
+  const after = await balanceOf();
+  const rowsAfter = await txnsOf();
+
+  console.log(`  trust:     ${usd(after?.trustPaid ?? 0)} paid, ${usd(after?.trustOutstanding ?? 0)} outstanding`);
+  console.log(`  operating: ${usd(after?.operatingPaid ?? 0)} paid, ${usd(after?.operatingOutstanding ?? 0)} outstanding`);
+  console.log("\n  transactions:");
+  for (const t of rowsAfter) {
+    console.log(
+      `    ${t.bankAccount.category.padEnd(9)} ${usd(t.amountProcessed).padStart(10)}` +
+        `  ${t.type.padEnd(11)} ${t.status_v2.padEnd(16)}` +
+        (t.achReturnCode ? ` code=${t.achReturnCode} (${t.achReturnReason})` : "") +
+        (t.originalTransactionId ? ` orig=${t.originalTransactionId.slice(0, 8)}` : ""),
+    );
+  }
+
+  // ── What the return actually did ──────────────────────────────────────────
+  section("What a return does to the ledger");
+
+  const newRows = rowsAfter.filter((t) => !rowsBefore.some((b) => b.id === t.id));
+  const originalNow = rowsAfter.find((t) => t.id === target.id);
+
+  check(
+    "the returned money left the trust balance",
+    (after?.trustPaid ?? 0) === (afterSettle?.trustPaid ?? 0) - target.amountProcessed,
+    { before: afterSettle?.trustPaid, after: after?.trustPaid, returned: target.amountProcessed },
+  );
+  check(
+    "the operating leg was NOT touched",
+    (after?.operatingPaid ?? 0) === before.operatingPaid,
+    { before: before.operatingPaid, after: after?.operatingPaid },
+  );
+  check(
+    "the original transaction is now RETURNED",
+    originalNow?.status_v2 === "RETURNED",
+    originalNow?.status_v2,
+  );
+  check(
+    "a separate reversing transaction was created",
+    newRows.length > 0,
+    newRows.map((t) => ({ type: t.type, amount: t.amountProcessed, status: t.status_v2 })),
+  );
+
+  for (const t of newRows) {
+    console.log(
+      `\n  reversing row: type=${t.type} amount=${usd(t.amountProcessed)} ` +
+        `status=${t.status_v2} code=${t.achReturnCode ?? "—"} reason=${t.achReturnReason ?? "—"}`,
+    );
+    check(
+      `reversing row (${t.type}) carries a positive amount, not a negative one`,
+      t.amountProcessed > 0,
+      t.amountProcessed,
+    );
+    check(
+      `reversing row (${t.type}) points back at the original`,
+      t.originalTransactionId === target.id,
+      { originalTransactionId: t.originalTransactionId, expected: target.id },
+    );
+  }
+
+  console.log(
+    "\n  \x1b[1mSchema implication:\x1b[0m a return is a SEPARATE transaction with a positive\n" +
+      "  amount pointing at the original, not a mutation of the original row. Our\n" +
+      "  `invoice_payments` can mirror that with a `kind` column plus a self-reference —\n" +
+      "  the `check(amount > 0)` constraint can stay as it is.\n",
+  );
+
+  await report();
+};
+
 // ─── entry ───────────────────────────────────────────────────────────────────
 
 const main = async () => {
@@ -486,9 +704,10 @@ const main = async () => {
   const mode = args.find((a) => !a.startsWith("-")) ?? "create";
 
   if (mode === "inspect") return inspect();
+  if (mode === "ach-return") return achReturn();
   if (mode === "create") return create(!args.includes("--new"));
 
-  console.error(`Unknown mode "${mode}". Use: create [--new] | inspect`);
+  console.error(`Unknown mode "${mode}". Use: create [--new] | inspect | ach-return`);
   process.exit(1);
 };
 
