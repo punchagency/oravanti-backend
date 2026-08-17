@@ -1,6 +1,5 @@
 import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import { db } from "../../db/client";
-import type { UpdateCalendarEventInput } from "./calendar.validation";
 import {
   CalendarEvent,
   calendarEvents,
@@ -449,7 +448,7 @@ export const createCalendarEvent = async (
 export const updateCalendarEvent = async (
   id: string,
   organizationId: string,
-  data: UpdateCalendarEventInput,
+  data: Partial<NewCalendarEvent>,
 ) => {
   const [existing] = await db
     .select({ status: calendarEvents.status })

@@ -115,7 +115,6 @@ export class OrganizationRouter {
     this.router.post(
       "/cancel-invitation",
       requireAuth,
-      requirePermission("invitations", "delete"),
       this.organizationController.cancelInvitation,
     );
     this.router.delete(
@@ -145,7 +144,6 @@ export class OrganizationRouter {
     this.router.post(
       "/resend-invitation",
       requireAuth,
-      requirePermission("invitations", "create"),
       this.organizationController.resendInvitation,
     );
     this.router.patch(

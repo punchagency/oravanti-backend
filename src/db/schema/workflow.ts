@@ -23,11 +23,6 @@ export const workflowStepStatusEnum = pgEnum('workflow_step_status', [
   'in_review',
   'completed',
   'skipped',
-  // A rejected review used to drop the step back to `in_progress`, which told
-  // the assignee nothing. `rejected` is terminal until they reopen it, so it
-  // can be surfaced as its own state and filtered into its own tab. Mirrors
-  // `lead_task_status` — both loops are the same shape.
-  'rejected',
 ]);
 
 export const noteCategoryEnum = pgEnum('note_category', [

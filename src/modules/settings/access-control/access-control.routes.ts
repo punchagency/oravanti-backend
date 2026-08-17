@@ -36,6 +36,7 @@ export class AccessControlRouter {
   }
 
   private initializeRoutes() {
+    this.router.use(this.path, this.router);
     this.router.use(requireAuth);
     this.router.use(resolveActorContext);
 

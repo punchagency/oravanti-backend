@@ -1,147 +1,33 @@
 ﻿import { AsyncLocalStorage } from "node:async_hooks";
-import { randomUUID } from "node:crypto";
 import { Request, Response, NextFunction, RequestHandler } from "express";
-import { clientIp, userAgentOf } from "../utils/request-info";
-import { annotateSpan } from "../telemetry/span";
-
-/** Mirrors the user.accountType enum, plus the two non-human origins. */
-export type ActorType = "staff" | "client" | "contractor" | "system" | "anonymous";
-
-/** Where the work came from. Everything that is not an HTTP request has no `req`. */
-export type RequestSource = "http" | "queue" | "webhook" | "cli" | "system";
+import { sql } from "drizzle-orm";
 
 export interface RequestContext {
-  /**
-   * Ties an HTTP access log, every diagnostic line, and (from Phase 3) every
-   * audit row to one user action. Always set — there is no valid context
-   * without one.
-   */
-  requestId: string;
-  source: RequestSource;
-  /**
-   * The API module handling the request — "cases", "leads", "organization".
-   *
-   * Bound onto every log line for the request, so a failure deep in a shared
-   * service still says which part of the API was being used when it happened.
-   * Set by tagModule() as the request enters a module's router.
-   */
-  module: string | null;
-  /**
-   * Where that module is mounted ("/cases").
-   *
-   * Kept because express restores `req.baseUrl` to the outer value once a
-   * router's stack unwinds — by the time the response finishes, it is "" and
-   * the route pattern cannot be rebuilt from the request alone.
-   */
-  mountPath: string | null;
   ipAddress: string | null;
-  userAgent: string | null;
   userId: string | null;
   organizationId: string | null;
   staffId: string | null;
-  actorType: ActorType;
-  /**
-   * Snapshot of the actor's display name, resolved once per request in
-   * resolveActorContext. Audit rows store it so history survives the staff
-   * member being deleted — and resolving it here is what removes the
-   * per-event SELECT the four actorNameFor() helpers each performed.
-   */
-  actorName: string | null;
   rawUserDEK: Buffer | null;
   tenantDb: any | null;
 }
 
 export const requestContextStore = new AsyncLocalStorage<RequestContext>();
 
-/**
- * Stable for the life of the process, and used only when code runs outside
- * any request context. Minting a fresh id per call would be worse than
- * useless: every unbound log line would look like its own request, and
- * grouping by requestId — the whole point — would silently stop working.
- */
-const PROCESS_CONTEXT_ID = `process-${randomUUID()}`;
-
 const createEmptyContext = (): RequestContext => ({
-  requestId: PROCESS_CONTEXT_ID,
-  source: "system",
-  module: null,
-  mountPath: null,
   ipAddress: null,
-  userAgent: null,
   userId: null,
   organizationId: null,
   staffId: null,
-  actorType: "anonymous",
-  actorName: null,
   rawUserDEK: null,
   tenantDb: null,
 });
 
-/**
- * An inbound x-request-id lets a caller correlate across services, but it is
- * attacker-controlled and lands in every log line this request produces.
- * Unbounded or newline-bearing input is a log-injection primitive, so anything
- * that is not a short opaque token is discarded in favour of a fresh id.
- */
-const SAFE_REQUEST_ID = /^[A-Za-z0-9._-]{1,128}$/;
-
-function resolveRequestId(req: Request): string {
-  const inbound = req.headers["x-request-id"];
-  const candidate = Array.isArray(inbound) ? inbound[0] : inbound;
-  return candidate && SAFE_REQUEST_ID.test(candidate) ? candidate : randomUUID();
-}
-
 export function requestContextMiddleware(req: Request, res: Response, next: NextFunction) {
-  const requestId = resolveRequestId(req);
-
-  // Echoed so a user hitting an error can quote the id in a support ticket,
-  // and so a caller can correlate its own logs with ours.
-  res.setHeader("x-request-id", requestId);
-
-  const context: RequestContext = {
-    ...createEmptyContext(),
-    requestId,
-    source: "http",
-    // Shared with the access log so one request is never attributed to two
-    // different addresses in two different records.
-    ipAddress: clientIp(req),
-    userAgent: userAgentOf(req),
-  };
-
-  requestContextStore.run(context, () => {
-    // The span the HTTP instrumentation opened is already active here, so the
-    // request id lands on it before any handler runs. That is the join between
-    // a log line and a trace: both carry the same id, from the same place.
-    annotateSpanFromContext(context);
+  const ip = (req.headers["x-forwarded-for"] as string)?.split(",")?.[0]?.trim() || req.socket.remoteAddress || null;
+  requestContextStore.run({ ...createEmptyContext(), ipAddress: ip }, () => {
     res.on("finish", cleanupTenantContext);
     next();
   });
-}
-
-/**
- * Entry point for work that has no HTTP request: queue jobs, webhook
- * handlers, CLI commands, scheduled tasks.
- *
- * Without this, such code runs with no store at all and every consumer
- * silently falls back to an empty context — which is how the current audit
- * tables ended up with null actors and null IPs on rows written by workers.
- * Propagate the originating requestId through the job payload and pass it
- * here, and async work stays correlated with the request that queued it.
- */
-export function runWithRequestContext<T>(
-  overrides: Partial<RequestContext> & { source: RequestSource },
-  fn: () => T,
-): T {
-  return requestContextStore.run(
-    // A fresh id per unit of work, unless the caller passes the originating
-    // request's id to keep async follow-on work correlated with it.
-    { ...createEmptyContext(), requestId: randomUUID(), ...overrides },
-    fn,
-  );
-}
-
-export function getRequestId(): string {
-  return getRequestContext().requestId;
 }
 
 export function getRequestContext(): RequestContext {
@@ -150,58 +36,13 @@ export function getRequestContext(): RequestContext {
 
 export function getStaffId(): string | null { return getRequestContext().staffId; }
 
-/**
- * Copies the request's identity onto the active OpenTelemetry span.
- *
- * An explicit allowlist, not a spread of the context. `RequestContext` carries
- * `rawUserDEK` — a live encryption key — and `tenantDb`, a database handle;
- * handing the whole object to an attribute serialiser would put the key
- * material in the telemetry backend as a stringified Buffer. This is the same
- * class of bug as D3 in the logging layer, arriving through a different door,
- * so it is closed the same way: name the fields that may leave.
- *
- * Called wherever the context changes, so a span acquires the user and tenant
- * the moment authentication resolves them rather than only at the end.
- */
-function annotateSpanFromContext(store: RequestContext): void {
-  annotateSpan({
-    requestId: store.requestId,
-    source: store.source,
-    ...(store.module ? { apiModule: store.module } : {}),
-    ...(store.userId ? { userId: store.userId } : {}),
-    ...(store.organizationId ? { orgId: store.organizationId } : {}),
-    ...(store.staffId ? { staffId: store.staffId } : {}),
-    ...(store.actorType !== "anonymous" ? { actorType: store.actorType } : {}),
-  });
-}
-
-export function setRequestContext(
-  updates: Partial<
-    Pick<
-      RequestContext,
-      | "userId"
-      | "organizationId"
-      | "staffId"
-      | "rawUserDEK"
-      | "actorType"
-      | "actorName"
-      | "module"
-      | "mountPath"
-    >
-  >,
-) {
+export function setRequestContext(updates: Partial<Pick<RequestContext, "userId" | "organizationId" | "staffId" | "rawUserDEK">>) {
   const store = requestContextStore.getStore();
   if (store) {
     if (updates.userId !== undefined) store.userId = updates.userId;
     if (updates.organizationId !== undefined) store.organizationId = updates.organizationId;
     if (updates.staffId !== undefined) store.staffId = updates.staffId;
     if (updates.rawUserDEK !== undefined) store.rawUserDEK = updates.rawUserDEK;
-    if (updates.actorType !== undefined) store.actorType = updates.actorType;
-    if (updates.actorName !== undefined) store.actorName = updates.actorName;
-    if (updates.module !== undefined) store.module = updates.module;
-    if (updates.mountPath !== undefined) store.mountPath = updates.mountPath;
-
-    annotateSpanFromContext(store);
   }
 }
 

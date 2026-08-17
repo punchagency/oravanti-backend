@@ -5,7 +5,6 @@ import { staff } from "../../db/schema/staff";
 import { getRequestContext } from "../../middleware/request-context";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { sendSuccess } from "../../utils/send-success";
-import { getTaskReviewEvents } from "../shared/task-review-events.service";
 import { logLeadView } from "./lead-events.service";
 import { LeadWorkflowService } from "./lead-workflow.service";
 import { LeadsService } from "./leads.service";
@@ -846,29 +845,6 @@ export class LeadsController {
       organizationId!,
     );
     sendSuccess(res, task, "Task rejected");
-  };
-
-  reopenLeadTask = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const task = await this.wfSvc.reopenTask(
-      req.params.taskId as string,
-      staffId!,
-      req.body.notes,
-      organizationId!,
-    );
-    sendSuccess(res, task, "Task reopened");
-  };
-
-  /** The task's full submit/approve/reject/reopen note thread. */
-  getLeadTaskReviewThread = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
-    const events = await getTaskReviewEvents(
-      "lead_task",
-      req.params.taskId as string,
-      organizationId!,
-    );
-    sendSuccess(res, events, "Task review thread retrieved");
   };
 
   getLeadReviewQueue = async (req: Request, res: Response) => {

@@ -5,11 +5,10 @@
  *     description: Document resources, versions, user access, and external requests
  */
 import { Router } from "express";
-import { documentUpload, type Upload } from "../../middleware/upload";
+import multer from "multer";
 import { z } from "zod";
 
 import { requireAuth } from "../../middleware/auth.middleware";
-import { requireResource } from "../../middleware/permission.middleware";
 import { preserveRequestContext } from "../../middleware/request-context";
 import { resolveActorContext } from "../../middleware/resolve-actor-context";
 
@@ -38,7 +37,7 @@ export class DocumentsRouter {
   public path: string;
   private documentsController: DocumentsController;
   private validation: CommonValidation;
-  private upload: Upload;
+  private upload: multer.Multer;
 
   constructor(
     documentsController: DocumentsController,
@@ -48,7 +47,7 @@ export class DocumentsRouter {
     this.path = "/documents";
     this.documentsController = documentsController;
     this.validation = validation;
-    this.upload = documentUpload();
+    this.upload = multer({ storage: multer.memoryStorage() });
 
     this.initializeRoutes();
   }
@@ -122,13 +121,8 @@ export class DocumentsRouter {
       this.documentsController.getExternalRequestByToken,
     );
 
-    // Everything from here down is authenticated and gated on the `documents`
-    // resource. The two token-authenticated routes above this line are
-    // deliberately public — the token is the credential — and Express matches
-    // in declaration order, so they are never reached by these guards.
     this.router.use(requireAuth);
     this.router.use(resolveActorContext);
-    this.router.use(requireResource("documents"));
 
     /**
      * @openapi

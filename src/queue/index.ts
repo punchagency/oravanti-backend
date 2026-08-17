@@ -6,9 +6,6 @@ import {
   startAiScanReconciliation,
 } from "./workers/ai-scan-result.worker";
 import { createReminderWorker } from "./workers/reminder.worker";
-import { LogEvent, createModuleLogger } from "../lib/logging/log";
-
-const log = createModuleLogger("queue");
 
 /**
  * Start all BullMQ workers. Called from the dedicated worker entrypoint
@@ -23,11 +20,7 @@ export const startWorkers = (): Worker[] => {
   startAiScanReconciliation();
   startDeterministicSweep();
 
-  log.info(
-    LogEvent.QUEUE_WORKERS_STARTED,
-    { workers: workers.length },
-    `started ${workers.length} workers`,
-  );
+  console.log(`[queue] started ${workers.length} workers`);
   return workers;
 };
 
@@ -42,16 +35,12 @@ const startDeterministicSweep = (): NodeJS.Timeout => {
     void sweepDeterministicIssues()
       .then(({ scenarios, errors }) => {
         if (scenarios) {
-          // Warn rather than info when the sweep hit errors: a sweep that
-          // half-completed leaves deadline issues unraised, and at info it
-          // would sit unnoticed among the successful runs.
-          log.at(errors ? "warn" : "info", LogEvent.CASE_REVIEW_SWEEP_COMPLETED, {
-            scenarios,
-            errors,
-          });
+          console.log(
+            `[case-review] deterministic sweep: ${scenarios} scenario(s), ${errors} error(s)`,
+          );
         }
       })
-      .catch((err) => log.failure(LogEvent.CASE_REVIEW_SWEEP_FAILED, err));
+      .catch((err) => console.error("[case-review] sweep failed:", err));
   }, SWEEP_INTERVAL_MS);
   timer.unref?.();
   return timer;

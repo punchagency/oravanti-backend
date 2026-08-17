@@ -133,7 +133,6 @@ import { CommonValidation } from "../../validation/common.validation";
 
 import { validateRequest } from "../../middleware/validate.middleware";
 import { TasksController } from "./tasks.controller";
-import * as v from "./tasks.validation";
 
 export class TasksRouter {
   public router: Router;
@@ -177,8 +176,8 @@ export class TasksRouter {
     this.router.patch(
       "/:id",
       validateRequest({
-        params: v.taskIdParams,
-        body: v.updateTaskBody,
+        params: this.validation.idParams,
+        body: this.validation.optionalBody(),
       }),
       this.tasksController.updateTask,
     );
