@@ -68,7 +68,7 @@ It refuses to run against a token whose prefix is not `sandbox`, since every
 mutation it makes either creates a firm or moves money. Sandbox firms cannot be
 deleted, so each run stamps what it creates with a short run id. Findings are
 printed as a `NOTE` block at the end; delete the script once the real provider
-lands. See `punch_ca/confido_legal_integration.md`.
+lands. See `confido_legal_integration.md` in the repo root.
 
 `15-confido-partial-payment` answers the one question `14` cannot. A partial
 payment can only be made by a real payer choosing their own amount on the hosted
