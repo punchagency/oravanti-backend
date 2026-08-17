@@ -48,7 +48,7 @@ async function collect(
   const capture = new Capture();
   const log = driver.create({
     level,
-    pretty: false,
+    format: "json",
     fileEnabled: false,
     base: { service: "oravanti-api", env: "test" },
     destination: capture,
@@ -146,7 +146,7 @@ describe.each(DRIVERS)("logging conformance: %s", (name, driver) => {
     const capture = new Capture();
     const log = driver.create({
       level: "warn",
-      pretty: false,
+      format: "json",
       fileEnabled: false,
       base: {},
       destination: capture,

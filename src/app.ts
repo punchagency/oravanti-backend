@@ -5,17 +5,21 @@ import { sql } from "drizzle-orm";
 import express, { Application, Request, Response, Router } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import morgan from "morgan";
 import type { Server } from "node:http";
 import swaggerUi from "swagger-ui-express";
 import { auth } from "./auth";
 import { db } from "./db/client";
 import { env } from "./config/env";
 
+import { createModuleLogger, LogEvent } from "./lib/logging/log";
 import { errorMiddleware } from "./middleware/error.middleware";
+import { tagModule } from "./middleware/module-context";
 import { notFoundMiddleware } from "./middleware/notFound.middleware";
 import { requestContextMiddleware } from "./middleware/request-context";
+import { requestLogger } from "./middleware/request-logger";
 import { swaggerSpec } from "./swagger";
+
+const log = createModuleLogger("app");
 
 export interface Module {
   router: Router;
@@ -77,7 +81,12 @@ export class App {
       }),
     );
 
-    this.express.use(morgan("dev"));
+    // Mounted this early, ahead of the rate limiters and the Better Auth
+    // handler, so every request gets a correlation id — including the ones
+    // most worth reading. Under morgan, a throttled login or a Better Auth
+    // failure produced a line with nothing to tie it to anything else.
+    this.express.use(requestContextMiddleware);
+    this.express.use(requestLogger);
 
     // Several read endpoints return large JSON trees (the practice-area
     // taxonomy alone is ~140 KB uncompressed); gzip takes those to a tenth of
@@ -167,7 +176,6 @@ export class App {
     // decision — anything larger than this belongs on an upload route, where
     // middleware/upload.ts applies a per-file limit instead.
     this.express.use(express.json({ limit: "1mb" }));
-    this.express.use(requestContextMiddleware);
   }
 
   private initializeRoutes() {
@@ -185,7 +193,7 @@ export class App {
         await db.execute(sql`SELECT 1`);
         res.json({ status: "ok", database: "ok" });
       } catch (error) {
-        console.error("[health] database check failed", error);
+        log.failure(LogEvent.DB_HEALTH_CHECK_FAILED, error);
         res.status(503).json({ status: "degraded", database: "unreachable" });
       }
     });
@@ -223,8 +231,11 @@ export class App {
       }),
     );
 
+    // tagModule runs before each module's router so every line logged during
+    // the request — including from shared services several layers down — says
+    // which part of the API was being used.
     this.modules.forEach((module: Module) => {
-      this.express.use(module.path, module.router);
+      this.express.use(module.path, tagModule(module.path), module.router);
     });
   }
 
@@ -238,14 +249,18 @@ export class App {
 
   public async testDbConnection() {
     await db.execute(sql`SELECT 1`);
-    console.log("database connection verified");
+    log.info(LogEvent.DB_CONNECTED, undefined, "database connection verified");
   }
 
   public async listen(): Promise<Server> {
     await this.testDbConnection();
 
     return this.express.listen(this.port, () => {
-      console.log(`app listening on port ${this.port}`);
+      log.info(
+        LogEvent.APP_STARTED,
+        { port: this.port },
+        `app listening on port ${this.port}`,
+      );
     });
   }
 }

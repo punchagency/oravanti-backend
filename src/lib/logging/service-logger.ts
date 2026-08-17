@@ -42,6 +42,7 @@ export function correlationFields(
   return {
     requestId: store.requestId,
     source: store.source,
+    ...(store.module ? { apiModule: store.module } : {}),
     ...(store.userId ? { userId: store.userId } : {}),
     ...(store.organizationId ? { orgId: store.organizationId } : {}),
     ...(store.staffId ? { staffId: store.staffId } : {}),

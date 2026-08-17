@@ -8,6 +8,8 @@ import type {
 } from "../types";
 import { LEVELS } from "../config";
 import { prepareFields } from "../redact";
+import { formattingStream, rendererFor } from "../pretty";
+import { alsoWriteToSinks } from "../sinks";
 
 /**
  * Winston driver.
@@ -33,6 +35,14 @@ import { prepareFields } from "../redact";
  *   D5  No `winston-daily-rotate-file`. Files are ephemeral in a container and
  *       an unbounded writer fills the volume. Console only, unless
  *       LOG_FILE_ENABLED is explicitly set.
+ *
+ * The driver has no formatting of its own. It always produces JSON and, when a
+ * human format is asked for, pipes that JSON through the shared renderer in
+ * `../pretty` — the same one the Pino driver uses. The previous arrangement
+ * had a Winston-specific `printf` that dumped every field as a single
+ * `JSON.stringify(rest)` blob, so "pretty" on this driver was a wall of text
+ * while the other driver produced properly laid-out output. Formatting after
+ * serialisation, once, is what makes that impossible to reintroduce.
  */
 
 /**
@@ -47,12 +57,43 @@ const timeField = winston.format((info) => {
   return info;
 });
 
+/**
+ * Winston is never asked to colourise. `winston.format.colorize` wraps the
+ * level token in escapes before the record is serialised, which would put ANSI
+ * inside the JSON string the renderer then has to parse. Colour is applied by
+ * the renderer, after parsing, where it cannot corrupt the record.
+ */
+const jsonFormat = () =>
+  winston.format.combine(
+    // Required, or Winston drops Error objects on the floor entirely.
+    winston.format.errors({ stack: true }),
+    winston.format.timestamp(),
+    timeField(),
+    winston.format.json(),
+  );
+
 const buildTransports = (options: LoggerOptions): winston.transport[] => {
   if (options.destination) {
-    return [new winston.transports.Stream({ stream: options.destination })];
+    return [
+      new winston.transports.Stream({
+        stream: alsoWriteToSinks(options.destination),
+      }),
+    ];
   }
 
-  const transports: winston.transport[] = [new winston.transports.Console()];
+  // For a human format the console transport is replaced by the shared
+  // renderer, which reads the JSON Winston just wrote and lays it out. A file
+  // transport, if enabled, still receives the raw JSON — a log file that is
+  // not machine-readable is not a log file.
+  // Always a Stream transport, never Console, so the JSON passes the sink
+  // registry on its way out and a sink sees the same records the Pino driver
+  // would have produced. Console offers no interception point at all.
+  const render = rendererFor(options.format);
+  const transports: winston.transport[] = [
+    new winston.transports.Stream({
+      stream: alsoWriteToSinks(render ? formattingStream(render) : process.stdout),
+    }),
+  ];
 
   // D5: opt-in only, and still bounded. Left off in every deployed
   // environment — logs belong on stdout, where the platform collects them.
@@ -113,13 +154,9 @@ export const winstonDriver: LoggerDriver = {
       levels: LEVELS,
       level: options.level,
       defaultMeta: options.base,
-      format: winston.format.combine(
-        // Required, or Winston drops Error objects on the floor entirely.
-        winston.format.errors({ stack: true }),
-        winston.format.timestamp(),
-        timeField(),
-        winston.format.json(),
-      ),
+      // Always JSON. The format the reader sees is decided by the transport,
+      // not here, so the record every transport receives is the same one.
+      format: jsonFormat(),
       transports: buildTransports(options),
     });
 

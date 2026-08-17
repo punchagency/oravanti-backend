@@ -9,6 +9,19 @@
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
 
+/**
+ * How a record is written out.
+ *
+ *   json         One record per line. The only format a log shipper can parse,
+ *                and therefore the only one production may use.
+ *   pretty       Coloured header plus aligned fields. The default locally.
+ *   json-pretty  Indented JSON. Still parses when copied out of the terminal.
+ *
+ * Rendering lives in `pretty.ts` and is shared, so the format a record is read
+ * in is independent of the driver that wrote it.
+ */
+export type LogFormat = "json" | "pretty" | "json-pretty";
+
 export interface LogFields {
   [key: string]: unknown;
   /** An Error, or anything thrown. Serialised to { type, message, stack }. */
@@ -43,8 +56,8 @@ export interface Logger {
 
 export interface LoggerOptions {
   level: LogLevel;
-  /** Human-readable output for local development. Never enable in production. */
-  pretty: boolean;
+  /** Output shape. Anything other than `json` is for a human, not a shipper. */
+  format: LogFormat;
   /** Merged into every record. Service name, version, environment. */
   base: Record<string, unknown>;
   /** Winston only, and off by default — see D5. */

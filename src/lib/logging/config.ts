@@ -1,4 +1,4 @@
-import type { LoggerOptions, LogLevel } from "./types";
+import type { LogFormat, LoggerOptions, LogLevel } from "./types";
 
 /**
  * Shared configuration. Both drivers consume these exact values — that is
@@ -105,6 +105,54 @@ const readEnv = (key: string): string | undefined => {
   return value?.trim() ? value.trim() : undefined;
 };
 
+export const LOG_FORMATS: LogFormat[] = ["json", "pretty", "json-pretty"];
+
+const isLogFormat = (v: unknown): v is LogFormat =>
+  typeof v === "string" && (LOG_FORMATS as string[]).includes(v);
+
+/**
+ * Resolves LOG_FORMAT.
+ *
+ * A human-readable format is the default everywhere a human is reading — which
+ * is every environment except the two where a machine is. Production emits
+ * `json` because the log shipper parses it, and colour escapes plus aligned
+ * columns would corrupt that; tests emit `json` so a failure prints the record
+ * as it will actually be stored.
+ *
+ *   pretty       aligned fields under a one-line header. Default locally.
+ *   json-pretty  indented JSON — same data, still parseable when pasted
+ *                somewhere. Set LOG_FORMAT=json-pretty when you want to read
+ *                one record in full rather than watch a stream go by.
+ *   json         one line per record.
+ *
+ * `LOG_PRETTY` is still honoured as the older boolean spelling, so existing
+ * .env files keep working; LOG_FORMAT wins where both are set. An unrecognised
+ * LOG_FORMAT throws for the same reason LOG_LEVEL does — a silent fallback
+ * means believing you changed the output when you did not.
+ *
+ * A shipped JSON log reads back with `jq` — which is what `json-pretty` is
+ * modelled on, down to the palette, so the two look the same. Writing a human
+ * format to a file would make the file unparseable, which is the one place
+ * that matters, so the format only ever applies to the console.
+ */
+function resolveFormat(nodeEnv: string): LogFormat {
+  const explicit = readEnv("LOG_FORMAT");
+
+  if (explicit !== undefined) {
+    if (!isLogFormat(explicit)) {
+      throw new Error(
+        `Invalid LOG_FORMAT "${explicit}". Expected one of: ${LOG_FORMATS.join(", ")}`,
+      );
+    }
+    return explicit;
+  }
+
+  const legacy = readEnv("LOG_PRETTY");
+  if (legacy !== undefined) return legacy === "true" ? "pretty" : "json";
+
+  return nodeEnv === "production" || nodeEnv === "test" ? "json" : "pretty";
+}
+
 /**
  * Reads LOG_* from the environment.
  *
@@ -127,7 +175,7 @@ export function loadLoggerOptions(
 
   return {
     level: rawLevel,
-    pretty: readEnv("LOG_PRETTY") === "true",
+    format: resolveFormat(nodeEnv),
     fileEnabled: readEnv("LOG_FILE_ENABLED") === "true",
     base: {
       service: "oravanti-api",

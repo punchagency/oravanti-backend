@@ -1,5 +1,4 @@
 import pino from "pino";
-import prettyStream from "pino-pretty";
 import type {
   Logger,
   LoggerDriver,
@@ -8,6 +7,8 @@ import type {
   LogLevel,
 } from "../types";
 import { prepareFields } from "../redact";
+import { formattingStream, rendererFor } from "../pretty";
+import { alsoWriteToSinks } from "../sinks";
 
 /**
  * Pino driver — the default.
@@ -30,20 +31,24 @@ import { prepareFields } from "../redact";
  */
 
 const buildStream = (options: LoggerOptions) => {
-  if (options.destination) return options.destination;
+  // A destination is only ever injected by a test or the conformance suite,
+  // both of which read JSON. Formatting it would defeat the assertion — but it
+  // still passes the sink registry, so a test exercises the same delivery path
+  // production does rather than a shortcut around it.
+  if (options.destination) return alsoWriteToSinks(options.destination);
 
-  // pino-pretty is used as a plain stream rather than a worker-thread
-  // transport: worker transports cannot be flushed deterministically, which
-  // is exactly what the exit path depends on.
-  if (options.pretty) {
-    return prettyStream({
-      colorize: true,
-      messageKey: "message",
-      translateTime: "HH:MM:ss.l",
-    });
-  }
+  // The renderer runs as a plain Writable rather than a pino worker-thread
+  // transport: worker transports cannot be flushed deterministically, which is
+  // exactly what the exit path depends on. It is also the same renderer the
+  // Winston driver uses, so the two produce identical human output — which
+  // pino-pretty could never guarantee, since Winston cannot use it.
+  const render = rendererFor(options.format);
 
-  return pino.destination({ dest: 1, sync: false });
+  // Applied to what pino writes — the JSON — not to what the renderer
+  // produces, so a sink receives records rather than coloured text.
+  return alsoWriteToSinks(
+    render ? formattingStream(render) : pino.destination({ dest: 1, sync: false }),
+  );
 };
 
 const wrap = (instance: pino.Logger): Logger => {

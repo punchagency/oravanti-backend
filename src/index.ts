@@ -1,3 +1,9 @@
+// MUST be first. Instrumentation patches express, pg and ioredis as they are
+// required, so anything imported above this line is loaded unpatched. See the
+// module's own note for why this is a bare import and not a function call.
+import "./telemetry/bootstrap";
+
+import { shutdownTelemetry } from "./telemetry";
 import { env } from "./config/env";
 import { App } from "./app";
 import { closeDb } from "./db/client";
@@ -31,6 +37,10 @@ async function main() {
     server.close(async () => {
       try {
         await closeDb();
+        // Both exporters batch. Without this the spans and log records
+        // describing the shutdown — including whatever triggered it — are
+        // still buffered when the process exits.
+        await shutdownTelemetry();
         console.log("[shutdown] clean");
         process.exit(0);
       } catch (error) {

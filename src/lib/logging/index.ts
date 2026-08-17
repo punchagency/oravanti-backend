@@ -3,9 +3,23 @@ import { pinoDriver } from "./drivers/pino.driver";
 import { winstonDriver } from "./drivers/winston.driver";
 import type { Logger, LoggerDriver, LoggerOptions } from "./types";
 
-export type { Logger, LoggerDriver, LoggerOptions, LogFields, LogLevel } from "./types";
-export { LEVELS, OTEL_SEVERITY, REDACT_KEYS, loadLoggerOptions } from "./config";
+export type {
+  Logger,
+  LoggerDriver,
+  LoggerOptions,
+  LogFields,
+  LogFormat,
+  LogLevel,
+} from "./types";
+export {
+  LEVELS,
+  LOG_FORMATS,
+  OTEL_SEVERITY,
+  REDACT_KEYS,
+  loadLoggerOptions,
+} from "./config";
 export { deepRedact, serialiseError } from "./redact";
+export { renderJsonPretty, renderPretty } from "./pretty";
 export { pinoDriver } from "./drivers/pino.driver";
 export { winstonDriver } from "./drivers/winston.driver";
 
@@ -48,13 +62,25 @@ let rootLogger: Logger | undefined;
  * Built on first use so that importing this module has no side effects — a
  * script or a test can import the types without standing up a logger.
  *
- * This is the base logger only. Request correlation arrives in step 8, when
- * `getServiceLogger()` starts reading `requestId` from AsyncLocalStorage;
- * until then every record simply carries the `base` fields.
+ * This is the base logger, without correlation fields. Application code should
+ * not call it directly: use the helpers in `log.ts`, which go through
+ * `getServiceLogger()` and so carry the current request's `requestId`.
  */
 export function getLogger(): Logger {
   if (!rootLogger) rootLogger = createLogger();
   return rootLogger;
+}
+
+/**
+ * Test seam. Installs a logger for the process — normally one built with a
+ * `destination` stream so a suite can assert on the records that are actually
+ * emitted, rather than on a mock of the logging API.
+ *
+ * Preferred over jest.mock() for anything that logs: it exercises the real
+ * drivers, so redaction and serialisation are covered by the same assertion.
+ */
+export function __setLogger(logger: Logger): void {
+  rootLogger = logger;
 }
 
 /** Test seam. Resets the memoised root logger. */

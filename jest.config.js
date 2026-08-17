@@ -21,6 +21,17 @@ const swcTransform = [
     jsc: {
       target: "es2020",
       parser: { syntax: "typescript", decorators: false },
+      /*
+        Hoists jest.mock() above the imports in the same file, which is what
+        makes it intercept anything.
+
+        Without it, swc's commonjs transform emits the require() calls first
+        and the jest.mock() registration runs afterwards — too late, so the
+        test silently exercises the real module. Suites got away with it only
+        by using `await import()` inside the test body. ts-jest did this via
+        babel-plugin-jest-hoist; nothing carried it over with the swc switch.
+      */
+      transform: { hidden: { jest: true } },
     },
     module: { type: "commonjs" },
   },

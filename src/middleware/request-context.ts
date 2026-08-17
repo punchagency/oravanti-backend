@@ -1,7 +1,8 @@
 ﻿import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { Request, Response, NextFunction, RequestHandler } from "express";
-import { sql } from "drizzle-orm";
+import { clientIp, userAgentOf } from "../utils/request-info";
+import { annotateSpan } from "../telemetry/span";
 
 /** Mirrors the user.accountType enum, plus the two non-human origins. */
 export type ActorType = "staff" | "client" | "contractor" | "system" | "anonymous";
@@ -17,6 +18,22 @@ export interface RequestContext {
    */
   requestId: string;
   source: RequestSource;
+  /**
+   * The API module handling the request — "cases", "leads", "organization".
+   *
+   * Bound onto every log line for the request, so a failure deep in a shared
+   * service still says which part of the API was being used when it happened.
+   * Set by tagModule() as the request enters a module's router.
+   */
+  module: string | null;
+  /**
+   * Where that module is mounted ("/cases").
+   *
+   * Kept because express restores `req.baseUrl` to the outer value once a
+   * router's stack unwinds — by the time the response finishes, it is "" and
+   * the route pattern cannot be rebuilt from the request alone.
+   */
+  mountPath: string | null;
   ipAddress: string | null;
   userAgent: string | null;
   userId: string | null;
@@ -47,6 +64,8 @@ const PROCESS_CONTEXT_ID = `process-${randomUUID()}`;
 const createEmptyContext = (): RequestContext => ({
   requestId: PROCESS_CONTEXT_ID,
   source: "system",
+  module: null,
+  mountPath: null,
   ipAddress: null,
   userAgent: null,
   userId: null,
@@ -73,7 +92,6 @@ function resolveRequestId(req: Request): string {
 }
 
 export function requestContextMiddleware(req: Request, res: Response, next: NextFunction) {
-  const ip = (req.headers["x-forwarded-for"] as string)?.split(",")?.[0]?.trim() || req.socket.remoteAddress || null;
   const requestId = resolveRequestId(req);
 
   // Echoed so a user hitting an error can quote the id in a support ticket,
@@ -84,11 +102,17 @@ export function requestContextMiddleware(req: Request, res: Response, next: Next
     ...createEmptyContext(),
     requestId,
     source: "http",
-    ipAddress: ip,
-    userAgent: req.headers["user-agent"]?.slice(0, 512) ?? null,
+    // Shared with the access log so one request is never attributed to two
+    // different addresses in two different records.
+    ipAddress: clientIp(req),
+    userAgent: userAgentOf(req),
   };
 
   requestContextStore.run(context, () => {
+    // The span the HTTP instrumentation opened is already active here, so the
+    // request id lands on it before any handler runs. That is the join between
+    // a log line and a trace: both carry the same id, from the same place.
+    annotateSpanFromContext(context);
     res.on("finish", cleanupTenantContext);
     next();
   });
@@ -126,6 +150,31 @@ export function getRequestContext(): RequestContext {
 
 export function getStaffId(): string | null { return getRequestContext().staffId; }
 
+/**
+ * Copies the request's identity onto the active OpenTelemetry span.
+ *
+ * An explicit allowlist, not a spread of the context. `RequestContext` carries
+ * `rawUserDEK` — a live encryption key — and `tenantDb`, a database handle;
+ * handing the whole object to an attribute serialiser would put the key
+ * material in the telemetry backend as a stringified Buffer. This is the same
+ * class of bug as D3 in the logging layer, arriving through a different door,
+ * so it is closed the same way: name the fields that may leave.
+ *
+ * Called wherever the context changes, so a span acquires the user and tenant
+ * the moment authentication resolves them rather than only at the end.
+ */
+function annotateSpanFromContext(store: RequestContext): void {
+  annotateSpan({
+    requestId: store.requestId,
+    source: store.source,
+    ...(store.module ? { apiModule: store.module } : {}),
+    ...(store.userId ? { userId: store.userId } : {}),
+    ...(store.organizationId ? { orgId: store.organizationId } : {}),
+    ...(store.staffId ? { staffId: store.staffId } : {}),
+    ...(store.actorType !== "anonymous" ? { actorType: store.actorType } : {}),
+  });
+}
+
 export function setRequestContext(
   updates: Partial<
     Pick<
@@ -136,6 +185,8 @@ export function setRequestContext(
       | "rawUserDEK"
       | "actorType"
       | "actorName"
+      | "module"
+      | "mountPath"
     >
   >,
 ) {
@@ -147,6 +198,10 @@ export function setRequestContext(
     if (updates.rawUserDEK !== undefined) store.rawUserDEK = updates.rawUserDEK;
     if (updates.actorType !== undefined) store.actorType = updates.actorType;
     if (updates.actorName !== undefined) store.actorName = updates.actorName;
+    if (updates.module !== undefined) store.module = updates.module;
+    if (updates.mountPath !== undefined) store.mountPath = updates.mountPath;
+
+    annotateSpanFromContext(store);
   }
 }
 
