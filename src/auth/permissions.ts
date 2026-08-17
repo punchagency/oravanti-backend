@@ -26,6 +26,11 @@ const statement = {
     "approve_time",
     "log_time",
     "trust",
+    // Connecting the firm's payment processor: creating the merchant account,
+    // completing underwriting, holding its credential. Kept separate from
+    // `update` — which is invoice editing — so that widening who may edit an
+    // invoice never silently widens who may bind the firm to a processor.
+    "configure",
   ],
 } as const;
 
@@ -74,6 +79,7 @@ export const owner = ac.newRole({
     "approve_time",
     "log_time",
     "trust",
+    "configure",
   ],
   ...ownerAc.statements,
 });
@@ -94,6 +100,7 @@ export const admin = ac.newRole({
     "approve_time",
     "log_time",
     "trust",
+    "configure",
   ],
   ...adminAc.statements,
 });
