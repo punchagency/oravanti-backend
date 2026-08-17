@@ -50,6 +50,24 @@ after a crash.
 | `07-rls` | Postgres | Proves tenant isolation using a role RLS applies to; audits policy coverage |
 | `08-reconcile-sweep` | Postgres | Stuck-job reconciliation and the time-driven deterministic sweep |
 | `09-live-roundtrip` | Everything | The whole system with nothing stubbed |
+| `14-confido-sandbox` | Confido sandbox token | Firm onboarding + trust/operating payment routing. Network only — touches no tables |
+
+## Tier 3 — Confido Legal sandbox
+
+`14-confido-sandbox` is a throwaway spike, not a permanent regression test. It
+answers the questions Confido's docs leave open before we design schema around
+them — above all whether one client payment really splits between a trust and an
+operating bank account, and how many `Transaction` rows that produces.
+
+```bash
+CONFIDO_PARTNER_TOKEN=p_secret_sandbox_… npm run check 14-confido-sandbox
+```
+
+It refuses to run against a token whose prefix is not `sandbox`, since every
+mutation it makes either creates a firm or moves money. Sandbox firms cannot be
+deleted, so each run stamps what it creates with a short run id. Findings are
+printed as a `NOTE` block at the end; delete the script once the real provider
+lands. See `punch_ca/confido_legal_integration.md`.
 
 ## Tier 2 — the queue round trip
 
