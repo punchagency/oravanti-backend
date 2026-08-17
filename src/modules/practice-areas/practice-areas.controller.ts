@@ -48,8 +48,26 @@ export class PracticeAreasController {
     sendSuccess(res, result, "Subscriptions cancelled successfully");
   });
 
-  getTreeData = asyncWrap(async (_req: Request, res: Response) => {
-    const result = await this.practiceAreasService.getTreeData();
+  getTreeData = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const { practiceAreaIds, depth } = req.query;
+
+    const parsedDepth = Number(depth);
+    const result = await this.practiceAreasService.getTreeData({
+      organizationId,
+      practiceAreaIds:
+        typeof practiceAreaIds === "string" && practiceAreaIds.length > 0
+          ? practiceAreaIds.split(",").map((id) => id.trim())
+          : undefined,
+      depth: Number.isFinite(parsedDepth) ? parsedDepth : undefined,
+    });
+
+    // `no-cache` means "revalidate every time", not "don't store": Express
+    // already emits an ETag, so an unchanged taxonomy costs a 304 with no body
+    // instead of re-sending the tree. Deliberately not `max-age`, so a firm
+    // that subscribes to a new practice area sees it immediately. `private`
+    // because the firm scoping above makes the response account-specific.
+    res.set("Cache-Control", "private, no-cache");
     sendSuccess(res, result, "Tree data retrieved successfully");
   });
 }

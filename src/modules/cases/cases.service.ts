@@ -11,6 +11,7 @@ import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
 import { ensureCaseTypeBelongsToPracticeArea } from "../practice-areas/practice-areas.utils";
 import { logCaseEvent } from "./case-events.service";
+import type { CreateCaseInput, ListCasesQuery, UpdateCaseInput } from "./cases.validation";
 
 // ─── Case Number Generation ──────────────────────────────────────────────────
 
@@ -396,10 +397,23 @@ export const createCase = async (
   return newCase;
 };
 
+/**
+ * Fields a caller may change on a case.
+ *
+ * This is `UpdateCaseInput` from the route schema plus the few fields the
+ * application sets on the caller's behalf (`reassignmentDate`). It is
+ * deliberately NOT `Partial<typeof cases.$inferInsert>`, which made every
+ * column writable — including `organizationId`, so a PATCH could move a matter
+ * into another firm.
+ */
+type UpdateCaseData = UpdateCaseInput & {
+  reassignmentDate?: Date;
+};
+
 export const updateCase = async (
   id: string,
   organizationId: string,
-  data: Partial<typeof cases.$inferInsert>,
+  data: UpdateCaseData,
   actorId?: string,
 ) => {
   // Fetch current state for change detection
@@ -517,8 +531,8 @@ export class CasesService {
   getAllCases = getAllCases;
   getCaseById = getCaseById;
   createCase = createCase;
-  updateCase = (id: string, organizationId: string, data: Partial<typeof cases.$inferInsert>, actorId?: string) =>
-    updateCase(id, organizationId, data, actorId);
-  deleteCase = (id: string, organizationId: string, actorId?: string) =>
-    deleteCase(id, organizationId, actorId);
+  // Aliased directly — a re-declared signature here would widen the narrowed
+  // input type back to "every column", which is the hole this closed.
+  updateCase = updateCase;
+  deleteCase = deleteCase;
 }

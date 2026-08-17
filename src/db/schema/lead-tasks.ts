@@ -19,6 +19,10 @@ export const leadTaskStatusEnum = pgEnum("lead_task_status", [
   "in_review",
   "completed",
   "skipped",
+  // A rejected review used to drop the task back to `in_progress`, which told
+  // the assignee nothing. `rejected` is terminal until they reopen it, so it
+  // can be surfaced as its own state and filtered into its own tab.
+  "rejected",
 ]);
 
 export const leadTasks = pgTable("lead_tasks", {

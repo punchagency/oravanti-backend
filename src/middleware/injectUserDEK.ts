@@ -4,7 +4,10 @@ import { systemDb } from "../db/client";
 import { env } from "../config/env";
 import { getRequestContext, setRequestContext } from "../middleware/request-context";
 import { decryptUserDEK, rotateUserDEK } from "../utils/cryptoUtils";
+import { LogEvent, createModuleLogger } from "../lib/logging/log";
 import { user } from "./../db/schema/auth-schema";
+
+const log = createModuleLogger("middleware.inject_user_dek");
 
 const PRIMARY_KEY = Buffer.from(env.SERVER_MASTER_KEY_PRIMARY, "hex");
 const OLD_KEY = env.SERVER_MASTER_KEY_OLD
@@ -48,9 +51,13 @@ export async function injectUserDEK(
       return next();
     } catch (primaryErr) {
       if (!OLD_KEY) {
-        console.error(
-          `🚨 CRITICAL CRYPTO_VERIFICATION_FAILURE for user ${userKeys.id}: no old key configured`,
-        );
+        // The user's key cannot be unwrapped and there is no previous master
+        // key to fall back to. Their encrypted data is unreadable until this
+        // is resolved, so it is an error, not a warning.
+        log.failure(LogEvent.SECURITY_DEK_DECRYPT_FAILED, primaryErr, {
+          targetUserId: userKeys.id,
+          oldKeyConfigured: false,
+        });
         return res.status(500).json({
           error: "Cryptographic verification failure. Record is unreadable.",
         });
@@ -59,9 +66,12 @@ export async function injectUserDEK(
       try {
         setRequestContext({ rawUserDEK: decryptUserDEK(userKeys, OLD_KEY) });
 
-        console.warn(
-          `[LAZY_MIGRATION] Running re-keying background task for: ${userKeys.email}`,
-        );
+        // The email is deliberately not logged: identifying the user by id is
+        // enough to act on, and this line is written on every request from
+        // every user still on the old key.
+        log.info(LogEvent.SECURITY_DEK_ROTATED, {
+          targetUserId: userKeys.id,
+        });
 
         const upgradedKeys = rotateUserDEK(userKeys, OLD_KEY, PRIMARY_KEY);
 
@@ -73,23 +83,31 @@ export async function injectUserDEK(
           })
           .where(eq(user.id, userKeys.id))
           .catch((dbErr) => {
-            console.error(
-              `🚨 [LAZY_MIGRATION_WRITE_ERROR] Failed for user ${userKeys.id}:`,
-              dbErr,
-            );
+            // The request succeeds — the key was unwrapped with the old key —
+            // but this user stays on it, so the rotation is not finished and
+            // the old key cannot be retired.
+            log.failure(LogEvent.SECURITY_DEK_ROTATION_FAILED, dbErr, {
+              targetUserId: userKeys.id,
+            });
           });
 
         return next();
       } catch (fallbackErr) {
-        console.error(
-          `🚨 CRITICAL CRYPTO_VERIFICATION_FAILURE for user ${userKeys.id}`,
-        );
+        // Neither key unwraps it. Either the record is corrupt or it was
+        // written under a key that is no longer configured at all.
+        log.failure(LogEvent.SECURITY_DEK_DECRYPT_FAILED, fallbackErr, {
+          targetUserId: userKeys.id,
+          oldKeyConfigured: true,
+        });
         return res.status(500).json({
           error: "Cryptographic verification failure. Record is unreadable.",
         });
       }
     }
   } catch (error) {
+    // Previously swallowed in silence: the caller got a 500 and nothing
+    // anywhere recorded why, which made this branch untraceable in production.
+    log.failure(LogEvent.SECURITY_DEK_INJECTION_FAILED, error, { userId });
     return res.status(500).json({ error: "Internal processing error." });
   }
 }

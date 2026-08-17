@@ -8,8 +8,6 @@ export const isAppError = (error: unknown): error is AppError => {
 };
 
 export const getErrorResponse = (error: unknown, fallbackStatusCode = 500) => {
-  console.log({ error });
-
   if (isAppError(error)) {
     return {
       statusCode: error.statusCode,
@@ -22,13 +20,14 @@ export const getErrorResponse = (error: unknown, fallbackStatusCode = 500) => {
     };
   }
 
-  const message =
-    error instanceof Error ? error.message : DEFAULT_ERROR_MESSAGE;
-
+  // Anything that is not an AppError was not written to be read by a client.
+  // Postgres errors name tables and constraints, driver errors name hosts, and
+  // AWS SDK errors name buckets — none of that goes over the wire. The caller
+  // logs the real error; the client gets a correlation id to quote at support.
   return {
     statusCode: fallbackStatusCode,
     body: {
-      message,
+      message: DEFAULT_ERROR_MESSAGE,
       success: false,
       code:
         fallbackStatusCode >= 500 ? "INTERNAL_SERVER_ERROR" : "REQUEST_ERROR",
