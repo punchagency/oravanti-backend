@@ -50,6 +50,53 @@ after a crash.
 | `07-rls` | Postgres | Proves tenant isolation using a role RLS applies to; audits policy coverage |
 | `08-reconcile-sweep` | Postgres | Stuck-job reconciliation and the time-driven deterministic sweep |
 | `09-live-roundtrip` | Everything | The whole system with nothing stubbed |
+| `14-confido-sandbox` | Confido sandbox token | Firm onboarding + trust/operating payment routing. Network only — touches no tables |
+| `15-confido-partial-payment` | Confido sandbox token + a browser | How Confido splits a **partial** payment across the trust and operating legs |
+
+## Tier 3 — Confido Legal sandbox
+
+`14-confido-sandbox` is a throwaway spike, not a permanent regression test. It
+answers the questions Confido's docs leave open before we design schema around
+them — above all whether one client payment really splits between a trust and an
+operating bank account, and how many `Transaction` rows that produces.
+
+```bash
+CONFIDO_PARTNER_TOKEN=p_secret_sandbox_… npm run check 14-confido-sandbox
+```
+
+It refuses to run against a token whose prefix is not `sandbox`, since every
+mutation it makes either creates a firm or moves money. Sandbox firms cannot be
+deleted, so each run stamps what it creates with a short run id. Findings are
+printed as a `NOTE` block at the end; delete the script once the real provider
+lands. See `confido_legal_integration.md` in the repo root.
+
+`15-confido-partial-payment` answers the one question `14` cannot. A partial
+payment can only be made by a real payer choosing their own amount on the hosted
+page — `recordManualPaymentOnPaymentLink` requires an explicit allocation, so the
+API only ever returns the split we asked for. It runs in two phases:
+
+```bash
+npm run check 15-confido-partial-payment -- create      # prints a link to pay in a browser
+npm run check 15-confido-partial-payment -- inspect     # reports which rule Confido used
+npm run check 15-confido-partial-payment -- ach-return  # settles an ACH leg, then returns it
+```
+
+`create` builds a deliberately lopsided link ($500 trust / $1,500 operating) and
+asks for a $200 payment — less than the trust leg alone, so trust-first,
+operating-first and pro-rata each give a visibly different answer. `inspect`
+compares what actually happened against all three and says whether the processor
+agrees with our trust-first policy. Pass `--new` to start a fresh firm.
+
+`ach-return` answers the question that decides the refund schema. It settles an
+`achPayment` leg (`FUNDS_IN_TRANSIT` → `DEPOSITED`) before returning it, because
+returns happen to money that has already landed — firing at a `PENDING`
+transaction would test something that does not occur in production. It then
+reports what the return did: only the returned leg unwinds, the original flips to
+`RETURNED`, and a **separate `achReturn` row with a positive amount** points back
+at it. Needs an ACH payment on the link first.
+
+State lives in `.confido-partial.json` (gitignored, `0600` — it holds a firm API
+token). Delete it to start over.
 
 ## Tier 2 — the queue round trip
 
