@@ -1,5 +1,5 @@
 ﻿import { Router } from "express";
-import { documentUpload, type Upload } from "../../middleware/upload";
+import multer from "multer";
 
 import { requireAuth } from "../../middleware/auth.middleware";
 import { preserveRequestContext } from "../../middleware/request-context";
@@ -16,7 +16,7 @@ export class QuestionnairesRouter {
   public path: string;
   private questionnairesController: QuestionnairesController;
   private questionnairesValidation: QuestionnairesValidation;
-  private upload: Upload;
+  private upload: multer.Multer;
 
   constructor(
     questionnairesController: QuestionnairesController,
@@ -26,7 +26,7 @@ export class QuestionnairesRouter {
     this.path = "/questionnaires";
     this.questionnairesController = questionnairesController;
     this.questionnairesValidation = questionnairesValidation;
-    this.upload = documentUpload();
+    this.upload = multer({ storage: multer.memoryStorage() });
 
     this.initializeRoutes();
   }

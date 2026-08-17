@@ -1,8 +1,5 @@
 import { Redis } from "ioredis";
 import { env } from "../config/env";
-import { LogEvent, createModuleLogger } from "../lib/logging/log";
-
-const log = createModuleLogger("queue.connection");
 
 /**
  * Shared ioredis connection for BullMQ.
@@ -17,8 +14,5 @@ export const redisConnection = new Redis(env.REDIS_URL, {
 });
 
 redisConnection.on("error", (err) => {
-  // The whole error, not `err.message`. ioredis attaches the syscall, errno
-  // and address, which is the difference between "connection error" and
-  // knowing it is ECONNREFUSED against the wrong host.
-  log.failure(LogEvent.QUEUE_REDIS_ERROR, err);
+  console.error("[redis] connection error:", err.message);
 });

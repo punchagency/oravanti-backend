@@ -29,9 +29,24 @@ const PI_TEMPLATE: TemplateDef = {
   name: "Personal Injury — Full Case Lifecycle",
   modules: [
     {
+      name: "Initial Client Intake & Conflict Check",
+      phase: "Pre-Engagement",
+      orderIndex: 1,
+      activationType: "auto",
+      steps: [
+        { title: "Receive initial inquiry (phone/web form/walk-in); log date, time, referral source", orderIndex: 1, requiredCertification: "PI Intake" },
+        { title: "Conduct 10-minute intake screening: injury type, incident date, parties involved", orderIndex: 2, requiredCertification: "PI Intake" },
+        { title: "Run conflict of interest check against firm database", orderIndex: 3, requiredCertification: "PI Intake" },
+        { title: "If no conflict: schedule in-depth intake consultation", orderIndex: 4, requiredCertification: "PI Intake" },
+        { title: "Collect signed HIPAA authorization, photo ID, insurance cards", orderIndex: 5, requiredCertification: "PI Intake" },
+        { title: "Enter all data into case management system; assign case number", orderIndex: 6, requiredCertification: "PI Intake" },
+        { title: "Send intake confirmation + client portal access credentials", orderIndex: 7, requiredCertification: "PI Intake" },
+      ],
+    },
+    {
       name: "Statute of Limitations Review & Docketing",
       phase: "Case Opening",
-      orderIndex: 1,
+      orderIndex: 2,
       activationType: "auto",
       steps: [
         { title: "Identify applicable statute of limitations", orderIndex: 1, requiredCertification: "PI Intake" },
@@ -46,7 +61,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Evidence Preservation & Spoliation Prevention",
       phase: "Investigation",
-      orderIndex: 2,
+      orderIndex: 3,
       activationType: "auto",
       steps: [
         { title: "Identify all potential evidence holders", orderIndex: 1, requiredCertification: "PI Intake" },
@@ -61,7 +76,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Medical Records & Bills Collection",
       phase: "Investigation",
-      orderIndex: 3,
+      orderIndex: 4,
       activationType: "auto",
       steps: [
         { title: "Identify all treating providers", orderIndex: 1, requiredCertification: "PI Medical" },
@@ -76,7 +91,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Insurance Coverage Investigation",
       phase: "Investigation",
-      orderIndex: 4,
+      orderIndex: 5,
       activationType: "auto",
       steps: [
         { title: "Identify defendant's liability insurer; request policy declarations page", orderIndex: 1, requiredCertification: "PI Intake" },
@@ -91,7 +106,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Liability Investigation & Fault Analysis",
       phase: "Investigation",
-      orderIndex: 5,
+      orderIndex: 6,
       activationType: "auto",
       steps: [
         { title: "Obtain and analyze police/incident reports", orderIndex: 1, requiredCertification: "PI Intake" },
@@ -106,7 +121,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Medical Treatment Monitoring & Gaps in Care",
       phase: "Active Treatment",
-      orderIndex: 6,
+      orderIndex: 7,
       activationType: "auto",
       steps: [
         { title: "Establish monthly check-in schedule with client", orderIndex: 1, requiredCertification: "PI Medical" },
@@ -121,7 +136,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Damages Calculation & Case Valuation",
       phase: "Pre-Demand",
-      orderIndex: 7,
+      orderIndex: 8,
       activationType: "auto",
       steps: [
         { title: "Confirm MMI status; obtain formal MMI letter", orderIndex: 1, requiredCertification: "PI Damages" },
@@ -136,7 +151,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Demand Package Preparation & Submission",
       phase: "Pre-Litigation",
-      orderIndex: 8,
+      orderIndex: 9,
       activationType: "auto",
       steps: [
         { title: "Draft demand letter with liability summary", orderIndex: 1, requiredCertification: "PI Demand" },
@@ -151,7 +166,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Settlement Negotiation & Authority Management",
       phase: "Pre-Litigation",
-      orderIndex: 9,
+      orderIndex: 10,
       activationType: "auto",
       steps: [
         { title: "Review insurer's initial response with attorney", orderIndex: 1, requiredCertification: "PI Demand" },
@@ -166,7 +181,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Filing Complaint & Service of Process",
       phase: "Litigation",
-      orderIndex: 10,
+      orderIndex: 11,
       activationType: "manual",
       activationCondition: "Activated only when settlement negotiations have failed or SOL requires filing",
       steps: [
@@ -182,7 +197,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Discovery Planning & Execution",
       phase: "Litigation — Discovery",
-      orderIndex: 11,
+      orderIndex: 12,
       activationType: "auto",
       steps: [
         { title: "Prepare discovery plan", orderIndex: 1, requiredCertification: "PI Litigation" },
@@ -197,7 +212,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Expert Witness Retention & Disclosure",
       phase: "Litigation — Discovery",
-      orderIndex: 12,
+      orderIndex: 13,
       activationType: "auto",
       steps: [
         { title: "Identify required experts", orderIndex: 1, requiredCertification: "PI Litigation" },
@@ -212,7 +227,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Deposition Preparation & Defence",
       phase: "Litigation — Discovery",
-      orderIndex: 13,
+      orderIndex: 14,
       activationType: "auto",
       steps: [
         { title: "Review all case documents with client", orderIndex: 1, requiredCertification: "PI Litigation" },
@@ -227,7 +242,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Summary Judgment Defence",
       phase: "Litigation — Pre-Trial",
-      orderIndex: 14,
+      orderIndex: 15,
       activationType: "auto",
       steps: [
         { title: "Calendar response deadline", orderIndex: 1, requiredCertification: "PI Litigation" },
@@ -242,7 +257,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Mediation Preparation & Attendance",
       phase: "Pre-Trial",
-      orderIndex: 15,
+      orderIndex: 16,
       activationType: "auto",
       steps: [
         { title: "Select qualified mediator", orderIndex: 1, requiredCertification: "PI Demand" },
@@ -257,7 +272,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Trial Preparation",
       phase: "Trial",
-      orderIndex: 16,
+      orderIndex: 17,
       activationType: "auto",
       steps: [
         { title: "Prepare trial notebook", orderIndex: 1, requiredCertification: "PI Litigation" },
@@ -272,7 +287,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Jury Selection (Voir Dire)",
       phase: "Trial",
-      orderIndex: 17,
+      orderIndex: 18,
       activationType: "manual",
       activationCondition: "Activated only after trial date is set and case proceeds to trial",
       steps: [
@@ -288,7 +303,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Post-Verdict & Judgment Collection",
       phase: "Post-Trial",
-      orderIndex: 18,
+      orderIndex: 19,
       activationType: "auto",
       steps: [
         { title: "Review verdict; assess post-trial motions", orderIndex: 1, requiredCertification: "PI Litigation" },
@@ -303,7 +318,7 @@ const PI_TEMPLATE: TemplateDef = {
     {
       name: "Settlement Disbursement & File Closing",
       phase: "Resolution",
-      orderIndex: 19,
+      orderIndex: 20,
       activationType: "conditional",
       activationCondition: "Activates when settlement is confirmed or judgment is paid",
       steps: [

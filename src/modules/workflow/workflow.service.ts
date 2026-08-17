@@ -17,7 +17,6 @@ import {
   workflowTemplates,
 } from "../../db/schema/workflow";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
-import { recordTaskReviewEvent } from "../shared/task-review-events.service";
 import { logCaseEvent } from "../cases/case-events.service";
 
 // ─── Metadata helpers ──────────────────────────────────────────────────────────
@@ -208,17 +207,11 @@ export class WorkflowService {
     const modulesWithStatus = sortedModules.map((mod) => {
       const stepStatuses = mod.steps.map((s) => s.status);
       const allCompleted = stepStatuses.every((s) => s === "completed");
-      // `rejected` counts as under way: the work has been started and sent
-      // back, so a module holding one must not fall through to "locked".
       const anyInProgress = stepStatuses.some(
-        (s) => s === "in_progress" || s === "in_review" || s === "rejected",
+        (s) => s === "in_progress" || s === "in_review",
       );
       const anyStarted = stepStatuses.some(
-        (s) =>
-          s === "in_progress" ||
-          s === "in_review" ||
-          s === "rejected" ||
-          s === "completed",
+        (s) => s === "in_progress" || s === "in_review" || s === "completed",
       );
 
       let status: "locked" | "active" | "completed";
@@ -279,11 +272,7 @@ export class WorkflowService {
     const percentage =
       totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
 
-    // A rejected step is still where the case's attention is, so it can name
-    // the current module — but a genuinely in-progress step takes precedence.
-    const inProgressStep =
-      steps.find((s) => s.status === "in_progress") ??
-      steps.find((s) => s.status === "rejected");
+    const inProgressStep = steps.find((s) => s.status === "in_progress");
     let currentModuleName: string | null = null;
     let currentModuleId: string | null = null;
 
@@ -771,11 +760,9 @@ export class WorkflowService {
       .limit(1);
 
     if (!step) throw new NotFoundError("Step not found");
-    // A rejected step is resubmitted straight from here rather than forcing a
-    // separate reopen round trip.
-    if (step.status !== "in_progress" && step.status !== "rejected")
+    if (step.status !== "in_progress")
       throw new BadRequestError(
-        "Step must be in_progress or rejected to submit for review",
+        "Step must be in_progress to submit for review",
       );
 
     const now = new Date();
@@ -798,16 +785,6 @@ export class WorkflowService {
       actorId: performedById,
       note: notes?.trim() || null,
       timeTakenMs,
-    });
-
-    await recordTaskReviewEvent({
-      organizationId,
-      taskKind: "case_step",
-      taskId: stepId,
-      caseId,
-      action: "submitted",
-      note: notes,
-      actorId: performedById,
     });
 
     const [subModName, subActorMap] = await Promise.all([
@@ -900,16 +877,6 @@ export class WorkflowService {
       timeTakenMs,
     });
 
-    await recordTaskReviewEvent({
-      organizationId,
-      taskKind: "case_step",
-      taskId: stepId,
-      caseId,
-      action: "approved",
-      note: notes,
-      actorId: performedById,
-    });
-
     const [apprModName, apprActorMap] = await Promise.all([
       resolveModuleName(step.templateStepId),
       resolveStaffNames(performedById, step.assignedToId),
@@ -991,9 +958,7 @@ export class WorkflowService {
     await db
       .update(caseWorkflowSteps)
       .set({
-        // Terminal until the assignee reopens it: dropping straight back to
-        // `in_progress` gave them no signal that anything had been rejected.
-        status: "rejected",
+        status: "in_progress",
         updatedAt: now,
       })
       .where(and(eq(caseWorkflowSteps.id, stepId), eq(caseWorkflowSteps.organizationId, organizationId)));
@@ -1007,16 +972,6 @@ export class WorkflowService {
       actorId: performedById,
       note: feedback?.trim() || null,
       timeTakenMs,
-    });
-
-    await recordTaskReviewEvent({
-      organizationId,
-      taskKind: "case_step",
-      taskId: stepId,
-      caseId,
-      action: "rejected",
-      note: feedback,
-      actorId: performedById,
     });
 
     const [rejModName, rejActorMap] = await Promise.all([
@@ -1037,7 +992,7 @@ export class WorkflowService {
         : `Step "${step.title}" rejected`,
       metadata: {
         previousStatus: "in_review",
-        newStatus: "rejected",
+        newStatus: "in_progress",
         feedback,
         reviewerId: performedById,
         reviewerName: rejReviewerName,
@@ -1055,95 +1010,6 @@ export class WorkflowService {
     if (feedback?.trim() && performedById) {
       await this.createStepNote(caseId, stepId, organizationId, performedById, feedback.trim());
     }
-
-    return this.buildWorkflowResponse(caseId, organizationId);
-  }
-
-  // ─── Reopen step (rejected → in_progress) ───────────────────────────────────────
-
-  /**
-   * Puts a rejected step back into the assignee's hands.
-   *
-   * Rejection is terminal until someone acts on the feedback, so returning to
-   * `in_progress` is an explicit step rather than something the reviewer does
-   * on the assignee's behalf. Mirrors `LeadWorkflowService.reopenTask`.
-   */
-  async reopenStep(
-    caseId: string,
-    stepId: string,
-    organizationId: string,
-    performedById?: string,
-    notes?: string,
-  ) {
-    const [step] = await db
-      .select()
-      .from(caseWorkflowSteps)
-      .where(
-        and(
-          eq(caseWorkflowSteps.id, stepId),
-          eq(caseWorkflowSteps.caseId, caseId),
-          eq(caseWorkflowSteps.organizationId, organizationId),
-        ),
-      )
-      .limit(1);
-
-    if (!step) throw new NotFoundError("Step not found");
-    if (step.status !== "rejected")
-      throw new BadRequestError("Only rejected steps can be reopened");
-
-    const now = new Date();
-
-    await db
-      .update(caseWorkflowSteps)
-      .set({
-        status: "in_progress",
-        completedAt: null,
-        completedById: null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(caseWorkflowSteps.id, stepId),
-          eq(caseWorkflowSteps.organizationId, organizationId),
-        ),
-      );
-
-    await logStepAction({
-      organizationId,
-      caseId,
-      stepId,
-      action: "REOPENED",
-      title: `Step reopened: ${step.title}`,
-      actorId: performedById,
-      note: notes?.trim() || null,
-    });
-
-    await recordTaskReviewEvent({
-      organizationId,
-      taskKind: "case_step",
-      taskId: stepId,
-      caseId,
-      action: "reopened",
-      note: notes,
-      actorId: performedById,
-    });
-
-    await logEvent({
-      organizationId,
-      caseId,
-      stepId,
-      eventType: "STEP_REOPENED",
-      title: `Step reopened: ${step.title}`,
-      description: `Step "${step.title}" reopened after rejection`,
-      metadata: {
-        previousStatus: "rejected",
-        newStatus: "in_progress",
-        stepTitle: step.title,
-        note: notes?.trim() || null,
-        timestamp: now.toISOString(),
-      },
-      performedById: performedById ?? null,
-    });
 
     return this.buildWorkflowResponse(caseId, organizationId);
   }
@@ -1596,22 +1462,8 @@ export class WorkflowService {
     const statuses = (
       status
         ? status.split(",")
-        : [
-            "in_progress",
-            "in_review",
-            "completed",
-            "pending",
-            "skipped",
-            "rejected",
-          ]
-    ) as (
-      | "completed"
-      | "pending"
-      | "in_progress"
-      | "in_review"
-      | "skipped"
-      | "rejected"
-    )[];
+        : ["in_progress", "in_review", "completed", "pending", "skipped"]
+    ) as ("completed" | "pending" | "in_progress" | "in_review" | "skipped")[];
 
     const baseConditions = and(
       eq(caseWorkflowSteps.assignedToId, staffId),
@@ -1633,7 +1485,6 @@ export class WorkflowService {
       completed: 0,
       pending: 0,
       skipped: 0,
-      rejected: 0,
     };
     for (const r of countRows) {
       counts[r.status] = r.count;
@@ -1728,7 +1579,7 @@ export class WorkflowService {
     limit: number = 10,
   ) {
     const statuses = (status ? status.split(",") : ["in_review"]) as (
-      "completed" | "pending" | "in_progress" | "in_review" | "skipped" | "rejected"
+      "completed" | "pending" | "in_progress" | "in_review" | "skipped"
     )[];
 
     const baseOrgCondition = eq(
@@ -1751,7 +1602,6 @@ export class WorkflowService {
       completed: 0,
       pending: 0,
       skipped: 0,
-      rejected: 0,
     };
     for (const r of countRows) {
       counts[r.status] = r.count;

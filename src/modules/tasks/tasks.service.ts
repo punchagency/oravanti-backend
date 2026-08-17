@@ -1,6 +1,5 @@
 import { and, count, desc, eq, gte, lte, or } from "drizzle-orm";
 import { db } from "../../db/client";
-import type { UpdateTaskInput } from "./tasks.validation";
 import { admins, cases, clients, staff, tasks } from "../../db/schema";
 import { assertAssignableStaff } from "../../utils/assignable-staff";
 import { dayjs } from "../../utils/date";
@@ -218,7 +217,7 @@ export class TasksService {
   updateTask = async (
     id: string,
     organizationId: string,
-    data: UpdateTaskInput,
+    data: Partial<typeof tasks.$inferInsert>,
   ) => {
     const [updated] = await db
       .update(tasks)

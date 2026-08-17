@@ -5,7 +5,7 @@
  *     description: Staff self-service (own profile)
  */
 import { Router } from "express";
-import { imageUpload } from "../../middleware/upload";
+import multer from "multer";
 import { z } from "zod";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { requirePermission } from "../../middleware/permission.middleware";
@@ -24,7 +24,18 @@ const updateOwnProfileBody = z
   })
   .strict();
 
-const upload = imageUpload();
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (_req, file, cb) => {
+    const allowed = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only JPEG, PNG, GIF, and WebP images are allowed"));
+    }
+  },
+});
 
 export class StaffsRouter {
   public router: Router;

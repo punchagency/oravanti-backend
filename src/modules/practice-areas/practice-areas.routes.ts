@@ -13,7 +13,6 @@ import { CommonValidation } from "../../validation/common.validation";
 
 import { validateRequest } from "../../middleware/validate.middleware";
 import { PracticeAreasController } from "./practice-areas.controller";
-import * as v from "./practice-areas.validation";
 
 export class PracticeAreasRouter {
   public router: Router;
@@ -34,6 +33,7 @@ export class PracticeAreasRouter {
   }
 
   private initializeRoutes() {
+    this.router.use(this.path, this.router);
     this.router.use(requireAuth);
     this.router.use(resolveActorContext);
 
@@ -110,7 +110,7 @@ export class PracticeAreasRouter {
     this.router.post(
       "/subscriptions",
       requireAuth,
-      validateRequest({ body: v.createSubscriptionsBody }),
+      validateRequest({ body: this.validation.optionalBody() }),
       this.practiceAreasController.createSubscriptions,
     );
 
@@ -138,36 +138,13 @@ export class PracticeAreasRouter {
     this.router.patch(
       "/subscriptions/cancel",
       requireAuth,
-      validateRequest({ body: v.cancelSubscriptionsBody }),
+      validateRequest({ body: this.validation.optionalBody() }),
       this.practiceAreasController.cancelSubscriptions,
     );
 
-    /**
-     * @openapi
-     * /practice-areas/tree-data:
-     *   get:
-     *     tags: [Practice Areas]
-     *     summary: Practice area taxonomy as a nested tree
-     *     description: >
-     *       Scoped to the practice areas the caller's firm actively subscribes
-     *       to, falling back to the full taxonomy when it subscribes to none.
-     *       Leaf nodes omit `children` rather than carrying an empty array.
-     *     security: [{ bearerAuth: [] }]
-     *     parameters:
-     *       - in: query
-     *         name: practiceAreaIds
-     *         schema: { type: string }
-     *         description: Comma-separated ids; returns only those subtrees.
-     *       - in: query
-     *         name: depth
-     *         schema: { type: integer, enum: [1, 2, 3], default: 3 }
-     *         description: >
-     *           1 = practice areas only, 2 = + subcategories, 3 = + case types.
-     *           Lower depths skip the corresponding queries entirely.
-     *     responses:
-     *       200:
-     *         description: Tree data retrieved
-     */
-    this.router.get("/tree-data", this.practiceAreasController.getTreeData);
+    this.router.get(
+      "/tree-data",
+      this.practiceAreasController.getTreeData,
+    );
   }
 }

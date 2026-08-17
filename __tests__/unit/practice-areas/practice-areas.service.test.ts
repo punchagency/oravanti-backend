@@ -25,16 +25,12 @@ describe("practice area utilities", () => {
   const organizationId = "firm-1";
 
   beforeEach(() => {
-    // mockReset, not clearAllMocks: clearing only drops recorded calls and
-    // leaves the mockReturnValueOnce queue intact, so a test that consumes
-    // fewer selects than it queued poisons the next one. That is how a single
-    // stale expectation here produced four failures instead of one.
-    mockDb.select.mockReset();
+    jest.clearAllMocks();
   });
 
   it("normalizes names by trimming whitespace", async () => {
     const { normalizePracticeAreaName } = await import(
-      "../../../src/modules/practice-areas/practice-areas.utils"
+      "../../../src/resources/practice-areas/practice-areas.utils"
     );
 
     expect(normalizePracticeAreaName("  Immigration  ")).toBe("Immigration");
@@ -42,7 +38,7 @@ describe("practice area utilities", () => {
 
   it("requires a practiceAreaId before checking subscription access", async () => {
     const { ensurePracticeAreaExists } = await import(
-      "../../../src/modules/practice-areas/practice-areas.utils"
+      "../../../src/resources/practice-areas/practice-areas.utils"
     );
 
     await expect(ensurePracticeAreaExists(organizationId)).rejects.toBeInstanceOf(
@@ -54,7 +50,7 @@ describe("practice area utilities", () => {
   it("throws NotFoundError when the practice area does not exist", async () => {
     mockDb.select.mockReturnValueOnce(buildSelectChain([]));
     const { ensurePracticeAreaExists } = await import(
-      "../../../src/modules/practice-areas/practice-areas.utils"
+      "../../../src/resources/practice-areas/practice-areas.utils"
     );
 
     await expect(
@@ -62,20 +58,12 @@ describe("practice area utilities", () => {
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  /**
-   * The subscription gate is commented out in practice-areas.utils.ts behind a
-   * TODO ("temporarily disabled until we have a proper subscription management
-   * system in place"). Kept as a skip rather than deleted: the rule is intended
-   * behaviour that is switched off, and rewriting the assertion to match the
-   * gap would turn the test into a rubber stamp that passes whether or not the
-   * gate is ever restored. Un-skip with the block in practice-areas.utils.ts.
-   */
-  it.skip("rejects case setup when the firm has no active subscription", async () => {
+  it("rejects case setup when the firm has no active subscription", async () => {
     mockDb.select
       .mockReturnValueOnce(buildSelectChain([{ id: "area-1" }]))
       .mockReturnValueOnce(buildSelectChain([]));
     const { ensurePracticeAreaExists } = await import(
-      "../../../src/modules/practice-areas/practice-areas.utils"
+      "../../../src/resources/practice-areas/practice-areas.utils"
     );
 
     await expect(
@@ -83,26 +71,27 @@ describe("practice area utilities", () => {
     ).rejects.toBeInstanceOf(BadRequestError);
   });
 
-  it("resolves the practice area once it is found to exist", async () => {
-    mockDb.select.mockReturnValueOnce(buildSelectChain([{ id: "area-1" }]));
+  it("allows case setup when the practice area exists and the firm is subscribed", async () => {
+    mockDb.select
+      .mockReturnValueOnce(buildSelectChain([{ id: "area-1" }]))
+      .mockReturnValueOnce(buildSelectChain([{ id: "subscription-1" }]));
     const { ensurePracticeAreaExists } = await import(
-      "../../../src/modules/practice-areas/practice-areas.utils"
+      "../../../src/resources/practice-areas/practice-areas.utils"
     );
 
     await expect(ensurePracticeAreaExists(organizationId, "area-1")).resolves.toEqual({
       id: "area-1",
     });
-    // One query, not two — the second was the subscription lookup, which the
-    // skipped test above covers and which is currently disabled.
-    expect(mockDb.select).toHaveBeenCalledTimes(1);
+    expect(mockDb.select).toHaveBeenCalledTimes(2);
   });
 
   it("rejects case setup when the case type does not belong to the practice area", async () => {
     mockDb.select
       .mockReturnValueOnce(buildSelectChain([{ id: "area-1" }]))
+      .mockReturnValueOnce(buildSelectChain([{ id: "subscription-1" }]))
       .mockReturnValueOnce(buildSelectChain([]));
     const { ensureCaseTypeBelongsToPracticeArea } = await import(
-      "../../../src/modules/practice-areas/practice-areas.utils"
+      "../../../src/resources/practice-areas/practice-areas.utils"
     );
 
     await expect(
@@ -113,6 +102,7 @@ describe("practice area utilities", () => {
   it("allows case setup when the case type belongs to the practice area", async () => {
     mockDb.select
       .mockReturnValueOnce(buildSelectChain([{ id: "area-1" }]))
+      .mockReturnValueOnce(buildSelectChain([{ id: "subscription-1" }]))
       .mockReturnValueOnce(
         buildSelectChain([
           {
@@ -126,7 +116,7 @@ describe("practice area utilities", () => {
         ]),
       );
     const { ensureCaseTypeBelongsToPracticeArea } = await import(
-      "../../../src/modules/practice-areas/practice-areas.utils"
+      "../../../src/resources/practice-areas/practice-areas.utils"
     );
 
     await expect(

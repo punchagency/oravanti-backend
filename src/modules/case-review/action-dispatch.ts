@@ -235,7 +235,7 @@ type TaskStage =
  * Which stage a task raised from `issue` belongs under.
  *
  * `pipelineStage` is a bucket for what the work is *about*, not where the lead
- * currently is — `initializePipelineSteps` stamps every intake task up front
+ * currently is — `initializePipelineSteps` stamps all ten intake tasks up front
  * while the lead still sits at `conflict_check`, and the consultation flow reads
  * tasks back by stage. So an issue over documents that arrived through a
  * questionnaire belongs on `questionnaire`, whatever the lead is doing now.
@@ -308,9 +308,6 @@ const assignCaseWorkflowStep = async (
 
   const target =
     steps.find((s) => s.status === "in_progress") ??
-    // A rejected step is unfinished work, not a finished one — without it a
-    // case whose only open step was sent back reports "already finished".
-    steps.find((s) => s.status === "rejected") ??
     steps.find((s) => s.status === "pending");
 
   if (!target) {

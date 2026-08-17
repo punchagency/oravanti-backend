@@ -16,16 +16,6 @@ jest.mock("../../../src/utils/email/email.service", () => ({
   emailService: { sendEmail: mockSendEmail },
 }));
 
-// leads.service imports the reminder producers, and that module graph reaches
-// src/queue/connection, which opens an ioredis socket the moment it is
-// imported. Importing it here would make a unit test depend on a running
-// Redis — it would emit connection errors, log after teardown, and hold the
-// worker open. Neither producer is on any path under test.
-jest.mock("../../../src/queue/queues", () => ({
-  scheduleQuestionnaireReminder: jest.fn(() => Promise.resolve(null)),
-  cancelQuestionnaireReminder: jest.fn(() => Promise.resolve()),
-}));
-
 // A drizzle-query stand-in: every builder method returns the same chain, and the
 // chain itself is awaitable (thenable) resolving to the configured rows. This
 // supports `.where().limit()`, `.set().where().returning()`, etc.
@@ -51,20 +41,6 @@ const makeChain = (rows: unknown[]) => {
   return chain;
 };
 
-/**
- * Serves a fixed sequence of results, then keeps answering with empty rows.
- *
- * A bare queue makes every test in the file hostage to the exact query count of
- * the code under test: add one incidental SELECT — an actor-name lookup, an
- * audit insert — and `shift()` starts returning undefined, so unrelated tests
- * fail with a TypeError instead of an assertion. The tail is what keeps a test
- * asserting on its own subject.
- */
-const queueThenEmpty = (rows: unknown[][]) => {
-  const queue = rows.map(makeChain);
-  return () => queue.shift() ?? makeChain([]);
-};
-
 const importService = async () => {
   const { LeadsService } = await import(
     "../../../src/modules/leads/leads.service"
@@ -85,26 +61,21 @@ describe("resolveConflictCheck", () => {
   // Wires the three pre-transaction selects (lead, staff, conflict check) and
   // the two in-transaction updates (conflict check, lead). Returns the captured
   // update chains so callers can assert on the `.set()` payloads.
-  //
-  // The updates are wired on `db`, not on the `tx` handle the transaction
-  // callback receives: withTransaction() puts the handle in AsyncLocalStorage
-  // and the db Proxy routes to it, so the service calls bare `db.update` inside
-  // the transaction and never touches `tx` directly.
   const wire = (lead: any, cc: any) => {
-    mockDb.select.mockImplementation(
-      queueThenEmpty([[lead], [{ id: STAFF }], [cc]]),
-    );
+    const selectQueue = [
+      makeChain([lead]),
+      makeChain([{ id: STAFF }]),
+      makeChain([cc]),
+    ];
+    mockDb.select.mockImplementation(() => selectQueue.shift());
 
     const ccChain = makeChain([{ id: cc.id, status: cc.status, matches: [] }]);
     const leadChain = makeChain([]);
-    const updates = [ccChain, leadChain];
-    mockDb.update.mockImplementation(() => updates.shift() ?? makeChain([]));
-
-    // Every resolution writes a lead event; the trail insert is incidental to
-    // what these tests assert, but it has to succeed for them to run.
-    mockDb.insert.mockImplementation(() => makeChain([]));
-
-    mockDb.transaction.mockImplementation((cb: any) => cb({}));
+    const txUpdates = [ccChain, leadChain];
+    mockDb.transaction.mockImplementation(async (cb: any) => {
+      const tx = { update: jest.fn(() => txUpdates.shift()) };
+      return cb(tx);
+    });
 
     return { ccChain, leadChain };
   };
@@ -117,8 +88,7 @@ describe("resolveConflictCheck", () => {
         conflictCheckId: CC_ID,
         pipelineStage: "conflict_check",
         status: "new",
-        firstName: "Jane",
-        lastName: "Doe",
+        name: "Jane Doe",
         email: "jane@example.com",
       },
       { id: CC_ID, status: "needs_review", matches: [] },
@@ -154,8 +124,7 @@ describe("resolveConflictCheck", () => {
         conflictCheckId: CC_ID,
         pipelineStage: "conflict_check",
         status: "new",
-        firstName: "Jane",
-        lastName: "Doe",
+        name: "Jane Doe",
         email: "jane@example.com",
       },
       { id: CC_ID, status: "conflict_found", matches: [] },
@@ -187,8 +156,7 @@ describe("resolveConflictCheck", () => {
         conflictCheckId: CC_ID,
         pipelineStage: "conflict_check",
         status: "new",
-        firstName: "Jane",
-        lastName: "Doe",
+        name: "Jane Doe",
         email: "jane@example.com",
       },
       { id: CC_ID, status: "conflict_found", matches: [] },
@@ -281,9 +249,6 @@ describe("runConflictCheck stage handling", () => {
       return c;
     });
 
-    // The run is recorded on the lead's activity trail.
-    mockDb.insert.mockImplementation(() => makeChain([]));
-
     return { ccUpdateChain, leadUpdateChains };
   };
 
@@ -294,8 +259,7 @@ describe("runConflictCheck stage handling", () => {
       conflictCheckId: CC_ID,
       pipelineStage: "conflict_check",
       status: "new",
-      firstName: "Jane",
-      lastName: "Doe",
+      name: "Jane Doe",
       email: "jane@example.com",
       intakeAdversePartyName: null,
       intakeAdversePartyEmail: null,
@@ -322,8 +286,7 @@ describe("runConflictCheck stage handling", () => {
       conflictCheckId: CC_ID,
       pipelineStage: "questionnaire", // already further along
       status: "reviewed",
-      firstName: "Jane",
-      lastName: "Doe",
+      name: "Jane Doe",
       email: "jane@example.com",
       intakeAdversePartyName: null,
       intakeAdversePartyEmail: null,

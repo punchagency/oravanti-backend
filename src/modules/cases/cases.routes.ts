@@ -8,31 +8,32 @@ import { Router } from "express";
 
 import { requireAuth } from "../../middleware/auth.middleware";
 import { resolveActorContext } from "../../middleware/resolve-actor-context";
-import { requireResource } from "../../middleware/permission.middleware";
+import { requirePermission } from "../../middleware/permission.middleware";
 
 
 import { validateRequest } from "../../middleware/validate.middleware";
+import { CommonValidation } from "../../validation/common.validation";
 import { CasesController } from "./cases.controller";
-import * as v from "./cases.validation";
 
 export class CasesRouter {
   public router: Router;
   public path: string;
   private casesController: CasesController;
+  private validation: CommonValidation;
 
-  constructor(casesController: CasesController) {
+  constructor(casesController: CasesController, validation: CommonValidation) {
     this.router = Router();
     this.path = "/cases";
     this.casesController = casesController;
+    this.validation = validation;
 
     this.initializeRoutes();
   }
 
   private initializeRoutes() {
-    // Gate the whole router once. Every route below inherits it, so a new
-    // endpoint cannot ship ungated by omission — and the per-route
-    // `requireAuth`/`requirePermission` repetition disappears.
-    this.router.use(requireAuth, resolveActorContext, requireResource("cases"));
+    this.router.use(this.path, this.router);
+    this.router.use(requireAuth);
+    this.router.use(resolveActorContext);
 
     /**
      * @openapi
@@ -60,7 +61,13 @@ export class CasesRouter {
      */
     this.router.get(
       "/generate-number",
-      validateRequest({ query: v.generateCaseNumberQuery }),
+      requireAuth,
+      validateRequest({
+        query: this.validation.query({
+          practiceAreaId: this.validation.uuid,
+          caseType: this.validation.nonEmptyString,
+        }),
+      }),
       this.casesController.generateCaseNumber,
     );
 
@@ -103,7 +110,8 @@ export class CasesRouter {
      */
     this.router.get(
       "/",
-      validateRequest({ query: v.listCasesQuery }),
+      requireAuth,
+      requirePermission({ cases: ["read"] }),
       this.casesController.getAllCases,
     );
 
@@ -132,7 +140,9 @@ export class CasesRouter {
      */
     this.router.get(
       "/:caseId/documents",
-      validateRequest({ params: v.caseDocumentsParams, query: v.paginationQuery }),
+      requireAuth,
+      requirePermission({ cases: ["read"] }),
+      validateRequest({ params: this.validation.params("caseId") }),
       this.casesController.getCaseDocuments,
     );
 
@@ -159,7 +169,9 @@ export class CasesRouter {
      */
     this.router.get(
       "/:id",
-      validateRequest({ params: v.caseIdParams }),
+      requireAuth,
+      requirePermission({ cases: ["read"] }),
+      validateRequest({ params: this.validation.idParams }),
       this.casesController.getCaseById,
     );
 
@@ -186,7 +198,16 @@ export class CasesRouter {
      */
     this.router.post(
       "/",
-      validateRequest({ body: v.createCaseBody }),
+      requireAuth,
+      validateRequest({
+        body: this.validation.requiredBody(
+          "clientId",
+          "practiceAreaId",
+          "caseType",
+          "filingDate",
+          "description",
+        ),
+      }),
       this.casesController.createCase,
     );
 
@@ -219,7 +240,11 @@ export class CasesRouter {
      */
     this.router.patch(
       "/:id",
-      validateRequest({ params: v.caseIdParams, body: v.updateCaseBody }),
+      requireAuth,
+      validateRequest({
+        params: this.validation.idParams,
+        body: this.validation.optionalBody(),
+      }),
       this.casesController.updateCase,
     );
 
@@ -245,7 +270,8 @@ export class CasesRouter {
      */
     this.router.delete(
       "/:id",
-      validateRequest({ params: v.caseIdParams }),
+      requireAuth,
+      validateRequest({ params: this.validation.idParams }),
       this.casesController.deleteCase,
     );
 
@@ -277,13 +303,18 @@ export class CasesRouter {
      */
     this.router.post(
       "/:id/reassign-team",
-      validateRequest({ params: v.caseIdParams, body: v.reassignTeamBody }),
+      requireAuth,
+      validateRequest({
+        params: this.validation.idParams,
+        body: this.validation.requiredBody("teamId"),
+      }),
       this.casesController.reassignTeam,
     );
 
     this.router.get(
       "/:id/audit-log",
-      validateRequest({ params: v.caseIdParams }),
+      requireAuth,
+      validateRequest({ params: this.validation.idParams }),
       this.casesController.getCaseAuditLog,
     );
   }

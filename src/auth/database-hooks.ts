@@ -7,11 +7,9 @@ import { systemDb } from "../db/client";
 import { staff } from "../db/schema";
 import { member, session } from "../db/schema/auth-schema";
 import { connectedEmailAccount } from "../db/schema/email";
-import { LogEvent, createModuleLogger } from "../lib/logging/log";
 import { getActiveOrganization } from "./helpers";
 
 const secret = env.BETTER_AUTH_SECRET;
-const log = createModuleLogger("auth.database_hooks");
 
 function extractEmailFromIdToken(idToken: string): string | null {
   try {
@@ -143,12 +141,10 @@ export const databaseHooks = {
               },
             });
         } catch (e) {
-          // Swallowed so sign-in still succeeds — but the user's mailbox is
-          // silently not connected, so it has to be visible somewhere.
-          log.failure(LogEvent.EMAIL_ACCOUNT_LINK_FAILED, e, {
-            provider: account.providerId,
-            targetUserId: account.userId,
-          });
+          console.error(
+            `Failed to connect ${account.providerId} email account via Better Auth hook:`,
+            e,
+          );
         }
       },
     },
@@ -167,20 +163,13 @@ export const databaseHooks = {
             const response = await fetch(`http://ip-api.com/json/${ipAddress}`);
             const data = await response.json();
 
-            // The bare `console.log(data)` that was here dumped the whole
-            // third-party response — which carries the user's ISP, latitude,
-            // longitude, postcode and organisation — into the log on every
-            // single sign-in. Only the two fields actually used are recorded.
+            console.log(data);
+
             if (!data.error && data.city && data.country) {
               locationStr = `${data.city}, ${data.country}`;
             }
           } catch (error) {
-            // Best effort. The session is created either way, with the
-            // location left as "Unknown Location".
-            log.warn(LogEvent.AUTH_GEO_LOOKUP_FAILED, {
-              err: error,
-              targetUserId: session.userId,
-            });
+            console.error("Failed to fetch IP location:", error);
           }
         }
 

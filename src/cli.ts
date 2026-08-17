@@ -114,8 +114,6 @@ import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
 import { seedStaffAndTeams } from "./db/seeds/staff-and-teams.seed";
 import { seedSystemQuestionnaires } from "./db/seeds/system-questionnaires.seed";
 import { seedWorkflowTemplate } from "./db/seeds/workflow-template.seed";
-import { seedIntakePipeline } from "./db/seeds/intake-pipeline.seed";
-import { applyTaskReviewSchema } from "./db/seeds/task-review-schema.seed";
 import { seedPICases } from "./db/seeds/seed-pi-cases";
 import { StaffAvailabilityService } from "./modules/staff-availability/staff-availability.service";
 
@@ -4282,14 +4280,6 @@ const runInteractive = async () => {
           label: "Seed 5 PI demo cases with clients",
         },
         {
-          value: "seed-intake-pipeline",
-          label: "Seed the intake pipeline template new leads are stamped with",
-        },
-        {
-          value: "apply-task-review-schema",
-          label: "Apply task review + intake pipeline template schema",
-        },
-        {
           value: "staff-availability",
           label: "Set staff availability (hours, breaks, overrides)",
         },
@@ -4404,14 +4394,6 @@ const runInteractive = async () => {
       if (action === "seed-pi-cases") {
         const firm = await resolveFirm();
         if (firm) await seedPICases(firm.id);
-      }
-
-      if (action === "seed-intake-pipeline") {
-        await seedIntakePipeline();
-      }
-
-      if (action === "apply-task-review-schema") {
-        await applyTaskReviewSchema();
       }
 
       if (action === "staff-availability") {
@@ -4600,26 +4582,6 @@ const piCasesCommand = program
   .description("Seed 5 Personal Injury demo cases with clients")
   .argument("[organizationId]", "Organization id")
   .action(seedPICases);
-
-const intakePipelineCommand = program
-  .command("seed-intake-pipeline")
-  .description(
-    "Seed the intake pipeline template new leads are stamped with (idempotent)",
-  )
-  .argument(
-    "[organizationId]",
-    "Seed a firm-specific template instead of the system default",
-  )
-  .action(async (organizationId?: string) => {
-    await seedIntakePipeline(organizationId);
-  });
-
-const taskReviewSchemaCommand = program
-  .command("apply-task-review-schema")
-  .description(
-    "Create the task review thread + intake pipeline template tables (idempotent)",
-  )
-  .action(applyTaskReviewSchema);
 
 program
   .command("staff-availability")

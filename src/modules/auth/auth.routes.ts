@@ -7,7 +7,7 @@
  *     description: Organization invitations & membership
  */
 import { Router } from "express";
-import { documentUpload, type Upload } from "../../middleware/upload";
+import multer from "multer";
 import { z } from "zod";
 import { CommonValidation } from "../../validation/common.validation";
 import { validateRequest } from "../../middleware/validate.middleware";
@@ -105,19 +105,20 @@ export class AuthRouter {
   public path: string;
   private authController: AuthController;
   private validation: CommonValidation;
-  private upload: Upload;
+  private upload: multer.Multer;
 
   constructor(authController: AuthController, validation: CommonValidation) {
     this.router = Router();
     this.path = "/auth";
     this.authController = authController;
     this.validation = validation;
-    this.upload = documentUpload();
+    this.upload = multer({ storage: multer.memoryStorage() });
 
     this.initializeRoutes();
   }
 
   private initializeRoutes() {
+    this.router.use(this.path, this.router);
 
     /**
      * @openapi
@@ -161,7 +162,7 @@ export class AuthRouter {
     this.router.post(
       "/contractors/sign-up/email",
       this.upload.fields([
-        { name: "certificationFiles", maxCount: 8 },
+        { name: "certificationFiles" },
         { name: "identificationFiles", maxCount: 2 },
       ]),
       validateRequest({ body: contractorSignUpBody }),

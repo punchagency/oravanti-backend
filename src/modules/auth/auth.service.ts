@@ -18,7 +18,6 @@ import {
   documentVersions,
 } from "../../db/schema/documents";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
-import { LogEvent, createModuleLogger } from "../../lib/logging/log";
 import { ContractorSignUpBody } from "../../types/auth.types";
 import {
   AuthenticationError,
@@ -122,8 +121,6 @@ const buildContractorIdentificationStoragePath = (
   filename: string,
 ) => `${userId}/contractor-identifications/${documentId}/v1/${filename}`;
 
-const log = createModuleLogger("auth.service");
-
 export class AuthService {
   private uploadToStorage = async (data: {
     storagePath: string;
@@ -158,11 +155,6 @@ export class AuthService {
       !accountType ||
       !["firm_admin", "contractor", "client"].includes(accountType)
     ) {
-      log.warn(
-        LogEvent.AUTH_SIGNUP_FAILED,
-        { email: body.email, accountType, reason: "invalid_account_type" },
-        "Sign-up rejected: account_type missing or not recognised",
-      );
       throw new BadRequestError(
         "Invalid or missing account_type context query parameter.",
       );
@@ -186,29 +178,16 @@ export class AuthService {
         },
         asResponse: true,
       });
-    } catch (error) {
-      log.failure(LogEvent.AUTH_SIGNUP_FAILED, error, {
-        email: body.email,
-        accountType,
-      });
-      throw error;
+    } catch (e) {
+      console.log(e);
+      throw e;
     }
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const errorCode = errorData.code;
       const message = errorData.message || "Registration failed";
-
-      log.warn(
-        LogEvent.AUTH_SIGNUP_FAILED,
-        {
-          email: body.email,
-          accountType,
-          code: errorCode,
-          status: response.status,
-        },
-        `Sign-up refused for ${body.email}: ${message}`,
-      );
+      console.log(message);
 
       switch (errorCode) {
         case "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL":
@@ -220,13 +199,6 @@ export class AuthService {
           throw new Error(message);
       }
     }
-
-    log.action(
-      LogEvent.AUTH_SIGNUP,
-      { email: body.email, accountType },
-      `${accountType} account registered for ${body.email}`,
-    );
-
     return response;
   };
 
@@ -241,20 +213,12 @@ export class AuthService {
     const certificationDocuments = body.certificationDocuments;
 
     if (!body.consentedToBackgroundCheck) {
-      log.warn(LogEvent.CONTRACTOR_REGISTRATION_REJECTED, {
-        email,
-        reason: "background_check_not_consented",
-      });
       throw new ValidationError(
         "Contractors must consent to a background check",
       );
     }
 
     if (!body.recognizedDirectoryListingVerificationAccepted) {
-      log.warn(LogEvent.CONTRACTOR_REGISTRATION_REJECTED, {
-        email,
-        reason: "directory_listing_not_accepted",
-      });
       throw new ValidationError(
         "Contractors must accept directory listing verification checks",
       );
@@ -262,10 +226,6 @@ export class AuthService {
 
     const hourlyRate = Number(body.desiredHourlyRate);
     if (!Number.isFinite(hourlyRate) || hourlyRate <= 0) {
-      log.warn(LogEvent.CONTRACTOR_REGISTRATION_REJECTED, {
-        email,
-        reason: "invalid_hourly_rate",
-      });
       throw new ValidationError("desiredHourlyRate must be greater than zero");
     }
 
@@ -275,45 +235,24 @@ export class AuthService {
       .where(inArray(practiceAreaCaseTypes.id, specialtyIds));
 
     if (existingSpecialties.length !== specialtyIds.length) {
-      log.warn(LogEvent.CONTRACTOR_REGISTRATION_REJECTED, {
-        email,
-        reason: "unknown_specialty",
-        requested: specialtyIds.length,
-        matched: existingSpecialties.length,
-      });
       throw new ValidationError(
         "One or more contractor specialties are invalid",
       );
     }
 
     if (!certificationFiles.length) {
-      log.warn(LogEvent.CONTRACTOR_REGISTRATION_REJECTED, {
-        email,
-        reason: "no_certification_files",
-      });
       throw new ValidationError(
         "At least one certification file must be uploaded",
       );
     }
 
     if (certificationFiles.length !== certificationDocuments.length) {
-      log.warn(LogEvent.CONTRACTOR_REGISTRATION_REJECTED, {
-        email,
-        reason: "certification_file_count_mismatch",
-        files: certificationFiles.length,
-        documents: certificationDocuments.length,
-      });
       throw new ValidationError(
         "certificationFiles must match certificationDocuments by array order",
       );
     }
 
     if (identificationFiles.length !== 2) {
-      log.warn(LogEvent.CONTRACTOR_REGISTRATION_REJECTED, {
-        email,
-        reason: "identification_file_count",
-        files: identificationFiles.length,
-      });
       throw new ValidationError(
         "Exactly two identification files must be uploaded",
       );
@@ -370,12 +309,6 @@ export class AuthService {
 
       const message = errorData.message || "Contractor registration failed";
 
-      log.warn(
-        LogEvent.CONTRACTOR_REGISTRATION_FAILED,
-        { email, code: errorCode, status: authResponse.status },
-        `Contractor sign-up refused for ${email}: ${message}`,
-      );
-
       switch (errorCode) {
         case "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL":
           throw new ConflictError(message, errorData);
@@ -392,12 +325,6 @@ export class AuthService {
     const authData = await authResponse.json();
     const userId = getAuthUserId(authData);
     if (!userId) {
-      log.failure(
-        LogEvent.CONTRACTOR_REGISTRATION_FAILED,
-        undefined,
-        { email },
-        "better-auth accepted the sign-up but returned no user id",
-      );
       throw new ExternalServiceError("Contractor auth user was not returned");
     }
 
@@ -624,56 +551,18 @@ export class AuthService {
         return createdContractor;
       });
 
-      log.action(
-        LogEvent.CONTRACTOR_REGISTERED,
-        {
-          email,
-          userId,
-          contractorId: contractor.id,
-          specialties: specialtyIds.length,
-          certifications: uploadedCertificationDocuments.length,
-          identifications: uploadedIdentificationDocuments.length,
-          paymentMethod: preparedPaymentDetails.paymentMethod,
-          status: contractor.status,
-        },
-        `Contractor ${email} registered and awaiting approval`,
-      );
-
       return {
         headers: authResponse.headers,
         authData,
         contractor,
       };
     } catch (error) {
-      const storagePaths = [
-        ...uploadedCertificationDocuments,
-        ...uploadedIdentificationDocuments,
-      ].map((document) => document.storagePath);
-
-      log.failure(LogEvent.CONTRACTOR_REGISTRATION_FAILED, error, {
-        email,
-        userId,
-        uploadedFiles: storagePaths.length,
-      });
-
-      // The auth user is already committed and is deliberately not removed
-      // here; only the orphaned uploads are. A cleanup failure must not mask
-      // the original error, so it is logged and swallowed.
-      await this.removeFromStorage(storagePaths).then(
-        () =>
-          log.info(LogEvent.CONTRACTOR_REGISTRATION_ROLLED_BACK, {
-            email,
-            userId,
-            removedFiles: storagePaths.length,
-          }),
-        (cleanupError: unknown) =>
-          log.failure(LogEvent.CONTRACTOR_ROLLBACK_FAILED, cleanupError, {
-            email,
-            userId,
-            orphanedFiles: storagePaths.length,
-          }),
-      );
-
+      await this.removeFromStorage(
+        [
+          ...uploadedCertificationDocuments,
+          ...uploadedIdentificationDocuments,
+        ].map((document) => document.storagePath),
+      ).catch(() => undefined);
       throw error;
     }
   };
@@ -705,15 +594,6 @@ export class AuthService {
 
       const message = errorData.message || "Registration failed";
 
-      // Security-relevant: the code and the identifier are what make a
-      // credential-stuffing run visible, and neither survives to the error
-      // middleware — it only ever sees "Invalid email or password".
-      log.warn(
-        LogEvent.AUTH_LOGIN_FAILED,
-        { email, code: errorCode, status: response.status },
-        `Sign-in failed for ${email}: ${errorCode ?? message}`,
-      );
-
       switch (errorCode) {
         // --- 1. Core Authentication Failures ---
         case "INVALID_EMAIL_OR_PASSWORD":
@@ -740,25 +620,6 @@ export class AuthService {
       }
     }
 
-    // A 200 here is not necessarily a completed sign-in: when the account has
-    // 2FA on, better-auth answers with `twoFactorRedirect` and no session. The
-    // clone is read instead of the response itself so the controller still
-    // forwards an untouched body.
-    const body = await response
-      .clone()
-      .json()
-      .catch(() => ({}) as Record<string, unknown>);
-
-    if (body.twoFactorRedirect) {
-      log.info(
-        LogEvent.AUTH_TWO_FACTOR_CHALLENGED,
-        { email },
-        `${email} passed credentials; second factor required`,
-      );
-    } else {
-      log.action(LogEvent.AUTH_LOGIN, { email }, `${email} signed in`);
-    }
-
     return response;
   };
 
@@ -781,13 +642,6 @@ export class AuthService {
         | "VALIDATION_ERROR";
 
       const message = errorData.message || "TOTP verification failed";
-
-      log.warn(
-        LogEvent.AUTH_TWO_FACTOR_FAILED,
-        { method: "totp", code: errorCode, status: response.status },
-        `Second factor rejected: ${errorCode ?? message}`,
-      );
-
       switch (errorCode) {
         case "INVALID_CODE":
           throw new AuthenticationError(message, errorData);
@@ -796,12 +650,6 @@ export class AuthService {
           throw new Error(message);
       }
     }
-
-    log.action(
-      LogEvent.AUTH_TWO_FACTOR_VERIFIED,
-      { method: "totp" },
-      "Second factor verified",
-    );
 
     return response;
   };
@@ -813,8 +661,6 @@ export class AuthService {
       headers: clientHeaders,
       asResponse: true,
     });
-
-    log.action(LogEvent.AUTH_LOGOUT, { status: response.status }, "Signed out");
 
     return response;
   };
@@ -841,12 +687,6 @@ export class AuthService {
 
       const message = errorData.message || "Failed to send verification code";
 
-      log.warn(
-        LogEvent.AUTH_OTP_SEND_FAILED,
-        { email, otpType: type, code: errorCode, status: response.status },
-        `Could not send a ${type} code to ${email}: ${errorCode ?? message}`,
-      );
-
       switch (errorCode) {
         case "INVALID_EMAIL":
         case "USER_NOT_FOUND":
@@ -858,17 +698,6 @@ export class AuthService {
           throw new Error(message);
       }
     }
-
-    // The three flows that matter downstream get their own event; the
-    // catch-all keeps the rest in the record rather than inventing a name.
-    const sent =
-      type === "email-verification"
-        ? LogEvent.AUTH_EMAIL_VERIFICATION_SENT
-        : type === "forget-password"
-          ? LogEvent.AUTH_PASSWORD_RESET_REQUESTED
-          : LogEvent.AUTH_OTP_SENT;
-
-    log.action(sent, { email, otpType: type }, `Sent a ${type} code to ${email}`);
 
     return response;
   };
@@ -894,12 +723,6 @@ export class AuthService {
 
       const message = errorData.message || "Password reset failed";
 
-      log.warn(
-        LogEvent.AUTH_PASSWORD_RESET_FAILED,
-        { email, code: errorCode, status: response.status },
-        `Password reset rejected for ${email}: ${errorCode ?? message}`,
-      );
-
       switch (errorCode) {
         case "INVALID_TOKEN":
         case "OTP_EXPIRED":
@@ -911,12 +734,6 @@ export class AuthService {
           throw new Error(message);
       }
     }
-
-    log.action(
-      LogEvent.AUTH_PASSWORD_RESET_COMPLETED,
-      { email },
-      `Password reset completed for ${email}`,
-    );
 
     return response;
   };
@@ -949,12 +766,6 @@ export class AuthService {
 
       const message = errorData.message || "Password change failed";
 
-      log.warn(
-        LogEvent.AUTH_PASSWORD_CHANGE_FAILED,
-        { code: errorCode, status: response.status },
-        `Password change rejected: ${errorCode ?? message}`,
-      );
-
       switch (errorCode) {
         case "INVALID_CURRENT_PASSWORD":
           throw new AuthenticationError(message, errorData);
@@ -967,15 +778,6 @@ export class AuthService {
           throw new Error(message);
       }
     }
-
-    // `revokeOtherSessions: true` above means this also ended every other
-    // session the user had — worth saying, because the sign-outs it causes
-    // have no other explanation in the log.
-    log.action(
-      LogEvent.AUTH_PASSWORD_CHANGED,
-      { otherSessionsRevoked: true },
-      "Password changed; other sessions revoked",
-    );
 
     return response;
   };
@@ -995,12 +797,6 @@ export class AuthService {
 
       const message = errorData.message || "Session revocation failed";
 
-      log.warn(
-        LogEvent.AUTH_SESSION_REVOKE_FAILED,
-        { code: errorCode, status: response.status },
-        `Session revocation rejected: ${errorCode ?? message}`,
-      );
-
       switch (errorCode) {
         case "INVALID_TOKEN":
         case "UNAUTHORIZED":
@@ -1012,9 +808,6 @@ export class AuthService {
           throw new Error(message);
       }
     }
-
-    // The token itself is a live credential and is never logged.
-    log.action(LogEvent.AUTH_SESSION_REVOKED, {}, "Session revoked");
 
     return response;
   };
@@ -1042,12 +835,6 @@ export class AuthService {
 
       const message = errorData.message || "Session refresh failed";
 
-      log.warn(
-        LogEvent.AUTH_SESSION_EXPIRED,
-        { code: errorCode, status: response.status },
-        `Session refresh refused: ${errorCode ?? message}`,
-      );
-
       switch (errorCode) {
         case "SESSION_EXPIRED":
         case "INVALID_SESSION":
@@ -1056,10 +843,6 @@ export class AuthService {
           throw new Error(message);
       }
     }
-
-    // Debug, not action: the frontend refreshes on a timer, so at info this
-    // one line would outnumber every real event in the log.
-    log.debug(LogEvent.AUTH_SESSION_REFRESHED);
 
     return response;
   };
@@ -1107,12 +890,6 @@ export class AuthService {
 
       const message = errorData.message || "Failed to enable 2FA";
 
-      log.warn(
-        LogEvent.AUTH_TWO_FACTOR_ENABLE_FAILED,
-        { code: errorCode, status: response.status },
-        `Enabling 2FA was refused: ${errorCode ?? message}`,
-      );
-
       switch (errorCode) {
         case "INVALID_PASSWORD":
           throw new AuthenticationError(message, errorData);
@@ -1123,12 +900,6 @@ export class AuthService {
           throw new Error(message);
       }
     }
-
-    log.action(
-      LogEvent.AUTH_TWO_FACTOR_ENABLED,
-      {},
-      "Two-factor authentication enabled",
-    );
 
     return response;
   };
@@ -1150,12 +921,6 @@ export class AuthService {
 
       const message = errorData.message || "Failed to describe 2FA";
 
-      log.warn(
-        LogEvent.AUTH_TWO_FACTOR_DISABLE_FAILED,
-        { code: errorCode, status: response.status },
-        `Disabling 2FA was refused: ${errorCode ?? message}`,
-      );
-
       switch (errorCode) {
         case "INVALID_PASSWORD":
           throw new AuthenticationError(message, errorData);
@@ -1166,13 +931,6 @@ export class AuthService {
           throw new Error(message);
       }
     }
-
-    // A security control being switched off. Always worth a record.
-    log.action(
-      LogEvent.AUTH_TWO_FACTOR_DISABLED,
-      {},
-      "Two-factor authentication disabled",
-    );
 
     return response;
   };
@@ -1203,12 +961,6 @@ export class AuthService {
 
       const message = errorData.message || "Backup code verification failed";
 
-      log.warn(
-        LogEvent.AUTH_TWO_FACTOR_FAILED,
-        { method: "backup_code", code: errorCode, status: response.status },
-        `Backup code rejected: ${errorCode ?? message}`,
-      );
-
       switch (errorCode) {
         case "INVALID_BACKUP_CODE":
         case "INVALID_CODE":
@@ -1222,14 +974,6 @@ export class AuthService {
           throw new Error(message);
       }
     }
-
-    // A backup code being spent means the user lost their authenticator.
-    // Worth surfacing on its own, not folded in with ordinary TOTP.
-    log.action(
-      LogEvent.AUTH_TWO_FACTOR_VERIFIED,
-      { method: "backup_code" },
-      "Signed in with a two-factor backup code",
-    );
 
     return response;
   };

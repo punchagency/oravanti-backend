@@ -9,8 +9,6 @@ import {
 import type { LeadEventType } from "../../db/schema/leads";
 import { assertAssignableStaff } from "../../utils/assignable-staff";
 import { triggerScenarioScan } from "../ai-scan/scan-triggers";
-import { recordTaskReviewEvent } from "../shared/task-review-events.service";
-import { resolveIntakePipelineSteps } from "./intake-pipeline-template.service";
 import { logLeadEvent } from "./lead-events.service";
 import { documents, documentVersions } from "../../db/schema/documents";
 import { staff } from "../../db/schema/staff";
@@ -308,12 +306,8 @@ export class LeadWorkflowService {
     organizationId: string,
   ) {
     const task = await this.getTask(taskId, organizationId);
-    // A rejected task is resubmitted straight from here rather than forcing a
-    // separate "reopen" round trip.
-    if (task.status !== "in_progress" && task.status !== "rejected") {
-      throw new BadRequestError(
-        "Only in-progress or rejected tasks can be submitted for review",
-      );
+    if (task.status !== "in_progress") {
+      throw new BadRequestError("Only in-progress tasks can be submitted for review");
     }
     const [updated] = await db
       .update(leadTasks)
@@ -321,22 +315,13 @@ export class LeadWorkflowService {
         status: "in_review",
         completedById: submittedById,
         completedAt: new Date(),
+        notes: notes ?? task.notes,
         updatedAt: new Date(),
       })
       .where(
         and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
       )
       .returning();
-
-    await recordTaskReviewEvent({
-      organizationId,
-      taskKind: "lead_task",
-      taskId,
-      leadId: task.leadId,
-      action: "submitted",
-      note: notes,
-      actorId: submittedById,
-    });
 
     await logLeadEvent({
       organizationId,
@@ -344,58 +329,6 @@ export class LeadWorkflowService {
       type: "task_submitted_for_review" as LeadEventType,
       actorId: submittedById,
       metadata: { taskId, title: task.title, note: notes },
-    });
-
-    return updated;
-  }
-
-  /**
-   * Puts a rejected task back into the assignee's hands.
-   *
-   * Rejection is terminal until someone acts on the feedback, so returning to
-   * `in_progress` is an explicit step rather than something the reviewer does
-   * on the assignee's behalf.
-   */
-  async reopenTask(
-    taskId: string,
-    actorId: string,
-    notes: string | undefined,
-    organizationId: string,
-  ) {
-    const task = await this.getTask(taskId, organizationId);
-    if (task.status !== "rejected") {
-      throw new BadRequestError("Only rejected tasks can be reopened");
-    }
-
-    const [updated] = await db
-      .update(leadTasks)
-      .set({
-        status: "in_progress",
-        completedById: null,
-        completedAt: null,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
-      )
-      .returning();
-
-    await recordTaskReviewEvent({
-      organizationId,
-      taskKind: "lead_task",
-      taskId,
-      leadId: task.leadId,
-      action: "reopened",
-      note: notes,
-      actorId,
-    });
-
-    await logLeadEvent({
-      organizationId,
-      leadId: task.leadId,
-      type: "task_status_changed" as LeadEventType,
-      actorId,
-      metadata: { taskId, title: task.title, from: "rejected", to: "in_progress" },
     });
 
     return updated;
@@ -417,22 +350,13 @@ export class LeadWorkflowService {
         status: "completed",
         completedById: approverId,
         completedAt: new Date(),
+        notes: notes ?? task.notes,
         updatedAt: new Date(),
       })
       .where(
         and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
       )
       .returning();
-
-    await recordTaskReviewEvent({
-      organizationId,
-      taskKind: "lead_task",
-      taskId,
-      leadId: task.leadId,
-      action: "approved",
-      note: notes,
-      actorId: approverId,
-    });
 
     await logLeadEvent({
       organizationId,
@@ -458,27 +382,16 @@ export class LeadWorkflowService {
     const [updated] = await db
       .update(leadTasks)
       .set({
-        // Terminal until the assignee reopens it: dropping straight back to
-        // `in_progress` gave them no signal that anything had been rejected.
-        status: "rejected",
+        status: "in_progress",
         completedById: null,
         completedAt: null,
+        notes: feedback,
         updatedAt: new Date(),
       })
       .where(
         and(eq(leadTasks.id, taskId), eq(leadTasks.organizationId, organizationId)),
       )
       .returning();
-
-    await recordTaskReviewEvent({
-      organizationId,
-      taskKind: "lead_task",
-      taskId,
-      leadId: task.leadId,
-      action: "rejected",
-      note: feedback,
-      actorId: reviewerId,
-    });
 
     await logLeadEvent({
       organizationId,
@@ -497,18 +410,9 @@ export class LeadWorkflowService {
     page = 1,
     limit = 20,
   ) {
-    // `rejected` is in the default set so a reviewer can still see what they
-    // sent back — it leaves the queue only once the assignee resubmits.
     const statuses = (status
       ? status.split(",").filter(Boolean)
-      : ["in_review", "rejected", "completed"]) as (
-      | "pending"
-      | "in_progress"
-      | "in_review"
-      | "completed"
-      | "skipped"
-      | "rejected"
-    )[];
+      : ["in_review", "completed"]) as ("pending" | "in_progress" | "in_review" | "completed" | "skipped")[];
     const offset = (page - 1) * limit;
 
     const [items, [{ total }]] = await Promise.all([
@@ -558,15 +462,6 @@ export class LeadWorkflowService {
     return { items, pagination: { total, limit, offset } };
   }
 
-  /**
-   * Stamps the firm's intake checklist onto a lead.
-   *
-   * The steps come from `intake_pipeline_templates` — the firm's own active
-   * template if it has one, otherwise the system default — so changing the
-   * checklist is a data edit rather than a deploy. If nothing has been seeded
-   * the system default is created on demand, which stops a fresh database from
-   * silently producing leads with no pipeline at all.
-   */
   async initializePipelineSteps(leadId: string, organizationId: string, assignedToId?: string) {
     const existing = await db
       .select()
@@ -577,23 +472,70 @@ export class LeadWorkflowService {
       .orderBy(asc(leadTasks.orderIndex));
     if (existing.length > 0) return existing;
 
-    const templateSteps = await resolveIntakePipelineSteps(organizationId);
+    const defaultTasks = [
+      {
+        leadId, organizationId, assignedToId,
+        title: "Run conflict check",
+        description: "Check for conflicts of interest with existing clients and adverse parties",
+        orderIndex: 0, pipelineStage: "conflict_check" as const,
+      },
+      {
+        leadId, organizationId, assignedToId,
+        title: "Review conflict results",
+        description: "Analyze conflict check results and determine next steps",
+        orderIndex: 1, pipelineStage: "conflict_check" as const,
+      },
+      {
+        leadId, organizationId, assignedToId,
+        title: "Send intake questionnaire",
+        description: "Send the intake questionnaire to the lead for detailed information",
+        orderIndex: 0, pipelineStage: "questionnaire" as const,
+      },
+      {
+        leadId, organizationId, assignedToId,
+        title: "Review questionnaire responses",
+        description: "Review and analyze the completed intake questionnaire",
+        orderIndex: 1, pipelineStage: "questionnaire" as const,
+      },
+      {
+        leadId, organizationId, assignedToId,
+        title: "Schedule consultation",
+        description: "Book initial consultation with the lead",
+        orderIndex: 0, pipelineStage: "consultation" as const,
+      },
+      {
+        leadId, organizationId, assignedToId,
+        title: "Conduct consultation",
+        description: "Hold the initial consultation meeting",
+        orderIndex: 1, pipelineStage: "consultation" as const,
+      },
+      {
+        leadId, organizationId, assignedToId,
+        title: "Prepare fee agreement",
+        description: "Draft the fee agreement for the lead",
+        orderIndex: 0, pipelineStage: "fee_agreement" as const,
+      },
+      {
+        leadId, organizationId, assignedToId,
+        title: "Send fee agreement",
+        description: "Send fee agreement to lead for signature",
+        orderIndex: 1, pipelineStage: "fee_agreement" as const,
+      },
+      {
+        leadId, organizationId, assignedToId,
+        title: "Receive signed fee agreement",
+        description: "Confirm receipt of the signed fee agreement",
+        orderIndex: 2, pipelineStage: "fee_agreement" as const,
+      },
+      {
+        leadId, organizationId, assignedToId,
+        title: "Open case file",
+        description: "Convert lead to active case and create case file",
+        orderIndex: 0, pipelineStage: "case_opening" as const,
+      },
+    ];
 
-    const steps = await db
-      .insert(leadTasks)
-      .values(
-        templateSteps.map((step) => ({
-          leadId,
-          organizationId,
-          assignedToId,
-          title: step.title,
-          description: step.description,
-          orderIndex: step.orderIndex,
-          pipelineStage: step.pipelineStage,
-          isRequired: step.isRequired,
-        })),
-      )
-      .returning();
+    const steps = await db.insert(leadTasks).values(defaultTasks).returning();
 
     await logLeadEvent({
       organizationId,

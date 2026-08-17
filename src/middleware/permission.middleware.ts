@@ -17,53 +17,6 @@ type PermissionsInput = {
   [Resource in Resources]?: Action<Resource>[];
 };
 
-/**
- * Maps an HTTP method to the CRUD action it performs.
- *
- * This exists so a resource router can be gated once, at mount time, instead of
- * per route — a route added later inherits the gate rather than needing someone
- * to remember `requirePermission`. That omission is exactly how five mutating
- * `/cases` endpoints shipped ungated while the reads beside them were gated.
- */
-const METHOD_ACTION = {
-  GET: "read",
-  HEAD: "read",
-  POST: "create",
-  PUT: "update",
-  PATCH: "update",
-  DELETE: "delete",
-} as const;
-
-type GuardedMethod = keyof typeof METHOD_ACTION;
-
-/**
- * Gates every request on a router by the resource it operates on, deriving the
- * action from the HTTP method.
- *
- * Mount it once: `router.use(requireAuth, resolveActorContext, requireResource("cases"))`.
- *
- * Routes whose action does not follow from the method — a POST that only reads,
- * or one needing a narrower action like `record_payment` — should still declare
- * their own `requirePermission` and be mounted on a router without this guard.
- */
-export function requireResource<Resource extends Resources>(resource: Resource) {
-  return async (req: Request, res: Response, next: NextFunction) => {
-    const action = METHOD_ACTION[req.method as GuardedMethod];
-
-    // An unmapped method (OPTIONS, TRACE) never reaches a handler here; refuse
-    // rather than fall through ungated.
-    if (!action) {
-      throw new AuthorizationError(`Unsupported method ${req.method}`);
-    }
-
-    return requirePermission(resource, action as Action<Resource>)(
-      req,
-      res,
-      next,
-    );
-  };
-}
-
 export function requirePermission(
   permissions: PermissionsInput,
 ): (req: Request, res: Response, next: NextFunction) => Promise<void>;
