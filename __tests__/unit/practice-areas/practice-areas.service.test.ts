@@ -30,7 +30,7 @@ describe("practice area utilities", () => {
 
   it("normalizes names by trimming whitespace", async () => {
     const { normalizePracticeAreaName } = await import(
-      "../../../src/resources/practice-areas/practice-areas.utils"
+      "../../../src/modules/practice-areas/practice-areas.utils"
     );
 
     expect(normalizePracticeAreaName("  Immigration  ")).toBe("Immigration");
@@ -38,7 +38,7 @@ describe("practice area utilities", () => {
 
   it("requires a practiceAreaId before checking subscription access", async () => {
     const { ensurePracticeAreaExists } = await import(
-      "../../../src/resources/practice-areas/practice-areas.utils"
+      "../../../src/modules/practice-areas/practice-areas.utils"
     );
 
     await expect(ensurePracticeAreaExists(organizationId)).rejects.toBeInstanceOf(
@@ -50,7 +50,7 @@ describe("practice area utilities", () => {
   it("throws NotFoundError when the practice area does not exist", async () => {
     mockDb.select.mockReturnValueOnce(buildSelectChain([]));
     const { ensurePracticeAreaExists } = await import(
-      "../../../src/resources/practice-areas/practice-areas.utils"
+      "../../../src/modules/practice-areas/practice-areas.utils"
     );
 
     await expect(
@@ -63,7 +63,7 @@ describe("practice area utilities", () => {
       .mockReturnValueOnce(buildSelectChain([{ id: "area-1" }]))
       .mockReturnValueOnce(buildSelectChain([]));
     const { ensurePracticeAreaExists } = await import(
-      "../../../src/resources/practice-areas/practice-areas.utils"
+      "../../../src/modules/practice-areas/practice-areas.utils"
     );
 
     await expect(
@@ -76,7 +76,7 @@ describe("practice area utilities", () => {
       .mockReturnValueOnce(buildSelectChain([{ id: "area-1" }]))
       .mockReturnValueOnce(buildSelectChain([{ id: "subscription-1" }]));
     const { ensurePracticeAreaExists } = await import(
-      "../../../src/resources/practice-areas/practice-areas.utils"
+      "../../../src/modules/practice-areas/practice-areas.utils"
     );
 
     await expect(ensurePracticeAreaExists(organizationId, "area-1")).resolves.toEqual({
@@ -91,7 +91,7 @@ describe("practice area utilities", () => {
       .mockReturnValueOnce(buildSelectChain([{ id: "subscription-1" }]))
       .mockReturnValueOnce(buildSelectChain([]));
     const { ensureCaseTypeBelongsToPracticeArea } = await import(
-      "../../../src/resources/practice-areas/practice-areas.utils"
+      "../../../src/modules/practice-areas/practice-areas.utils"
     );
 
     await expect(
@@ -116,7 +116,7 @@ describe("practice area utilities", () => {
         ]),
       );
     const { ensureCaseTypeBelongsToPracticeArea } = await import(
-      "../../../src/resources/practice-areas/practice-areas.utils"
+      "../../../src/modules/practice-areas/practice-areas.utils"
     );
 
     await expect(

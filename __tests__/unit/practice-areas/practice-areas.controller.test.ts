@@ -1,5 +1,5 @@
 import { describe, expect, it, jest } from "@jest/globals";
-import { PracticeAreasController } from "../../../src/resources/practice-areas/practice-areas.controller";
+import { PracticeAreasController } from "../../../src/modules/practice-areas/practice-areas.controller";
 
 const createResponse = () => {
   const res = {
