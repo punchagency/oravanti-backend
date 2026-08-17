@@ -1,23 +1,30 @@
 import { pgEnum } from 'drizzle-orm/pg-core';
 
 /**
- * `portal_status` is declared outside this directory — re-exported so
- * drizzle-kit emits it.
+ * Portal access status, shared by `staff` and `clients`.
  *
- * `drizzle.config.ts` points `schema` at `./src/db/schema`, so drizzle-kit only
- * discovers drizzle objects exported from files in here. The enum lives in
- * `modules/auth/enums.ts` and was merely *imported* by `staff.ts` and
- * `clients.ts`: their columns referenced the type, but nothing ever told
- * drizzle-kit to `CREATE TYPE` it, so `db:push` against a fresh database failed
- * with `type "portal_status" does not exist`. Re-exporting puts it in scope
- * without moving it away from the auth module that owns it.
+ * Declared HERE and not in `src/modules/auth/enums.ts`, where it originally
+ * sat, because `drizzle.config.ts` points `schema` at `./src/db/schema` only.
+ * A pgEnum declared outside that glob is invisible to drizzle-kit, so it
+ * emitted the two columns without ever emitting `CREATE TYPE portal_status`
+ * and every generated migration failed with:
  *
- * Only this one — the other enums in that file (`account_type_enum`,
- * `onboarding_state_enum`, `staff_status_enum`) back no column in this schema,
- * and their TS names collide with different PG types declared here
- * (`user_account_type`, `account_type`, `staff_status`).
+ *     type "portal_status" does not exist
+ *
+ * The other enums in that file are unaffected only because nothing inside the
+ * glob references them — the tables that look like they should use them
+ * (`user.account_type`, `staff.status`) resolve to separately-declared types
+ * with different names. Anything a table in this directory references has to
+ * be declared in this directory.
  */
-export { portalStatusEnum } from '../../modules/auth/enums';
+export const portalStatusValues = [
+  'none',
+  'pending',
+  'active',
+  'disabled',
+] as const;
+export type PortalStatus = (typeof portalStatusValues)[number];
+export const portalStatusEnum = pgEnum('portal_status', portalStatusValues);
 
 export const filingTypeEnum = pgEnum('filing_type', [
   'I-130',

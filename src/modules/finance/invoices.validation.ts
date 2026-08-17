@@ -79,6 +79,34 @@ const lineItemSchema = z.object({
   quantity: z.coerce.number().positive().default(1),
   rate: z.coerce.number().nonnegative(),
   account: z.enum(["operating", "trust_iolta"]).default("operating"),
+  /**
+   * Which catalog preset this line was composed from. Provenance only — the
+   * billed figures are the three fields above, and the server never reads the
+   * preset to fill them in. A stale or unknown id would therefore change
+   * nothing about what the client is charged.
+   */
+  presetId: z.string().uuid().optional(),
+});
+
+// ── Line preset catalog ──────────────────────────────────────────────────────
+
+/**
+ * Scope for the picker. Both ids optional: an invoice with no matter still
+ * gets the unscoped tier, which is the general charges any matter attracts.
+ */
+export const listLinePresetsQuerySchema = z.object({
+  practiceAreaId: z.string().uuid().optional(),
+  caseTypeId: z.string().uuid().optional(),
+  account: z.enum(["operating", "trust_iolta"]).optional(),
+});
+
+export const createLinePresetBodySchema = z.object({
+  name: z.string().trim().min(1).max(255),
+  note: z.string().trim().max(500).optional(),
+  account: z.enum(["operating", "trust_iolta"]),
+  defaultRate: z.coerce.number().nonnegative(),
+  practiceAreaId: z.string().uuid().optional(),
+  caseTypeId: z.string().uuid().optional(),
 });
 
 export const createInvoiceBodySchema = z
@@ -175,6 +203,18 @@ export const updateInvoiceBodySchema = z
   );
 
 export const voidInvoiceBodySchema = z.object({
+  reason: z.string().trim().max(500).optional(),
+});
+
+/**
+ * Give a client longer to pay.
+ *
+ * "Later than the current due date" cannot be checked here — the current one is
+ * in the database — so the service enforces it. This only guarantees a
+ * well-formed date arrives.
+ */
+export const extendDueDateBodySchema = z.object({
+  dueDate: z.string().date(),
   reason: z.string().trim().max(500).optional(),
 });
 

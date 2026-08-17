@@ -12,7 +12,17 @@ import {
 } from "@clack/prompts";
 import { Command } from "commander";
 import { createHash, randomUUID } from "crypto";
-import { and, asc, desc, eq, ilike, inArray, like, or } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  isNull,
+  like,
+  or,
+} from "drizzle-orm";
 import { env } from "./config/env";
 import { closeDb, db } from "./db/client";
 import {
@@ -60,6 +70,7 @@ import {
 } from "./db/schema/documents";
 import { feeAgreements } from "./db/schema/fee-agreements";
 import { firmPracticeAreas } from "./db/schema/firm-practice-areas";
+import { invoiceLinePresets } from "./db/schema/invoice-line-presets";
 import { leads } from "./db/schema/leads";
 import { leaveRequests } from "./db/schema/leave-requests";
 import { paralegalProfiles } from "./db/schema/paralegal-profiles";
@@ -93,6 +104,11 @@ import {
   workflowTemplates,
   workflowTemplateSteps,
 } from "./db/schema/workflow";
+import {
+  GENERAL_LINE_PRESETS,
+  PRACTICE_AREA_LINE_PRESETS,
+  type LinePresetSeed,
+} from "./db/seeds/invoice-line-presets.seed";
 import { seedMasterQuestionnaires } from "./db/seeds/master-questionnaires.seed";
 import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
 import { seedStaffAndTeams } from "./db/seeds/staff-and-teams.seed";
@@ -1001,6 +1017,162 @@ const seedPracticeAreaTaxonomy = async () => {
   });
 
   console.table([result]);
+};
+
+/**
+ * Seed the shipped invoice line preset catalog.
+ *
+ * Deliberately NOT behind `assertDevelopment()`, unlike the demo-data actions:
+ * these are shipped rows a production firm needs on day one, not fixtures. The
+ * taxonomy seeder above is the precedent — this catalog is scoped by it and
+ * has the same standing.
+ *
+ * Shipped rows carry `organizationId: null`. The RLS policy on the table lets
+ * every firm read them and no firm write them; the CLI connects with no
+ * `app.current_organization_id` set at all, which is what makes writing them
+ * possible here and nowhere else.
+ *
+ * Idempotent through `invoice_line_presets_shipped_uidx`, so re-running after
+ * a published fee changes corrects the amount in place rather than duplicating
+ * the row. Requires the taxonomy to have been seeded first — a preset whose
+ * practice area or case type cannot be resolved is reported and skipped rather
+ * than silently landing unscoped, which would put an immigration filing fee in
+ * front of every family-law invoice.
+ */
+const seedInvoiceLinePresets = async () => {
+  const result = await db.transaction(async (tx) => {
+    let seeded = 0;
+    const skipped: string[] = [];
+
+    // Read-then-write rather than `onConflictDoUpdate`, matching
+    // `seedPracticeAreaTaxonomy` above. The uniqueness that actually protects
+    // this table is an EXPRESSION index (lower(name), coalesce over the two
+    // nullable scope columns) and Drizzle's conflict target accepts columns
+    // only, so it cannot name that index. The index still does its job — it is
+    // what makes a duplicate a database error — and the CLI is single-threaded,
+    // so a lookup first is sufficient here.
+    const upsert = async (
+      preset: LinePresetSeed,
+      practiceAreaId: string | null,
+      caseTypeId: string | null,
+    ) => {
+      const [existing] = await tx
+        .select({ id: invoiceLinePresets.id })
+        .from(invoiceLinePresets)
+        .where(
+          and(
+            isNull(invoiceLinePresets.organizationId),
+            eq(invoiceLinePresets.account, preset.account),
+            ilike(invoiceLinePresets.name, preset.name),
+            practiceAreaId
+              ? eq(invoiceLinePresets.practiceAreaId, practiceAreaId)
+              : isNull(invoiceLinePresets.practiceAreaId),
+            caseTypeId
+              ? eq(invoiceLinePresets.caseTypeId, caseTypeId)
+              : isNull(invoiceLinePresets.caseTypeId),
+          ),
+        )
+        .limit(1);
+
+      if (existing) {
+        await tx
+          .update(invoiceLinePresets)
+          .set({
+            name: preset.name,
+            note: preset.note ?? null,
+            defaultRate: preset.defaultRate.toFixed(4),
+            active: true,
+            updatedAt: new Date(),
+          })
+          .where(eq(invoiceLinePresets.id, existing.id));
+      } else {
+        await tx.insert(invoiceLinePresets).values({
+          organizationId: null,
+          name: preset.name,
+          note: preset.note ?? null,
+          account: preset.account,
+          defaultRate: preset.defaultRate.toFixed(4),
+          practiceAreaId,
+          caseTypeId,
+        });
+      }
+
+      seeded += 1;
+    };
+
+    for (const preset of GENERAL_LINE_PRESETS) {
+      await upsert(preset, null, null);
+    }
+
+    for (const group of PRACTICE_AREA_LINE_PRESETS) {
+      const [area] = await tx
+        .select({ id: practiceAreas.id })
+        .from(practiceAreas)
+        .where(ilike(practiceAreas.name, group.practiceArea))
+        .limit(1);
+
+      if (!area) {
+        skipped.push(`${group.practiceArea} (practice area not found)`);
+        continue;
+      }
+
+      for (const preset of group.presets) {
+        if (!preset.caseType) {
+          await upsert(preset, area.id, null);
+          continue;
+        }
+
+        // Resolved through the same codeFromParts() the taxonomy was created
+        // with, so a renamed case type surfaces here as a skip rather than as
+        // a preset quietly attached to the wrong one.
+        const subcategoryCode = codeFromParts(
+          group.practiceArea,
+          preset.caseType.subcategory,
+        );
+        const caseTypeCode = codeFromParts(
+          group.practiceArea,
+          preset.caseType.subcategory,
+          preset.caseType.name,
+        );
+
+        const [caseType] = await tx
+          .select({ id: practiceAreaCaseTypes.id })
+          .from(practiceAreaCaseTypes)
+          .innerJoin(
+            practiceAreaSubcategories,
+            eq(
+              practiceAreaSubcategories.id,
+              practiceAreaCaseTypes.subcategoryId,
+            ),
+          )
+          .where(
+            and(
+              eq(practiceAreaSubcategories.practiceAreaId, area.id),
+              eq(practiceAreaSubcategories.code, subcategoryCode),
+              eq(practiceAreaCaseTypes.code, caseTypeCode),
+            ),
+          )
+          .limit(1);
+
+        if (!caseType) {
+          skipped.push(`${preset.name} (case type "${preset.caseType.name}")`);
+          continue;
+        }
+
+        await upsert(preset, area.id, caseType.id);
+      }
+    }
+
+    return { seeded, skipped };
+  });
+
+  console.table([{ seeded: result.seeded, skipped: result.skipped.length }]);
+  if (result.skipped.length) {
+    note(
+      result.skipped.map((entry) => `- ${entry}`).join("\n"),
+      "Skipped — run 'Seed practice area taxonomy' first if this looks wrong",
+    );
+  }
 };
 
 const DEMO_EMAIL_DOMAIN = "demo.oravanti.test";
@@ -4069,6 +4241,10 @@ const runInteractive = async () => {
       options: [
         { value: "list", label: "Fetch practice areas" },
         { value: "seed-taxonomy", label: "Seed practice area taxonomy" },
+        {
+          value: "seed-line-presets",
+          label: "Seed invoice line presets (needs the taxonomy first)",
+        },
         { value: "edit", label: "Edit a practice area" },
         { value: "delete", label: "Delete practice areas" },
         { value: "case-types-list", label: "Fetch case types" },
@@ -4145,6 +4321,10 @@ const runInteractive = async () => {
 
       if (action === "seed-taxonomy") {
         await seedPracticeAreaTaxonomy();
+      }
+
+      if (action === "seed-line-presets") {
+        await seedInvoiceLinePresets();
       }
 
       if (action === "edit") {
@@ -4282,6 +4462,13 @@ program
   .command("seed-taxonomy")
   .description("Seed the full practice area taxonomy from the bundled catalog")
   .action(seedPracticeAreaTaxonomy);
+
+program
+  .command("seed-line-presets")
+  .description(
+    "Seed the shipped invoice line preset catalog (idempotent; run seed-taxonomy first)",
+  )
+  .action(seedInvoiceLinePresets);
 
 program
   .command("seed-questionnaires")

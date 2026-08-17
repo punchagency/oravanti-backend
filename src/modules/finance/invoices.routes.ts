@@ -14,10 +14,13 @@ import {
   activityQuerySchema,
   caseDefaultsQuerySchema,
   createInvoiceBodySchema,
+  createLinePresetBodySchema,
   exportInvoicesQuerySchema,
+  extendDueDateBodySchema,
   followUpBodySchema,
   invoiceParamsSchema,
   listInvoicesQuerySchema,
+  listLinePresetsQuerySchema,
   recordPaymentBodySchema,
   setScheduleBodySchema,
   unbilledTimeQuerySchema,
@@ -124,6 +127,48 @@ export class InvoicesRouter {
       create,
       validateRequest({ query: caseDefaultsQuerySchema }),
       controller.getCaseDefaults,
+    );
+
+    /**
+     * @openapi
+     * /finance/invoices/line-presets:
+     *   get:
+     *     tags: [Finance — Invoicing]
+     *     summary: The catalog manual invoice lines are composed from
+     *     description: >
+     *       Returns the shipped catalog plus this firm's own entries, narrowed
+     *       to the matter's case type and practice area and widened outward:
+     *       case-type presets, then practice-area, then unscoped. `rank` says
+     *       which matched. Trust presets are omitted for callers who cannot
+     *       write trust lines.
+     *     responses:
+     *       200: { description: Line presets retrieved }
+     */
+    this.router.get(
+      "/line-presets",
+      create,
+      validateRequest({ query: listLinePresetsQuerySchema }),
+      controller.getLinePresets,
+    );
+
+    /**
+     * @openapi
+     * /finance/invoices/line-presets:
+     *   post:
+     *     tags: [Finance — Invoicing]
+     *     summary: Save a custom line to the firm's own list
+     *     description: >
+     *       Creates a firm-owned preset. Re-saving the same name in the same
+     *       scope updates its amount rather than failing. Cannot create or
+     *       modify a shipped preset — RLS refuses the write.
+     *     responses:
+     *       201: { description: Line preset saved }
+     */
+    this.router.post(
+      "/line-presets",
+      create,
+      validateRequest({ body: createLinePresetBodySchema }),
+      controller.createLinePreset,
     );
 
     /**
@@ -305,6 +350,34 @@ export class InvoicesRouter {
         body: voidInvoiceBodySchema,
       }),
       controller.void,
+    );
+
+    /**
+     * @openapi
+     * /finance/invoices/{id}/extend-due-date:
+     *   post:
+     *     tags: [Finance — Invoicing]
+     *     summary: Give the client longer to pay
+     *     description: >
+     *       Moves the due date forward on a live, unsettled invoice — stored
+     *       `sent` or `partial`, which includes anything currently overdue.
+     *       Forward only: a date on or before the current one is refused, since
+     *       an extension that can shorten is not an extension. Refused on a
+     *       draft (edit it instead), on a settled invoice, on a void, and on an
+     *       invoice with a payment schedule, whose header date is pinned to the
+     *       final instalment and must be changed by revising the schedule.
+     *     responses:
+     *       200: { description: Due date extended }
+     *       400: { description: Not extendable, scheduled, or not a later date }
+     */
+    this.router.post(
+      "/:id/extend-due-date",
+      update,
+      validateRequest({
+        params: invoiceParamsSchema,
+        body: extendDueDateBodySchema,
+      }),
+      controller.extendDueDate,
     );
 
     /**

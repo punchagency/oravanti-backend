@@ -27,6 +27,14 @@ export type StaffStatus = (typeof staffStatusValues)[number];
 export const staffStatusEnum = pgEnum("staff_status_enum", staffStatusValues);
 
 // 4. Portal Access Status (shared by staff + clients)
-export const portalStatusValues = ["none", "pending", "active", "disabled"] as const;
-export type PortalStatus = (typeof portalStatusValues)[number];
-export const portalStatusEnum = pgEnum("portal_status", portalStatusValues);
+//
+// Moved to `src/db/schema/enums.ts` and re-exported here for existing callers.
+// `drizzle.config.ts` only scans ./src/db/schema, so a pgEnum declared in this
+// file is invisible to drizzle-kit — it emitted `staff.portal_status` and
+// `clients.portal_status` without ever emitting `CREATE TYPE portal_status`,
+// and migrations failed on the missing type.
+export {
+  portalStatusEnum,
+  portalStatusValues,
+  type PortalStatus,
+} from "../../db/schema/enums";

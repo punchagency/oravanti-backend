@@ -18,8 +18,8 @@
  * org it creates.
  */
 import { randomUUID } from "crypto";
-import { and, eq, inArray } from "drizzle-orm";
-import { closeDb, systemDb } from "../../src/db/client";
+import { and, eq, inArray, like } from "drizzle-orm";
+import { closeDb, db, systemDb } from "../../src/db/client";
 import { organization, team, user } from "../../src/db/schema/auth-schema";
 import { billingRates } from "../../src/db/schema/billing-rates";
 import { cases } from "../../src/db/schema/cases";
@@ -28,6 +28,7 @@ import { financeEvents } from "../../src/db/schema/finance-events";
 import { invoiceFollowups } from "../../src/db/schema/invoice-followups";
 import { invoiceNumberSequences } from "../../src/db/schema/invoice-number-sequences";
 import { invoicePayments } from "../../src/db/schema/invoice-payments";
+import { invoiceLinePresets } from "../../src/db/schema/invoice-line-presets";
 import { invoiceLineItems, invoices } from "../../src/db/schema/invoices";
 import { leads } from "../../src/db/schema/leads";
 import { practiceAreaCaseTypes } from "../../src/db/schema/practice-area-case-types";
@@ -42,6 +43,7 @@ import {
   setBillingRate,
 } from "../../src/modules/finance/billing-rates.service";
 import { agingOverDues } from "../../src/modules/finance/dues";
+import * as linePresets from "../../src/modules/finance/line-presets.service";
 import { allocate, generateSchedule } from "../../src/modules/finance/instalments";
 import * as instalmentsService from "../../src/modules/finance/instalments.service";
 import * as invoicesService from "../../src/modules/finance/invoices.service";
@@ -84,6 +86,10 @@ const main = async () => {
   let caseId = "";
   let practiceAreaId = "";
   let subcategoryId = "";
+  // Shipped presets are not org-scoped, so cleanup has to be by the exact ids
+  // this check invents — a blanket delete of NULL-org rows would wipe a real
+  // catalog off a shared database.
+  const presetIdsToClean: string[] = [];
 
   // ── Fixture ────────────────────────────────────────────────────────────────
   await systemDb.insert(organization).values({
@@ -874,33 +880,340 @@ const main = async () => {
         null,
       );
 
-      // ── Void releases time ────────────────────────────────────────────────
-      section("voiding releases billed time");
+      // ── Extending a due date ──────────────────────────────────────────────
+      section("extending a due date");
+
+      // `second` is sent and partly paid — the shape the action exists for, and
+      // the one a bare status === 'unpaid' check would have missed.
+      const [beforeExtend] = await systemDb
+        .select({ dueDate: invoices.dueDate, status: invoices.status })
+        .from(invoices)
+        .where(eq(invoices.id, second.id));
+      const extendedTo = daysFromNow(45);
+
+      const extended = await invoicesService.extendDueDate(
+        orgId,
+        second.id,
+        { dueDate: extendedTo, reason: "Client asked for another fortnight" },
+        staffBId,
+        FULL,
+      );
+      checkEqual("the due date moves", extended.dueDate, extendedTo);
+      checkEqual(
+        "and the invoice keeps its status",
+        extended.storedStatus,
+        beforeExtend!.status,
+      );
+
+      // The column now holds the new date, so the trail is the only place the
+      // old one survives. An audit that cannot say what changed is not one.
+      const [extendEvent] = await systemDb
+        .select({
+          title: financeEvents.title,
+          description: financeEvents.description,
+        })
+        .from(financeEvents)
+        .where(
+          and(
+            eq(financeEvents.invoiceId, second.id),
+            like(financeEvents.title, "%due date extended%"),
+          ),
+        );
+      check("the extension is recorded", extendEvent != null);
+      check(
+        "with the date it moved from",
+        extendEvent?.description?.includes(beforeExtend!.dueDate) ?? false,
+        extendEvent?.description,
+      );
+      check(
+        "and the reason given",
+        extendEvent?.description?.includes("another fortnight") ?? false,
+      );
+
+      // Forward only. This is the whole reason it is not just a PATCH.
+      let backwardsRefused = false;
+      try {
+        await invoicesService.extendDueDate(
+          orgId,
+          second.id,
+          { dueDate: daysFromNow(1) },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        backwardsRefused = true;
+      }
+      check("moving a due date backwards is refused", backwardsRefused);
+
+      let sameDateRefused = false;
+      try {
+        await invoicesService.extendDueDate(
+          orgId,
+          second.id,
+          { dueDate: extendedTo },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        sameDateRefused = true;
+      }
+      check("and so is the date it already has", sameDateRefused);
+
+      // ── Scheduled invoices move the NEXT UNPAID instalment ────────────────
+      //
+      // The header date is pinned to the FINAL instalment, so it is not what
+      // anyone means by "extend this". A client who missed instalment 1 of 3
+      // needs longer on instalment 1 — and `dueBy` agrees, since a scheduled
+      // invoice goes overdue on its next unpaid slice, never on its last.
+      //
+      // Sent, not a draft: the draft guard fires first and would make these
+      // pass for the wrong reason.
+      const scheduledInvoice = await invoicesService.create(
+        orgId,
+        staffBId,
+        FULL,
+        {
+          clientId,
+          caseId,
+          issueDate: daysFromNow(-40),
+          dueDate: daysFromNow(60),
+          status: "draft",
+          timeEntryIds: [],
+          lineItems: [
+            { description: "Scheduled work", quantity: 1, rate: 600, account: "operating" },
+          ],
+        },
+      );
+      await instalmentsService.setSchedule(
+        orgId,
+        scheduledInvoice.id,
+        [
+          // Already past — the case this whole feature exists for.
+          { dueDate: daysFromNow(-10), amount: 200 },
+          { dueDate: daysFromNow(30), amount: 200 },
+          { dueDate: daysFromNow(60), amount: 200 },
+        ],
+        staffBId,
+        FULL,
+      );
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, scheduledInvoice.id));
+
+      const [beforeShift] = await systemDb
+        .select({ dueDate: invoices.dueDate, nextDue: invoices.nextDueDate })
+        .from(invoices)
+        .where(eq(invoices.id, scheduledInvoice.id));
+      checkEqual(
+        "the header date is the final instalment",
+        beforeShift!.dueDate,
+        daysFromNow(60),
+      );
+      checkEqual(
+        "and the invoice is next owed on the overdue slice",
+        beforeShift!.nextDue,
+        daysFromNow(-10),
+      );
+
+      const shifted = await invoicesService.extendDueDate(
+        orgId,
+        scheduledInvoice.id,
+        { dueDate: daysFromNow(20), reason: "Missed the first payment" },
+        staffBId,
+        FULL,
+      );
+      const shiftedFirst = shifted.instalments.find((i) => i.sequence === 1);
+      checkEqual(
+        "the overdue instalment moves",
+        shiftedFirst?.dueDate,
+        daysFromNow(20),
+      );
+      checkEqual(
+        "the header date is untouched — it follows the LAST instalment",
+        shifted.dueDate,
+        daysFromNow(60),
+      );
+      const [afterShift] = await systemDb
+        .select({ nextDue: invoices.nextDueDate })
+        .from(invoices)
+        .where(eq(invoices.id, scheduledInvoice.id));
+      checkEqual(
+        "and next_due_date follows it, which is what clears the overdue flag",
+        afterShift!.nextDue,
+        daysFromNow(20),
+      );
+      checkEqual(
+        "the schedule still sums to the total",
+        shifted.instalments.reduce((sum, i) => sum + i.amount, 0),
+        shifted.totals.total,
+      );
+
+      // Reordering the plan is a reschedule, not an extension.
+      let reorderRefused = false;
+      try {
+        await invoicesService.extendDueDate(
+          orgId,
+          scheduledInvoice.id,
+          { dueDate: daysFromNow(45) },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        reorderRefused = true;
+      }
+      check(
+        "pushing an instalment past the next one is refused",
+        reorderRefused,
+      );
+
+      // Landing exactly on the next instalment's date leaves two slices due the
+      // same day with nothing deciding their order.
+      let collisionRefused = false;
+      try {
+        await invoicesService.extendDueDate(
+          orgId,
+          scheduledInvoice.id,
+          { dueDate: daysFromNow(30) },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        collisionRefused = true;
+      }
+      check(
+        "and so is landing exactly on it",
+        collisionRefused,
+      );
+
+      // The last instalment has nothing to collide with, and the header date
+      // travels with it.
+      await paymentsService.recordPayment(
+        orgId,
+        scheduledInvoice.id,
+        staffBId,
+        FULL,
+        {
+          amount: 400,
+          paymentDate: daysFromNow(0),
+          method: "bank_transfer",
+        },
+      );
+      const lastExtended = await invoicesService.extendDueDate(
+        orgId,
+        scheduledInvoice.id,
+        { dueDate: daysFromNow(90) },
+        staffBId,
+        FULL,
+      );
+      checkEqual(
+        "extending the final instalment carries the header date with it",
+        lastExtended.dueDate,
+        daysFromNow(90),
+      );
+
+      // ── Void ──────────────────────────────────────────────────────────────
+      section("voiding");
+
+      // `invoice` was paid in full above. Voiding it would drop `collected` by
+      // money the firm actually holds while the invoice_payments rows survive,
+      // and there is no reversing entry to undo that with — the amount_positive
+      // check constraint forbids a negative payment. So it is refused.
+      let paidVoidRefused = false;
+      try {
+        await invoicesService.voidInvoice(
+          orgId,
+          invoice.id,
+          "Issued in error",
+          staffBId,
+          FULL,
+        );
+      } catch {
+        paidVoidRefused = true;
+      }
+      check("a paid invoice cannot be voided", paidVoidRefused);
+
+      const statsBeforeVoid = await invoicesService.getStats(orgId, FULL);
+
+      // A fresh, unpaid, countable invoice to void for real. It bills its own
+      // time entry, so the release assertion below still means something —
+      // `backdated` and `recent` are permanently attached to `invoice`, which
+      // can no longer be voided.
+      const voidableEntry = await timeBilling.create(orgId, staffAId, false, {
+        staffId: staffAId,
+        caseId,
+        entryDate: "2026-06-14",
+        hoursWorked: 1,
+        description: "Work billed on an invoice that gets withdrawn",
+        billable: true,
+      });
+      await timeBilling.approve(orgId, voidableEntry.id, staffBId);
+
+      const toVoid = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(0),
+        dueDate: daysFromNow(30),
+        status: "draft",
+        lineItems: [],
+        timeEntryIds: [voidableEntry.id],
+      });
+      // Countable — a draft is excluded from the tiles anyway, so voiding one
+      // would prove nothing about the revenue figures.
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, toVoid.id));
+
+      const statsWhileLive = await invoicesService.getStats(orgId, FULL);
+      checkEqual(
+        "a sent invoice counts toward revenue",
+        statsWhileLive.totalInvoiced,
+        statsBeforeVoid.totalInvoiced + toVoid.totals.total,
+      );
 
       const voided = await invoicesService.voidInvoice(
         orgId,
-        invoice.id,
+        toVoid.id,
         "Issued in error",
         staffBId,
         FULL,
       );
-      checkEqual("the invoice is void", voided.status, "void");
+      checkEqual("an unpaid invoice can be voided", voided.status, "void");
 
-      const released = await systemDb
+      const [releasedEntry] = await systemDb
         .select({ invoicedAt: timeEntries.invoicedAt })
         .from(timeEntries)
-        .where(inArray(timeEntries.id, [backdated.id, recent.id]));
-      check(
-        "its time entries can be billed again",
-        released.every((e) => e.invoicedAt == null),
+        .where(eq(timeEntries.id, voidableEntry.id));
+      checkEqual(
+        "its time entry can be billed again",
+        releasedEntry?.invoicedAt ?? null,
+        null,
       );
 
+      // Relative, not the absolute 300 this used to assert: that literal was
+      // only correct while this section voided the paid invoice, which is now
+      // refused. "Voiding removes exactly what it added" is the real invariant
+      // and does not go stale when an earlier section changes.
       const statsAfterVoid = await invoicesService.getStats(orgId, FULL);
       checkEqual(
         "a voided invoice leaves the revenue figures",
         statsAfterVoid.totalInvoiced,
-        300,
+        statsBeforeVoid.totalInvoiced,
       );
+      checkEqual(
+        "and the paid one it could not void is still counted",
+        statsAfterVoid.collected > 0,
+        true,
+      );
+
+      let doubleVoidRefused = false;
+      try {
+        await invoicesService.voidInvoice(orgId, toVoid.id, undefined, staffBId, FULL);
+      } catch {
+        doubleVoidRefused = true;
+      }
+      check("and cannot be voided twice", doubleVoidRefused);
 
       // ── Matter defaults (attorney prefill) ────────────────────────────────
       section("matter defaults");
@@ -970,7 +1283,29 @@ const main = async () => {
       // ── Editing a draft ───────────────────────────────────────────────────
       section("draft editing");
 
-      // The void above released these two, so they are billable again.
+      // Two entries of this section's own. This used to reuse `backdated` and
+      // `recent`, relying on the void above having released them — a hidden
+      // coupling that broke the moment voiding a paid invoice became refused.
+      // Owning its fixtures keeps this section about draft editing.
+      const swapOut = await timeBilling.create(orgId, staffAId, false, {
+        staffId: staffAId,
+        caseId,
+        entryDate: "2026-06-16",
+        hoursWorked: 2,
+        description: "Entry the draft starts with",
+        billable: true,
+      });
+      const swapIn = await timeBilling.create(orgId, staffAId, false, {
+        staffId: staffAId,
+        caseId,
+        entryDate: "2026-06-17",
+        hoursWorked: 1,
+        description: "Entry the draft swaps to",
+        billable: true,
+      });
+      await timeBilling.approve(orgId, swapOut.id, staffBId);
+      await timeBilling.approve(orgId, swapIn.id, staffBId);
+
       const draft = await invoicesService.create(orgId, staffBId, FULL, {
         clientId,
         caseId,
@@ -980,10 +1315,10 @@ const main = async () => {
         lineItems: [
           { description: "Consultation", quantity: 1, rate: 100, account: "operating" },
         ],
-        timeEntryIds: [backdated.id],
+        timeEntryIds: [swapOut.id],
       });
-      const backdatedAmount = draft.totals.total - 100;
-      check("the draft folds in its time entry", backdatedAmount > 0);
+      const foldedTimeAmount = draft.totals.total - 100;
+      check("the draft folds in its time entry", foldedTimeAmount > 0);
 
       const edited = await invoicesService.update(
         orgId,
@@ -994,7 +1329,7 @@ const main = async () => {
             { description: "Consultation", quantity: 2, rate: 100, account: "operating" },
           ],
           // Swap which time entry it bills.
-          timeEntryIds: [recent.id],
+          timeEntryIds: [swapIn.id],
         },
         staffBId,
         FULL,
@@ -1004,17 +1339,17 @@ const main = async () => {
       checkEqual("the notes stuck", edited.notes, "Revised before sending");
       checkEqual("the line set was replaced", edited.lineItems.length, 2);
 
-      const [backdatedAfter] = await systemDb
+      const [swapOutAfter] = await systemDb
         .select({ invoicedAt: timeEntries.invoicedAt })
         .from(timeEntries)
-        .where(eq(timeEntries.id, backdated.id));
-      const [recentAfter] = await systemDb
+        .where(eq(timeEntries.id, swapOut.id));
+      const [swapInAfter] = await systemDb
         .select({ invoicedAt: timeEntries.invoicedAt })
         .from(timeEntries)
-        .where(eq(timeEntries.id, recent.id));
+        .where(eq(timeEntries.id, swapIn.id));
       // The dropped entry must become billable again, or the work is stranded.
-      checkEqual("the dropped entry is released", backdatedAfter?.invoicedAt ?? null, null);
-      check("the added entry is claimed", recentAfter?.invoicedAt != null);
+      checkEqual("the dropped entry is released", swapOutAfter?.invoicedAt ?? null, null);
+      check("the added entry is claimed", swapInAfter?.invoicedAt != null);
 
       // Totals are recalculated, not left at what the draft used to say.
       const recentAmount = edited.totals.total - 200;
@@ -1031,7 +1366,7 @@ const main = async () => {
         draft.id,
         {
           lineItems: [],
-          timeEntryIds: [recent.id],
+          timeEntryIds: [swapIn.id],
         },
         staffBId,
         FULL,
@@ -1045,12 +1380,12 @@ const main = async () => {
       });
       check(
         "the held entry is offered back when editing",
-        offered.some((e) => e.id === recent.id),
+        offered.some((e) => e.id === swapIn.id),
       );
       const unbilledOnly = await invoicesService.getUnbilledTime(orgId, { clientId });
       check(
         "but not to a plain unbilled query",
-        !unbilledOnly.some((e) => e.id === recent.id),
+        !unbilledOnly.some((e) => e.id === swapIn.id),
       );
 
       // A sent invoice is a statement the client already holds; correcting it
@@ -2024,6 +2359,306 @@ const main = async () => {
       }
       check("a replayed event id is rejected", duplicateEventRejected);
 
+      // ── Line preset catalog ───────────────────────────────────────────────
+      // Placed here deliberately: the money assertions earlier in this file are
+      // chained and absolute (totalInvoiced 2240, statsAfterVoid 300), so the
+      // invoice this section raises must come after all of them.
+      section("line preset catalog");
+
+      // Shipped rows are written with systemDb because RLS forbids a tenant
+      // from creating one — which is itself asserted below.
+      const [shippedGeneral] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: null,
+          name: "Check — postage",
+          account: "operating",
+          defaultRate: "12.0000",
+        })
+        .returning();
+      const [shippedArea] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: null,
+          name: "Check — area filing fee",
+          account: "trust_iolta",
+          defaultRate: "405.0000",
+          practiceAreaId,
+        })
+        .returning();
+      const [shippedCaseType] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: null,
+          name: "Check — I-485 filing fee",
+          account: "trust_iolta",
+          defaultRate: "1440.0000",
+          practiceAreaId,
+          caseTypeId: caseType!.id,
+        })
+        .returning();
+      const [shippedToShadow] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: null,
+          name: "Check — superseded fee",
+          account: "operating",
+          defaultRate: "99.0000",
+          practiceAreaId,
+        })
+        .returning();
+      presetIdsToClean.push(
+        shippedGeneral!.id,
+        shippedArea!.id,
+        shippedCaseType!.id,
+        shippedToShadow!.id,
+      );
+
+      // A firm that has authored nothing still gets a working catalog. This
+      // reads through the TENANT connection, so it is the RLS `using` clause
+      // being exercised, not a bypass.
+      const scoped = await linePresets.listPresets(orgId, FULL, {
+        practiceAreaId,
+        caseTypeId: caseType!.id,
+      });
+      const scopedNames = scoped.map((p) => p.name);
+      check(
+        "a firm with no presets of its own still sees the shipped catalog",
+        scopedNames.includes("Check — postage") &&
+          scopedNames.includes("Check — area filing fee") &&
+          scopedNames.includes("Check — I-485 filing fee"),
+        scopedNames,
+      );
+      checkEqual(
+        "shipped rows report their origin",
+        scoped.find((p) => p.name === "Check — postage")?.origin,
+        "shipped",
+      );
+
+      // Most-specific first, so the picker's group headings come straight off
+      // the response.
+      const rankOf = (name: string) =>
+        scoped.find((p) => p.name === name)?.rank;
+      checkEqual("a case-type preset ranks as one", rankOf("Check — I-485 filing fee"), "case_type");
+      checkEqual("a practice-area preset ranks as one", rankOf("Check — area filing fee"), "practice_area");
+      checkEqual("an unscoped preset ranks general", rankOf("Check — postage"), "general");
+      check(
+        "and they arrive in that order",
+        scoped.findIndex((p) => p.name === "Check — I-485 filing fee") <
+          scoped.findIndex((p) => p.name === "Check — area filing fee") &&
+          scoped.findIndex((p) => p.name === "Check — area filing fee") <
+            scoped.findIndex((p) => p.name === "Check — postage"),
+      );
+
+      // Widening is one-directional: a narrower preset must not leak upward.
+      const areaOnly = await linePresets.listPresets(orgId, FULL, {
+        practiceAreaId,
+      });
+      check(
+        "a case-type preset is withheld from a matter without that case type",
+        !areaOnly.some((p) => p.name === "Check — I-485 filing fee"),
+      );
+      const unscopedOnly = await linePresets.listPresets(orgId, FULL, {});
+      checkEqual(
+        "an invoice with no matter sees only the general tier",
+        unscopedOnly.every((p) => p.rank === "general"),
+        true,
+      );
+
+      // Trust visibility. The list is a UX filter; the write path below is the
+      // boundary that actually matters.
+      const withoutTrust = await linePresets.listPresets(orgId, NO_TRUST, {
+        practiceAreaId,
+        caseTypeId: caseType!.id,
+      });
+      checkEqual(
+        "a caller without trust access is shown no trust presets",
+        withoutTrust.some((p) => p.account === "trust_iolta"),
+        false,
+      );
+      check(
+        "but still sees the operating ones",
+        withoutTrust.some((p) => p.name === "Check — postage"),
+      );
+
+      // ── Saving a custom line ──────────────────────────────────────────────
+      const savedFirst = await linePresets.saveFirmPreset(
+        orgId,
+        staffBId,
+        FULL,
+        {
+          name: "Check — bespoke drafting",
+          account: "operating",
+          defaultRate: 400,
+          practiceAreaId,
+        },
+      );
+      presetIdsToClean.push(savedFirst.id);
+      checkEqual("a saved custom line is firm-owned", savedFirst.origin, "firm");
+
+      // Re-saving the same name is an update, not a duplicate and not an error.
+      // It is the only way to correct an amount until the edit screen exists.
+      const savedAgain = await linePresets.saveFirmPreset(
+        orgId,
+        staffBId,
+        FULL,
+        {
+          name: "Check — bespoke drafting",
+          account: "operating",
+          defaultRate: 450,
+          practiceAreaId,
+        },
+      );
+      checkEqual("re-saving updates in place", savedAgain.id, savedFirst.id);
+      checkEqual("and takes the newer amount", savedAgain.defaultRate, 450);
+
+      const afterSave = await linePresets.listPresets(orgId, FULL, {
+        practiceAreaId,
+      });
+      checkEqual(
+        "the firm's list holds it exactly once",
+        afterSave.filter((p) => p.name === "Check — bespoke drafting").length,
+        1,
+      );
+      // A firm's own entry outranks the shipped rows it sits beside.
+      check(
+        "a firm entry sorts ahead of shipped ones at the same rank",
+        afterSave.findIndex((p) => p.name === "Check — bespoke drafting") <
+          afterSave.findIndex((p) => p.name === "Check — area filing fee"),
+      );
+
+      let trustPresetRefused = false;
+      try {
+        await linePresets.saveFirmPreset(orgId, staffBId, NO_TRUST, {
+          name: "Check — forbidden trust line",
+          account: "trust_iolta",
+          defaultRate: 100,
+        });
+      } catch {
+        trustPresetRefused = true;
+      }
+      check(
+        "saving a trust preset without trust access is refused",
+        trustPresetRefused,
+      );
+
+      // ── Shadowing ─────────────────────────────────────────────────────────
+      const [shadowRow] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: orgId,
+          shadowsPresetId: shippedToShadow!.id,
+          name: "Check — superseded fee",
+          account: "operating",
+          defaultRate: "150.0000",
+          practiceAreaId,
+        })
+        .returning();
+      presetIdsToClean.push(shadowRow!.id);
+
+      const afterShadow = await linePresets.listPresets(orgId, FULL, {
+        practiceAreaId,
+      });
+      const supersededRows = afterShadow.filter(
+        (p) => p.name === "Check — superseded fee",
+      );
+      checkEqual(
+        "a shadowed shipped preset drops out of the list",
+        supersededRows.length,
+        1,
+      );
+      checkEqual(
+        "leaving the firm's own in its place",
+        supersededRows[0]?.defaultRate,
+        150,
+      );
+      // The shipped row is untouched — that is the whole point of shadowing
+      // rather than editing, and it is what lets a CLI correction still land.
+      const [shippedStillThere] = await systemDb
+        .select({ rate: invoiceLinePresets.defaultRate })
+        .from(invoiceLinePresets)
+        .where(eq(invoiceLinePresets.id, shippedToShadow!.id));
+      checkEqual(
+        "while the shipped row itself is unchanged",
+        num(shippedStillThere!.rate),
+        99,
+      );
+
+      // ── RLS: the read admits NULL, the write does not ─────────────────────
+      let shippedWriteRefused = false;
+      try {
+        // `db` is the TENANT connection inside withOrgContext. A firm minting a
+        // row every other firm would then see is exactly what the withCheck
+        // clause exists to stop.
+        await db.insert(invoiceLinePresets).values({
+          organizationId: null,
+          name: "Check — smuggled shipped row",
+          account: "operating",
+          defaultRate: "1.0000",
+        });
+      } catch {
+        shippedWriteRefused = true;
+      }
+      check(
+        "a firm cannot author a shipped preset",
+        shippedWriteRefused,
+      );
+
+      // ── Provenance on the line ────────────────────────────────────────────
+      const presetInvoice = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(0),
+        dueDate: daysFromNow(30),
+        status: "draft",
+        timeEntryIds: [],
+        lineItems: [
+          {
+            description: "Check — postage",
+            quantity: 1,
+            rate: 12,
+            account: "operating",
+            presetId: shippedGeneral!.id,
+          },
+        ],
+      });
+      const presetLine = presetInvoice.lineItems[0];
+      checkEqual(
+        "a line composed from a preset records which one",
+        presetLine?.presetId,
+        shippedGeneral!.id,
+      );
+
+      // Retiring a preset must not reach into an invoice the client holds. This
+      // is why the reference is `set null` and why the rate is copied, never
+      // read back.
+      await systemDb
+        .delete(invoiceLinePresets)
+        .where(eq(invoiceLinePresets.id, shippedGeneral!.id));
+      const [orphaned] = await systemDb
+        .select({
+          description: invoiceLineItems.description,
+          rate: invoiceLineItems.rate,
+          presetId: invoiceLineItems.presetId,
+        })
+        .from(invoiceLineItems)
+        .where(eq(invoiceLineItems.id, presetLine!.id));
+      checkEqual(
+        "deleting the preset leaves the billed description intact",
+        orphaned!.description,
+        "Check — postage",
+      );
+      checkEqual(
+        "and the billed rate intact",
+        num(orphaned!.rate),
+        12,
+      );
+      checkEqual(
+        "clearing only the provenance link",
+        orphaned!.presetId,
+        null,
+      );
+
       // ── Activity trail ────────────────────────────────────────────────────
       section("activity trail");
 
@@ -2060,6 +2695,13 @@ const main = async () => {
       await systemDb
         .delete(invoiceLineItems)
         .where(inArray(invoiceLineItems.invoiceId, invoiceIds));
+    }
+    // Before the practice area, whose cascade would otherwise reach the scoped
+    // ones and leave the unscoped shipped row behind.
+    if (presetIdsToClean.length) {
+      await systemDb
+        .delete(invoiceLinePresets)
+        .where(inArray(invoiceLinePresets.id, presetIdsToClean));
     }
     // Not org-scoped by design, so cleaned by the ids this check invents.
     await systemDb

@@ -12,6 +12,7 @@ import {
 } from "./deliveries.service";
 import { getRecentActivity } from "./finance-events.service";
 import * as instalmentsService from "./instalments.service";
+import { listPresets, saveFirmPreset } from "./line-presets.service";
 import * as invoicesService from "./invoices.service";
 import * as paymentsService from "./payments.service";
 import type { AccountFilter, InvoiceStatusFilter } from "./types";
@@ -56,6 +57,34 @@ export class InvoicesController {
       req.query.caseId as string,
     );
     sendSuccess(res, defaults, "Matter defaults retrieved");
+  };
+
+  getLinePresets = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const access = await accessForRequest();
+    const presets = await listPresets(organizationId!, access, {
+      practiceAreaId: req.query.practiceAreaId as string | undefined,
+      caseTypeId: req.query.caseTypeId as string | undefined,
+      account: req.query.account as
+        | "operating"
+        | "trust_iolta"
+        | undefined,
+    });
+    sendSuccess(res, presets, "Line presets retrieved", 200, {
+      restrictions: restrictionsFor(access),
+    });
+  };
+
+  createLinePreset = async (req: Request, res: Response) => {
+    const { organizationId, staffId } = getRequestContext();
+    const access = await accessForRequest();
+    const preset = await saveFirmPreset(
+      organizationId!,
+      staffId ?? null,
+      access,
+      req.body,
+    );
+    sendSuccess(res, preset, "Line preset saved", 201);
   };
 
   list = async (req: Request, res: Response) => {
@@ -239,6 +268,19 @@ export class InvoicesController {
       access,
     );
     sendSuccess(res, invoice, "Invoice voided successfully");
+  };
+
+  extendDueDate = async (req: Request, res: Response) => {
+    const { organizationId, staffId } = getRequestContext();
+    const access = await accessForRequest();
+    const invoice = await invoicesService.extendDueDate(
+      organizationId!,
+      req.params.id as string,
+      req.body,
+      staffId ?? null,
+      access,
+    );
+    sendSuccess(res, invoice, "Due date extended");
   };
 
   recordPayment = async (req: Request, res: Response) => {
