@@ -553,16 +553,16 @@ const main = async () => {
     txns.length,
   );
 
-  // ANSWERED — and not the way the schema comment implies. `txnGroupId` is
-  // documented as the "stable id shared by transactions that belong to the same
-  // payment", but it comes back NULL on both legs. The correlation key we can
-  // actually rely on is `Payment.id`, which does return both legs under
-  // `transactions`. Our ledger idempotency must therefore key on the individual
-  // transaction id per row, with Payment.id as the grouping column — not on
-  // txnGroupId.
-  observe("txnGroupId on split legs", txns.map((t) => t.txnGroupId));
+  // `txnGroupId` is documented as the "stable id shared by transactions that
+  // belong to the same payment", but it comes back NULL for payments recorded
+  // through this API. It IS populated for real payments made on the hosted page
+  // (confirmed in 15-confido-partial-payment), so the field is not broken — it
+  // is just absent on the manual path. That makes it unusable as a universal
+  // correlator: key the ledger on each leg's own transaction id, and group by
+  // `Payment.id`, which is always present.
+  observe("txnGroupId on manually-recorded split legs", txns.map((t) => t.txnGroupId));
   check(
-    "FINDING: txnGroupId is NOT populated — Payment.id is the only correlator",
+    "FINDING: txnGroupId is null for MANUAL payments (populated for real ones)",
     txns.every((t) => t.txnGroupId == null),
     txns.map((t) => t.txnGroupId),
   );
