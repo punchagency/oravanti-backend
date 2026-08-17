@@ -81,6 +81,32 @@ export interface UpdateStaffMemberParams {
   teamIds?: string[];
 }
 
+/**
+ * A new hire cannot start before today. Applied on invite only — updating an
+ * existing staff member must stay free to record a genuinely historical start
+ * date.
+ *
+ * The comparison allows one day of slack because the client sends a plain
+ * calendar date from the admin's own timezone, which can legitimately read as
+ * "yesterday" in UTC for anyone far enough west of it.
+ */
+const assertStartDateNotInPast = (startDate?: string) => {
+  if (!startDate) return;
+
+  const parsed = new Date(startDate);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new BadRequestError("startDate must be a valid date");
+  }
+
+  const earliest = new Date();
+  earliest.setUTCHours(0, 0, 0, 0);
+  earliest.setUTCDate(earliest.getUTCDate() - 1);
+
+  if (parsed.getTime() < earliest.getTime()) {
+    throw new BadRequestError("Start date cannot be in the past");
+  }
+};
+
 export class OrganizationService {
   async listStaffs(organizationId: string, filters: GetStaffsFilters = {}) {
     const { search, role, team, status, page = 1, limit = 10 } = filters;
@@ -1172,6 +1198,8 @@ export class OrganizationService {
       teamIds,
     } = params;
 
+    assertStartDateNotInPast(startDate);
+
     const formattedEmail = email.toLowerCase().trim();
     const tempPassword = generateTempPassword();
 
@@ -1246,25 +1274,39 @@ export class OrganizationService {
       }
     });
 
-    // Send invitation email with login credentials
-    const [orgRecord] = await db
-      .select({ name: organization.name })
-      .from(organization)
-      .where(eq(organization.id, organizationId))
-      .limit(1);
+    // Create a real invitation row so the invited staff member lands on the
+    // accept-invitation page. needsSetup() drives the FE redirect by counting
+    // pending invitations for the user's email, and acceptInvite() marks it
+    // accepted (afterAcceptInvitation flips the staff row to active). The
+    // sendInvitationEmail callback picks up the staff temp password and sends
+    // the credentials email.
+    try {
+      const createdInvitation = await auth.api.createInvitation({
+        body: {
+          organizationId,
+          email: formattedEmail,
+          role: role as "admin" | "attorney" | "paralegal",
+          resend: true,
+        },
+        headers: fromNodeHeaders(headers as Record<string, string>),
+      });
 
-    const loginUrl = `${env.FRONTEND_APP_URL || "http://localhost:5173"}/login?email=${encodeURIComponent(formattedEmail)}&password=${encodeURIComponent(tempPassword)}`;
+      return {
+        staffId,
+        invitationId: createdInvitation?.id,
+      };
+    } catch (e) {
+      console.log({ error: e });
 
-    await emailService.sendInvitationWithCredentials({
-      email: formattedEmail,
-      tempPassword,
-      inviteLink: loginUrl,
-      invitedByUsername: "Your team",
-      invitedByEmail: "",
-      orgName: orgRecord?.name ?? "your organization",
-    });
+      // Roll back the account + staff row if the invitation can't be created
+      // so we don't leave an orphaned pending_invitation staff record.
+      await db.transaction(async (tx) => {
+        await tx.delete(staff).where(eq(staff.id, staffId));
+        await tx.delete(user).where(eq(user.id, createdUser.id));
+      });
 
-    return { staffId };
+      throw e;
+    }
   }
 
   async deleteTeam(teamId: string, organizationId: string) {

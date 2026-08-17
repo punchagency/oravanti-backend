@@ -17,7 +17,6 @@ export class FirmProfileRouter {
   }
 
   private initializeRoutes() {
-    this.router.use(this.path, this.router);
     this.router.use(requireAuth);
     this.router.use(resolveActorContext);
 

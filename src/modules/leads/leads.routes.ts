@@ -1,5 +1,5 @@
 ﻿import { Router } from "express";
-import multer from "multer";
+import { fieldsOnlyUpload } from "../../middleware/upload";
 
 import { requireAuth } from "../../middleware/auth.middleware";
 import { resolveActorContext } from "../../middleware/resolve-actor-context";
@@ -137,6 +137,23 @@ export class LeadWorkflowRouter {
         body: v.rejectReviewBodySchema,
       }),
       ctrl.rejectLeadTask,
+    );
+
+    this.router.post(
+      "/:leadId/tasks/:taskId/reopen",
+      requireAuth,
+      validateRequest({
+        params: v.leadTaskIdParamsSchema,
+        body: v.submitReviewBodySchema,
+      }),
+      ctrl.reopenLeadTask,
+    );
+
+    this.router.get(
+      "/:leadId/tasks/:taskId/review-thread",
+      requireAuth,
+      validateRequest({ params: v.leadTaskIdParamsSchema }),
+      ctrl.getLeadTaskReviewThread,
     );
 
     this.router.delete(
@@ -580,7 +597,7 @@ export class WebhooksRouter {
   private ctrl: LeadsController;
   // Dropbox Sign posts multipart/form-data with a single `json` field and no
   // files; memory storage + .none() parses that text field onto req.body.
-  private upload = multer({ storage: multer.memoryStorage() });
+  private upload = fieldsOnlyUpload();
 
   constructor(ctrl: LeadsController) {
     this.router = Router();

@@ -1,4 +1,3 @@
-import { CommonValidation } from "../../validation/common.validation";
 import { DocumentsService } from "../documents/documents.service";
 import { CasesController } from "./cases.controller";
 import { CasesRouter } from "./cases.routes";
@@ -9,11 +8,10 @@ export class CasesModule {
   public path: string;
 
   constructor() {
-    const commonValidation = new CommonValidation();
     const service = new CasesService();
     const documentsService = new DocumentsService();
     const controller = new CasesController(service, documentsService);
-    const router = new CasesRouter(controller, commonValidation);
+    const router = new CasesRouter(controller);
     this.router = router.router;
     this.path = router.path;
   }
