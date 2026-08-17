@@ -118,6 +118,30 @@ export class ConfidoClient {
     );
   }
 
+  /**
+   * Give someone at the firm a Confido login.
+   *
+   * Embedded onboarding creates a Firm but no user, and several things are
+   * portal-only: revoking the API token, monthly statements, the branding page.
+   * Without this the firm cannot reach any of them and each becomes a support
+   * request.
+   *
+   * Non-fatal at the call site — a firm that exists without a portal login is
+   * recoverable; a firm creation aborted because an invite email bounced is not.
+   */
+  async inviteUser(
+    firmId: string,
+    input: { email: string; firstName: string; lastName: string; role: string },
+  ): Promise<void> {
+    await this.gql(
+      this.partnerToken,
+      `mutation InviteUser($input: InviteUserInput!) {
+        inviteUser(input: $input) { id }
+      }`,
+      { input: { ...input, firmId } },
+    );
+  }
+
   /** Connect: trade an authorization code for a firm token we then store. */
   async exchangeCodeForFirmToken(
     code: string,
