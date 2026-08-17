@@ -47,13 +47,13 @@
 //
 // ─── Coverage ───────────────────────────────────────────────────────────────
 //
-// Currently covered tables (21):
+// Currently covered tables (22):
 //   cases, case_events, case_record_notes, clients,
 //   leads, lead_events, lead_notes,
 //   case_issues, case_issue_documents, case_issue_events, ai_scan_jobs,
 //   invoices, invoice_line_items, invoice_payments, invoice_instalments,
 //   invoice_followups, invoice_deliveries, invoice_line_presets,
-//   finance_events, billing_rates, time_entries
+//   finance_events, billing_rates, time_entries, confido_firms
 //
 // One of these — invoice_line_presets — holds shared rows with a NULL
 // organization_id, so its read and write clauses are not the same expression.
@@ -94,6 +94,7 @@ import { invoiceFollowups } from "./invoice-followups";
 import { invoiceLinePresets } from "./invoice-line-presets";
 import { invoiceNumberSequences } from "./invoice-number-sequences";
 import { invoiceInstalments } from "./invoice-instalments";
+import { confidoFirms } from "./confido-firms";
 import { invoicePayments } from "./invoice-payments";
 import { invoices, invoiceLineItems } from "./invoices";
 import { leads, leadEvents, leadNotes } from "./leads";
@@ -730,6 +731,25 @@ export const rlsTimeEntriesOrg = pgPolicy("rls_time_entries_org", {
   using: sql`organization_id = ${currentOrgId}`,
   withCheck: sql`organization_id = ${currentOrgId}`,
 }).link(timeEntries);
+
+/**
+ * confido_firms — one firm's merchant account.
+ *
+ * The row holds an encrypted, unscoped, full-access credential for moving that
+ * firm's money, so tenant isolation here is not merely about privacy.
+ *
+ * Note this policy protects the authenticated path only. The webhook route and
+ * its worker have no request context, so `db` falls back to `systemDb` and RLS
+ * does not apply to them at all — they must carry an explicit organization
+ * predicate resolved from confido_firm_id. Same discipline as
+ * payment-webhooks.service, and the reason confido_firm_id is uniquely indexed.
+ */
+export const rlsConfidoFirmsOrg = pgPolicy("rls_confido_firms_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(confidoFirms);
 
 
 // =============================================================================
