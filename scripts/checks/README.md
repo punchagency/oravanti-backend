@@ -52,6 +52,7 @@ after a crash.
 | `09-live-roundtrip` | Everything | The whole system with nothing stubbed |
 | `14-confido-sandbox` | Confido sandbox token | Firm onboarding + trust/operating payment routing. Network only — touches no tables |
 | `15-confido-partial-payment` | Confido sandbox token + a browser | How Confido splits a **partial** payment across the trust and operating legs |
+| `16-confido-onboarding` | Postgres | The concurrency and idempotency behind firm onboarding. No network |
 
 ## Tier 3 — Confido Legal sandbox
 
