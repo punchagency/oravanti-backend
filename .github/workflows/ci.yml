@@ -70,11 +70,8 @@ jobs:
       # __tests__/integration does not exist yet. Without the flag jest exits
       # non-zero on a repo that is otherwise fine.
       #
-      # This step is the one to watch for wall-clock time. ts-jest type-checks
-      # every file it transforms, so it recompiles the project a second time
-      # after the typecheck step above. If it becomes the slowest thing in CI,
-      # switch the transform to @swc/jest or set ts-jest isolatedModules —
-      # types are already covered by the previous step.
+      # Transform is @swc/jest, which does not type-check — that is the
+      # Typecheck step above, and it runs first for exactly this reason.
       - name: Test
         run: npm test -- --ci --passWithNoTests
 
