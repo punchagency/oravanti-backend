@@ -48,7 +48,7 @@ import { allocate, generateSchedule } from "../../src/modules/finance/instalment
 import * as instalmentsService from "../../src/modules/finance/instalments.service";
 import * as invoicesService from "../../src/modules/finance/invoices.service";
 import { formatInvoiceNumber } from "../../src/modules/finance/invoice-number";
-import { num, proRateSplit, toMoney } from "../../src/modules/finance/money";
+import { num, trustFirstSplit, toMoney } from "../../src/modules/finance/money";
 import { firmToday } from "../../src/modules/finance/status";
 import * as paymentsService from "../../src/modules/finance/payments.service";
 import * as deliveriesService from "../../src/modules/finance/deliveries.service";
@@ -232,14 +232,18 @@ const main = async () => {
         "void",
       );
 
-      const split = proRateSplit(600, 500, 1500);
-      checkEqual("pro-rata trust share", split.trust, 450);
-      checkEqual("pro-rata operating share", split.operating, 150);
+      const split = trustFirstSplit(600, 500, 1500);
+      checkEqual("trust is filled first", split.trust, 600);
+      checkEqual("operating gets nothing until trust is covered", split.operating, 0);
       checkEqual(
-        "pro-rata split sums exactly",
+        "the split sums exactly",
         toMoney(split.operating + split.trust),
         600,
       );
+      // The case that proves it is trust-FIRST rather than trust-only.
+      const spill = trustFirstSplit(1000, 900, 400);
+      checkEqual("it spills into operating once trust is covered", spill.operating, 600);
+      checkEqual("with trust capped at what it owed", spill.trust, 400);
 
       // ── Finance role resolution ───────────────────────────────────────────
       section("finance role resolution");
@@ -693,18 +697,31 @@ const main = async () => {
         "bank_transfer",
       );
 
-      const [storedSplit] = await systemDb
+      // Ordered explicitly: once a provider payment writes one row per credited
+      // leg there can be several rows here, and an unordered select would pick
+      // an arbitrary one.
+      const storedRows = await systemDb
         .select({
           operating: invoicePayments.amountOperating,
           trust: invoicePayments.amountTrust,
+          amount: invoicePayments.amount,
         })
         .from(invoicePayments)
-        .where(eq(invoicePayments.invoiceId, invoice.id));
-      // 940 apportioned over 500 operating / 1440 trust outstanding.
+        .where(eq(invoicePayments.invoiceId, invoice.id))
+        .orderBy(invoicePayments.createdAt);
+
+      checkEqual("one row per recorded payment so far", storedRows.length, 1);
+      const storedSplit = storedRows[0];
+      // 940 against 1440 owed to trust: trust-first takes all of it.
       checkEqual(
         "trust share is stored, not inferred",
         Number(storedSplit!.trust),
-        toMoney((940 * 1440) / 1940),
+        940,
+      );
+      checkEqual(
+        "and operating gets nothing while trust is still owed",
+        Number(storedSplit!.operating),
+        0,
       );
       checkEqual(
         "the split sums to the payment",

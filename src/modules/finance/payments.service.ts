@@ -15,7 +15,7 @@ import { canChaseInvoice } from "./deliveries.service";
 import { agingOverDues } from "./dues";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
-import { money, num, proRateSplit, toMoney } from "./money";
+import { money, num, toMoney, trustFirstSplit } from "./money";
 import { onClient, onLead, partyEmail, partyName, partyPhone } from "./party";
 import { dueBy, firmToday } from "./status";
 import { recalculateInvoiceTotals } from "./totals";
@@ -92,7 +92,7 @@ export const recordPayment = async (
         operating: toMoney(input.amountOperating ?? 0),
         trust: toMoney(input.amountTrust ?? 0),
       }
-    : proRateSplit(input.amount, operatingOutstanding, trustOutstanding);
+    : trustFirstSplit(input.amount, operatingOutstanding, trustOutstanding);
 
   if (explicit) {
     const sum = toMoney(split.operating + split.trust);
