@@ -149,3 +149,21 @@ export interface ConfidoStatementRecord {
   additionalFees: { amount: number; description: string; type: string }[];
   additionalCredits: { amount: number; description: string; type: string }[];
 }
+
+/**
+ * A firm's payment settings, as Confido holds them.
+ *
+ * Surcharging is gated twice and we mirror rather than copy: Confido must
+ * approve the firm (`surchargeAllowed`), and only then may the firm turn it on
+ * (`surchargeEnabled`). Storing our own copy would let the two drift, so this
+ * is read live every time.
+ */
+export interface ConfidoPaymentSettings {
+  id: string;
+  /** Confido's to grant. A firm cannot enable surcharging without it. */
+  surchargeAllowed: boolean;
+  surchargeEnabled: boolean;
+  surchargeDefaulted: boolean;
+  /** Fixed by Confido — 3.00 at time of writing — and not firm-editable. */
+  surchargeRate: number | null;
+}

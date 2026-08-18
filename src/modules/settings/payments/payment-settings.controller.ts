@@ -6,7 +6,9 @@ import { PaymentDecryptionError } from "../../../utils/payment-crypto";
 import { sendSuccess } from "../../../utils/send-success";
 import {
   getPaymentAccount,
+  getSurchargeSettings,
   refreshStatus,
+  setSurchargeEnabled,
   startOnboardingSession,
 } from "./payment-settings.service";
 
@@ -63,6 +65,19 @@ export class PaymentSettingsController {
     const { staffId } = getRequestContext();
     const session = await startOnboardingSession(this.orgId(), staffId ?? null);
     sendSuccess(res, session, "Onboarding session started");
+  });
+
+  getSurcharge = asyncWrap(async (_req: Request, res: Response) => {
+    const settings = await getSurchargeSettings(this.orgId());
+    sendSuccess(res, settings, "Surcharge settings retrieved");
+  });
+
+  setSurcharge = asyncWrap(async (req: Request, res: Response) => {
+    const settings = await setSurchargeEnabled(
+      this.orgId(),
+      req.body.enabled === true,
+    );
+    sendSuccess(res, settings, "Surcharge settings saved");
   });
 
   refresh = asyncWrap(async (_req: Request, res: Response) => {

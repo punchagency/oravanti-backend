@@ -5,6 +5,7 @@ import type {
   ConfidoBankAccount,
   ConfidoPayer,
   ConfidoPaymentLink,
+  ConfidoPaymentSettings,
   ConfidoStatementRecord,
   ConfidoTransaction,
   ConfidoBrandingImageUpload,
@@ -492,6 +493,51 @@ export class ConfidoClient {
       { limit },
     );
     return data.statements.records;
+  }
+
+  /** The firm's payment settings, including whether surcharging is permitted. */
+  async getPaymentSettings(
+    firmToken: string,
+  ): Promise<ConfidoPaymentSettings> {
+    const data = await this.gql<{
+      firm: { paymentSettings: ConfidoPaymentSettings };
+    }>(
+      firmToken,
+      `query PaymentSettings {
+        firm {
+          paymentSettings {
+            id surchargeAllowed surchargeEnabled surchargeDefaulted surchargeRate
+          }
+        }
+      }`,
+    );
+    return data.firm.paymentSettings;
+  }
+
+  /**
+   * Turn surcharging on or off for a firm.
+   *
+   * `surchargeDefaulted` is set alongside `surchargeEnabled` so new payment
+   * links inherit the firm's choice rather than needing it passed per link.
+   */
+  async updateSurcharge(
+    firmToken: string,
+    firmId: string,
+    enabled: boolean,
+  ): Promise<void> {
+    await this.gql(
+      firmToken,
+      `mutation Surcharge($input: PaymentSettingsUpdateInput!) {
+        paymentSettingsUpdate(input: $input) { id surchargeEnabled }
+      }`,
+      {
+        input: {
+          firmId,
+          surchargeEnabled: enabled,
+          surchargeDefaulted: enabled,
+        },
+      },
+    );
   }
 
   // ─── Webhooks ──────────────────────────────────────────────────────────────
