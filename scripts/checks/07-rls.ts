@@ -300,13 +300,38 @@ const main = async () => {
 
       // Visible but not writable: the shipped row is readable above, so an
       // UPDATE that reached it would be a genuine cross-tenant write.
-      const shippedUpdate = await sql`
-        UPDATE invoice_line_presets SET default_rate = 999
-         WHERE id = ${shipped!.id} RETURNING id`;
+      //
+      // Postgres refuses this in one of two ways depending on which clause
+      // catches it, and the check must accept both. A row excluded by `using`
+      // is simply not matched, so the UPDATE reports zero rows. A row that IS
+      // matched but whose result fails `withCheck` — which is this case, since
+      // the shipped row is deliberately readable — raises instead. Asserting
+      // only the zero-row form turned a correct policy into an unhandled
+      // rejection that killed the run before anything below it executed.
+      let shippedUpdateRefused = false;
+      try {
+        const shippedUpdate = await sql`
+          UPDATE invoice_line_presets SET default_rate = 999
+           WHERE id = ${shipped!.id} RETURNING id`;
+        shippedUpdateRefused = shippedUpdate.length === 0;
+      } catch {
+        shippedUpdateRefused = true;
+      }
+      check("nor edit one it can see", shippedUpdateRefused);
+
+      // Belt and braces: "the write was refused" is only meaningful if the row
+      // really is untouched. Read it back through systemDb, which bypasses RLS
+      // and therefore sees what actually happened rather than what the tenant
+      // is allowed to see.
+      const [shippedAfter] = await systemDb
+        .select({ defaultRate: invoiceLinePresets.defaultRate })
+        .from(invoiceLinePresets)
+        .where(eq(invoiceLinePresets.id, shipped!.id))
+        .limit(1);
       checkEqual(
-        "nor edit one it can see",
-        shippedUpdate.length,
-        0,
+        "and the shipped row is unchanged",
+        shippedAfter?.defaultRate,
+        "10.0000",
       );
 
       // ── No context set at all ───────────────────────────────────────────
