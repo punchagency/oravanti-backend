@@ -38,6 +38,10 @@ applies, and nothing in the API exposes it.
 - **Is "updated platform" the same thing as "new sponsor bank configuration",** or are they
   independent? They are described in separate articles and we cannot tell.
 
+We have confirmation that our firms are on the **newer platform** (see question 4), but that was
+about surcharge deposits and does not tell us which account a refund debits. If the two are the same
+thing, saying so answers this outright.
+
 This decides our entire refund model. On the new configuration a trust refund moves trust money and
 our ledger matches the bank. On legacy it does not, and we would have to model a manual transfer the
 firm may never make — which would leave the trust ledger disagreeing with the trust bank account,
@@ -61,24 +65,24 @@ all**, so nothing we can test will catch this before production.
 
 ## Important — we have shipped a defensive workaround, but would rather not guess
 
-### 4. Surcharging on the updated platform — is there a transaction at all?
+### 4. Surcharging on the updated platform — ANSWERED, with one follow-up
 
-Your article says firms on the updated platform *"will not receive any surcharge amounts — Confido
-will hold the surcharge amounts and apply them to the firm's processing fees."* A separate article
-describes a trust-only payment producing **two** charges ($100 and $3), with the $3 landing in
-operating.
+> "Yes, your firms will all be on the newer platform, so **no surcharge will be deposited**. You can
+> still initiate refunds on them and firms can still see the surcharge amounts in their reporting."
+> — Emery Wager, 18 Aug 2026
 
-- **On the updated platform, does a surcharged payment still produce a separate surcharge
-  transaction in the API**, or only the base payment?
-- **If it does, how does it present?** Is it `amountProcessed: 0, surchargeAmount: 300`, or
-  `amountProcessed: 300`? And what is its `type`?
-- **What is `Transaction.legacySurchargeAmount` for**, versus `surchargeAmount`? Does a populated
-  `legacySurchargeAmount` indicate the legacy model?
+So on the updated platform there is no separate surcharge transaction crediting the operating
+account, which removes the risk of booking one as invoice revenue.
 
-We record one ledger row per transaction, so a surcharge transaction booked as invoice revenue would
-overpay the invoice and mark it settled — silently, with no constraint violated. We currently
-allowlist transaction types we recognise as client payments and skip everything else, but we would
-rather know than guess before enabling surcharging for any firm.
+One thing still worth confirming, because "firms can still see the surcharge amounts in their
+reporting" implies the number exists somewhere:
+
+- **Does a surcharged payment still return a non-zero `Transaction.surchargeAmount`**, even though
+  nothing extra is deposited? And is `amountProcessed` still exclusive of it?
+- **What is `Transaction.legacySurchargeAmount` for**, versus `surchargeAmount`?
+
+We record `amountProcessed` per transaction as the amount credited to the invoice, so we need to be
+sure the surcharge is reported alongside it rather than folded into it.
 
 ### 5. Fee debits against insufficient funds
 

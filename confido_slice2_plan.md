@@ -124,21 +124,18 @@ trust-only link unaccounted for, and **how it presents has not been observed** �
 `amountProcessed: 0, surchargeAmount: 300`, or the reverse. The check script must settle this before
 surcharging is offered to any firm.
 
-**Confido has two surcharge accounting models and does not tell you which you are on.** From
-`what-should-i-know-before-surcharging`: firms on the *legacy platform* have surcharge deposited to
-operating and withdrawn at month end; firms on the *updated platform* "will not receive any
-surcharge amounts — Confido will hold the surcharge amounts and apply them to the firm's processing
-fees." So on the updated platform there may be no surcharge transaction at all.
+**Confirmed by Confido support (18 Aug 2026):** *"your firms will all be on the newer platform, so
+no surcharge will be deposited. You can still initiate refunds on them and firms can still see the
+surcharge amounts in their reporting."*
 
-Nothing in the API distinguishes them ahead of time. The only trace anywhere is
-`Transaction.legacySurchargeAmount` / `legacySurchargeAmountRefunded`, which sit beside the
-non-legacy `surchargeAmount` pair — so the model is observable only *after* a surcharged payment
-exists, by seeing which field is populated. There is no field on `Firm`, `FirmSettings`,
-`PaymentSettings` or `BankAccount` that says.
+So there is **no separate surcharge transaction** to mistake for invoice revenue. The hazard
+described above is the legacy platform's, not ours. The webhook allowlist stays anyway — it costs
+nothing, and "no transaction is created" is a thing that could change without us hearing about it.
 
-The handler must therefore tolerate both shapes, and the check script must record which one the
-account actually exhibits. Confirming it with support is a prerequisite to letting any real firm
-switch surcharging on.
+What remains open is only whether a surcharged payment still reports a non-zero
+`Transaction.surchargeAmount` alongside an exclusive `amountProcessed`. Since we credit the invoice
+with `amountProcessed`, that distinction is what keeps a surcharged payment from being recorded as
+larger than it was.
 
 ### Who pays the processing fee
 
