@@ -571,6 +571,37 @@ export const refreshStatus = async (
 };
 
 /**
+ * A firm's Confido credential, for paths that have no request context.
+ *
+ * `firmTokenFor` reads through `db`, which is right for the settings routes but
+ * wrong here: the public payment page and the webhook worker have no request
+ * context, so `db` would fall back to `systemDb` and RLS would not apply while
+ * looking as though it did. This reads `systemDb` explicitly with the
+ * organization named, which is the same discipline `organizationForConfidoFirm`
+ * follows.
+ *
+ * Returns the firm id alongside the token because creating a payer needs both,
+ * and fetching them separately would be two queries for one row.
+ */
+export const confidoCredentialFor = async (
+  organizationId: string,
+): Promise<{ credential: string; firmId: string }> => {
+  const [row] = await systemDb
+    .select({
+      token: confidoFirms.encryptedApiToken,
+      firmId: confidoFirms.confidoFirmId,
+    })
+    .from(confidoFirms)
+    .where(eq(confidoFirms.organizationId, organizationId))
+    .limit(1);
+
+  if (!row?.token || !row.firmId) {
+    throw new BadRequestError("This firm has no Confido credential yet");
+  }
+  return { credential: decryptPaymentValue(row.token), firmId: row.firmId };
+};
+
+/**
  * The webhook worker's entry point.
  *
  * Runs with no request context, so `db` would silently fall back to `systemDb`

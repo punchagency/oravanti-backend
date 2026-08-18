@@ -13,7 +13,7 @@ import { logCaseEvent } from "../cases/case-events.service";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
 import { mintPaymentLink, paymentLinkFor } from "./payment-links.service";
-import { isPaymentProviderConfigured } from "./payment.provider";
+import { paymentsEnabledFor } from "./confido/payments-enabled";
 import { onClient, onLead, partyEmail, partyName } from "./party";
 import { renderInvoicePdf, type InvoicePdfInput } from "./invoice-pdf";
 import type { AccountAccess } from "./types";
@@ -277,7 +277,11 @@ const deliver = async (
 
   // A link is only offered when it can actually take money. Sending one that
   // leads to "payment is not available" is worse than sending none.
-  const paymentUrl = isPaymentProviderConfigured()
+  //
+  // Per organization, not per deployment: this firm may still be in
+  // underwriting while the firm next door is trading. Getting that wrong emails
+  // a dead link to a client.
+  const paymentUrl = (await paymentsEnabledFor(organizationId))
     ? paymentLinkFor(await mintPaymentLink(organizationId, invoiceId))
     : null;
 
