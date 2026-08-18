@@ -124,21 +124,18 @@ trust-only link unaccounted for, and **how it presents has not been observed** �
 `amountProcessed: 0, surchargeAmount: 300`, or the reverse. The check script must settle this before
 surcharging is offered to any firm.
 
-**Confido has two surcharge accounting models and does not tell you which you are on.** From
-`what-should-i-know-before-surcharging`: firms on the *legacy platform* have surcharge deposited to
-operating and withdrawn at month end; firms on the *updated platform* "will not receive any
-surcharge amounts — Confido will hold the surcharge amounts and apply them to the firm's processing
-fees." So on the updated platform there may be no surcharge transaction at all.
+**Confirmed by Confido support (18 Aug 2026):** *"your firms will all be on the newer platform, so
+no surcharge will be deposited. You can still initiate refunds on them and firms can still see the
+surcharge amounts in their reporting."*
 
-Nothing in the API distinguishes them ahead of time. The only trace anywhere is
-`Transaction.legacySurchargeAmount` / `legacySurchargeAmountRefunded`, which sit beside the
-non-legacy `surchargeAmount` pair — so the model is observable only *after* a surcharged payment
-exists, by seeing which field is populated. There is no field on `Firm`, `FirmSettings`,
-`PaymentSettings` or `BankAccount` that says.
+So there is **no separate surcharge transaction** to mistake for invoice revenue. The hazard
+described above is the legacy platform's, not ours. The webhook allowlist stays anyway — it costs
+nothing, and "no transaction is created" is a thing that could change without us hearing about it.
 
-The handler must therefore tolerate both shapes, and the check script must record which one the
-account actually exhibits. Confirming it with support is a prerequisite to letting any real firm
-switch surcharging on.
+What remains open is only whether a surcharged payment still reports a non-zero
+`Transaction.surchargeAmount` alongside an exclusive `amountProcessed`. Since we credit the invoice
+with `amountProcessed`, that distinction is what keeps a surcharged payment from being recorded as
+larger than it was.
 
 ### Who pays the processing fee
 
@@ -179,20 +176,30 @@ trust, that changes our posture entirely.
 The API docs describe mechanics; the knowledgebase describes money movement, and it contradicts
 some assumptions. Four findings, in descending order of how much they cost if missed.
 
-**1. Refunds come out of the OPERATING account, not trust — on the legacy configuration.**
+**1. Refunds debit the trust account directly — the good case, now decided.**
 
-> "The refund amount is withdrawn from your operating account and sent to your client. You must then
-> transfer the same amount from trust to operating to balance the accounts."
+Confido documents two configurations. On the legacy sponsor bank a refund is withdrawn from
+*operating* and the firm must then transfer trust→operating by hand to balance; on the new sponsor
+bank it debits trust directly. We are on the newer platform, so the new configuration applies.
 
-Trust accounts were historically set up to block all debits, which is exactly the safeguard you want
-and exactly what makes refunds awkward. On the newer sponsor-bank configuration refunds debit trust
-directly, provided the firm's bank allows Confido's originator IDs.
+That matters more than it sounds. Under the legacy model a trust refund would leave the trust bank
+balance unchanged while our ledger recorded a reversal, and the correction depended on a firm
+remembering to make a manual transfer — leaving the trust ledger disagreeing with the trust bank
+account, the one reconciliation that must never drift. Under the new model the ledger reversal and
+the bank movement are the same event, which is what makes slice 3's refund handling tractable.
 
-This is **slice 3's biggest problem**, and it is worse than the API suggested. The spike observed a
-trust-leg refund reducing `trustPaid` on the payment link — but that is Confido's ledger view, not
-the bank movement. On legacy, the trust bank balance does not change and the firm owes itself a
-manual transfer. A refund ledger that mirrors Confido without modelling that will disagree with the
-trust bank statement, which is the one reconciliation that must never drift.
+**It carries one onboarding prerequisite**, and it fails silently until a firm's first refund: the
+firm's bank must permit Confido's originator IDs to debit the trust account.
+
+```
+2638633811   9263863381   8263863381
+4263863381   3263863381   2263863380
+```
+
+> "If these IDs are not allowed by your bank, the refund may be blocked."
+
+Surfaced on the Payments settings tab once a firm is active, since it is the firm's own bank they
+have to arrange it with and nobody finds out otherwise until a client is owed money.
 
 **2. `TransactionStatus2.HELD` is a high-dollar risk hold**, previously unexplained. Payments that
 deviate from a firm's normal pattern are held pending documentation, cleared manually by Confido
@@ -210,12 +217,9 @@ actually about.
 within 30 days". So a returned payment is not necessarily final, which argues for modelling returns
 as reversing entries rather than deletions — the shape slice 3 already plans.
 
-**Working assumption: the updated platform and the new sponsor bank.** Confido documents two
-configurations on each of two axes and provides no way to read either from the API — the refund
-article ends by saying *"Contact support@confidolegal.com to determine which configuration is set for
-your firm"*, which is as close to an answer as the docs get. Since we are onboarding new firms onto a
-platform whose updated version is already in production, assuming the current configuration is the
-reasonable default. Confirm with support, but build on it.
+**Confirmed: we deploy on the updated platform.** The sponsor-bank axis is still open — the two are
+described in separate articles and may be independent — and it is question 2 in
+`confido_support_questions.md`.
 
 What that assumption buys:
 

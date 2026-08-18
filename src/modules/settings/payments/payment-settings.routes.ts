@@ -9,7 +9,9 @@ import { Router } from "express";
 import { requireAuth } from "../../../middleware/auth.middleware";
 import { requirePermission } from "../../../middleware/permission.middleware";
 import { resolveActorContext } from "../../../middleware/resolve-actor-context";
+import { validateRequest } from "../../../middleware/validate.middleware";
 import { PaymentSettingsController } from "./payment-settings.controller";
+import { setSurchargeSchema } from "./payment-settings.validation";
 
 export class PaymentSettingsRouter {
   public router: Router;
@@ -43,6 +45,17 @@ export class PaymentSettingsRouter {
       this.controller.startOnboarding,
     );
     this.router.post("/refresh", configure, this.controller.refresh);
+
+    // Reconciliation data: what Confido charged and debited, by month.
+    this.router.get("/statements", configure, this.controller.listStatements);
+
+    this.router.get("/surcharge", configure, this.controller.getSurcharge);
+    this.router.patch(
+      "/surcharge",
+      configure,
+      validateRequest({ body: setSurchargeSchema }),
+      this.controller.setSurcharge,
+    );
 
     // Connect (attaching an EXISTING Confido account) is intentionally not
     // exposed yet. `completeConnect` is implemented in the service, but the

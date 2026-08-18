@@ -109,3 +109,61 @@ export interface ConfidoTransaction {
   paymentLink: { id: string; externalId: string | null } | null;
   payment: { id: string } | null;
 }
+
+/**
+ * A monthly statement.
+ *
+ * Every amount below is in CENTS, including the ones Confido types as `Float!`
+ * and the one it types as `Int!` — the inconsistency is cosmetic. Confirmed
+ * against a sandbox statement where `cardFees + achFees == totalFees` and an
+ * "unauthorized ACH return" fee came through as 2500, which is $25 rather than
+ * $2,500.
+ *
+ * Note there are no summary fields: payment volume, total fees and net fees are
+ * the firm-facing figures from Confido's own statement UI, and have to be
+ * derived by folding `bankAccounts`.
+ */
+export interface ConfidoStatementBankAccount {
+  bankAccountCategory: string;
+  bankAccountMask: string;
+  bankAccountNickname: string;
+  totalPaymentVolume: number;
+  totalFees: number;
+  cardFees: number;
+  achFees: number;
+  surchargeFeesCollected: number;
+}
+
+export interface ConfidoStatementDebitRow {
+  amount: number;
+  fromBankAccountCategory: string;
+  fromBankAccountMask: string;
+  statementDescriptor: string;
+}
+
+export interface ConfidoStatementRecord {
+  id: string;
+  month: string;
+  bankAccounts: ConfidoStatementBankAccount[];
+  debits: ConfidoStatementDebitRow[];
+  additionalFees: { amount: number; description: string; type: string }[];
+  additionalCredits: { amount: number; description: string; type: string }[];
+}
+
+/**
+ * A firm's payment settings, as Confido holds them.
+ *
+ * Surcharging is gated twice and we mirror rather than copy: Confido must
+ * approve the firm (`surchargeAllowed`), and only then may the firm turn it on
+ * (`surchargeEnabled`). Storing our own copy would let the two drift, so this
+ * is read live every time.
+ */
+export interface ConfidoPaymentSettings {
+  id: string;
+  /** Confido's to grant. A firm cannot enable surcharging without it. */
+  surchargeAllowed: boolean;
+  surchargeEnabled: boolean;
+  surchargeDefaulted: boolean;
+  /** Fixed by Confido — 3.00 at time of writing — and not firm-editable. */
+  surchargeRate: number | null;
+}

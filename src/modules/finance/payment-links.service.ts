@@ -78,6 +78,15 @@ export type PayableInvoice = {
   /** False while this firm cannot take money — the page says so rather than lying. */
   paymentsEnabled: boolean;
   /**
+   * True once nothing is owed.
+   *
+   * Returned rather than thrown, because the payment page POLLS this while a
+   * card is being processed. Throwing the moment the balance clears would flip
+   * the page into "this link is not available" at exactly the moment the payment
+   * succeeded — the one instant the payer most needs reassurance.
+   */
+  settled: boolean;
+  /**
    * Our uuid for whoever is billed — the client, or the lead if no client row
    * exists yet. Becomes the Confido payer's `externalId`, which is what lets us
    * map without a table of our own.
@@ -127,9 +136,6 @@ export const invoiceByPaymentToken = async (
   if (row.status === "draft") {
     throw new BadRequestError("This invoice is not ready for payment");
   }
-  if (num(row.balanceDue) <= 0) {
-    throw new BadRequestError("This invoice has already been paid in full");
-  }
 
   return {
     invoiceId: row.id,
@@ -142,6 +148,7 @@ export const invoiceByPaymentToken = async (
     balanceDue: num(row.balanceDue),
     dueDate: row.dueDate,
     status: row.status,
+    settled: num(row.balanceDue) <= 0,
     paymentsEnabled: await paymentsEnabledFor(row.organizationId),
     payerExternalId: row.clientId ?? row.leadId!,
   };
@@ -158,6 +165,13 @@ export const invoiceByPaymentToken = async (
  */
 export const startCheckout = async (token: string) => {
   const invoice = await invoiceByPaymentToken(token);
+
+  // The guard `invoiceByPaymentToken` used to carry. Resolving a settled
+  // invoice is fine — the page needs to say "paid" — but taking money against
+  // one is not.
+  if (invoice.settled) {
+    throw new BadRequestError("This invoice has already been paid in full");
+  }
 
   if (!(await paymentsEnabledFor(invoice.organizationId))) {
     throw new BadRequestError(
