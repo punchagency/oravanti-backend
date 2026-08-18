@@ -1,0 +1,4 @@
+# Staged files only — a pre-commit hook that lints the whole repo is a
+# pre-commit hook people disable. Type errors are caught by CI and by the
+# editor; this catches the ones that make a diff noisy or a rule regress.
+npx lint-staged

@@ -62,8 +62,19 @@ jobs:
 
       - run: npm ci
 
+      # tsconfig.check.json, not tsconfig.json. The build config is pinned to
+      # rootDir "./src" so it can emit dist/, which left scripts/, __tests__/
+      # and src/db/seeds/ unchecked — that is how three checks under
+      # scripts/checks went on importing a table deleted months earlier.
       - name: Typecheck
         run: npm run typecheck
+
+      # lint:ci pins --max-warnings to the agreed ceiling, same shape as the
+      # frontend gate. Warnings are tracked debt (no-explicit-any, mostly in
+      # drizzle builders and better-auth payloads); the count may fall, never
+      # rise. Errors are zero and stay zero.
+      - name: Lint
+        run: npm run lint:ci
 
       # --passWithNoTests is load-bearing: jest.config.js declares an
       # "integration" project whose testMatch resolves to nothing, because

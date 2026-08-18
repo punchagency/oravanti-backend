@@ -13,13 +13,13 @@
   run. It fails `npm run typecheck`, which runs ahead of tests both in CI and
   in the pre-commit hook, so nothing reaches a branch unchecked.
 
-  Settings mirror tsconfig.json — target ES2020, module commonjs.
+  Settings mirror tsconfig.json — target ES2022, module commonjs.
 */
 const swcTransform = [
   "@swc/jest",
   {
     jsc: {
-      target: "es2020",
+      target: "es2022",
       parser: { syntax: "typescript", decorators: false },
       /*
         Hoists jest.mock() above the imports in the same file, which is what

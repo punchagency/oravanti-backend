@@ -1,0 +1,28 @@
+{
+  /*
+    Typecheck config — wider than the build config on purpose.
+
+    tsconfig.json exists to emit dist/, so it is pinned to rootDir "./src" and
+    cannot include anything outside it without changing the output layout.
+    That left scripts/, __tests__/ and src/db/seeds/ unchecked, which is how
+    three checks under scripts/checks came to import `caseIssueEvents` months
+    after it was deleted: the import resolved to `undefined` at runtime and
+    nothing in CI could see it. `npm run check 07-rls` — the gate for the RLS
+    rollout — was broken and reported as passing infrastructure.
+
+    So: no emit, no rootDir, everything the repo actually runs.
+  */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node", "jest"]
+  },
+  "include": [
+    "src/**/*",
+    "scripts/**/*",
+    "__tests__/**/*",
+    "drizzle.config.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

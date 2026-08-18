@@ -14,11 +14,14 @@
     "test": "jest",
     "test:unit": "jest --selectProjects unit",
     "test:integration": "jest --selectProjects integration",
-    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:ci": "eslint . --max-warnings 122",
+    "typecheck": "tsc -p tsconfig.check.json",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "ts-node src/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "db:push": "drizzle-kit push",
+    "db:setup": "tsx scripts/db-setup.ts",
     "auth:generate": "auth generate --output ./src/db/schema/auth-schema.ts --yes",
     "db:clear": "tsx src/db/clear-all.ts",
     "db:reset": "tsx src/db/reset.ts",
@@ -26,8 +29,11 @@
     "test:db:clear": "tsx scripts/test-db/drop.ts",
     "test:db:drop": "tsx scripts/test-db/drop.ts --database",
     "check": "tsx scripts/check.ts",
-    "backfill:lead-events": "tsx src/scripts/backfill-lead-events.ts",
-    "backfill:time-entry-status": "tsx src/scripts/backfill-time-entry-status.ts"
+    "routes:audit": "tsx scripts/routes-audit.ts",
+    "backfill:time-entry-status": "tsx src/scripts/backfill-time-entry-status.ts",
+    "security:baseline": "tsx scripts/apply-security-baseline.ts",
+    "audit:retention": "tsx scripts/run-audit-retention.ts",
+    "prepare": "husky"
   },
   "repository": {
     "type": "git",
@@ -94,6 +100,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@swc/core": "^1.16.0",
     "@swc/jest": "^0.2.39",
     "@types/compression": "^1.8.1",
@@ -108,10 +115,17 @@
     "@types/swagger-jsdoc": "^6.0.4",
     "@types/swagger-ui-express": "^4.1.8",
     "drizzle-kit": "^0.31.10",
+    "eslint": "^10.8.1",
+    "eslint-plugin-unused-imports": "^4.4.1",
+    "globals": "^17.11.0",
+    "husky": "^9.1.7",
     "jest": "^30.4.2",
+    "lint-staged": "^17.3.0",
     "nodemon": "^3.1.14",
+    "prettier": "^3.9.6",
     "ts-jest": "^29.4.11",
     "ts-node": "^10.9.2",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.67.0"
   }
 }
