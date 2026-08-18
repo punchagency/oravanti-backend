@@ -2,7 +2,6 @@ import {
   boolean,
   date,
   integer,
-  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -12,7 +11,6 @@ import {
 import { organization } from './auth-schema';
 import { cases } from './cases';
 import { practiceAreas } from './practice-areas';
-import { practiceAreaCaseTypes } from './practice-area-case-types';
 import { staff } from './staff';
 
 // ─── Enums ──────────────────────────────────────────────────────────────────────
@@ -140,36 +138,6 @@ export const caseNotes = pgTable('case_notes', {
   updatedAt:         timestamp('updated_at', { precision: 6, withTimezone: true }).notNull().defaultNow(),
 });
 
-// ─── Case Timeline Events ───────────────────────────────────────────────────────
-
-export const caseTimelineEvents = pgTable('case_timeline_events', {
-  id:             uuid('id').primaryKey().defaultRandom(),
-  organizationId: text('organization_id').notNull().references(() => organization.id),
-  caseId:         uuid('case_id').notNull().references(() => cases.id, { onDelete: 'cascade' }),
-  eventType:      text('event_type').notNull(),
-  title:          text('title').notNull(),
-  description:    text('description'),
-  metadata:       jsonb('metadata'),
-  createdById:    uuid('created_by_id').references(() => staff.id),
-  createdAt:      timestamp('created_at').notNull().defaultNow(),
-});
-
-// ─── Workflow Log (Audit Trail) ──────────────────────────────────────────────────
-
-export const workflowLog = pgTable('workflow_log', {
-  id:             uuid('id').primaryKey().defaultRandom(),
-  organizationId: text('organization_id').notNull().references(() => organization.id),
-  caseId:         uuid('case_id').notNull().references(() => cases.id, { onDelete: 'cascade' }),
-  stepId:         uuid('step_id').references(() => caseWorkflowSteps.id),
-  moduleId:       uuid('module_id').references(() => workflowModules.id),
-  eventType:      text('event_type').notNull(),
-  title:          text('title').notNull(),
-  description:    text('description'),
-  metadata:       jsonb('metadata'),
-  performedById:  uuid('performed_by_id').references(() => staff.id),
-  createdAt:      timestamp('created_at').notNull().defaultNow(),
-});
-
 // ─── Types ───────────────────────────────────────────────────────────────────────
 
 export type WorkflowTemplate      = typeof workflowTemplates.$inferSelect;
@@ -177,5 +145,3 @@ export type WorkflowModule        = typeof workflowModules.$inferSelect;
 export type WorkflowTemplateStep  = typeof workflowTemplateSteps.$inferSelect;
 export type CaseWorkflowStep      = typeof caseWorkflowSteps.$inferSelect;
 export type CaseNote              = typeof caseNotes.$inferSelect;
-export type CaseTimelineEvent     = typeof caseTimelineEvents.$inferSelect;
-export type WorkflowLogEntry      = typeof workflowLog.$inferSelect;
