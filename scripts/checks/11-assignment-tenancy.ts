@@ -118,9 +118,9 @@ const main = async () => {
           section("case tasks");
 
           check(
-            "TasksService.create refuses another firm's staff",
+            "TasksService.createTask refuses another firm's staff",
             await refuses(() =>
-              tasksService.create({
+              tasksService.createTask({
                 organizationId: a.organizationId,
                 title: "Cross-tenant task",
                 description: "should not exist",

@@ -5,6 +5,7 @@ import { StaffAvailabilityService } from "../staff-availability/staff-availabili
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 import { dayjs, wallClockToEpoch } from "../../utils/date";
 
+
 export type ConsultationSlot = {
   start: string; // ISO 8601
   end: string; // ISO 8601

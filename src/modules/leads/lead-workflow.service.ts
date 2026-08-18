@@ -1,12 +1,11 @@
 import { and, asc, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../../db/client";
+import { createModuleLogger } from "../../lib/logging/log";
 import {
   leadDocumentLinks,
   leadTasks,
-  leadTimelineEvents,
   leads,
 } from "../../db/schema";
-import type { LeadEventType } from "../../db/schema/leads";
 import { assertAssignableStaff } from "../../utils/assignable-staff";
 import { triggerScenarioScan } from "../ai-scan/scan-triggers";
 import { recordTaskReviewEvent } from "../shared/task-review-events.service";
@@ -18,6 +17,8 @@ import {
   BadRequestError,
   NotFoundError,
 } from "../../utils/error/app-error";
+
+const log = createModuleLogger("lead-workflow.service");
 
 export class LeadWorkflowService {
   // ─── Lead Tasks ────────────────────────────────────────────────────────────
@@ -140,10 +141,12 @@ export class LeadWorkflowService {
     await logLeadEvent({
       organizationId,
       leadId: data.leadId,
-      type: "task_created" as LeadEventType,
+      action: "lead.task_created",
       actorId,
       metadata: { taskId: task.id, title: data.title, pipelineStage: data.pipelineStage },
     });
+
+    log.action("lead_workflow.created", { taskId: task.id, leadId: data.leadId });
 
     return task;
   }
@@ -173,10 +176,12 @@ export class LeadWorkflowService {
     await logLeadEvent({
       organizationId,
       leadId: existing.leadId,
-      type: "task_updated" as LeadEventType,
+      action: "lead.task_updated",
       actorId,
       metadata: { taskId, title: task.title, changes: data },
     });
+
+    log.action("lead_workflow.updated", { taskId, leadId: existing.leadId });
 
     return task;
   }
@@ -216,7 +221,7 @@ export class LeadWorkflowService {
     await logLeadEvent({
       organizationId,
       leadId: existing.leadId,
-      type: "task_assigned" as LeadEventType,
+      action: "lead.task_assigned",
       actorId,
       metadata: { taskId, title: existing.title, assignedToId, assigneeName: assignee?.name },
     });
@@ -246,7 +251,7 @@ export class LeadWorkflowService {
     await logLeadEvent({
       organizationId,
       leadId: existing.leadId,
-      type: "task_completed" as LeadEventType,
+      action: "lead.task_completed",
       actorId: completedById,
       metadata: { taskId, title: existing.title },
     });
@@ -276,7 +281,7 @@ export class LeadWorkflowService {
     await logLeadEvent({
       organizationId,
       leadId: existing.leadId,
-      type: "task_status_changed" as LeadEventType,
+      action: "lead.task_status_changed",
       actorId,
       metadata: { taskId, title: existing.title, from: existing.status, to: status },
     });
@@ -295,10 +300,12 @@ export class LeadWorkflowService {
     await logLeadEvent({
       organizationId,
       leadId: existing.leadId,
-      type: "task_deleted" as LeadEventType,
+      action: "lead.task_deleted",
       actorId,
       metadata: { taskId, title: existing.title, pipelineStage: existing.pipelineStage },
     });
+
+    log.action("lead_workflow.deleted", { taskId, leadId: existing.leadId });
   }
 
   async submitTaskForReview(
@@ -311,6 +318,7 @@ export class LeadWorkflowService {
     // A rejected task is resubmitted straight from here rather than forcing a
     // separate "reopen" round trip.
     if (task.status !== "in_progress" && task.status !== "rejected") {
+      log.warn("lead_workflow.submission_rejected", { taskId, status: task.status });
       throw new BadRequestError(
         "Only in-progress or rejected tasks can be submitted for review",
       );
@@ -333,7 +341,7 @@ export class LeadWorkflowService {
       taskKind: "lead_task",
       taskId,
       leadId: task.leadId,
-      action: "submitted",
+      action: "task.submitted",
       note: notes,
       actorId: submittedById,
     });
@@ -341,7 +349,7 @@ export class LeadWorkflowService {
     await logLeadEvent({
       organizationId,
       leadId: task.leadId,
-      type: "task_submitted_for_review" as LeadEventType,
+      action: "lead.task_submitted_for_review",
       actorId: submittedById,
       metadata: { taskId, title: task.title, note: notes },
     });
@@ -364,6 +372,7 @@ export class LeadWorkflowService {
   ) {
     const task = await this.getTask(taskId, organizationId);
     if (task.status !== "rejected") {
+      log.warn("lead_workflow.reopen_rejected", { taskId, status: task.status });
       throw new BadRequestError("Only rejected tasks can be reopened");
     }
 
@@ -385,7 +394,7 @@ export class LeadWorkflowService {
       taskKind: "lead_task",
       taskId,
       leadId: task.leadId,
-      action: "reopened",
+      action: "task.reopened",
       note: notes,
       actorId,
     });
@@ -393,7 +402,7 @@ export class LeadWorkflowService {
     await logLeadEvent({
       organizationId,
       leadId: task.leadId,
-      type: "task_status_changed" as LeadEventType,
+      action: "lead.task_status_changed",
       actorId,
       metadata: { taskId, title: task.title, from: "rejected", to: "in_progress" },
     });
@@ -409,6 +418,7 @@ export class LeadWorkflowService {
   ) {
     const task = await this.getTask(taskId, organizationId);
     if (task.status !== "in_review") {
+      log.warn("lead_workflow.approve_rejected", { taskId, status: task.status });
       throw new BadRequestError("Only tasks in review can be approved");
     }
     const [updated] = await db
@@ -429,7 +439,7 @@ export class LeadWorkflowService {
       taskKind: "lead_task",
       taskId,
       leadId: task.leadId,
-      action: "approved",
+      action: "task.approved",
       note: notes,
       actorId: approverId,
     });
@@ -437,7 +447,7 @@ export class LeadWorkflowService {
     await logLeadEvent({
       organizationId,
       leadId: task.leadId,
-      type: "task_approved" as LeadEventType,
+      action: "lead.task_approved",
       actorId: approverId,
       metadata: { taskId, title: task.title, note: notes },
     });
@@ -453,6 +463,7 @@ export class LeadWorkflowService {
   ) {
     const task = await this.getTask(taskId, organizationId);
     if (task.status !== "in_review") {
+      log.warn("lead_workflow.reject_rejected", { taskId, status: task.status });
       throw new BadRequestError("Only tasks in review can be rejected");
     }
     const [updated] = await db
@@ -475,7 +486,7 @@ export class LeadWorkflowService {
       taskKind: "lead_task",
       taskId,
       leadId: task.leadId,
-      action: "rejected",
+      action: "task.rejected",
       note: feedback,
       actorId: reviewerId,
     });
@@ -483,7 +494,7 @@ export class LeadWorkflowService {
     await logLeadEvent({
       organizationId,
       leadId: task.leadId,
-      type: "task_rejected" as LeadEventType,
+      action: "lead.task_rejected",
       actorId: reviewerId,
       metadata: { taskId, title: task.title, feedback },
     });
@@ -598,46 +609,11 @@ export class LeadWorkflowService {
     await logLeadEvent({
       organizationId,
       leadId,
-      type: "pipeline_initialized",
+      action: "lead.pipeline_initialized",
       metadata: { taskCount: steps.length },
     });
 
     return steps;
-  }
-
-  // ─── Timeline Events ────────────────────────────────────────────────────────
-
-  async getTimelineEvents(leadId: string, organizationId: string) {
-    return db
-      .select()
-      .from(leadTimelineEvents)
-      .leftJoin(staff, eq(leadTimelineEvents.createdById, staff.id))
-      .innerJoin(leads, eq(leadTimelineEvents.leadId, leads.id))
-      .where(
-        and(
-          eq(leadTimelineEvents.leadId, leadId),
-          eq(leads.organizationId, organizationId),
-        ),
-      )
-      .orderBy(asc(leadTimelineEvents.createdAt));
-  }
-
-  async createTimelineEvent(
-    data: {
-      leadId: string;
-      organizationId: string;
-      eventType: string;
-      title: string;
-      description?: string;
-      metadata?: Record<string, unknown>;
-      createdById?: string;
-    },
-  ) {
-    const [event] = await db
-      .insert(leadTimelineEvents)
-      .values(data)
-      .returning();
-    return event;
   }
 
   // ─── Document Links ─────────────────────────────────────────────────────────
@@ -695,7 +671,7 @@ export class LeadWorkflowService {
       await logLeadEvent({
         organizationId,
         leadId,
-        type: "document_linked" as LeadEventType,
+        action: "lead.document_linked",
         actorId: linkedByStaffId,
         metadata: { documentId, linkId: link.id },
       });
@@ -735,7 +711,7 @@ export class LeadWorkflowService {
       await logLeadEvent({
         organizationId,
         leadId,
-        type: "document_unlinked" as LeadEventType,
+        action: "lead.document_unlinked",
         metadata: { documentId: existing.documentId, linkId },
       });
     }

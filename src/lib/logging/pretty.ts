@@ -254,7 +254,7 @@ function jqInline(value: unknown, colour: boolean): string {
 
 /** Width of a rendered string with the escape sequences discounted. */
 const visibleWidth = (text: string): number =>
-  // eslint-disable-next-line no-control-regex
+   
   text.replace(/\u001b\[[0-9;]*m/g, "").length;
 
 function renderValue(value: unknown, indent: string, colour: boolean): string {

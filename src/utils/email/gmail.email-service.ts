@@ -1,10 +1,13 @@
 import nodemailer from "nodemailer";
 import { env } from "../../config/env";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
 import {
   BaseEmailService,
   EMAIL_CONFIG,
   SendEmailOptions,
 } from "./email.types";
+
+const log = createModuleLogger("gmail.email-service");
 
 export class GmailEmailService extends BaseEmailService {
   private transporter;
@@ -27,9 +30,9 @@ export class GmailEmailService extends BaseEmailService {
 
     try {
       await this.transporter.sendMail(mailOptions);
-      console.log(`[Gmail] Email sent to ${options.to}`);
+      log.info(LogEvent.EMAIL_SENT, { to: options.to });
     } catch (error) {
-      console.error(`[Gmail] Failed to send email to ${options.to}:`, error);
+      log.failure(LogEvent.EMAIL_SEND_FAILED, error, { to: options.to });
       throw error;
     }
   }

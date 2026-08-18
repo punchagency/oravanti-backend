@@ -11,7 +11,7 @@ import {
 import { captureLogs, type LogCapture } from "./capture";
 
 /**
- * The error path (plan-02 step 9, closes H4).
+ * The error path: logged once at the right level, with no internals in the body.
  *
  * Two things are load-bearing. A failure is recorded exactly once, at a level
  * that reflects whether it was our fault or the caller's. And the response

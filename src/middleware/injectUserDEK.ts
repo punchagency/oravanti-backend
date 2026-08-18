@@ -4,7 +4,7 @@ import { systemDb } from "../db/client";
 import { env } from "../config/env";
 import { getRequestContext, setRequestContext } from "../middleware/request-context";
 import { decryptUserDEK, rotateUserDEK } from "../utils/cryptoUtils";
-import { LogEvent, createModuleLogger } from "../lib/logging/log";
+import { createModuleLogger } from "../lib/logging/log";
 import { user } from "./../db/schema/auth-schema";
 
 const log = createModuleLogger("middleware.inject_user_dek");
@@ -54,7 +54,7 @@ export async function injectUserDEK(
         // The user's key cannot be unwrapped and there is no previous master
         // key to fall back to. Their encrypted data is unreadable until this
         // is resolved, so it is an error, not a warning.
-        log.failure(LogEvent.SECURITY_DEK_DECRYPT_FAILED, primaryErr, {
+        log.failure("security.dek_decrypt_failed", primaryErr, {
           targetUserId: userKeys.id,
           oldKeyConfigured: false,
         });
@@ -69,7 +69,7 @@ export async function injectUserDEK(
         // The email is deliberately not logged: identifying the user by id is
         // enough to act on, and this line is written on every request from
         // every user still on the old key.
-        log.info(LogEvent.SECURITY_DEK_ROTATED, {
+        log.info("security.dek_rotated", {
           targetUserId: userKeys.id,
         });
 
@@ -86,7 +86,7 @@ export async function injectUserDEK(
             // The request succeeds — the key was unwrapped with the old key —
             // but this user stays on it, so the rotation is not finished and
             // the old key cannot be retired.
-            log.failure(LogEvent.SECURITY_DEK_ROTATION_FAILED, dbErr, {
+            log.failure("security.dek_rotation_failed", dbErr, {
               targetUserId: userKeys.id,
             });
           });
@@ -95,7 +95,7 @@ export async function injectUserDEK(
       } catch (fallbackErr) {
         // Neither key unwraps it. Either the record is corrupt or it was
         // written under a key that is no longer configured at all.
-        log.failure(LogEvent.SECURITY_DEK_DECRYPT_FAILED, fallbackErr, {
+        log.failure("security.dek_decrypt_failed", fallbackErr, {
           targetUserId: userKeys.id,
           oldKeyConfigured: true,
         });
@@ -107,7 +107,7 @@ export async function injectUserDEK(
   } catch (error) {
     // Previously swallowed in silence: the caller got a 500 and nothing
     // anywhere recorded why, which made this branch untraceable in production.
-    log.failure(LogEvent.SECURITY_DEK_INJECTION_FAILED, error, { userId });
+    log.failure("security.dek_injection_failed", error, { userId });
     return res.status(500).json({ error: "Internal processing error." });
   }
 }

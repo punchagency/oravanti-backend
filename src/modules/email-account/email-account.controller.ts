@@ -8,7 +8,10 @@ import asyncWrap from "../../utils/asyncWrapper";
 import { encryptData } from "../../utils/cryptoUtils";
 import { BadRequestError } from "../../utils/error/app-error";
 import { sendSuccess } from "../../utils/send-success";
+import { createModuleLogger } from "../../lib/logging/log";
 import { EmailAccountService } from "./email-account.service";
+
+const log = createModuleLogger("email-account.controller");
 
 export class EmailAccountController {
   private emailAccountService: EmailAccountService;
@@ -218,7 +221,7 @@ export class EmailAccountController {
           headers: fromNodeHeaders(req.headers),
         });
       } catch (e) {
-        console.error("Failed to unlink Better Auth social account:", e);
+        log.failure("email_account.unlink_failed", e, { accountId: String(id) });
         // Continue with deletion even if unlink fails
       }
     }
@@ -255,13 +258,11 @@ export class EmailAccountController {
   };
 
   initiateGoogleOAuth = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const url = await this.buildOAuthRedirect(req, "google");
     res.redirect(url);
   });
 
   initiateMicrosoftOAuth = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const url = await this.buildOAuthRedirect(req, "microsoft");
     res.redirect(url);
   });

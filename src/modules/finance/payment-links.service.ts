@@ -3,12 +3,15 @@ import { and, eq } from "drizzle-orm";
 import { env } from "../../config/env";
 import { db } from "../../db/client";
 import { invoices } from "../../db/schema/invoices";
+import { createModuleLogger } from "../../lib/logging/log";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { onClient, onLead, partyEmail, partyName } from "./party";
 import { clients } from "../../db/schema/clients";
 import { leads } from "../../db/schema/leads";
 import { num } from "./money";
 import { getPaymentProvider, isPaymentProviderConfigured } from "./payment.provider";
+
+const log = createModuleLogger("payment-links.service");
 
 /**
  * Client-facing payment links.
@@ -58,6 +61,9 @@ export const mintPaymentLink = async (
     .where(
       and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
     );
+
+  log.action("payment_link.created", { invoiceId });
+
   return token;
 };
 
@@ -106,17 +112,21 @@ export const invoiceByPaymentToken = async (
     .where(eq(invoices.paymentTokenHash, tokenHash(token)))
     .limit(1);
 
-  if (!row) throw new NotFoundError("Payment link not found");
+  if (!row) { log.warn("payment_link.expired", { reason: "not found" }); throw new NotFoundError("Payment link not found"); }
   if (row.expiresAt && row.expiresAt.getTime() < Date.now()) {
+    log.warn("payment_link.expired", { reason: "link expired" });
     throw new BadRequestError("This payment link has expired");
   }
   if (row.status === "void") {
+    log.warn("payment_link.expired", { reason: "invoice voided" });
     throw new BadRequestError("This invoice has been cancelled");
   }
   if (row.status === "draft") {
+    log.warn("payment_link.expired", { reason: "invoice draft" });
     throw new BadRequestError("This invoice is not ready for payment");
   }
   if (num(row.balanceDue) <= 0) {
+    log.warn("payment_link.expired", { reason: "already paid" });
     throw new BadRequestError("This invoice has already been paid in full");
   }
 
@@ -148,6 +158,7 @@ export const startCheckout = async (token: string) => {
   const invoice = await invoiceByPaymentToken(token);
 
   if (!isPaymentProviderConfigured()) {
+    log.warn("payment_link.sent", { reason: "no provider" });
     throw new BadRequestError(
       "Online payment is not available yet. Please contact the firm to arrange payment.",
     );
@@ -166,6 +177,8 @@ export const startCheckout = async (token: string) => {
     payerEmail: invoice.payerEmail,
     returnUrl: paymentLinkFor(token),
   });
+
+  log.action("payment_link.sent", { invoiceId: invoice.invoiceId });
 
   return { url: session.url, reference: session.reference };
 };

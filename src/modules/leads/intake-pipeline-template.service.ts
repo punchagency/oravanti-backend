@@ -6,6 +6,9 @@ import {
   type IntakePipelineTemplateStep,
 } from "../../db/schema/intake-pipeline-templates";
 import { seedIntakePipeline } from "../../db/seeds/intake-pipeline.seed";
+import { createModuleLogger } from "../../lib/logging/log";
+
+const log = createModuleLogger("leads.intake-pipeline-template");
 
 /**
  * Resolves which intake checklist a firm's new leads should get.
@@ -69,9 +72,7 @@ export async function resolveIntakePipelineSteps(
   let templateId = await findActiveTemplateId(organizationId);
 
   if (!templateId) {
-    console.warn(
-      "No intake pipeline template found — seeding the system default on demand.",
-    );
+    log.warn("lead.pipeline_template_missing");
     templateId = await seedIntakePipeline();
   }
 

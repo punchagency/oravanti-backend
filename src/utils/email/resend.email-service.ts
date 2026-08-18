@@ -1,10 +1,13 @@
 import { Resend } from "resend";
 import { env } from "../../config/env";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
 import {
   BaseEmailService,
   EMAIL_CONFIG,
   SendEmailOptions,
 } from "./email.types";
+
+const log = createModuleLogger("resend.email-service");
 
 export class ResendEmailService extends BaseEmailService {
   private resend: Resend;
@@ -38,11 +41,11 @@ export class ResendEmailService extends BaseEmailService {
       });
 
       if (error) {
-        console.error(`[Resend] Error sending email to ${options.to}:`, error);
+        log.failure(LogEvent.EMAIL_SEND_FAILED, error, { to: options.to });
         throw error;
       }
     } catch (error) {
-      console.error(`[Resend] Failed to send email to ${options.to}:`, error);
+      log.failure(LogEvent.EMAIL_SEND_FAILED, error, { to: options.to });
       throw error;
     }
   }

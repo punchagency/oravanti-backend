@@ -35,7 +35,10 @@ export const renderCsv = async <T>(
   const data = rows.map((r) => columns.map((c) => formatCell(c.value(r))));
   const csv = await writeToString([header, ...data]);
   // Leading BOM so Excel opens UTF-8 (accents, non-Latin names) correctly.
-  return `﻿${csv}`;
+  // Written as an escape rather than a literal U+FEFF: the character is
+  // invisible in a diff, so a literal one cannot be told apart from an
+  // accidental paste — and deleting it silently breaks Excel.
+  return `\uFEFF${csv}`;
 };
 
 // ── PDF ──────────────────────────────────────────────────────────────────────

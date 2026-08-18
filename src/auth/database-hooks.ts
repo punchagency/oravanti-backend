@@ -7,7 +7,7 @@ import { systemDb } from "../db/client";
 import { staff } from "../db/schema";
 import { member, session } from "../db/schema/auth-schema";
 import { connectedEmailAccount } from "../db/schema/email";
-import { LogEvent, createModuleLogger } from "../lib/logging/log";
+import { createModuleLogger } from "../lib/logging/log";
 import { getActiveOrganization } from "./helpers";
 
 const secret = env.BETTER_AUTH_SECRET;
@@ -113,7 +113,11 @@ export const databaseHooks = {
                   email = data.mail || data.userPrincipalName || "";
                 }
               }
-            } catch {}
+            } catch {
+              // Best effort. The email is resolved again from the ID token
+              // on the next sign-in, and failing the whole hook because a
+              // profile fetch timed out would block the login itself.
+            }
           }
 
           if (!email) return;
@@ -145,7 +149,7 @@ export const databaseHooks = {
         } catch (e) {
           // Swallowed so sign-in still succeeds — but the user's mailbox is
           // silently not connected, so it has to be visible somewhere.
-          log.failure(LogEvent.EMAIL_ACCOUNT_LINK_FAILED, e, {
+          log.failure("email_account.link_failed", e, {
             provider: account.providerId,
             targetUserId: account.userId,
           });
@@ -177,7 +181,7 @@ export const databaseHooks = {
           } catch (error) {
             // Best effort. The session is created either way, with the
             // location left as "Unknown Location".
-            log.warn(LogEvent.AUTH_GEO_LOOKUP_FAILED, {
+            log.warn("auth.geo_lookup_failed", {
               err: error,
               targetUserId: session.userId,
             });

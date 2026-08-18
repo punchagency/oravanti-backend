@@ -281,9 +281,6 @@ export const auth = betterAuth({
         firmTimezone = settings?.timezone ?? "UTC";
       }
 
-      if (memberRole === "") {
-      }
-
       // User's own timezone preference (null → client falls back to browser).
       // Lives on the staff record (staff is the source of truth for profile data).
       const [staffTimezone] = await systemDb

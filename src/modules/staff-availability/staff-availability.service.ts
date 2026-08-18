@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, gte, lte, ne } from "drizzle-orm";
 import { db } from "../../db/client";
+import { createModuleLogger } from "../../lib/logging/log";
 import {
   staffAvailability,
   staffAvailabilityBreaks,
@@ -16,6 +17,8 @@ import {
   UpdateOverrideBody,
   UpdateTimeOffBody,
 } from "./staff-availability.validation";
+
+const log = createModuleLogger("staff-availability.service");
 
 export class StaffAvailabilityService {
   // Writes accept any staffId from admins, so confirm the target staff
@@ -156,7 +159,7 @@ export class StaffAvailabilityService {
         );
       }
 
-      return tx
+      const result = await tx
         .select()
         .from(staffAvailability)
         .where(
@@ -169,6 +172,10 @@ export class StaffAvailabilityService {
           asc(staffAvailability.dayOfWeek),
           asc(staffAvailability.startTime),
         );
+
+      log.action("staff_availability.updated", { staffId, windowCount: result.length });
+
+      return result;
     });
   };
 
@@ -202,7 +209,7 @@ export class StaffAvailabilityService {
         );
       }
 
-      return tx
+      const result = await tx
         .select()
         .from(staffAvailabilityBreaks)
         .where(
@@ -215,6 +222,10 @@ export class StaffAvailabilityService {
           asc(staffAvailabilityBreaks.dayOfWeek),
           asc(staffAvailabilityBreaks.startTime),
         );
+
+      log.action("staff_availability.updated", { staffId, breakCount: result.length });
+
+      return result;
     });
   };
 
@@ -238,6 +249,7 @@ export class StaffAvailabilityService {
         reason: body.reason,
       })
       .returning();
+    log.action("staff_availability.blocked", { staffId, overrideId: created.id, date: body.date, type: body.type });
     return created;
   };
 
@@ -324,6 +336,7 @@ export class StaffAvailabilityService {
         reason: body.reason,
       })
       .returning();
+    log.action("staff_availability.blocked", { staffId, timeOffId: created.id, startDate: body.startDate, endDate: body.endDate });
     return created;
   };
 

@@ -3,10 +3,13 @@ import { db } from "../../db/client";
 import { consultations } from "../../db/schema/consultations";
 import { invoices } from "../../db/schema/invoices";
 import { leads } from "../../db/schema/leads";
+import { createModuleLogger } from "../../lib/logging/log";
 import { systemAccess } from "./account-access";
 import { create } from "./invoices.service";
 import { num } from "./money";
 import { firmToday } from "./status";
+
+const log = createModuleLogger("consultation-billing.service");
 
 /**
  * Consultation fees, as invoices.
@@ -105,6 +108,8 @@ export const raiseConsultationInvoice = async (
     .update(consultations)
     .set({ invoiceId: invoice.id, updatedAt: new Date() })
     .where(eq(consultations.id, input.consultationId));
+
+  log.action("consultation_billing.generated", { consultationId: input.consultationId, invoiceId: invoice.id });
 
   return invoice.id;
 };

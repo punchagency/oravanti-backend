@@ -169,6 +169,7 @@ export const LogEvent = {
   INVITATION_EXPIRED: "invitation.expired",
   ONBOARDING_STEP_COMPLETED: "onboarding.step_completed",
   ONBOARDING_COMPLETED: "onboarding.completed",
+  ONBOARDING_STEP_REJECTED: "onboarding.step_rejected",
 
   // ── Users & staff ─────────────────────────────────────────────────────────
   STAFF_CREATED: "staff.created",
@@ -177,7 +178,13 @@ export const LogEvent = {
   STAFF_REACTIVATED: "staff.reactivated",
   STAFF_ROLE_CHANGED: "staff.role_changed",
   STAFF_PERMISSIONS_CHANGED: "staff.permissions_changed",
+  STAFF_PROFILE_UPDATED: "staff.profile_updated",
+  STAFF_AVATAR_UPLOADED: "staff.avatar_uploaded",
   USER_PROFILE_UPDATED: "user.profile_updated",
+
+  // ── Staff availability ────────────────────────────────────────────────────
+  STAFF_AVAILABILITY_UPDATED: "staff_availability.updated",
+  STAFF_AVAILABILITY_BLOCKED: "staff_availability.blocked",
 
   // ── Contractors ───────────────────────────────────────────────────────────
   CONTRACTOR_REGISTERED: "contractor.registered",
@@ -204,6 +211,7 @@ export const LogEvent = {
   ORGANIZATION_UPDATE_FAILED: "organization.update_failed",
   ORGANIZATION_SETTINGS_CHANGED: "organization.settings_changed",
   ORGANIZATION_SUBSCRIPTION_CHANGED: "organization.subscription_changed",
+  ORGANIZATION_STAFF_INVITE_FAILED: "organization.staff_invite_failed",
 
   // ── Clients ───────────────────────────────────────────────────────────────
   CLIENT_CREATED: "client.created",
@@ -215,6 +223,12 @@ export const LogEvent = {
   CLIENT_PORTAL_ACCESS_REVOKED: "client.portal_access_revoked",
   CLIENT_CONTACT_ADDED: "client.contact_added",
   CLIENT_CONTACT_REMOVED: "client.contact_removed",
+  CLIENT_CONTACT_UPDATED: "client.contact_updated",
+  CLIENT_CONTACT_DELETED: "client.contact_deleted",
+  CLIENT_COMPANY_SET: "client.company_set",
+  CLIENT_PORTAL_SESSION_REVOKED: "client.portal_session_revoked",
+  CLIENT_PORTAL_STATUS_CHANGED: "client.portal_status_changed",
+  CLIENT_PORTAL_INVITE_FAILED: "client.portal_invite_failed",
 
   // ── Leads ─────────────────────────────────────────────────────────────────
   LEAD_CREATED: "lead.created",
@@ -226,6 +240,12 @@ export const LogEvent = {
   LEAD_CONVERTED: "lead.converted",
   LEAD_DECLINED: "lead.declined",
   LEAD_NOTE_ADDED: "lead.note_added",
+  LEAD_NOTE_CREATED: "lead_note.created",
+  LEAD_NOTE_UPDATED: "lead_note.updated",
+  LEAD_NOTE_DELETED: "lead_note.deleted",
+  LEAD_NOTE_CREATION_REJECTED: "lead_note.creation_rejected",
+  LEAD_NOTE_UPDATE_REJECTED: "lead_note.update_rejected",
+  LEAD_NOTE_DELETE_REJECTED: "lead_note.delete_rejected",
   LEAD_CONFLICT_CHECK_RUN: "lead.conflict_check_run",
   LEAD_CONFLICT_CHECK_APPROVED: "lead.conflict_check_approved",
   LEAD_CONFLICT_CHECK_DECLINED: "lead.conflict_check_declined",
@@ -237,12 +257,24 @@ export const LogEvent = {
   LEAD_FEE_AGREEMENT_SIGNED: "lead.fee_agreement_signed",
   // Diagnostics
   LEAD_EVENT_WRITE_FAILED: "lead.event_write_failed",
+  LEAD_EVENT_LOGGED: "lead_event.logged",
   LEAD_VIEW_LOG_FAILED: "lead.view_log_failed",
   LEAD_NOTE_SAVE_FAILED: "lead.note_save_failed",
   LEAD_CONSULTATION_NOTE_MIRROR_FAILED: "lead.consultation_note_mirror_failed",
   LEAD_CALENDAR_EVENT_FAILED: "lead.calendar_event_failed",
   LEAD_FEE_AGREEMENT_ARCHIVE_FAILED: "lead.fee_agreement_archive_failed",
   LEAD_PIPELINE_TEMPLATE_MISSING: "lead.pipeline_template_missing",
+  LEADS_CONSULTATION_INVOICE_FAILED: "leads.consultation_invoice_failed",
+  LEADS_FEE_AGREEMENT_INVOICE_FAILED: "leads.fee_agreement_invoice_failed",
+
+  // ── Lead workflow ─────────────────────────────────────────────────────────
+  LEAD_WORKFLOW_CREATED: "lead_workflow.created",
+  LEAD_WORKFLOW_UPDATED: "lead_workflow.updated",
+  LEAD_WORKFLOW_DELETED: "lead_workflow.deleted",
+  LEAD_WORKFLOW_SUBMISSION_REJECTED: "lead_workflow.submission_rejected",
+  LEAD_WORKFLOW_REOPEN_REJECTED: "lead_workflow.reopen_rejected",
+  LEAD_WORKFLOW_APPROVE_REJECTED: "lead_workflow.approve_rejected",
+  LEAD_WORKFLOW_REJECT_REJECTED: "lead_workflow.reject_rejected",
 
   // ── Cases ─────────────────────────────────────────────────────────────────
   CASE_CREATED: "case.created",
@@ -251,6 +283,7 @@ export const LogEvent = {
   CASE_DELETED: "case.deleted",
   CASE_STATUS_CHANGED: "case.status_changed",
   CASE_ASSIGNED: "case.assigned",
+  CASE_ARCHIVED: "case.archived",
   CASE_CLOSED: "case.closed",
   CASE_REOPENED: "case.reopened",
   CASE_NOTE_ADDED: "case.note_added",
@@ -259,6 +292,7 @@ export const LogEvent = {
   // Diagnostics
   CASE_EVENT_WRITE_FAILED: "case.event_write_failed",
   CASE_VIEW_LOG_FAILED: "case.view_log_failed",
+  CASE_EVENT_LOGGED: "case.event_logged",
 
   // ── Case review ───────────────────────────────────────────────────────────
   CASE_REVIEW_RULE_FAILED: "case_review.rule_failed",
@@ -267,6 +301,8 @@ export const LogEvent = {
   CASE_REVIEW_SWEEP_FAILED: "case_review.sweep_failed",
   CASE_REVIEW_ISSUE_RAISED: "case_review.issue_raised",
   CASE_REVIEW_ISSUE_RESOLVED: "case_review.issue_resolved",
+  CASE_REVIEW_EVALUATED: "case_review.evaluated",
+  CONSULTATION_AUTO_QUESTIONNAIRE_SKIPPED: "consultation.auto_questionnaire_skipped",
   TASK_REVIEW_EVENT_WRITE_FAILED: "task_review.event_write_failed",
 
   // ── Documents ─────────────────────────────────────────────────────────────
@@ -278,6 +314,19 @@ export const LogEvent = {
   DOCUMENT_SIGNATURE_REQUESTED: "document.signature_requested",
   DOCUMENT_SIGNED: "document.signed",
   DOCUMENT_UPLOAD_FAILED: "document.upload_failed",
+  DOCUMENT_UPDATED: "document.updated",
+  DOCUMENT_SHARING_CHANGED: "document.sharing_changed",
+  DOCUMENT_LINKED_TO_CASE: "document.linked_to_case",
+  DOCUMENT_STATUS_CHANGED: "document.status_changed",
+  DOCUMENT_ARCHIVED: "document.archived",
+  DOCUMENT_RESTORED: "document.restored",
+  DOCUMENT_REQUEST_CREATED: "document.request_created",
+  DOCUMENT_EXTERNAL_SUBMITTED: "document.external_submitted",
+  DOCUMENT_REQUEST_REISSUED: "document.request_reissued",
+  DOCUMENT_REQUEST_CANCELLED: "document.request_cancelled",
+  DOCUMENT_REQUIREMENT_CREATED: "document_requirement.created",
+  DOCUMENT_REQUIREMENT_UPDATED: "document_requirement.updated",
+  DOCUMENT_REQUIREMENT_DELETED: "document_requirement.deleted",
 
   // ── Tasks & time ──────────────────────────────────────────────────────────
   TASK_CREATED: "task.created",
@@ -292,6 +341,9 @@ export const LogEvent = {
   CALENDAR_EVENT_CREATED: "calendar.event_created",
   CALENDAR_EVENT_UPDATED: "calendar.event_updated",
   CALENDAR_EVENT_CANCELLED: "calendar.event_cancelled",
+  CALENDAR_EVENT_DELETED: "calendar.event_deleted",
+  CALENDAR_UPDATE_REJECTED: "calendar.update_rejected",
+  CALENDAR_DELETE_REJECTED: "calendar.delete_rejected",
   CALENDAR_SYNC_FAILED: "calendar.sync_failed",
 
   // ── Questionnaires ────────────────────────────────────────────────────────
@@ -304,15 +356,43 @@ export const LogEvent = {
   // ── Finance ───────────────────────────────────────────────────────────────
   INVOICE_CREATED: "invoice.created",
   INVOICE_SENT: "invoice.sent",
+  INVOICE_DUPLICATED: "invoice.duplicated",
   INVOICE_PAID: "invoice.paid",
   INVOICE_VOIDED: "invoice.voided",
   INVOICE_DELIVERY_FAILED: "invoice.delivery_failed",
+  INVOICE_SCHEDULE_DELIVERY_FAILED: "invoice.schedule_delivery_failed",
+  INSTALMENT_CREATED: "instalment.created",
+  INSTALMENT_REMINDER_SENT: "instalment.reminder_sent",
+  REPORT_GENERATED: "report.generated",
+  REPORT_EXPORT_FAILED: "report.export_failed",
   PAYMENT_RECEIVED: "payment.received",
   PAYMENT_REFUNDED: "payment.refunded",
   PAYMENT_FAILED: "payment.failed",
+  PAYMENT_FOLLOWUP_EMAIL_FAILED: "payment.followup_email_failed",
   PAYMENT_WEBHOOK_RECEIVED: "payment.webhook_received",
   PAYMENT_WEBHOOK_REJECTED: "payment.webhook_rejected",
   PAYMENT_WEBHOOK_FAILED: "payment.webhook_failed",
+  PAYMENT_WEBHOOK_PROCESSED: "payment_webhook.processed",
+  PAYMENT_WEBHOOK_SIGNATURE_INVALID: "payment_webhook.signature_invalid",
+  PAYMENT_WEBHOOK_DUPLICATE_SKIPPED: "payment_webhook.duplicate_skipped",
+  PAYMENT_LINK_CREATED: "payment_link.created",
+  PAYMENT_LINK_SENT: "payment_link.sent",
+  PAYMENT_LINK_EXPIRED: "payment_link.expired",
+  FINANCE_EVENT_RECORDED: "finance.event_recorded",
+  FINANCE_EVENT_QUERY_FAILED: "finance.event_query_failed",
+  FEE_AGREEMENT_GENERATED: "fee_agreement.generated",
+  FEE_AGREEMENT_SENT: "fee_agreement.sent",
+  CONSULTATION_BILLING_GENERATED: "consultation_billing.generated",
+  CONSULTATION_BILLING_SENT: "consultation_billing.sent",
+  BILLING_RATE_CREATED: "billing_rate.created",
+  BILLING_RATE_UPDATED: "billing_rate.updated",
+  BILLING_RATE_DELETED: "billing_rate.deleted",
+  LINE_PRESET_CREATED: "line_preset.created",
+  LINE_PRESET_UPDATED: "line_preset.updated",
+  LINE_PRESET_DELETED: "line_preset.deleted",
+  INVOICE_UPDATED: "invoice.updated",
+  TIME_ENTRY_TIMER_STARTED: "time_entry.timer_started",
+  TIME_ENTRY_TIMER_STOPPED: "time_entry.timer_stopped",
   EXPENSE_CREATED: "expense.created",
   TRUST_LEDGER_ENTRY_CREATED: "trust_ledger.entry_created",
 
@@ -323,8 +403,10 @@ export const LogEvent = {
   // ── Email ─────────────────────────────────────────────────────────────────
   EMAIL_SENT: "email.sent",
   EMAIL_SEND_FAILED: "email.send_failed",
+  EMAIL_DNS_RESOLUTION_FAILED: "email.dns_resolution_failed",
   EMAIL_ACCOUNT_LINKED: "email_account.linked",
   EMAIL_ACCOUNT_UNLINKED: "email_account.unlinked",
+  EMAIL_ACCOUNT_UNLINK_FAILED: "email_account.unlink_failed",
   EMAIL_ACCOUNT_SYNC_FAILED: "email_account.sync_failed",
   EMAIL_ACCOUNT_LINK_FAILED: "email_account.link_failed",
 
@@ -348,6 +430,7 @@ export const LogEvent = {
   AI_SCAN_MARK_RUNNING_FAILED: "ai_scan.mark_running_failed",
   AI_SCAN_RECONCILIATION_FAILED: "ai_scan.reconciliation_failed",
   AI_SCAN_TRIGGER_FAILED: "ai_scan.trigger_failed",
+  AI_SCAN_SCENARIO_RESOLVE_FAILED: "ai_scan.scenario_resolve_failed",
 
   // ── External integrations ─────────────────────────────────────────────────
   GOOGLE_MEET_LINK_CREATED: "google_meet.link_created",
@@ -358,10 +441,66 @@ export const LogEvent = {
   STORAGE_DOWNLOAD_FAILED: "storage.download_failed",
   INTEGRATION_REQUEST_FAILED: "integration.request_failed",
 
+  // ── SMS (stubs) ──────────────────────────────────────────────────────────
+  /** SMS sending is not wired yet. These stubs record the intent for when it is. */
+  SMS_FOLLOWUP_STUB: "sms.followup_stub",
+  SMS_QUESTIONNAIRE_LINK_STUB: "sms.questionnaire_link_stub",
+  SMS_BOOKING_LINK_STUB: "sms.booking_link_stub",
+  SMS_MISSING_DOCS_STUB: "sms.missing_docs_stub",
+
+  // ── Audit trail ───────────────────────────────────────────────────────────
+  /**
+   * The audit row could not be written.
+   *
+   * Emitted only where the caller chose not to let the failure abort the
+   * request — an observational record of something that already happened
+   * elsewhere, such as a rejected sign-in. Everywhere else the insert throws
+   * and the business change rolls back with it, so there is nothing to report
+   * here. Treat this event as a gap in a legally-retained record and alert on
+   * it accordingly.
+   */
+  AUDIT_WRITE_FAILED: "audit.write_failed",
+  /** An access (view/download) row was lost. Never aborts the read it describes. */
+  AUDIT_ACCESS_WRITE_FAILED: "audit.access_write_failed",
+  /** A read of the trail itself, at `debug` — the audited record of it is the `audit_log.viewed` row. */
+  AUDIT_QUERIED: "audit.queried",
+  /**
+   * Audit rows were destroyed by the retention job.
+   *
+   * An `action`, not an `info`: this is the one code path allowed to remove a
+   * legally-retained record, and years later it must be possible to show that
+   * a missing row was purged on schedule rather than never written.
+   */
+  AUDIT_RETENTION_PURGED: "audit.retention_purged",
+  AUDIT_RETENTION_COMPLETED: "audit.retention_completed",
+  /** The maintenance role is not configured, so nothing was purged. */
+  AUDIT_RETENTION_SKIPPED: "audit.retention_skipped",
+  AUDIT_RETENTION_FAILED: "audit.retention_failed",
+
   // ── Data movement ─────────────────────────────────────────────────────────
   DATA_EXPORTED: "data.exported",
   DATA_IMPORTED: "data.imported",
   DATA_BULK_DELETED: "data.bulk_deleted",
+
+  // ── Workflow ──────────────────────────────────────────────────────────────
+  WORKFLOW_TRIGGERED: "workflow.triggered",
+  WORKFLOW_COMPLETED: "workflow.completed",
+  WORKFLOW_SUBMIT_REJECTED: "workflow.submit_rejected",
+  WORKFLOW_APPROVE_REJECTED: "workflow.approve_rejected",
+  WORKFLOW_REJECT_REJECTED: "workflow.reject_rejected",
+  WORKFLOW_REOPEN_REJECTED: "workflow.reopen_rejected",
+
+  // ── Settings ──────────────────────────────────────────────────────────────
+  SETTINGS_DATA_ACCESS_UPDATED: "settings.data_access_updated",
+  SETTINGS_SECURITY_UPDATED: "settings.security_updated",
+  SETTINGS_APPROVAL_WORKFLOW_UPDATED: "settings.approval_workflow_updated",
+  SETTINGS_CONSULTATION_UPDATED: "settings.consultation_updated",
+  SETTINGS_ACCESS_CONTROL_UPDATED: "settings.access_control_updated",
+  SETTINGS_CERTIFICATION_GATE_UPDATED: "settings.certification_gate_updated",
+  SETTINGS_FIRM_PROFILE_UPDATED: "settings.firm_profile_updated",
+  SETTINGS_FINANCIAL_ACCESS_UPDATED: "settings.financial_access_updated",
+  SETTINGS_FIRM_INFO_UPDATED: "settings.firm_info_updated",
+  PERMISSION_AUDIT_QUERIED: "permission_audit.queried",
 } as const;
 
 /** Every valid value of the `event` field. */

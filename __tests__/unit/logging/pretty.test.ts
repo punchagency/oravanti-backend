@@ -33,7 +33,7 @@ const RECORD = {
   env: "development",
 };
 
-// eslint-disable-next-line no-control-regex
+ 
 const ANSI = /\[[0-9;]*m/g;
 const plain = (text: string) => text.replace(ANSI, "");
 

@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { systemDb } from "../../db/client";
 import { invoices } from "../../db/schema/invoices";
 import { paymentWebhookEvents } from "../../db/schema/payment-webhook-events";
+import { createModuleLogger } from "../../lib/logging/log";
 import {
   AuthorizationError,
   BadRequestError,
@@ -9,6 +10,8 @@ import {
 import { recordPayment } from "./payments.service";
 import { getPaymentProvider, isPaymentProviderConfigured } from "./payment.provider";
 import { systemAccess } from "./account-access";
+
+const log = createModuleLogger("payment-webhooks.service");
 
 /**
  * Provider webhooks — the path by which money actually reaches the ledger.
@@ -38,11 +41,13 @@ export const handlePaymentWebhook = async (
   // safe answer: an unauthenticated endpoint that accepts unverified payloads
   // and writes payments is a way to mark any invoice paid from the internet.
   if (!isPaymentProviderConfigured()) {
+    log.warn("payment_webhook.processed", { reason: "no provider configured" });
     throw new BadRequestError("No payment provider is configured");
   }
 
   const provider = getPaymentProvider();
   if (!provider.verifyWebhook(rawBody, signature)) {
+    log.warn("payment_webhook.signature_invalid", { reason: "signature verification failed" });
     throw new AuthorizationError("Invalid webhook signature");
   }
 
@@ -60,6 +65,7 @@ export const handlePaymentWebhook = async (
       eventType: "payment",
     });
   } catch {
+    log.action("payment_webhook.duplicate_skipped", { eventId: event.eventId });
     return { handled: false, reason: "Already processed" };
   }
 
@@ -97,12 +103,15 @@ export const handlePaymentWebhook = async (
     // error worth retrying.
     const message = err instanceof Error ? err.message : "";
     if (message.includes("invoice_payments_provider_ref_uidx")) {
+      log.action("payment_webhook.duplicate_skipped", { eventId: event.eventId, invoiceId: invoice.id });
       await markProcessed(provider.name, event.eventId);
       return { handled: true, invoiceId: invoice.id, duplicate: true };
     }
+    log.failure("payment_webhook.processed", err, { eventId: event.eventId, invoiceId: invoice.id });
     throw err;
   }
 
+  log.action("payment_webhook.processed", { eventId: event.eventId, invoiceId: invoice.id });
   await markProcessed(provider.name, event.eventId);
   return { handled: true, invoiceId: invoice.id, duplicate: false };
 };

@@ -1,6 +1,9 @@
 import { randomUUID } from "crypto";
 import { google } from "googleapis";
 import { env } from "../../config/env";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
+
+const log = createModuleLogger("google-meet.service");
 
 export type CreateMeetLinkInput = {
   summary?: string;
@@ -86,15 +89,13 @@ export class GoogleMeetService {
         undefined;
 
       if (!url) {
-        console.error(
-          "[google-meet] event created but no Meet link was returned",
-        );
+        log.warn(LogEvent.GOOGLE_MEET_LINK_CREATE_FAILED, {}, "event created but no Meet link was returned");
         return this.placeholder();
       }
 
       return { url, externalId: data.id ?? undefined, isPlaceholder: false };
     } catch (error) {
-      console.error("[google-meet] failed to create Meet link", error);
+      log.failure(LogEvent.GOOGLE_MEET_LINK_CREATE_FAILED, error);
       return this.placeholder();
     }
   }
@@ -113,7 +114,7 @@ export class GoogleMeetService {
         eventId: externalId,
       });
     } catch (error) {
-      console.error("[google-meet] failed to delete Meet event", error);
+      log.failure(LogEvent.GOOGLE_MEET_EVENT_DELETE_FAILED, error);
     }
   }
 

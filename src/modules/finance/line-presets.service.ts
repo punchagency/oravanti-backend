@@ -4,9 +4,12 @@ import {
   invoiceLinePresets,
   type InvoiceLinePreset,
 } from "../../db/schema/invoice-line-presets";
+import { createModuleLogger } from "../../lib/logging/log";
 import { canWriteTrust, requireTrustWrite } from "./account-access";
 import { num } from "./money";
 import type { AccountAccess } from "./types";
+
+const log = createModuleLogger("line-presets.service");
 
 /**
  * The catalog manual invoice lines are composed from.
@@ -226,6 +229,8 @@ export const saveFirmPreset = async (
           createdById: actorStaffId,
         })
         .returning();
+
+  log.action(existing ? "line_preset.updated" : "line_preset.created", { presetId: saved!.id, name: input.name });
 
   return toRow(
     saved!,

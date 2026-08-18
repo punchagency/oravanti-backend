@@ -1,6 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import multer from "multer";
-import { LogEvent, logFailure, logWarning } from "../lib/logging/log";
+import { logFailure, logWarning } from "../lib/logging/log";
 import { getRequestContext, getRequestId } from "./request-context";
 import { getErrorResponse, isAppError } from "../utils/error";
 import type { AppError } from "../utils/error/app-error";
@@ -36,7 +36,7 @@ function recordFailure(
   };
 
   if (statusCode >= 500) {
-    logFailure(LogEvent.HTTP_REQUEST_FAILED, error, {
+    logFailure("http.request_failed", error, {
       ...where,
       ...pgContext(error),
     });
@@ -51,7 +51,7 @@ function recordFailure(
     ? (error as unknown as AppError)
     : undefined;
 
-  logWarning(LogEvent.HTTP_REQUEST_REJECTED, {
+  logWarning("http.request_rejected", {
     ...where,
     errorMessage: error?.message,
     // Validation failures carry the field-level detail saying which inputs
@@ -85,7 +85,7 @@ export const errorMiddleware = (
     // gets its own event so it can be alerted on separately from the noise of
     // ordinary permission failures.
     logFailure(
-      LogEvent.SECURITY_RLS_VIOLATION,
+      "security.rls_violation",
       error,
       {
         ...pgContext(error),

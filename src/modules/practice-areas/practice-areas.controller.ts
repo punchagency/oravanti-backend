@@ -12,7 +12,6 @@ export class PracticeAreasController {
   }
 
   getAllPracticeAreas = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const { search } = req.query;
     const result = await this.practiceAreasService.getAllPracticeAreas({
       search: search as string | undefined,

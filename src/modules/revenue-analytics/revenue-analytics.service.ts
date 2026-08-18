@@ -9,6 +9,7 @@ import { dayjs } from "../../utils/date";
 import { resolveAvatarUrl } from "../../utils/storage/avatar-url";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type Period = "month" | "quarter" | "year" | "all";

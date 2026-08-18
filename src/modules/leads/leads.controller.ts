@@ -171,8 +171,6 @@ export class LeadsController {
       userRole = staffMember?.role ?? undefined;
     }
 
-    console.log({ userRole });
-
     const result = await this.svc.getLeadNotes(leadId, organizationId!, {
       context,
       authorId,
@@ -464,7 +462,6 @@ export class LeadsController {
   // Public booking flow (token-gated, no auth)
 
   getConsultationBooking = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     const result = await this.svc.getConsultationBooking(
       req.params.token as string,
@@ -473,7 +470,6 @@ export class LeadsController {
   };
 
   payConsultationFee = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     const result = await this.svc.payConsultationFee(
       req.params.token as string,
@@ -482,7 +478,6 @@ export class LeadsController {
   };
 
   selectConsultationSlot = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     const result = await this.svc.selectConsultationSlot(
       req.params.token as string,
@@ -492,7 +487,6 @@ export class LeadsController {
   };
 
   updateBookingTimezone = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     sendSuccess(res, null, "Timezone updated successfully");
   };
@@ -593,7 +587,6 @@ export class LeadsController {
   // Embedded signing session (public, token-gated)
 
   getEmbeddedSignSession = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     const result = await this.svc.getEmbeddedSignSession(
       req.params.token as string,
@@ -604,7 +597,6 @@ export class LeadsController {
   // Dropbox Sign Webhook (public)
 
   handleDropboxSignWebhook = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     const raw = (req.body as { json?: string })?.json;
     if (!raw) {
@@ -949,21 +941,6 @@ export class LeadsController {
     sendSuccess(res, result.data, "Audit log retrieved successfully", 200, {
       pagination: result.pagination,
     });
-  };
-
-  createLeadTimelineEvent = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const event = await this.wfSvc.createTimelineEvent({
-      leadId: req.params.leadId as string,
-      organizationId: organizationId!,
-      eventType: req.body.eventType,
-      title: req.body.title,
-      description: req.body.description,
-      metadata: req.body.metadata,
-      createdById: staffId ?? undefined,
-    });
-    sendSuccess(res, event, "Timeline event created successfully", 201);
   };
 
   // Lead Documents

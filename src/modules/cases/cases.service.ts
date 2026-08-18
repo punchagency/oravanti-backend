@@ -11,7 +11,10 @@ import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
 import { ensureCaseTypeBelongsToPracticeArea } from "../practice-areas/practice-areas.utils";
 import { logCaseEvent } from "./case-events.service";
-import type { CreateCaseInput, ListCasesQuery, UpdateCaseInput } from "./cases.validation";
+import type { UpdateCaseInput } from "./cases.validation";
+import { createModuleLogger } from "../../lib/logging/log";
+
+const log = createModuleLogger("cases.service");
 
 // ─── Case Number Generation ──────────────────────────────────────────────────
 
@@ -71,27 +74,6 @@ export const getAllCases = async (
   const limit = filters?.limit ?? 20;
   const offset = (page - 1) * limit;
 
-  const baseJoin = (qb: any) =>
-    qb
-      .from(cases)
-      .leftJoin(clients, eq(clients.id, cases.clientId))
-      .leftJoin(
-        clientContacts,
-        and(
-          eq(clientContacts.clientId, clients.id),
-          eq(clientContacts.type, "primary_client"),
-        ),
-      )
-      .leftJoin(practiceAreas, eq(practiceAreas.id, cases.practiceAreaId))
-      .leftJoin(
-        practiceAreaCaseTypes,
-        eq(practiceAreaCaseTypes.id, cases.caseTypeId),
-      )
-      .leftJoin(
-        practiceAreaSubcategories,
-        eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
-      )
-      .leftJoin(team, eq(team.id, cases.assignedTeamId));
 
   const conditions: ReturnType<typeof sql>[] = [
     eq(cases.organizationId, organizationId),
@@ -374,9 +356,9 @@ export const createCase = async (
   await logCaseEvent({
     organizationId,
     caseId: newCase.id,
-    eventType: "case_created",
-    title: "Case created",
-    description: `Case ${newCase.caseNumber} created`,
+    action: "case.created",
+    
+    summary: `Case ${newCase.caseNumber} created`,
     metadata: { caseNumber: newCase.caseNumber, description: data.description },
     actorId,
   });
@@ -386,13 +368,15 @@ export const createCase = async (
     await logCaseEvent({
       organizationId,
       caseId: newCase.id,
-      eventType: "case_team_assigned",
-      title: "Team assigned",
-      description: `Team assigned to case`,
+      action: "case.team_assigned",
+      
+      summary: `Team assigned to case`,
       metadata: { teamId: data.assignedTeamId },
       actorId,
     });
   }
+
+  log.action("case.created", { caseId: newCase.id });
 
   return newCase;
 };
@@ -440,9 +424,9 @@ export const updateCase = async (
     await logCaseEvent({
       organizationId,
       caseId: id,
-      eventType: "case_status_changed",
-      title: "Status changed",
-      description: `Status changed from ${currentCase.status} to ${data.status}`,
+      action: "case.status_changed",
+      
+      summary: `Status changed from ${currentCase.status} to ${data.status}`,
       metadata: { previousStatus: currentCase.status, newStatus: data.status },
       actorId,
     });
@@ -452,20 +436,21 @@ export const updateCase = async (
     await logCaseEvent({
       organizationId,
       caseId: id,
-      eventType: "case_priority_changed",
-      title: "Priority changed",
-      description: `Priority changed from ${currentCase.priority} to ${data.priority}`,
+      action: "case.priority_changed",
+      
+      summary: `Priority changed from ${currentCase.priority} to ${data.priority}`,
       metadata: { previousPriority: currentCase.priority, newPriority: data.priority },
       actorId,
     });
   }
 
   if (data.assignedTeamId !== undefined && data.assignedTeamId !== currentCase.assignedTeamId) {
-    const eventType = currentCase.assignedTeamId ? "case_team_reassigned" : "case_team_assigned";
-    const title = currentCase.assignedTeamId ? "Team reassigned" : "Team assigned";
+    const action = currentCase.assignedTeamId
+      ? ("case.team_reassigned" as const)
+      : ("case.team_assigned" as const);
 
     const teamIds = [currentCase.assignedTeamId, data.assignedTeamId].filter(Boolean) as string[];
-    let teamNames: Record<string, string> = {};
+    const teamNames: Record<string, string> = {};
     if (teamIds.length > 0) {
       const teams = await db
         .select({ id: team.id, name: team.name })
@@ -486,9 +471,8 @@ export const updateCase = async (
     await logCaseEvent({
       organizationId,
       caseId: id,
-      eventType,
-      title,
-      description: `Team changed from ${previousTeam?.name ?? "none"} to ${newTeam?.name ?? "none"}`,
+      action,
+      summary: `Team changed from ${previousTeam?.name ?? "none"} to ${newTeam?.name ?? "none"}`,
       metadata: { previousTeam, newTeam },
       actorId,
     });
@@ -499,13 +483,15 @@ export const updateCase = async (
     await logCaseEvent({
       organizationId,
       caseId: id,
-      eventType: "case_description_updated",
-      title: "Description updated",
-      description: "Case description updated",
+      action: "case.description_updated",
+      
+      summary: "Case description updated",
       metadata: { changes: Object.keys(data).filter(k => k !== "updatedAt") },
       actorId,
     });
   }
+
+  log.action("case.updated", { caseId: id });
 
   return updated;
 };
@@ -515,15 +501,17 @@ export const deleteCase = async (id: string, organizationId: string, actorId?: s
   await logCaseEvent({
     organizationId,
     caseId: id,
-    eventType: "case_deleted",
-    title: "Case deleted",
-    description: "Case deleted",
+    action: "case.deleted",
+    
+    summary: "Case deleted",
     actorId,
   });
 
   await db
     .delete(cases)
     .where(and(eq(cases.id, id), eq(cases.organizationId, organizationId)));
+
+  log.action("case.archived", { caseId: id });
 };
 
 export class CasesService {

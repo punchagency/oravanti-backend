@@ -13,7 +13,7 @@ export class CalendarController {
   }
 
   getCalendarEvents = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const { year, month, teamId, eventTypes } = req.query;
 
     const filters = {
@@ -31,7 +31,7 @@ export class CalendarController {
   });
 
   getCalendarEventById = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const result = await this.calendarService.getCalendarEventById(
       req.params.id as string,
       organizationId!,
@@ -43,7 +43,7 @@ export class CalendarController {
   });
 
   createCalendarEvent = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const body = {
       ...req.body,
       startTime: new Date(req.body.startTime),
@@ -57,7 +57,7 @@ export class CalendarController {
   });
 
   updateCalendarEvent = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const body = { ...req.body };
     if (body.startTime) body.startTime = new Date(body.startTime);
     if (body.endTime) body.endTime = new Date(body.endTime);
@@ -73,7 +73,7 @@ export class CalendarController {
   });
 
   deleteCalendarEvent = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     await this.calendarService.deleteCalendarEvent(
       req.params.id as string,
       organizationId!,
@@ -82,7 +82,7 @@ export class CalendarController {
   });
 
   getCalendarStrip = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const teamId = req.query.teamId as string | undefined;
     const result = await this.calendarService.getCalendarStrip(
       organizationId!,
@@ -93,7 +93,7 @@ export class CalendarController {
 
   createServiceRequestEvent = asyncWrap(
     async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
       const {
         clientId,
         caseId,
@@ -118,7 +118,7 @@ export class CalendarController {
 
   resolveServiceRequestEvents = asyncWrap(
     async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
       await this.calendarService.resolveServiceRequestEvents(
         req.params.caseId as string,
         organizationId!,
@@ -129,7 +129,7 @@ export class CalendarController {
 
   scheduleNextServiceRequest = asyncWrap(
     async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
       const {
         clientId,
         caseId,
