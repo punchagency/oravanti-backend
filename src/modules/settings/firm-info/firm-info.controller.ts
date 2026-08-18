@@ -1,4 +1,4 @@
-﻿import { Request, Response } from "express";
+import { Request, Response } from "express";
 import { getRequestContext } from "../../../middleware/request-context";
 import { UpsertFirmInfoBody } from "../../../types/settings.types";
 import asyncWrap from "../../../utils/asyncWrapper";

@@ -18,7 +18,10 @@ import {
   documentVersions,
 } from "../../db/schema/documents";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
-import { LogEvent, createModuleLogger } from "../../lib/logging/log";
+import type { AuditActionName } from "../../lib/audit/actions";
+import { createModuleLogger } from "../../lib/logging/log";
+import { getRequestContext } from "../../middleware/request-context";
+import { recordAuditEvent } from "../shared/audit.service";
 import { ContractorSignUpBody } from "../../types/auth.types";
 import {
   AuthenticationError,
@@ -31,25 +34,6 @@ import {
 import { storageService } from "../../utils/storage/storage.service";
 import { AccountType } from "./enums";
 
-type AuthServiceError = {
-  message: string;
-  status?: number;
-};
-
-const mapAuthError = (error: AuthServiceError) => {
-  switch (error.status) {
-    case 400:
-      return new BadRequestError(error.message);
-    case 401:
-      return new AuthenticationError(error.message);
-    case 409:
-      return new ConflictError(error.message);
-    case 422:
-      return new ValidationError(error.message);
-    default:
-      return new ExternalServiceError(error.message);
-  }
-};
 
 const normalizeEmail = (email: string) => email.toLowerCase().trim();
 
@@ -124,6 +108,60 @@ const buildContractorIdentificationStoragePath = (
 
 const log = createModuleLogger("auth.service");
 
+/** The `auth.*` slice of the registry — nothing else may be recorded from here. */
+type AuthAuditAction = Extract<AuditActionName, `auth.${string}`>;
+
+/**
+ * Writes an authentication event to the audit trail.
+ *
+ * Authentication had **zero** audit coverage before this: sign-in, sign-out,
+ * failed sign-in, password reset, password change, 2FA enable/disable and
+ * backup-code use all happened without leaving a durable record. For a
+ * product holding privileged client data, unrecorded failed sign-ins is the
+ * gap that matters most — it is what an alerting rule watches for a
+ * credential-stuffing run, and what an incident review starts from. Logs are
+ * not a substitute: they rotate away in thirty days and cannot be queried per
+ * firm.
+ *
+ * Two things this wrapper exists to get right at every call site:
+ *
+ * **The actor is passed explicitly.** At sign-in there is no session yet, so
+ * `resolveActorContext` has not run and the request context holds no user.
+ * Left to the context, the events that matter most would be the ones recorded
+ * with no actor at all. Fields are omitted rather than passed as null when
+ * unknown, so an authenticated flow (a password change, say) still falls
+ * through to the context.
+ *
+ * **A failed audit write never fails the request.** These record something
+ * that already happened and cannot be rolled back — a rejected sign-in is not
+ * a transaction to undo. Throwing would turn an unreachable audit table into
+ * a 500 on the login endpoint, which hands anyone who can break audit writes
+ * a denial of service on authentication itself. The loss is reported as
+ * `audit.write_failed` instead.
+ */
+const recordAuthEvent = (
+  action: AuthAuditAction,
+  options: {
+    summary: string;
+    email?: string | null;
+    userId?: string | null;
+    userName?: string | null;
+    metadata?: Record<string, unknown>;
+  },
+) =>
+  recordAuditEvent({
+    action,
+    entityId: options.userId ?? getRequestContext().userId,
+    summary: options.summary,
+    metadata: options.metadata,
+    actor: {
+      ...(options.userId !== undefined ? { id: options.userId } : {}),
+      ...(options.userName ? { name: options.userName } : {}),
+      ...(options.email ? { email: options.email } : {}),
+    },
+    onWriteFailure: "log",
+  });
+
 export class AuthService {
   private uploadToStorage = async (data: {
     storagePath: string;
@@ -159,7 +197,7 @@ export class AuthService {
       !["firm_admin", "contractor", "client"].includes(accountType)
     ) {
       log.warn(
-        LogEvent.AUTH_SIGNUP_FAILED,
+        "auth.signup_failed",
         { email: body.email, accountType, reason: "invalid_account_type" },
         "Sign-up rejected: account_type missing or not recognised",
       );
@@ -187,7 +225,7 @@ export class AuthService {
         asResponse: true,
       });
     } catch (error) {
-      log.failure(LogEvent.AUTH_SIGNUP_FAILED, error, {
+      log.failure("auth.signup_failed", error, {
         email: body.email,
         accountType,
       });
@@ -200,7 +238,7 @@ export class AuthService {
       const message = errorData.message || "Registration failed";
 
       log.warn(
-        LogEvent.AUTH_SIGNUP_FAILED,
+        "auth.signup_failed",
         {
           email: body.email,
           accountType,
@@ -209,6 +247,13 @@ export class AuthService {
         },
         `Sign-up refused for ${body.email}: ${message}`,
       );
+
+      await recordAuthEvent("auth.signup_failed", {
+        email: body.email,
+        userId: null,
+        summary: `Sign-up refused for ${body.email}`,
+        metadata: { accountType, reason: errorCode ?? "unknown" },
+      });
 
       switch (errorCode) {
         case "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL":
@@ -222,10 +267,18 @@ export class AuthService {
     }
 
     log.action(
-      LogEvent.AUTH_SIGNUP,
+      "auth.signup",
       { email: body.email, accountType },
       `${accountType} account registered for ${body.email}`,
     );
+
+    await recordAuthEvent("auth.signup", {
+      email: body.email,
+      userId: null,
+      userName: displayName,
+      summary: `${accountType} account registered for ${body.email}`,
+      metadata: { accountType },
+    });
 
     return response;
   };
@@ -241,7 +294,7 @@ export class AuthService {
     const certificationDocuments = body.certificationDocuments;
 
     if (!body.consentedToBackgroundCheck) {
-      log.warn(LogEvent.CONTRACTOR_REGISTRATION_REJECTED, {
+      log.warn("contractor.registration_rejected", {
         email,
         reason: "background_check_not_consented",
       });
@@ -251,7 +304,7 @@ export class AuthService {
     }
 
     if (!body.recognizedDirectoryListingVerificationAccepted) {
-      log.warn(LogEvent.CONTRACTOR_REGISTRATION_REJECTED, {
+      log.warn("contractor.registration_rejected", {
         email,
         reason: "directory_listing_not_accepted",
       });
@@ -262,7 +315,7 @@ export class AuthService {
 
     const hourlyRate = Number(body.desiredHourlyRate);
     if (!Number.isFinite(hourlyRate) || hourlyRate <= 0) {
-      log.warn(LogEvent.CONTRACTOR_REGISTRATION_REJECTED, {
+      log.warn("contractor.registration_rejected", {
         email,
         reason: "invalid_hourly_rate",
       });
@@ -275,7 +328,7 @@ export class AuthService {
       .where(inArray(practiceAreaCaseTypes.id, specialtyIds));
 
     if (existingSpecialties.length !== specialtyIds.length) {
-      log.warn(LogEvent.CONTRACTOR_REGISTRATION_REJECTED, {
+      log.warn("contractor.registration_rejected", {
         email,
         reason: "unknown_specialty",
         requested: specialtyIds.length,
@@ -287,7 +340,7 @@ export class AuthService {
     }
 
     if (!certificationFiles.length) {
-      log.warn(LogEvent.CONTRACTOR_REGISTRATION_REJECTED, {
+      log.warn("contractor.registration_rejected", {
         email,
         reason: "no_certification_files",
       });
@@ -297,7 +350,7 @@ export class AuthService {
     }
 
     if (certificationFiles.length !== certificationDocuments.length) {
-      log.warn(LogEvent.CONTRACTOR_REGISTRATION_REJECTED, {
+      log.warn("contractor.registration_rejected", {
         email,
         reason: "certification_file_count_mismatch",
         files: certificationFiles.length,
@@ -309,7 +362,7 @@ export class AuthService {
     }
 
     if (identificationFiles.length !== 2) {
-      log.warn(LogEvent.CONTRACTOR_REGISTRATION_REJECTED, {
+      log.warn("contractor.registration_rejected", {
         email,
         reason: "identification_file_count",
         files: identificationFiles.length,
@@ -371,7 +424,7 @@ export class AuthService {
       const message = errorData.message || "Contractor registration failed";
 
       log.warn(
-        LogEvent.CONTRACTOR_REGISTRATION_FAILED,
+        "contractor.registration_failed",
         { email, code: errorCode, status: authResponse.status },
         `Contractor sign-up refused for ${email}: ${message}`,
       );
@@ -393,7 +446,7 @@ export class AuthService {
     const userId = getAuthUserId(authData);
     if (!userId) {
       log.failure(
-        LogEvent.CONTRACTOR_REGISTRATION_FAILED,
+        "contractor.registration_failed",
         undefined,
         { email },
         "better-auth accepted the sign-up but returned no user id",
@@ -625,7 +678,7 @@ export class AuthService {
       });
 
       log.action(
-        LogEvent.CONTRACTOR_REGISTERED,
+        "contractor.registered",
         {
           email,
           userId,
@@ -639,6 +692,23 @@ export class AuthService {
         `Contractor ${email} registered and awaiting approval`,
       );
 
+      // Recorded outside the transaction above, which has already committed.
+      // A contractor gains access to client matters once approved, so the
+      // registration itself belongs in the admin trail — not only the approval.
+      await recordAuditEvent({
+        action: "admin.contractor_registered",
+        entityId: contractor.id,
+        summary: `Contractor ${email} registered and awaiting approval`,
+        metadata: {
+          specialties: specialtyIds.length,
+          certifications: uploadedCertificationDocuments.length,
+          identifications: uploadedIdentificationDocuments.length,
+          status: contractor.status,
+        },
+        actor: { type: "contractor", id: userId, email },
+        onWriteFailure: "log",
+      });
+
       return {
         headers: authResponse.headers,
         authData,
@@ -650,7 +720,7 @@ export class AuthService {
         ...uploadedIdentificationDocuments,
       ].map((document) => document.storagePath);
 
-      log.failure(LogEvent.CONTRACTOR_REGISTRATION_FAILED, error, {
+      log.failure("contractor.registration_failed", error, {
         email,
         userId,
         uploadedFiles: storagePaths.length,
@@ -661,13 +731,13 @@ export class AuthService {
       // the original error, so it is logged and swallowed.
       await this.removeFromStorage(storagePaths).then(
         () =>
-          log.info(LogEvent.CONTRACTOR_REGISTRATION_ROLLED_BACK, {
+          log.info("contractor.registration_rolled_back", {
             email,
             userId,
             removedFiles: storagePaths.length,
           }),
         (cleanupError: unknown) =>
-          log.failure(LogEvent.CONTRACTOR_ROLLBACK_FAILED, cleanupError, {
+          log.failure("contractor.rollback_failed", cleanupError, {
             email,
             userId,
             orphanedFiles: storagePaths.length,
@@ -709,10 +779,20 @@ export class AuthService {
       // credential-stuffing run visible, and neither survives to the error
       // middleware — it only ever sees "Invalid email or password".
       log.warn(
-        LogEvent.AUTH_LOGIN_FAILED,
+        "auth.login_failed",
         { email, code: errorCode, status: response.status },
         `Sign-in failed for ${email}: ${errorCode ?? message}`,
       );
+
+      // The durable half of the same record. `userId` is deliberately not
+      // resolved from the email: doing so would confirm which addresses have
+      // accounts, and the trail is keyed on what was tried, not on who exists.
+      await recordAuthEvent("auth.login_failed", {
+        email,
+        userId: null,
+        summary: `Sign-in failed for ${email}`,
+        metadata: { reason: errorCode ?? "unknown", status: response.status },
+      });
 
       switch (errorCode) {
         // --- 1. Core Authentication Failures ---
@@ -749,14 +829,31 @@ export class AuthService {
       .json()
       .catch(() => ({}) as Record<string, unknown>);
 
+    const signedInUser = (body as { user?: { id?: string; name?: string } }).user;
+
     if (body.twoFactorRedirect) {
       log.info(
-        LogEvent.AUTH_TWO_FACTOR_CHALLENGED,
+        "auth.two_factor_challenged",
         { email },
         `${email} passed credentials; second factor required`,
       );
+      // Recorded separately from a completed sign-in. Without this the trail
+      // would show a gap between the credentials being accepted and the second
+      // factor arriving, and a stalled or abandoned challenge would look
+      // identical to no attempt at all.
+      await recordAuthEvent("auth.two_factor_challenged", {
+        email,
+        userId: signedInUser?.id ?? null,
+        summary: `${email} passed credentials; second factor required`,
+      });
     } else {
-      log.action(LogEvent.AUTH_LOGIN, { email }, `${email} signed in`);
+      log.action("auth.login", { email }, `${email} signed in`);
+      await recordAuthEvent("auth.login", {
+        email,
+        userId: signedInUser?.id ?? null,
+        userName: signedInUser?.name ?? null,
+        summary: `${email} signed in`,
+      });
     }
 
     return response;
@@ -783,10 +880,15 @@ export class AuthService {
       const message = errorData.message || "TOTP verification failed";
 
       log.warn(
-        LogEvent.AUTH_TWO_FACTOR_FAILED,
+        "auth.two_factor_failed",
         { method: "totp", code: errorCode, status: response.status },
         `Second factor rejected: ${errorCode ?? message}`,
       );
+
+      await recordAuthEvent("auth.two_factor_failed", {
+        summary: "Second factor rejected",
+        metadata: { method: "totp", reason: errorCode ?? "unknown" },
+      });
 
       switch (errorCode) {
         case "INVALID_CODE":
@@ -798,10 +900,15 @@ export class AuthService {
     }
 
     log.action(
-      LogEvent.AUTH_TWO_FACTOR_VERIFIED,
+      "auth.two_factor_verified",
       { method: "totp" },
       "Second factor verified",
     );
+
+    await recordAuthEvent("auth.two_factor_verified", {
+      summary: "Second factor accepted",
+      metadata: { method: "totp" },
+    });
 
     return response;
   };
@@ -809,12 +916,22 @@ export class AuthService {
   signOut = async (req: Request) => {
     const clientHeaders = fromNodeHeaders(req.headers);
 
+    // Read before the call: signing out is what invalidates the session the
+    // context was built from, so afterwards there is no one left to attribute
+    // the sign-out to.
+    const { userId } = getRequestContext();
+
     const response = await auth.api.signOut({
       headers: clientHeaders,
       asResponse: true,
     });
 
-    log.action(LogEvent.AUTH_LOGOUT, { status: response.status }, "Signed out");
+    log.action("auth.logout", { status: response.status }, "Signed out");
+
+    await recordAuthEvent("auth.logout", {
+      userId,
+      summary: "Signed out",
+    });
 
     return response;
   };
@@ -842,7 +959,7 @@ export class AuthService {
       const message = errorData.message || "Failed to send verification code";
 
       log.warn(
-        LogEvent.AUTH_OTP_SEND_FAILED,
+        "auth.otp_send_failed",
         { email, otpType: type, code: errorCode, status: response.status },
         `Could not send a ${type} code to ${email}: ${errorCode ?? message}`,
       );
@@ -863,12 +980,24 @@ export class AuthService {
     // catch-all keeps the rest in the record rather than inventing a name.
     const sent =
       type === "email-verification"
-        ? LogEvent.AUTH_EMAIL_VERIFICATION_SENT
+        ? "auth.email_verification_sent"
         : type === "forget-password"
-          ? LogEvent.AUTH_PASSWORD_RESET_REQUESTED
-          : LogEvent.AUTH_OTP_SENT;
+          ? "auth.password_reset_requested"
+          : "auth.otp_sent";
 
     log.action(sent, { email, otpType: type }, `Sent a ${type} code to ${email}`);
+
+    // Only the reset flow is a security event. An email-verification code is
+    // part of onboarding; a password reset request is the first half of an
+    // account takeover attempt, and is meaningless in the trail unless the
+    // request is recorded alongside the completion.
+    if (type === "forget-password") {
+      await recordAuthEvent("auth.password_reset_requested", {
+        email,
+        userId: null,
+        summary: `Password reset requested for ${email}`,
+      });
+    }
 
     return response;
   };
@@ -895,10 +1024,17 @@ export class AuthService {
       const message = errorData.message || "Password reset failed";
 
       log.warn(
-        LogEvent.AUTH_PASSWORD_RESET_FAILED,
+        "auth.password_reset_failed",
         { email, code: errorCode, status: response.status },
         `Password reset rejected for ${email}: ${errorCode ?? message}`,
       );
+
+      await recordAuthEvent("auth.password_reset_failed", {
+        email,
+        userId: null,
+        summary: `Password reset rejected for ${email}`,
+        metadata: { reason: errorCode ?? "unknown" },
+      });
 
       switch (errorCode) {
         case "INVALID_TOKEN":
@@ -913,10 +1049,16 @@ export class AuthService {
     }
 
     log.action(
-      LogEvent.AUTH_PASSWORD_RESET_COMPLETED,
+      "auth.password_reset_completed",
       { email },
       `Password reset completed for ${email}`,
     );
+
+    await recordAuthEvent("auth.password_reset_completed", {
+      email,
+      userId: null,
+      summary: `Password reset completed for ${email}`,
+    });
 
     return response;
   };
@@ -950,10 +1092,15 @@ export class AuthService {
       const message = errorData.message || "Password change failed";
 
       log.warn(
-        LogEvent.AUTH_PASSWORD_CHANGE_FAILED,
+        "auth.password_change_failed",
         { code: errorCode, status: response.status },
         `Password change rejected: ${errorCode ?? message}`,
       );
+
+      await recordAuthEvent("auth.password_change_failed", {
+        summary: "Password change rejected",
+        metadata: { reason: errorCode ?? "unknown" },
+      });
 
       switch (errorCode) {
         case "INVALID_CURRENT_PASSWORD":
@@ -972,10 +1119,15 @@ export class AuthService {
     // session the user had — worth saying, because the sign-outs it causes
     // have no other explanation in the log.
     log.action(
-      LogEvent.AUTH_PASSWORD_CHANGED,
+      "auth.password_changed",
       { otherSessionsRevoked: true },
       "Password changed; other sessions revoked",
     );
+
+    await recordAuthEvent("auth.password_changed", {
+      summary: "Password changed; other sessions revoked",
+      metadata: { otherSessionsRevoked: true },
+    });
 
     return response;
   };
@@ -996,7 +1148,7 @@ export class AuthService {
       const message = errorData.message || "Session revocation failed";
 
       log.warn(
-        LogEvent.AUTH_SESSION_REVOKE_FAILED,
+        "auth.session_revoke_failed",
         { code: errorCode, status: response.status },
         `Session revocation rejected: ${errorCode ?? message}`,
       );
@@ -1013,8 +1165,12 @@ export class AuthService {
       }
     }
 
-    // The token itself is a live credential and is never logged.
-    log.action(LogEvent.AUTH_SESSION_REVOKED, {}, "Session revoked");
+    // The token itself is a live credential and is never logged or stored.
+    log.action("auth.session_revoked", {}, "Session revoked");
+
+    await recordAuthEvent("auth.session_revoked", {
+      summary: "Session revoked",
+    });
 
     return response;
   };
@@ -1043,7 +1199,7 @@ export class AuthService {
       const message = errorData.message || "Session refresh failed";
 
       log.warn(
-        LogEvent.AUTH_SESSION_EXPIRED,
+        "auth.session_expired",
         { code: errorCode, status: response.status },
         `Session refresh refused: ${errorCode ?? message}`,
       );
@@ -1059,7 +1215,7 @@ export class AuthService {
 
     // Debug, not action: the frontend refreshes on a timer, so at info this
     // one line would outnumber every real event in the log.
-    log.debug(LogEvent.AUTH_SESSION_REFRESHED);
+    log.debug("auth.session_refreshed");
 
     return response;
   };
@@ -1108,7 +1264,7 @@ export class AuthService {
       const message = errorData.message || "Failed to enable 2FA";
 
       log.warn(
-        LogEvent.AUTH_TWO_FACTOR_ENABLE_FAILED,
+        "auth.two_factor_enable_failed",
         { code: errorCode, status: response.status },
         `Enabling 2FA was refused: ${errorCode ?? message}`,
       );
@@ -1125,10 +1281,14 @@ export class AuthService {
     }
 
     log.action(
-      LogEvent.AUTH_TWO_FACTOR_ENABLED,
+      "auth.two_factor_enabled",
       {},
       "Two-factor authentication enabled",
     );
+
+    await recordAuthEvent("auth.two_factor_enabled", {
+      summary: "Two-factor authentication enabled",
+    });
 
     return response;
   };
@@ -1151,7 +1311,7 @@ export class AuthService {
       const message = errorData.message || "Failed to describe 2FA";
 
       log.warn(
-        LogEvent.AUTH_TWO_FACTOR_DISABLE_FAILED,
+        "auth.two_factor_disable_failed",
         { code: errorCode, status: response.status },
         `Disabling 2FA was refused: ${errorCode ?? message}`,
       );
@@ -1169,10 +1329,14 @@ export class AuthService {
 
     // A security control being switched off. Always worth a record.
     log.action(
-      LogEvent.AUTH_TWO_FACTOR_DISABLED,
+      "auth.two_factor_disabled",
       {},
       "Two-factor authentication disabled",
     );
+
+    await recordAuthEvent("auth.two_factor_disabled", {
+      summary: "Two-factor authentication disabled",
+    });
 
     return response;
   };
@@ -1204,10 +1368,15 @@ export class AuthService {
       const message = errorData.message || "Backup code verification failed";
 
       log.warn(
-        LogEvent.AUTH_TWO_FACTOR_FAILED,
+        "auth.two_factor_failed",
         { method: "backup_code", code: errorCode, status: response.status },
         `Backup code rejected: ${errorCode ?? message}`,
       );
+
+      await recordAuthEvent("auth.two_factor_failed", {
+        summary: "Backup code rejected",
+        metadata: { method: "backup_code", reason: errorCode ?? "unknown" },
+      });
 
       switch (errorCode) {
         case "INVALID_BACKUP_CODE":
@@ -1226,10 +1395,17 @@ export class AuthService {
     // A backup code being spent means the user lost their authenticator.
     // Worth surfacing on its own, not folded in with ordinary TOTP.
     log.action(
-      LogEvent.AUTH_TWO_FACTOR_VERIFIED,
+      "auth.two_factor_verified",
       { method: "backup_code" },
       "Signed in with a two-factor backup code",
     );
+
+    // Its own action, not `two_factor_verified` with a method field: a spent
+    // backup code is a one-off credential that cannot be spent again, and it
+    // is the event a security reviewer looks for.
+    await recordAuthEvent("auth.backup_code_used", {
+      summary: "Signed in with a two-factor backup code",
+    });
 
     return response;
   };

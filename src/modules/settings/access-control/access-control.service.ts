@@ -1,6 +1,10 @@
 import { and, count, eq, inArray } from "drizzle-orm";
 import { db } from "../../../db/client";
 import { clients, modulePermissions, staff } from "../../../db/schema";
+import { recordAuditEvent } from "../../shared/audit.service";
+import { createModuleLogger } from "../../../lib/logging/log";
+
+const log = createModuleLogger("access-control.service");
 
 export class AccessControlService {
   getRoleOverview = async (organizationId: string) => {
@@ -87,5 +91,14 @@ export class AccessControlService {
           ),
       ),
     );
+
+    await recordAuditEvent({
+      action: "admin.access_control_changed",
+      entityId: organizationId,
+      organizationId,
+      after: { permissions: permissions.map((p) => ({ module: p.module, role: p.role, permission: p.permission })) },
+      onWriteFailure: "log",
+    });
+    log.action("settings.access_control_updated", { organizationId });
   };
 }

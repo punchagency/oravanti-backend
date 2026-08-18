@@ -12,13 +12,13 @@ export class ConsultationSettingsController {
   }
 
   getSettings = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const result = await this.service.getSettings(organizationId!);
     sendSuccess(res, result, "Consultation settings retrieved successfully");
   });
 
   upsertSettings = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const result = await this.service.upsertSettings(
       organizationId!,
       req.body,
@@ -27,7 +27,7 @@ export class ConsultationSettingsController {
   });
 
   listLocations = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const includeInactive = req.query.includeInactive === "true";
     const result = await this.service.listLocations(
       organizationId!,
@@ -37,7 +37,7 @@ export class ConsultationSettingsController {
   });
 
   createLocation = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const result = await this.service.createLocation(
       organizationId!,
       req.body,
@@ -46,7 +46,7 @@ export class ConsultationSettingsController {
   });
 
   updateLocation = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const result = await this.service.updateLocation(
       organizationId!,
       req.params.locationId as string,
@@ -56,7 +56,7 @@ export class ConsultationSettingsController {
   });
 
   deleteLocation = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     await this.service.deleteLocation(
       organizationId!,
       req.params.locationId as string,

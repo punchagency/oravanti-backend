@@ -51,8 +51,9 @@ import {
   type FeeAgreementDetails,
 } from "../../db/schema/fee-agreements";
 import { leadTasks } from "../../db/schema/lead-tasks";
-import { leadTimelineEvents } from "../../db/schema/lead-timeline-events";
-import { leadEvents, leads } from "../../db/schema/leads";
+import { auditEvents } from "../../db/schema/audit-events";
+import { leads } from "../../db/schema/leads";
+import { labelFor } from "../../lib/audit/actions";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreas } from "../../db/schema/practice-areas";
 import {
@@ -93,12 +94,17 @@ import { generateCaseNumber } from "../cases/cases.service";
 import { materializeCaseTypeRequirements } from "../document-requirements/document-requirements.service";
 import { relinkLeadDocumentsToCase } from "../documents/document-ingest";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
+import { createModuleLogger } from "../../lib/logging/log";
 import { hydrateCaseWorkflow } from "../workflow/workflow.service";
 import { generateConsultationSlots } from "./consultation-slots.service";
 import { getESignatureProvider } from "./dropbox-sign.provider";
 import { assembleFeeAgreementDocument } from "./fee-agreement-document";
 import { renderFeeAgreementPdf } from "./fee-agreement-pdf";
-import { getLeadActivity, logLeadEvent } from "./lead-events.service";
+import {
+  getLeadActivity,
+  getLeadAuditLog,
+  logLeadEvent,
+} from "./lead-events.service";
 import { getLeadMetrics } from "./lead-metrics.service";
 import {
   addLeadNote,
@@ -110,6 +116,8 @@ import {
   updateLeadNote,
 } from "./lead-notes.service";
 import { LeadWorkflowService } from "./lead-workflow.service";
+
+const log = createModuleLogger("leads.service");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -495,9 +503,17 @@ const createLead = async (
   await logLeadEvent({
     organizationId,
     leadId: lead.id,
-    type: "lead_received",
+    action: "lead.received",
     actorId: creatorStaffId,
     metadata: { source: data.source },
+  });
+
+  await logLeadEvent({
+    organizationId,
+    leadId: lead.id,
+    action: "lead.assigned",
+    actorId: creatorStaffId,
+    metadata: { assignedToId: creatorStaffId },
   });
 
   // Auto-initialize the intake pipeline tasks so the pipeline tab is
@@ -804,7 +820,7 @@ const updateLead = async (
         context: (data.noteContext as any) ?? "lead_update",
       },
       actorId,
-    ).catch((err) => console.error("Failed to save lead note", err));
+    ).catch((err) => log.failure("lead.note_save_failed", err, { leadId: id }));
   }
 
   // Only real columns reach .set(). The previous version spread the whole body,
@@ -861,7 +877,7 @@ const updateLead = async (
     await logLeadEvent({
       organizationId,
       leadId: id,
-      type: "lead_updated",
+      action: "lead.updated",
       actorId,
       // The changed fields with their before and after values, so the activity
       // trail can say what changed rather than only that something did.
@@ -924,7 +940,7 @@ const updateLeadStatus = async (
   await logLeadEvent({
     organizationId,
     leadId: id,
-    type: status === "archived" ? "lead_archived" : "lead_updated",
+    action: status === "archived" ? "lead.archived" : "lead.updated",
     actorId,
     metadata: { status },
   });
@@ -970,7 +986,7 @@ const archiveLead = async (
   await logLeadEvent({
     organizationId,
     leadId: id,
-    type: "lead_archived",
+    action: "lead.archived",
     actorId,
     metadata: { reason: data.reason ?? null, priorStatus: lead.status },
   });
@@ -1000,16 +1016,17 @@ const restoreLead = async (
     throw new ConflictError("Only an archived lead can be restored");
 
   const [lastArchive] = await db
-    .select({ metadata: leadEvents.metadata })
-    .from(leadEvents)
+    .select({ metadata: auditEvents.metadata })
+    .from(auditEvents)
     .where(
       and(
-        eq(leadEvents.leadId, id),
-        eq(leadEvents.type, "lead_archived"),
-        eq(leadEvents.organizationId, organizationId),
+        eq(auditEvents.organizationId, organizationId),
+        eq(auditEvents.entityType, "lead"),
+        eq(auditEvents.entityId, id),
+        eq(auditEvents.action, "lead.archived"),
       ),
     )
-    .orderBy(desc(leadEvents.createdAt))
+    .orderBy(desc(auditEvents.occurredAt))
     .limit(1);
 
   const priorStatus = (lastArchive?.metadata as { priorStatus?: string } | null)
@@ -1039,7 +1056,7 @@ const restoreLead = async (
   await logLeadEvent({
     organizationId,
     leadId: id,
-    type: "lead_restored",
+    action: "lead.restored",
     actorId,
     metadata: { restoredStatus },
   });
@@ -1102,7 +1119,7 @@ const logStageChange = async (data: {
   await logLeadEvent({
     organizationId: data.organizationId,
     leadId: data.leadId,
-    type: "stage_changed",
+    action: "lead.stage_changed",
     actorId: data.actorId,
     metadata: { from: data.from, to: data.to },
   });
@@ -1138,7 +1155,7 @@ const mirrorConsultationNote = async (data: {
     data.actorId,
   ).catch((err) => {
     // A note that fails to mirror must not roll back the consultation itself.
-    console.error("Failed to mirror consultation note", err);
+    log.failure("lead.consultation_note_mirror_failed", err, { leadId: data.leadId });
   });
 };
 
@@ -1681,7 +1698,7 @@ const runConflictCheck = async (
   await logLeadEvent({
     organizationId,
     leadId,
-    type: "conflict_check_run",
+    action: "lead.conflict_check_run",
     actorId: checkedById,
     metadata: { status, matchCount: matches.length },
   });
@@ -1874,9 +1891,9 @@ const resolveConflictCheck = async (
       await logLeadEvent({
         organizationId,
         leadId,
-        type: wasHardConflict
-          ? "conflict_overridden"
-          : "conflict_check_approved",
+        action: wasHardConflict
+          ? "lead.conflict_overridden"
+          : "lead.conflict_check_approved",
         actorId: staffId,
         metadata: { reviewNotes: data.reviewNotes, priorStatus: cc.status },
       });
@@ -1915,7 +1932,7 @@ const resolveConflictCheck = async (
     await logLeadEvent({
       organizationId,
       leadId,
-      type: "conflict_check_declined",
+      action: "lead.conflict_check_declined",
       actorId: staffId,
       metadata: { reviewNotes: data.reviewNotes },
     });
@@ -1926,7 +1943,7 @@ const resolveConflictCheck = async (
   // Notify the lead after the resolution has committed. Fire-and-forget so an
   // email failure can never roll back the decision.
   if (data.action === "decline")
-    emailService.sendEmail(buildDeclineEmail(lead)).catch(console.error);
+    emailService.sendEmail(buildDeclineEmail(lead)).catch((err) => log.failure("email.send_failed", err, { leadId }));
 
   const enrichedMatches = await enrichMatchesWithCaseContext(
     (updated.matches ?? []) as StoredMatch[],
@@ -2226,7 +2243,7 @@ const sendQuestionnaire = async (
   await logLeadEvent({
     organizationId,
     leadId,
-    type: "questionnaire_sent",
+    action: "lead.questionnaire_sent",
     actorId: sentById,
     metadata: { sendId: send.id, deliveryChannels, language, autoReminderDays },
   });
@@ -2256,13 +2273,11 @@ const sendQuestionnaire = async (
           <p><a href="${clientLink}">Complete Questionnaire</a></p>
           <p>This link is unique to you. Please do not share it.</p>`,
       })
-      .catch(console.error);
+      .catch((err) => log.failure("questionnaire.send_failed", err, { leadId }));
   }
   if (deliveryChannels.includes("sms") && lead.phone) {
     // SMS provider not yet wired — log the intent for now.
-    console.log(
-      `[sms-stub] questionnaire link to ${lead.phone}: ${clientLink}`,
-    );
+    log.debug("sms.questionnaire_link_stub", { leadId, phone: lead.phone });
   }
 
   return { send: { ...send, accessToken }, clientLink, sentAt: send.sentAt };
@@ -2284,7 +2299,7 @@ export const cancelSendReminder = async (
     )
     .limit(1);
   if (send?.reminderJobId) {
-    await cancelQuestionnaireReminder(send.reminderJobId).catch(console.error);
+    await cancelQuestionnaireReminder(send.reminderJobId).catch((err) => log.failure("queue.job_cancel_failed", err, { sendId }));
   }
 };
 
@@ -2585,10 +2600,7 @@ const initiateConsultation = async (
         dueImmediately: data.paymentTiming === "pay_now" || !startNow,
       });
     } catch (err) {
-      console.error(
-        `[leads] could not raise consultation invoice for ${consultation!.id}:`,
-        err,
-      );
+      log.failure("leads.consultation_invoice_failed", err, { leadId, consultationId: consultation!.id });
     }
   }
 
@@ -2681,7 +2693,7 @@ const initiateConsultation = async (
   await logLeadEvent({
     organizationId,
     leadId,
-    type: "consultation_scheduled",
+    action: "lead.consultation_scheduled",
     actorId: scheduledById,
     metadata: {
       consultationId: consultation.id,
@@ -2749,7 +2761,6 @@ const initiateConsultation = async (
   if (notifyChannels.includes("email") || startNow) {
     const needsPayment = feeStatus === "unpaid";
     const urgent = Boolean(data.urgent);
-    emailService;
     const leadName = `${lead.firstName} ${lead.lastName}`;
     emailService
       .sendEmail({
@@ -2773,13 +2784,11 @@ const initiateConsultation = async (
             <p>Please choose a time that works for your consultation:</p>
             <p><a href="${bookingLink}">${bookingLink}</a></p>`,
       })
-      .catch(console.error);
+      .catch((err) => log.failure("email.send_failed", err, { leadId }));
   }
 
   if (notifyChannels.includes("sms") && lead.phone) {
-    console.log(
-      `[sms-stub] consultation booking link to ${lead.phone}: ${bookingLink}`,
-    );
+    log.debug("sms.booking_link_stub", { leadId, phone: lead.phone });
   }
 
   return { consultation, bookingToken: accessToken };
@@ -2898,7 +2907,7 @@ const updateConsultation = async (
     await logLeadEvent({
       organizationId,
       leadId,
-      type: "consultation_completed",
+      action: "lead.consultation_completed",
       actorId,
       metadata: { consultationId: updated.id, outcome: data.outcome ?? null },
     });
@@ -2922,7 +2931,7 @@ const updateConsultation = async (
     await logLeadEvent({
       organizationId,
       leadId,
-      type: "consultation_rescheduled",
+      action: "lead.consultation_rescheduled",
       actorId,
       metadata: {
         consultationId: updated.id,
@@ -2936,7 +2945,7 @@ const updateConsultation = async (
     await logLeadEvent({
       organizationId,
       leadId,
-      type: "payment_received",
+      action: "lead.payment_received",
       actorId,
       metadata: {
         kind: "consultation_fee",
@@ -2994,7 +3003,7 @@ const updateConsultation = async (
             <p>Thank you for your consultation. Please pay your consultation fee of <strong>$${updated.feeAmount}</strong>:</p>
             <p><a href="${payLink}">${payLink}</a></p>`,
         })
-        .catch(console.error);
+        .catch((err) => log.failure("email.send_failed", err, { leadId }));
     }
 
     // Auto-send the intake questionnaire when requested and the lead has never
@@ -3010,11 +3019,9 @@ const updateConsultation = async (
       if (leadCaseType?.id) {
         await sendQuestionnaire(leadId, organizationId, undefined, {
           language: lead.language ?? undefined,
-        }).catch(console.error);
+        }).catch((err) => log.failure("questionnaire.send_failed", err, { leadId }));
       } else {
-        console.warn(
-          `[consultation] skipping auto-questionnaire for lead ${leadId}: no case type assigned`,
-        );
+        log.warn("consultation.auto_questionnaire_skipped", { leadId });
       }
     }
   }
@@ -3177,7 +3184,7 @@ const getConsultationBooking = async (token: string) => {
   await logLeadEvent({
     organizationId: consultation.organizationId,
     leadId: consultation.leadId,
-    type: "consultation_booking_opened",
+    action: "lead.consultation_booking_opened",
     metadata: { consultationId: consultation.id },
   });
 
@@ -3260,7 +3267,7 @@ const payConsultationFee = async (token: string) => {
     await logLeadEvent({
       organizationId: consultation.organizationId,
       leadId: consultation.leadId,
-      type: "payment_received",
+      action: "lead.payment_received",
       metadata: {
         consultationId: consultation.id,
         amount: Number(consultation.feeAmount),
@@ -3301,7 +3308,7 @@ const payConsultationFee = async (token: string) => {
     await logLeadEvent({
       organizationId: consultation.organizationId,
       leadId: consultation.leadId,
-      type: "payment_received",
+      action: "lead.payment_received",
       metadata: {
         consultationId: consultation.id,
         amount: Number(consultation.feeAmount),
@@ -3333,13 +3340,13 @@ const payConsultationFee = async (token: string) => {
           <p>Thanks, your payment was received. Please choose a time that works for you:</p>
           <p><a href="${bookingLink}">${bookingLink}</a></p>`,
       })
-      .catch(console.error);
+      .catch((err) => log.failure("email.send_failed", err, { leadId: consultation.leadId }));
   }
 
   await logLeadEvent({
     organizationId: consultation.organizationId,
     leadId: consultation.leadId,
-    type: "payment_received",
+    action: "lead.payment_received",
     metadata: {
       consultationId: consultation.id,
       amount: Number(consultation.feeAmount),
@@ -3475,7 +3482,7 @@ const sendConsultationConfirmation = async (
         ${meetingDetail}
         <p>We look forward to speaking with you.</p>`,
     })
-    .catch(console.error);
+    .catch((err) => log.failure("email.send_failed", err, { leadId: consultation.leadId }));
 
   for (const email of staffEmails) {
     emailService
@@ -3485,7 +3492,7 @@ const sendConsultationConfirmation = async (
         html: `<p>A consultation with <strong>${leadName}</strong> is confirmed for <strong>${staffScheduledStr}</strong>.</p>
           ${meetingDetail}`,
       })
-      .catch(console.error);
+      .catch((err) => log.failure("email.send_failed", err, { leadId: consultation.leadId }));
   }
 };
 
@@ -3568,7 +3575,7 @@ const finalizeConsultation = async (
     });
   } catch (err) {
     // Non-fatal: calendar event creation failure must not block consultation
-    console.error("Failed to auto-create calendar event for consultation", err);
+    log.failure("lead.calendar_event_failed", err, { leadId: consultation.leadId });
   }
 
   await sendConsultationConfirmation(updated);
@@ -3611,7 +3618,7 @@ const selectConsultationSlot = async (token: string, startIso: string) => {
   await logLeadEvent({
     organizationId: consultation.organizationId,
     leadId: consultation.leadId,
-    type: "consultation_slot_selected",
+    action: "lead.consultation_slot_selected",
     metadata: { consultationId: consultation.id, slot: startIso },
   });
 
@@ -3683,7 +3690,7 @@ const cancelConsultation = async (
   await logLeadEvent({
     organizationId,
     leadId,
-    type: "consultation_cancelled",
+    action: "lead.consultation_cancelled",
     actorId,
     metadata: {
       consultationId: consultation.id,
@@ -3732,7 +3739,7 @@ const cancelConsultation = async (
           ${reasonLine}
           <p>Please contact our office if you would like to re-schedule.</p>`,
       })
-      .catch(console.error);
+      .catch((err) => log.failure("email.send_failed", err, { leadId }));
   }
   for (const email of staffEmails) {
     emailService
@@ -3744,7 +3751,7 @@ const cancelConsultation = async (
         }</strong>${staffWhen} has been cancelled.</p>
           ${reasonLine}`,
       })
-      .catch(console.error);
+      .catch((err) => log.failure("email.send_failed", err, { leadId }));
   }
 
   return updated;
@@ -3926,7 +3933,7 @@ const generateFeeAgreement = async (
   await logLeadEvent({
     organizationId,
     leadId,
-    type: "fee_agreement_generated",
+    action: "lead.fee_agreement_generated",
     actorId,
     metadata: {
       agreementId: agreement.id,
@@ -3982,7 +3989,7 @@ const discardDraftFeeAgreement = async (
   await logLeadEvent({
     organizationId,
     leadId: agreement.leadId,
-    type: "fee_agreement_discarded",
+    action: "lead.fee_agreement_discarded",
     metadata: { agreementId },
   });
 
@@ -4083,7 +4090,7 @@ const sendFeeAgreement = async (
   await logLeadEvent({
     organizationId,
     leadId: agreement.leadId,
-    type: "fee_agreement_sent",
+    action: "lead.fee_agreement_sent",
     actorId,
     metadata: { agreementId },
   });
@@ -4097,7 +4104,7 @@ const sendFeeAgreement = async (
         <p><a href="${signingLink}">Sign Agreement</a></p>
         <p>Please complete this at your earliest convenience.</p>`,
     })
-    .catch(console.error);
+    .catch((err) => log.failure("email.send_failed", err, { leadId: agreement.leadId }));
 
   return { ...updated, clientSigningLink: signingLink };
 };
@@ -4154,10 +4161,7 @@ const billSignedFeeAgreement = async (
       consultationFeeAmount: document.consultationFeeAmount,
     });
   } catch (err) {
-    console.error(
-      `[leads] could not raise fee-agreement invoice for ${agreementId}:`,
-      err,
-    );
+    log.failure("leads.fee_agreement_invoice_failed", err, { agreementId });
   }
 };
 
@@ -4235,7 +4239,7 @@ const markFeeAgreementReceived = async (
     await logLeadEvent({
       organizationId,
       leadId: agreement.leadId,
-      type: "fee_agreement_signed",
+      action: "lead.fee_agreement_signed",
       actorId,
       metadata: { agreementId, markedManually: true },
     });
@@ -4309,7 +4313,7 @@ const markFeeAgreementPaymentReceived = async (
     await logLeadEvent({
       organizationId,
       leadId: agreement.leadId,
-      type: "payment_received",
+      action: "lead.payment_received",
       actorId,
       metadata: { kind: "fee_agreement", agreementId },
     });
@@ -4420,7 +4424,7 @@ const nudgeClient = async (agreementId: string, organizationId: string) => {
   await logLeadEvent({
     organizationId,
     leadId: lead.id,
-    type: "nudge_sent",
+    action: "lead.nudge_sent",
     metadata: { agreementId },
   });
 
@@ -4537,7 +4541,7 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
         contentType: "application/pdf",
       });
     } catch (err) {
-      console.error("Failed to archive signed fee-agreement PDF", err);
+      log.failure("lead.fee_agreement_archive_failed", err, { leadId: agreement.leadId });
     }
 
     await db
@@ -4555,7 +4559,7 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
     await logLeadEvent({
       organizationId: agreement.organizationId,
       leadId: agreement.leadId,
-      type: "fee_agreement_signed",
+      action: "lead.fee_agreement_signed",
       actorId: null,
       metadata: { agreementId: agreement.id, via: "e_signature" },
     });
@@ -4600,7 +4604,7 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
       await logLeadEvent({
         organizationId: agreement.organizationId,
         leadId: agreement.leadId,
-        type: "fee_agreement_voided",
+        action: "lead.fee_agreement_voided",
         actorId: null,
         metadata: { agreementId: agreement.id, reason: event.event_type },
       });
@@ -4755,12 +4759,6 @@ const openCase = async (
       );
     }
 
-    const [practiceArea] = await db
-      .select({ id: practiceAreas.id })
-      .from(practiceAreas)
-      .where(eq(practiceAreas.id, resolvedPracticeAreaId))
-      .limit(1);
-
     const [caseType] = await db
       .select()
       .from(practiceAreaCaseTypes)
@@ -4845,7 +4843,19 @@ const openCase = async (
     await logLeadEvent({
       organizationId,
       leadId,
-      type: "case_opened",
+      action: "lead.case_opened",
+      actorId: creatorStaffId,
+      metadata: {
+        caseId: newCase.id,
+        caseNumber: newCase.caseNumber,
+        clientId: client.id,
+      },
+    });
+
+    await logLeadEvent({
+      organizationId,
+      leadId,
+      action: "lead.converted",
       actorId: creatorStaffId,
       metadata: {
         caseId: newCase.id,
@@ -4935,7 +4945,7 @@ const openCase = async (
           <p><strong>Case Number:</strong> ${newCase.caseNumber}</p>
           <p>Your attorney will be in touch with you shortly.</p>`,
       })
-      .catch(console.error);
+      .catch((err) => log.failure("email.send_failed", err, { leadId }));
 
     return {
       client,
@@ -4999,7 +5009,7 @@ const updateCaseWorkflowStep = async (
     await logLeadEvent({
       organizationId,
       leadId: caseRow.leadId,
-      type: "case_workflow_step_updated",
+      action: "lead.case_workflow_step_updated",
       metadata: { caseId, stepId, changes: data },
     });
   }
@@ -5054,7 +5064,7 @@ const addAdverseParty = async (
     await logLeadEvent({
       organizationId,
       leadId: caseRow.leadId,
-      type: "adverse_party_added",
+      action: "lead.adverse_party_added",
       metadata: {
         caseId,
         partyId: created.id,
@@ -5107,7 +5117,7 @@ const updateAdverseParty = async (
     await logLeadEvent({
       organizationId,
       leadId: caseRow.leadId,
-      type: "adverse_party_updated",
+      action: "lead.adverse_party_updated",
       metadata: { caseId, partyId, changes: data },
     });
   }
@@ -5139,177 +5149,81 @@ const deleteAdverseParty = async (
     await logLeadEvent({
       organizationId,
       leadId: caseRow.leadId,
-      type: "adverse_party_deleted",
+      action: "lead.adverse_party_deleted",
       metadata: { caseId, partyId },
     });
   }
 };
 
-// ─── Unified Timeline ──────────────────────────────────────────────────────
-// Merges lead_events + lead_timeline_events into a single sorted timeline,
-// matching the cases pattern (case_timeline_events + step_action_logs).
+// ─── Timeline ─────────────────────────────────────────────────────────────
+// All timeline events live in `audit_events` now — the old
+// `lead_timeline_events` table has been removed.
 
-const EVENT_TITLE_MAP: Record<string, string> = {
-  lead_received: "Lead received",
-  lead_updated: "Lead updated",
-  lead_viewed: "Lead viewed",
-  stage_changed: "Stage changed",
-  lead_assigned: "Lead assigned",
-  lead_archived: "Lead archived",
-  lead_restored: "Lead restored",
-  note_added: "Note added",
-  note_updated: "Note updated",
-  note_deleted: "Note deleted",
-  note_pinned: "Note pinned",
-  note_unpinned: "Note unpinned",
-  conflict_check_run: "Conflict check run",
-  conflict_check_approved: "Conflict check approved",
-  conflict_check_declined: "Conflict check declined",
-  conflict_overridden: "Conflict overridden",
-  questionnaire_sent: "Questionnaire sent",
-  questionnaire_opened: "Questionnaire opened",
-  questionnaire_draft_saved: "Questionnaire draft saved",
-  questionnaire_response_received: "Questionnaire response received",
-  questionnaire_file_uploaded: "Questionnaire file uploaded",
-  consultation_scheduled: "Consultation scheduled",
-  consultation_rescheduled: "Consultation rescheduled",
-  consultation_cancelled: "Consultation cancelled",
-  consultation_completed: "Consultation completed",
-  consultation_booking_opened: "Consultation booking opened",
-  consultation_slot_selected: "Consultation slot selected",
-  fee_agreement_generated: "Fee agreement generated",
-  fee_agreement_sent: "Fee agreement sent",
-  fee_agreement_signed: "Fee agreement signed",
-  fee_agreement_discarded: "Fee agreement discarded",
-  fee_agreement_voided: "Fee agreement voided",
-  payment_received: "Payment received",
-  case_opened: "Case opened",
-  case_workflow_step_updated: "Case workflow step updated",
-  nudge_sent: "Reminder sent",
-  pipeline_initialized: "Pipeline initialized",
-  task_created: "Task created",
-  task_updated: "Task updated",
-  task_assigned: "Task assigned",
-  task_completed: "Task completed",
-  task_status_changed: "Task status changed",
-  task_deleted: "Task deleted",
-  task_submitted_for_review: "Task submitted for review",
-  task_approved: "Task approved",
-  task_rejected: "Task rejected",
-  document_linked: "Document linked",
-  document_unlinked: "Document unlinked",
-  adverse_party_added: "Adverse party added",
-  adverse_party_updated: "Adverse party updated",
-  adverse_party_deleted: "Adverse party deleted",
-  missing_documents_requested: "Missing documents requested",
-  reminder_sent: "Reminder sent",
-};
-
+/**
+ * A lead's timeline.
+ *
+ * The same rows as the audit-log tab, in the same vocabulary — `action` plus
+ * the registry `label`, never a re-cased `eventType`. Three defects were fixed
+ * here together, because they were the same mistake in three places:
+ *
+ *   - it selected every row for the lead and then `slice()`d the requested
+ *     page out in memory, so a busy lead paid for its whole history on every
+ *     scroll;
+ *   - it counted `events.length` from that same unbounded fetch;
+ *   - it re-resolved actor names from `staff` at read time, which meant
+ *     renaming a colleague rewrote who had done things years earlier. The
+ *     stored `actorName` snapshot is the record.
+ */
 const getLeadTimeline = async (
   leadId: string,
   organizationId: string,
   page = 1,
   limit = 20,
 ) => {
-  const [events, timelineEvents] = await Promise.all([
-    db
-      .select({
-        id: leadEvents.id,
-        eventType: leadEvents.type,
-        title: leadEvents.type,
-        description: sql<string | null>`null`,
-        metadata: leadEvents.metadata,
-        ipAddress: leadEvents.ipAddress,
-        createdById: leadEvents.actorId,
-        createdAt: leadEvents.createdAt,
-      })
-      .from(leadEvents)
-      .where(
-        and(
-          eq(leadEvents.leadId, leadId),
-          eq(leadEvents.organizationId, organizationId),
-        ),
-      ),
-    db
-      .select({
-        id: leadTimelineEvents.id,
-        eventType: leadTimelineEvents.eventType,
-        title: leadTimelineEvents.title,
-        description: leadTimelineEvents.description,
-        metadata: leadTimelineEvents.metadata,
-        createdById: leadTimelineEvents.createdById,
-        createdAt: leadTimelineEvents.createdAt,
-      })
-      .from(leadTimelineEvents)
-      .innerJoin(leads, eq(leadTimelineEvents.leadId, leads.id))
-      .where(
-        and(
-          eq(leadTimelineEvents.leadId, leadId),
-          eq(leads.organizationId, organizationId),
-        ),
-      ),
-  ]);
-
-  // Resolve staff names for both sources
-  const allActorIds = [
-    ...new Set([
-      ...(events.map((e) => e.createdById).filter(Boolean) as string[]),
-      ...(timelineEvents.map((e) => e.createdById).filter(Boolean) as string[]),
-    ]),
-  ];
-
-  let staffMap: Record<string, string> = {};
-  if (allActorIds.length > 0) {
-    const staffRows = await db
-      .select({
-        id: staff.id,
-        name: sql<string>`concat(${staff.firstName}, ' ', ${staff.lastName})`,
-      })
-      .from(staff)
-      .where(
-        and(
-          inArray(staff.id, allActorIds),
-          eq(staff.organizationId, organizationId),
-        ),
-      );
-    staffMap = Object.fromEntries(staffRows.map((r) => [r.id, r.name]));
-  }
-
-  // Normalize and merge
-  const merged = [
-    ...events.map((e) => ({
-      id: e.id,
-      eventType: e.eventType,
-      title: EVENT_TITLE_MAP[e.eventType] ?? e.eventType,
-      description: e.description,
-      metadata: e.metadata as Record<string, unknown> | null,
-      ipAddress: e.ipAddress,
-      createdBy: e.createdById
-        ? { id: e.createdById, name: staffMap[e.createdById] ?? "Unknown" }
-        : null,
-      createdAt: e.createdAt,
-    })),
-    ...timelineEvents.map((e) => ({
-      id: e.id,
-      eventType: e.eventType,
-      title: e.title,
-      description: e.description,
-      metadata: e.metadata as Record<string, unknown> | null,
-      ipAddress: null as string | null,
-      createdBy: e.createdById
-        ? { id: e.createdById, name: staffMap[e.createdById] ?? "Unknown" }
-        : null,
-      createdAt: e.createdAt,
-    })),
-  ];
-
-  merged.sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  const where = and(
+    eq(auditEvents.organizationId, organizationId),
+    eq(auditEvents.entityType, "lead"),
+    eq(auditEvents.entityId, leadId),
   );
 
-  const total = merged.length;
   const offset = (page - 1) * limit;
-  const data = merged.slice(offset, offset + limit);
+
+  const [rows, [count]] = await Promise.all([
+    db
+      .select({
+        id: auditEvents.id,
+        action: auditEvents.action,
+        summary: auditEvents.summary,
+        metadata: auditEvents.metadata,
+        ipAddress: auditEvents.ipAddress,
+        actorStaffId: auditEvents.actorStaffId,
+        actorName: auditEvents.actorName,
+        occurredAt: auditEvents.occurredAt,
+      })
+      .from(auditEvents)
+      .where(where)
+      .orderBy(desc(auditEvents.occurredAt))
+      .limit(limit)
+      .offset(offset),
+    db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(auditEvents)
+      .where(where),
+  ]);
+
+  const total = count?.value ?? 0;
+
+  const data = rows.map((r) => ({
+    id: r.id,
+    action: r.action,
+    label: labelFor(r.action),
+    summary: r.summary,
+    metadata: r.metadata as Record<string, unknown> | null,
+    ipAddress: r.ipAddress,
+    actorId: r.actorStaffId,
+    actorName: r.actorName,
+    createdAt: r.occurredAt,
+  }));
 
   return {
     data,
@@ -5318,120 +5232,9 @@ const getLeadTimeline = async (
 };
 
 // ─── Audit Log ─────────────────────────────────────────────────────────────
-// Read-only view of the lead_events audit trail, formatted for the audit log
-// tab. Uses UPPER_SNAKE_CASE event types to match the cases audit log pattern.
-
-const AUDIT_EVENT_TYPE_MAP: Record<string, string> = {
-  lead_received: "LEAD_RECEIVED",
-  lead_updated: "LEAD_UPDATED",
-  lead_viewed: "LEAD_VIEWED",
-  stage_changed: "STAGE_CHANGED",
-  lead_assigned: "LEAD_ASSIGNED",
-  lead_archived: "LEAD_ARCHIVED",
-  lead_restored: "LEAD_RESTORED",
-  note_added: "NOTE_ADDED",
-  note_updated: "NOTE_UPDATED",
-  note_deleted: "NOTE_DELETED",
-  note_pinned: "NOTE_PINNED",
-  note_unpinned: "NOTE_UNPINNED",
-  conflict_check_run: "CONFLICT_CHECK_RUN",
-  conflict_check_approved: "CONFLICT_CHECK_APPROVED",
-  conflict_check_declined: "CONFLICT_CHECK_DECLINED",
-  conflict_overridden: "CONFLICT_OVERRIDDEN",
-  questionnaire_sent: "QUESTIONNAIRE_SENT",
-  questionnaire_opened: "QUESTIONNAIRE_OPENED",
-  questionnaire_draft_saved: "QUESTIONNAIRE_DRAFT_SAVED",
-  questionnaire_response_received: "QUESTIONNAIRE_RESPONSE_RECEIVED",
-  questionnaire_file_uploaded: "QUESTIONNAIRE_FILE_UPLOADED",
-  consultation_scheduled: "CONSULTATION_SCHEDULED",
-  consultation_rescheduled: "CONSULTATION_RESCHEDULED",
-  consultation_cancelled: "CONSULTATION_CANCELLED",
-  consultation_completed: "CONSULTATION_COMPLETED",
-  consultation_booking_opened: "CONSULTATION_BOOKING_OPENED",
-  consultation_slot_selected: "CONSULTATION_SLOT_SELECTED",
-  fee_agreement_generated: "FEE_AGREEMENT_GENERATED",
-  fee_agreement_sent: "FEE_AGREEMENT_SENT",
-  fee_agreement_signed: "FEE_AGREEMENT_SIGNED",
-  fee_agreement_discarded: "FEE_AGREEMENT_DISCARDED",
-  fee_agreement_voided: "FEE_AGREEMENT_VOIDED",
-  payment_received: "PAYMENT_RECEIVED",
-  case_opened: "CASE_OPENED",
-  case_workflow_step_updated: "CASE_WORKFLOW_STEP_UPDATED",
-  nudge_sent: "NUDGE_SENT",
-  pipeline_initialized: "PIPELINE_INITIALIZED",
-  task_created: "TASK_CREATED",
-  task_updated: "TASK_UPDATED",
-  task_assigned: "TASK_ASSIGNED",
-  task_completed: "TASK_COMPLETED",
-  task_status_changed: "TASK_STATUS_CHANGED",
-  task_deleted: "TASK_DELETED",
-  task_submitted_for_review: "TASK_SUBMITTED_FOR_REVIEW",
-  task_approved: "TASK_APPROVED",
-  task_rejected: "TASK_REJECTED",
-  document_linked: "DOCUMENT_LINKED",
-  document_unlinked: "DOCUMENT_UNLINKED",
-  adverse_party_added: "ADVERSE_PARTY_ADDED",
-  adverse_party_updated: "ADVERSE_PARTY_UPDATED",
-  adverse_party_deleted: "ADVERSE_PARTY_DELETED",
-  missing_documents_requested: "MISSING_DOCUMENTS_REQUESTED",
-  reminder_sent: "REMINDER_SENT",
-};
-
-const getLeadAuditLog = async (
-  leadId: string,
-  organizationId: string,
-  page = 1,
-  limit = 20,
-) => {
-  const rows = await db
-    .select({
-      id: leadEvents.id,
-      type: leadEvents.type,
-      actorId: leadEvents.actorId,
-      actorNameSnapshot: leadEvents.actorNameSnapshot,
-      firstName: staff.firstName,
-      lastName: staff.lastName,
-      metadata: leadEvents.metadata,
-      ipAddress: leadEvents.ipAddress,
-      createdAt: leadEvents.createdAt,
-    })
-    .from(leadEvents)
-    .leftJoin(staff, eq(leadEvents.actorId, staff.id))
-    .where(
-      and(
-        eq(leadEvents.leadId, leadId),
-        eq(leadEvents.organizationId, organizationId),
-      ),
-    )
-    .orderBy(desc(leadEvents.createdAt));
-
-  const total = rows.length;
-  const offset = (page - 1) * limit;
-  const pageRows = rows.slice(offset, offset + limit);
-
-  const data = pageRows.map((r) => ({
-    id: r.id,
-    eventType: AUDIT_EVENT_TYPE_MAP[r.type] ?? r.type.toUpperCase(),
-    title: EVENT_TITLE_MAP[r.type] ?? r.type,
-    description: null as string | null,
-    metadata: r.metadata as Record<string, unknown> | null,
-    ipAddress: r.ipAddress,
-    performedBy: r.actorId
-      ? {
-          id: r.actorId,
-          name: r.firstName
-            ? `${r.firstName} ${r.lastName}`.trim()
-            : (r.actorNameSnapshot ?? "Unknown"),
-        }
-      : null,
-    createdAt: r.createdAt,
-  }));
-
-  return {
-    data,
-    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
-  };
-};
+// Lives in lead-events.service.ts alongside the writer, so the read and the
+// write share one definition of what a lead event is. Re-exported here only
+// because the controller reaches it through LeadsService.
 
 export class LeadsService {
   createLead = createLead;

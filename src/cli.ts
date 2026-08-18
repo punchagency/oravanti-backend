@@ -44,7 +44,6 @@ import {
 import { aiScanJobs } from "./db/schema/ai-scan-jobs";
 import {
   caseIssueDocuments,
-  caseIssueEvents,
   caseIssues,
 } from "./db/schema/case-issues";
 import { scenarioDocumentRequirements } from "./db/schema/document-requirements";
@@ -61,7 +60,6 @@ import { consultations } from "./db/schema/consultations";
 import { contractors } from "./db/schema/contractors";
 import {
   documentAccess,
-  documentActivityLogs,
   documentCaseLinks,
   documentRequests,
   documents,
@@ -115,59 +113,11 @@ import { seedStaffAndTeams } from "./db/seeds/staff-and-teams.seed";
 import { seedSystemQuestionnaires } from "./db/seeds/system-questionnaires.seed";
 import { seedWorkflowTemplate } from "./db/seeds/workflow-template.seed";
 import { seedIntakePipeline } from "./db/seeds/intake-pipeline.seed";
-import { applyTaskReviewSchema } from "./db/seeds/task-review-schema.seed";
 import { seedPICases } from "./db/seeds/seed-pi-cases";
 import { StaffAvailabilityService } from "./modules/staff-availability/staff-availability.service";
 
-const DEFAULT_IMMIGRATION_CASE_TYPES = [
-  { code: "h1b_visa", name: "H-1B Visa", caseNumberPrefix: "H1B" },
-  { code: "green_card", name: "Green Card", caseNumberPrefix: "GC" },
-  { code: "citizenship", name: "Citizenship", caseNumberPrefix: "CIT" },
-  { code: "l1_visa", name: "L-1 Visa", caseNumberPrefix: "L1" },
-  { code: "asylum", name: "Asylum", caseNumberPrefix: "ASY" },
-  { code: "family_petition", name: "Family Petition", caseNumberPrefix: "FAM" },
-  {
-    code: "e2_treaty_investor",
-    name: "E-2 Treaty Investor",
-    caseNumberPrefix: "E2",
-  },
-  {
-    code: "o1_extraordinary_ability",
-    name: "O-1 Extraordinary Ability",
-    caseNumberPrefix: "O1",
-  },
-  {
-    code: "eb1_priority_workers",
-    name: "EB-1 Priority Workers",
-    caseNumberPrefix: "EB1",
-  },
-  {
-    code: "eb2_advanced_degree",
-    name: "EB-2 Advanced Degree",
-    caseNumberPrefix: "EB2",
-  },
-  {
-    code: "eb3_skilled_workers",
-    name: "EB-3 Skilled Workers",
-    caseNumberPrefix: "EB3",
-  },
-  {
-    code: "eb5_immigrant_investor",
-    name: "EB-5 Immigrant Investor",
-    caseNumberPrefix: "EB5",
-  },
-  {
-    code: "work_authorization",
-    name: "Work Authorization",
-    caseNumberPrefix: "EAD",
-  },
-  { code: "travel_document", name: "Travel Document", caseNumberPrefix: "TRV" },
-  { code: "naturalization", name: "Naturalization", caseNumberPrefix: "NAT" },
-  { code: "other", name: "Other", caseNumberPrefix: "OTH" },
-].map((caseType) => ({ ...caseType, jurisdiction: "federal" as const }));
 
 type PracticeAreaRow = typeof practiceAreas.$inferSelect;
-type PracticeAreaSubcategoryRow = typeof practiceAreaSubcategories.$inferSelect;
 type PracticeAreaCaseTypeRow = typeof practiceAreaCaseTypes.$inferSelect;
 type CertificationRow = typeof certifications.$inferSelect;
 type StaffRow = typeof staff.$inferSelect;
@@ -180,7 +130,6 @@ type NewClientContactRow = typeof clientContacts.$inferInsert;
 type NewContractorRow = typeof contractors.$inferInsert;
 type NewDocumentRow = typeof documents.$inferInsert;
 type NewDocumentAccessRow = typeof documentAccess.$inferInsert;
-type NewDocumentActivityLogRow = typeof documentActivityLogs.$inferInsert;
 type NewDocumentCaseLinkRow = typeof documentCaseLinks.$inferInsert;
 type NewDocumentVersionRow = typeof documentVersions.$inferInsert;
 type NewLeadRow = typeof leads.$inferInsert;
@@ -259,7 +208,6 @@ const abortIfCancelled = <T>(value: T | symbol): T => {
 };
 
 const normalizeName = (name: string) => name.trim();
-const normalizeKey = (name: string) => normalizeName(name).toLocaleLowerCase();
 const normalizeCode = (code: string) => code.trim().toLowerCase();
 const normalizePrefix = (prefix: string) => prefix.trim().toUpperCase();
 const normalizeJurisdiction = (
@@ -428,23 +376,6 @@ const printCaseTypes = (caseTypes: PracticeAreaCaseTypeRow[]) => {
   );
 };
 
-const printSubcategories = (subcategories: PracticeAreaSubcategoryRow[]) => {
-  if (!subcategories.length) {
-    note("No practice area subcategories found.");
-    return;
-  }
-
-  console.table(
-    subcategories.map((subcategory) => ({
-      id: subcategory.id,
-      practiceAreaId: subcategory.practiceAreaId,
-      code: subcategory.code,
-      name: subcategory.name,
-      createdAt: subcategory.createdAt.toISOString(),
-      updatedAt: subcategory.updatedAt.toISOString(),
-    })),
-  );
-};
 
 const parseCaseTypeDefinitions = (
   input: string | readonly string[] | readonly CaseTypeInput[],
@@ -542,12 +473,6 @@ const resolveFirm = async (id?: string) => {
   return allFirms.find((firm) => firm.id === selectedId) ?? null;
 };
 
-const resolvePracticeAreaByName = async (name: string) => {
-  const areas = await getPracticeAreas();
-  return (
-    areas.find((area) => normalizeKey(area.name) === normalizeKey(name)) ?? null
-  );
-};
 
 const resolveSubcategory = async (
   practiceAreaId?: string,
@@ -1277,8 +1202,6 @@ const eventTypes = [
 ] as const;
 const leaveTypes = ["annual", "sick", "emergency", "unpaid"] as const;
 const leaveStatuses = ["pending", "approved", "rejected"] as const;
-const errorSeverities = ["critical", "high", "medium", "low"] as const;
-const errorStatuses = ["pending_review", "under_review", "resolved"] as const;
 const leadSources = [
   "education_flywheel",
   "referral",
@@ -2042,7 +1965,6 @@ const seedDemoData = async (organizationId?: string) => {
 
     const documentValues: NewDocumentRow[] = range(DEMO_TARGETS.documents).map(
       (index) => {
-        const currentCase = pick(createdCases, index);
         const uploader = pick(createdStaff, index);
         return {
           title: `Demo ${pick(documentCategories, index)} document ${pad(index + 1)}.pdf`,
@@ -2116,19 +2038,6 @@ const seedDemoData = async (organizationId?: string) => {
     if (documentAccessValues.length) {
       await tx.insert(documentAccess).values(documentAccessValues);
     }
-
-    const documentActivityValues: NewDocumentActivityLogRow[] =
-      createdDocuments.map((document, index) => ({
-        documentId: document.id,
-        actorUserId: pick(createdStaff, index).userId,
-        action: "CREATED",
-        metadata: {
-          source: "demo_seed",
-          versionId: createdDocumentVersions[index].id,
-          caseId: pick(createdCases, index).id,
-        },
-      }));
-    await tx.insert(documentActivityLogs).values(documentActivityValues);
 
     const taskValues: NewTaskRow[] = range(DEMO_TARGETS.tasks).map((index) => ({
       organizationId: firm.id,
@@ -2534,13 +2443,6 @@ const dropDemoData = async (organizationId?: string) => {
 
     if (documentIds.length) {
       record(
-        "documentActivityLogs",
-        await tx
-          .delete(documentActivityLogs)
-          .where(inArray(documentActivityLogs.documentId, documentIds))
-          .returning(),
-      );
-      record(
         "documentAccess",
         await tx
           .delete(documentAccess)
@@ -2562,7 +2464,6 @@ const dropDemoData = async (organizationId?: string) => {
           .returning(),
       );
     } else {
-      deleted.documentActivityLogs = 0;
       deleted.documentAccess = 0;
       deleted.documentCaseLinks = 0;
       deleted.documentVersions = 0;
@@ -2878,13 +2779,6 @@ const AI_ISSUE_SPECS = [
 ];
 
 /** Action keys used on resolved demo issues → nice "Action taken" pills. */
-const DEMO_ACTION_KEYS = [
-  "request_reupload",
-  "send_client_reminder",
-  "send_urgent_reminder",
-  "flag_for_attorney",
-  "set_calendar_alert",
-] as const;
 
 const seedAiReviewDemo = async (organizationId?: string) => {
   assertDevelopment();
@@ -3012,18 +2906,9 @@ const seedAiReviewDemo = async (organizationId?: string) => {
         created += 1;
         matterIssues += 1;
 
-        // Detection event, plus a resolution event carrying the action.
-        await tx
-          .insert(caseIssueEvents)
-          .values({ issueId: issue.id, toStatus: "open" });
+        // case_issue_events table was migrated to audit_events; demo events
+        // are no longer seeded here.
         if (isResolved) {
-          await tx.insert(caseIssueEvents).values({
-            issueId: issue.id,
-            fromStatus: "open",
-            toStatus: "resolved",
-            actorStaffId: actor,
-            actionKey: pick(DEMO_ACTION_KEYS, sIndex + i),
-          });
           resolvedCount += 1;
         }
 
@@ -4286,10 +4171,6 @@ const runInteractive = async () => {
           label: "Seed the intake pipeline template new leads are stamped with",
         },
         {
-          value: "apply-task-review-schema",
-          label: "Apply task review + intake pipeline template schema",
-        },
-        {
           value: "staff-availability",
           label: "Set staff availability (hours, breaks, overrides)",
         },
@@ -4408,10 +4289,6 @@ const runInteractive = async () => {
 
       if (action === "seed-intake-pipeline") {
         await seedIntakePipeline();
-      }
-
-      if (action === "apply-task-review-schema") {
-        await applyTaskReviewSchema();
       }
 
       if (action === "staff-availability") {
@@ -4584,24 +4461,24 @@ casesCommand
   )
   .action(browseCases);
 
-const staffTeamsCommand = program
+program
   .command("seed-staff-teams")
   .description("Seed staff members and teams for an organization")
   .argument("[organizationId]", "Organization id")
   .action(async (organizationId?: string) => { await seedStaffAndTeams(organizationId); });
 
-const workflowTemplateCommand = program
+program
   .command("seed-workflow-template")
   .description("Seed the Personal Injury workflow template (20 modules, idempotent)")
   .action(seedWorkflowTemplate);
 
-const piCasesCommand = program
+program
   .command("seed-pi-cases")
   .description("Seed 5 Personal Injury demo cases with clients")
   .argument("[organizationId]", "Organization id")
   .action(seedPICases);
 
-const intakePipelineCommand = program
+program
   .command("seed-intake-pipeline")
   .description(
     "Seed the intake pipeline template new leads are stamped with (idempotent)",
@@ -4613,13 +4490,6 @@ const intakePipelineCommand = program
   .action(async (organizationId?: string) => {
     await seedIntakePipeline(organizationId);
   });
-
-const taskReviewSchemaCommand = program
-  .command("apply-task-review-schema")
-  .description(
-    "Create the task review thread + intake pipeline template tables (idempotent)",
-  )
-  .action(applyTaskReviewSchema);
 
 program
   .command("staff-availability")

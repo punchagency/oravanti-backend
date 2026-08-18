@@ -1,124 +1,106 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../../db/client";
-import type { LeadEventType } from "../../db/schema/leads";
-import { leadEvents } from "../../db/schema/leads";
-import { staff } from "../../db/schema/staff";
-import { getRequestContext } from "../../middleware/request-context";
+import { auditEvents } from "../../db/schema/audit-events";
+import { createModuleLogger } from "../../lib/logging/log";
+import { labelFor, type AuditActionName } from "../../lib/audit/actions";
+import { recordAccessEvent, recordAuditEvent } from "../shared/audit.service";
+
+const log = createModuleLogger("lead-events.service");
 
 /**
- * Append-only activity trail for a lead. Mirrors the shape of
- * workflow.service.ts `logEvent()`, which does the same job for cases.
+ * The lead activity trail, a view over `audit_events`.
  *
- * Nothing in this module updates or deletes an event, and no route exposes a
- * path that would — the trail is the record of what happened, so a correction
- * is a new event, never an edit.
+ * `lead_events` is gone, and so is its vocabulary. There is one set of names
+ * now — the actions in `lib/audit/actions.ts` — and it is the same set stored
+ * in the database, returned by the API, and rendered by the frontend. The old
+ * table had three spellings of the same event: `stage_changed` in the column,
+ * `STAGE_CHANGED` on the wire (via `AUDIT_EVENT_TYPE_MAP`), and "Stage
+ * changed" in a frontend map that had drifted into two divergent copies.
+ *
+ * What the move also buys: a `requestId` on every row tying it to the request
+ * that caused it, an actor resolved once per request instead of a SELECT per
+ * event, an org-wide index, and survival — `lead_events.lead_id` was
+ * `onDelete: cascade`, so deleting a lead deleted the record of everything
+ * ever done to it.
  */
+
+/**
+ * Every action a lead's trail can carry — the `lead.*` slice of the registry.
+ *
+ * Call sites name the action directly. There is no translation layer between
+ * what you write and what is stored: type `action: "lead."` and autocomplete
+ * lists exactly these, and a name the registry does not define will not
+ * compile.
+ */
+export type LeadAuditAction = Extract<AuditActionName, `lead.${string}`>;
+
+/** The one lead action that is a read: recorded with `category: "access"`. */
+const isLeadViewAction = (
+  action: LeadAuditAction | "lead.viewed",
+): action is "lead.viewed" => action === "lead.viewed";
 
 type LogLeadEventInput = {
   organizationId: string;
   leadId: string;
-  type: LeadEventType;
+  /** e.g. `"lead.stage_changed"`. */
+  action: LeadAuditAction | "lead.viewed";
   /**
    * Null for lead-driven and system events — a lead paying through the booking
    * link, a Dropbox Sign webhook firing. Never invent a staff member for these.
+   *
+   * This is a `staff.id`, so it lands in `actor_staff_id`. The actor's `user.id`
+   * and display name come from the request context, which is what removed the
+   * `actorNameFor()` SELECT that used to run on every single event.
    */
   actorId?: string | null;
   metadata?: Record<string, unknown>;
 };
 
 /**
- * Denormalised so the trail still reads correctly after a staff member is
- * removed from the firm.
+ * Append one entry to a lead's trail.
+ *
+ * A thin wrapper over `recordAuditEvent` that binds `entityType: "lead"` and
+ * routes the one view action through the access writer, so a call site never has to
+ * remember either. Everything else — actor, tenant, IP, request id — the
+ * writer reads from the request context.
  */
-const actorNameFor = async (
-  actorId: string | null | undefined,
-  organizationId: string,
-): Promise<string | null> => {
-  if (!actorId) return null;
-
-  const [row] = await db
-    .select({ firstName: staff.firstName, lastName: staff.lastName })
-    .from(staff)
-    .where(and(eq(staff.id, actorId), eq(staff.organizationId, organizationId)))
-    .limit(1);
-
-  return row ? `${row.firstName} ${row.lastName}`.trim() : null;
-};
-
 export const logLeadEvent = async (data: LogLeadEventInput) => {
-  const actorId = data.actorId ?? null;
-  const ctx = getRequestContext();
+  const { action } = data;
 
-  await db.insert(leadEvents).values({
+  if (isLeadViewAction(action)) {
+    await recordAccessEvent({
+      action,
+      entityId: data.leadId,
+      organizationId: data.organizationId,
+      metadata: data.metadata,
+      actor: { staffId: data.actorId ?? null },
+    });
+    return;
+  }
+
+  await recordAuditEvent({
+    action,
+    // "lead" for every action, including the ones the registry files under a
+    // nested entity such as `lead_note`. This signature only carries the lead
+    // id, so filing a note event under `lead_note` would give it an entity id
+    // pointing at the wrong row. A call site with the real nested id should
+    // use `recordAuditEvent` directly and drop the override.
+    entityType: "lead",
+    entityId: data.leadId,
     organizationId: data.organizationId,
-    leadId: data.leadId,
-    type: data.type,
-    actorId,
-    actorNameSnapshot: await actorNameFor(actorId, data.organizationId),
-    metadata: (data.metadata as any) ?? null,
-    ipAddress: ctx.ipAddress,
+    metadata: data.metadata,
+    actor: { staffId: data.actorId ?? null },
   });
-};
 
-export type LeadActivityEntry = {
-  id: string;
-  type: LeadEventType;
-  actorId: string | null;
-  /**
-   * Null where the actor is genuinely unknown — a system/lead-driven event, or
-   * a backfilled event predating the trail. Callers must render the absence,
-   * not guess a name.
-   */
-  actorName: string | null;
-  metadata: Record<string, unknown> | null;
-  ipAddress: string | null;
-  createdAt: Date;
-};
-
-export const getLeadActivity = async (
-  leadId: string,
-  organizationId: string,
-): Promise<LeadActivityEntry[]> => {
-  const rows = await db
-    .select({
-      id: leadEvents.id,
-      type: leadEvents.type,
-      actorId: leadEvents.actorId,
-      actorNameSnapshot: leadEvents.actorNameSnapshot,
-      firstName: staff.firstName,
-      lastName: staff.lastName,
-      metadata: leadEvents.metadata,
-      ipAddress: leadEvents.ipAddress,
-      createdAt: leadEvents.createdAt,
-    })
-    .from(leadEvents)
-    .leftJoin(staff, eq(leadEvents.actorId, staff.id))
-    .where(
-      and(
-        eq(leadEvents.leadId, leadId),
-        eq(leadEvents.organizationId, organizationId),
-      ),
-    )
-    .orderBy(desc(leadEvents.createdAt));
-
-  return rows.map((r) => ({
-    id: r.id,
-    type: r.type,
-    actorId: r.actorId,
-    actorName: r.firstName
-      ? `${r.firstName} ${r.lastName}`.trim()
-      : r.actorNameSnapshot,
-    metadata: r.metadata as Record<string, unknown> | null,
-    ipAddress: r.ipAddress,
-    createdAt: r.createdAt,
-  }));
+  log.action("lead_event.logged", { action, leadId: data.leadId });
 };
 
 /**
- * Log a lead_viewed event, but deduplicate: skip if the same staff member
- * viewed the same lead within the last 5 minutes. This prevents noise from
- * tab switches, re-renders, and polling while still recording meaningful
- * access patterns.
+ * Records that a lead was opened.
+ *
+ * The 5-minute deduplication that used to live here is now inside
+ * `recordAccessEvent`, so every access path gets it rather than only the two
+ * that remembered to implement it.
  */
 export const logLeadView = async (
   organizationId: string,
@@ -128,33 +110,130 @@ export const logLeadView = async (
 ) => {
   if (!actorId) return;
 
-  const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+  await recordAccessEvent({
+    action: "lead.viewed",
+    entityId: leadId,
+    organizationId,
+    metadata: tab ? { tab } : undefined,
+    actor: { staffId: actorId },
+  });
+};
 
-  try {
-    const [recent] = await db
-      .select({ id: leadEvents.id, createdAt: leadEvents.createdAt })
-      .from(leadEvents)
-      .where(
-        and(
-          eq(leadEvents.organizationId, organizationId),
-          eq(leadEvents.leadId, leadId),
-          eq(leadEvents.actorId, actorId),
-          eq(leadEvents.type, "lead_viewed"),
-        ),
-      )
-      .orderBy(desc(leadEvents.createdAt))
-      .limit(1);
+export type LeadActivityEntry = {
+  id: string;
+  /** A registry action name, e.g. `"lead.stage_changed"`. */
+  action: string;
+  /** The registry's label for that action, e.g. `"Stage changed"`. */
+  label: string;
+  /** One sentence describing what happened, written when the row was recorded. */
+  summary: string;
+  /** `staff.id`, or null for a system or lead-driven event. Render the absence; never guess a name. */
+  actorId: string | null;
+  actorName: string | null;
+  metadata: Record<string, unknown> | null;
+  ipAddress: string | null;
+  createdAt: Date;
+};
 
-    if (recent && recent.createdAt > fiveMinAgo) return;
+/**
+ * One lead's activity — changes and views together, from one table.
+ *
+ * A single index scan on
+ * `(organization_id, entity_type, entity_id, occurred_at desc)`. This was a
+ * `UNION ALL` across two tables with two summed counts until `access_events`
+ * was folded into `audit_events`; every entity feed wanted both halves, so
+ * the split was being undone on every read.
+ */
+const leadActivityWhere = (leadId: string, organizationId: string) =>
+  and(
+    eq(auditEvents.organizationId, organizationId),
+    eq(auditEvents.entityType, "lead"),
+    eq(auditEvents.entityId, leadId),
+  );
 
-    await logLeadEvent({
-      organizationId,
-      leadId,
-      type: "lead_viewed",
-      actorId,
-      metadata: tab ? { tab } : undefined,
-    });
-  } catch (err) {
-    console.error("[logLeadView] failed", err);
-  }
+const leadActivitySelect = (leadId: string, organizationId: string) =>
+  db
+    .select({
+      id: auditEvents.id,
+      action: auditEvents.action,
+      actorStaffId: auditEvents.actorStaffId,
+      actorName: auditEvents.actorName,
+      summary: auditEvents.summary,
+      metadata: auditEvents.metadata,
+      ipAddress: auditEvents.ipAddress,
+      occurredAt: auditEvents.occurredAt,
+    })
+    .from(auditEvents)
+    .where(leadActivityWhere(leadId, organizationId))
+    .orderBy(desc(auditEvents.occurredAt));
+
+
+type LeadActivityRow = {
+  id: string;
+  action: string;
+  actorStaffId: string | null;
+  actorName: string | null;
+  summary: string;
+  metadata: unknown;
+  ipAddress: string | null;
+  occurredAt: Date;
+};
+
+const toActivityEntry = (r: LeadActivityRow): LeadActivityEntry => ({
+  id: r.id,
+  action: r.action,
+  label: labelFor(r.action),
+  summary: r.summary,
+  actorId: r.actorStaffId,
+  // The snapshot is the only source now. The old read left-joined `staff` to
+  // prefer a live name over the stored one, which meant renaming a staff
+  // member silently rewrote history — the trail then said the new name had
+  // done things the old name did.
+  actorName: r.actorName,
+  metadata: (r.metadata as Record<string, unknown> | null) ?? null,
+  ipAddress: r.ipAddress,
+  createdAt: r.occurredAt,
+});
+
+export const getLeadActivity = async (
+  leadId: string,
+  organizationId: string,
+): Promise<LeadActivityEntry[]> => {
+  const rows = await leadActivitySelect(leadId, organizationId);
+
+  return rows.map(toActivityEntry);
+};
+
+const leadActivityCount = (leadId: string, organizationId: string) =>
+  db
+    .select({ value: sql<number>`count(*)::int` })
+    .from(auditEvents)
+    .where(leadActivityWhere(leadId, organizationId));
+
+/**
+ * The audit-log tab's read: the same rows, paginated.
+ *
+ * Pagination happens in the database. The previous implementation fetched
+ * every event for the lead and called `rows.slice()`, so page 1 of a lead with
+ * ten thousand events cost exactly as much as page 500.
+ */
+export const getLeadAuditLog = async (
+  leadId: string,
+  organizationId: string,
+  page = 1,
+  limit = 20,
+) => {
+  const offset = (page - 1) * limit;
+
+  const [rows, [count]] = await Promise.all([
+    leadActivitySelect(leadId, organizationId).limit(limit).offset(offset),
+    leadActivityCount(leadId, organizationId),
+  ]);
+
+  const total = count?.value ?? 0;
+
+  return {
+    data: rows.map(toActivityEntry),
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  };
 };

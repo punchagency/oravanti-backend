@@ -32,6 +32,10 @@ import {
   user,
 } from "../../db/schema/auth-schema";
 import { resolveAvatarUrl } from "../../utils/storage/avatar-url";
+import { recordAuditEvent } from "../shared/audit.service";
+import { createModuleLogger } from "../../lib/logging/log";
+
+const log = createModuleLogger("organization.service");
 
 export interface GetStaffsFilters {
   search?: string;
@@ -471,7 +475,7 @@ export class OrganizationService {
     email: string,
     role: string,
     organizationId: string,
-    headers: Record<string, string | string[] | undefined>,
+    _headers: Record<string, string | string[] | undefined>,
   ) {
     const formattedEmail = email.toLowerCase().trim();
 
@@ -564,6 +568,13 @@ export class OrganizationService {
           await tx.delete(staff).where(eq(staff.id, staffRecord.id));
           await tx.delete(user).where(eq(user.id, userId));
         });
+
+        await recordAuditEvent({
+          action: "admin.staff_invitation_revoked",
+          entityId: invitationId,
+          entityType: "invitation",
+          after: { email, staffId: staffRecord.id, userId },
+        });
       }
     }
 
@@ -578,6 +589,13 @@ export class OrganizationService {
       body: { invitationId },
       headers: fromNodeHeaders(headers as Record<string, string>),
     });
+
+    await recordAuditEvent({
+      action: "admin.staff_created",
+      entityId: invitationId,
+      entityType: "invitation",
+    });
+
     return data;
   }
 
@@ -683,6 +701,11 @@ export class OrganizationService {
       .update(clients)
       .set({ tempPassword: null })
       .where(eq(clients.userId, userId));
+
+    await recordAuditEvent({
+      action: "admin.password_changed",
+      entityId: userId,
+    });
 
     return { message: "Password set successfully" };
   }
@@ -804,6 +827,13 @@ export class OrganizationService {
       }
     });
 
+    await recordAuditEvent({
+      action: "admin.staff_updated",
+      entityId: staffId,
+      before: { caseTypeIds: undefined, teamIds: undefined },
+      after: { ...safeFields, caseTypeIds, teamIds },
+    });
+
     return { message: "Staff updated successfully" };
   }
 
@@ -845,6 +875,12 @@ export class OrganizationService {
       headers: fromNodeHeaders(headers as Record<string, string>),
     });
 
+    await recordAuditEvent({
+      action: "admin.role_changed",
+      entityId: staffId,
+      after: { role },
+    });
+
     return { message: "Role updated successfully" };
   }
 
@@ -867,6 +903,13 @@ export class OrganizationService {
       .update(staff)
       .set({ portalStatus: status })
       .where(eq(staff.id, staffId));
+
+    await recordAuditEvent({
+      action: "admin.staff_updated",
+      entityId: staffId,
+      before: { portalStatus: staffRecord.portalStatus },
+      after: { portalStatus: status },
+    });
 
     return { staffId, portalStatus: status };
   }
@@ -1103,8 +1146,6 @@ export class OrganizationService {
     },
     headers: Record<string, string | string[] | undefined>,
   ) {
-    console.log({ params });
-
     const createdTeam = await auth.api.createTeam({
       body: {
         name: params.name.trim(),
@@ -1176,6 +1217,17 @@ export class OrganizationService {
         "Failed to complete team creation. All changes have been rolled back.",
       );
     }
+
+    await recordAuditEvent({
+      action: "admin.team_created",
+      entityId: createdTeam.id,
+      after: {
+        name: params.name,
+        leadId: params.leadId,
+        maxCaseload: params.maxCaseload,
+        memberCount: params.memberStaffIds?.length ?? 0,
+      },
+    });
 
     return createdTeam;
   }
@@ -1291,12 +1343,34 @@ export class OrganizationService {
         headers: fromNodeHeaders(headers as Record<string, string>),
       });
 
+      await recordAuditEvent({
+        action: "admin.invite_member",
+        entityId: staffId,
+        after: {
+          email: formattedEmail,
+          firstName,
+          lastName,
+          role,
+          organizationId,
+          invitationId: createdInvitation?.id,
+        },
+      });
+
       return {
         staffId,
         invitationId: createdInvitation?.id,
       };
     } catch (e) {
-      console.log({ error: e });
+      log.failure("organization.staff_invite_failed", e, { organizationId });
+
+      await recordAuditEvent({
+        action: "admin.staff_invite_failed",
+        entityId: staffId,
+        entityType: "staff",
+        summary: `Staff invitation failed for ${email}, rolling back`,
+        metadata: { email, reason: "invitation_creation_failed" },
+        onWriteFailure: "log",
+      });
 
       // Roll back the account + staff row if the invitation can't be created
       // so we don't leave an orphaned pending_invitation staff record.
@@ -1311,7 +1385,7 @@ export class OrganizationService {
 
   async deleteTeam(teamId: string, organizationId: string) {
     const [existingTeam] = await db
-      .select({ id: teamTable.id })
+      .select({ id: teamTable.id, name: teamTable.name })
       .from(teamTable)
       .where(
         and(
@@ -1325,6 +1399,12 @@ export class OrganizationService {
     }
 
     await db.delete(teamTable).where(eq(teamTable.id, teamId));
+
+    await recordAuditEvent({
+      action: "admin.team_deleted",
+      entityId: teamId,
+      before: { name: existingTeam.name },
+    });
   }
 
   async removeTeamMember(
@@ -1357,6 +1437,12 @@ export class OrganizationService {
       .update(teamTable)
       .set({ leadId: null })
       .where(and(eq(teamTable.id, teamId), eq(teamTable.leadId, staffId)));
+
+    await recordAuditEvent({
+      action: "admin.team_member_removed",
+      entityId: teamId,
+      after: { staffId, userId: staffMember.userId },
+    });
   }
 
   async getStaffMember(staffId: string, organizationId: string) {
@@ -1496,6 +1582,12 @@ export class OrganizationService {
 
       await tx.delete(user).where(eq(user.id, staffMember.userId!));
     });
+
+    await recordAuditEvent({
+      action: "admin.staff_deleted",
+      entityId: staffId,
+      after: { userId: staffMember.userId },
+    });
   }
 
   async updateTeam(
@@ -1557,6 +1649,12 @@ export class OrganizationService {
         );
       }
     }
+
+    await recordAuditEvent({
+      action: "admin.team_updated",
+      entityId: teamId,
+      after: params,
+    });
   }
 
   async addTeamMembers(
@@ -1605,6 +1703,13 @@ export class OrganizationService {
         });
       }
     }
+
+    await recordAuditEvent({
+      action: "admin.assigned_to_team",
+      entityId: teamId,
+      after: { staffIds },
+      onWriteFailure: "log",
+    });
   }
 
   updateOrganization = async (data: Record<string, string>, req: Request) => {
@@ -1646,6 +1751,11 @@ export class OrganizationService {
           throw new ExternalServiceError(message, errorData);
       }
     }
+
+    await recordAuditEvent({
+      action: "system.settings_changed",
+      after: data,
+    });
 
     return response;
   };

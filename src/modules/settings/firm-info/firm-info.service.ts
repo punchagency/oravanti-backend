@@ -2,6 +2,10 @@ import { eq } from "drizzle-orm";
 import { db } from "../../../db/client";
 import { organization } from "../../../db/schema/auth-schema";
 import { UpsertFirmInfoBody } from "../../../types/settings.types";
+import { recordAuditEvent } from "../../shared/audit.service";
+import { createModuleLogger } from "../../../lib/logging/log";
+
+const log = createModuleLogger("firm-info.service");
 
 const slugify = (value: string) =>
   value
@@ -57,6 +61,14 @@ export class FirmInfoService {
         .set(toOrganizationValues(body))
         .where(eq(organization.id, organizationId))
         .returning();
+      await recordAuditEvent({
+        action: "system.settings_changed",
+        entityId: organizationId,
+        entityType: "organization",
+        metadata: { settingType: "firm_info" },
+        onWriteFailure: "log",
+      });
+      log.action("settings.firm_info_updated", { organizationId });
       return toFirmInfo(updated);
     }
 
@@ -69,6 +81,14 @@ export class FirmInfoService {
         ...toOrganizationValues(body),
       })
       .returning();
+    await recordAuditEvent({
+      action: "system.settings_changed",
+      entityId: organizationId,
+      entityType: "organization",
+      metadata: { settingType: "firm_info" },
+      onWriteFailure: "log",
+    });
+    log.action("settings.firm_info_updated", { organizationId });
     return toFirmInfo(created);
   };
 }

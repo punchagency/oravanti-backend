@@ -1,6 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../../../db/client";
 import { approvalWorkflows } from "../../../db/schema";
+import { recordAuditEvent } from "../../shared/audit.service";
+import { createModuleLogger } from "../../../lib/logging/log";
+
+const log = createModuleLogger("approval-workflows.service");
 
 export class ApprovalWorkflowsService {
   getApprovalWorkflows = async (organizationId: string) => {
@@ -37,5 +41,12 @@ export class ApprovalWorkflowsService {
           ),
       ),
     );
+    await recordAuditEvent({
+      action: "admin.approval_workflow_changed",
+      entityId: organizationId,
+      entityType: "permission",
+      onWriteFailure: "log",
+    });
+    log.action("settings.approval_workflow_updated", { organizationId });
   };
 }

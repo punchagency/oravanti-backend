@@ -2,8 +2,10 @@ import { and, asc, eq, gte, inArray, isNotNull, lt } from "drizzle-orm";
 import { db } from "../../db/client";
 import type { FeeAgreementDetails } from "../../db/schema/fee-agreements";
 import { feeAgreements } from "../../db/schema/fee-agreements";
-import { leadEvents, leads } from "../../db/schema/leads";
+import { auditEvents } from "../../db/schema/audit-events";
+import { leads } from "../../db/schema/leads";
 import { practiceAreas } from "../../db/schema/practice-areas";
+
 
 export type MetricsPeriod = "30d" | "90d" | "12mo";
 
@@ -188,18 +190,19 @@ export const getLeadMetrics = async (
   const stageEvents = leadIds.length
     ? await db
         .select({
-          leadId: leadEvents.leadId,
-          metadata: leadEvents.metadata,
-          createdAt: leadEvents.createdAt,
+          leadId: auditEvents.entityId,
+          metadata: auditEvents.metadata,
+          createdAt: auditEvents.occurredAt,
         })
-        .from(leadEvents)
+        .from(auditEvents)
         .where(
           and(
-            eq(leadEvents.type, "stage_changed"),
-            inArray(leadEvents.leadId, leadIds),
+            eq(auditEvents.entityType, "lead"),
+            eq(auditEvents.action, "lead.stage_changed"),
+            inArray(auditEvents.entityId, leadIds),
           ),
         )
-        .orderBy(asc(leadEvents.createdAt))
+        .orderBy(asc(auditEvents.occurredAt))
     : [];
 
   const durationsByStage = new Map<Stage, number[]>();
@@ -212,7 +215,10 @@ export const getLeadMetrics = async (
 
   for (const event of stageEvents) {
     const meta = event.metadata as { from?: string; to?: string } | null;
-    if (!meta?.from || !meta?.to) continue;
+    // `entity_id` is nullable on audit_events — it holds no foreign key, so
+    // nothing guarantees it at the database level. A stage change without a
+    // lead cannot contribute an interval.
+    if (!event.leadId || !meta?.from || !meta?.to) continue;
 
     const entry = enteredAt.get(event.leadId);
     if (entry && entry.stage === meta.from) {

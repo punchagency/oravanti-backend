@@ -1,4 +1,4 @@
-﻿import { Request, Response } from "express";
+import { Request, Response } from "express";
 import { getRequestContext } from "../../../middleware/request-context";
 import asyncWrap from "../../../utils/asyncWrapper";
 import { sendSuccess } from "../../../utils/send-success";
@@ -18,7 +18,7 @@ export class FinancialAccessController {
   }
 
   getFinancialAccess = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const result = await this.financialAccessService.getFinancialAccess(
       organizationId!,
     );

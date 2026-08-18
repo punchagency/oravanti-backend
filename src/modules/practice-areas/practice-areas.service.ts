@@ -1,5 +1,6 @@
 import { and, asc, eq, ilike, inArray } from "drizzle-orm";
 import { db } from "../../db/client";
+import { createModuleLogger } from "../../lib/logging/log";
 import { firmPracticeAreas } from "../../db/schema/firm-practice-areas";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreaSubcategories } from "../../db/schema/practice-area-subcategories";
@@ -13,6 +14,9 @@ import {
   ConflictError,
   NotFoundError,
 } from "../../utils/error/app-error";
+import { recordAuditEvent } from "../shared/audit.service";
+
+const log = createModuleLogger("practice-areas.service");
 
 const BILLING_CYCLES = ["monthly", "annual"] as const;
 type BillingCycle = (typeof BILLING_CYCLES)[number];
@@ -334,7 +338,7 @@ export const createSubscriptions = async (
     );
   }
 
-  return db.transaction(async (tx) => {
+    return db.transaction(async (tx) => {
     const created = [];
 
     for (const item of items) {
@@ -371,6 +375,16 @@ export const createSubscriptions = async (
         firmPracticeArea,
       });
     }
+
+    await recordAuditEvent({
+      action: "admin.practice_areas_changed",
+      entityId: organizationId,
+      organizationId,
+      after: { practiceAreaIds: items.map((i) => i.practiceAreaId), action: "subscribed" },
+      onWriteFailure: "log",
+    });
+
+    log.action("practice_area.subscribed", { organizationId, practiceAreaIds: items.map((i) => i.practiceAreaId) });
 
     return created;
   });
@@ -453,6 +467,16 @@ export const cancelSubscriptions = async (
           inArray(firmPracticeAreas.subscriptionId, matchedSubscriptionIds),
         ),
       );
+
+    await recordAuditEvent({
+      action: "admin.practice_areas_changed",
+      entityId: organizationId,
+      organizationId,
+      after: { practiceAreaIds: activeFirmAreas.map((a) => a.practiceAreaId), action: "cancelled" },
+      onWriteFailure: "log",
+    });
+
+    log.action("practice_area.unsubscribed", { organizationId, practiceAreaIds: activeFirmAreas.map((a) => a.practiceAreaId) });
 
     return cancelledSubscriptions;
   });

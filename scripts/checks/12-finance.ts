@@ -24,7 +24,7 @@ import { organization, team, user } from "../../src/db/schema/auth-schema";
 import { billingRates } from "../../src/db/schema/billing-rates";
 import { cases } from "../../src/db/schema/cases";
 import { clients } from "../../src/db/schema/clients";
-import { financeEvents } from "../../src/db/schema/finance-events";
+import { auditEvents } from "../../src/db/schema/audit-events";
 import { invoiceFollowups } from "../../src/db/schema/invoice-followups";
 import { invoiceNumberSequences } from "../../src/db/schema/invoice-number-sequences";
 import { invoicePayments } from "../../src/db/schema/invoice-payments";
@@ -85,7 +85,6 @@ const main = async () => {
   let clientId = "";
   let caseId = "";
   let practiceAreaId = "";
-  let subcategoryId = "";
   // Shipped presets are not org-scoped, so cleanup has to be by the exact ids
   // this check invents — a blanket delete of NULL-org rows would wipe a real
   // catalog off a shared database.
@@ -117,7 +116,7 @@ const main = async () => {
     .insert(practiceAreaSubcategories)
     .values({ practiceAreaId, code: `FAM${randomUUID().slice(0, 4)}`, name: "Family" })
     .returning();
-  subcategoryId = sub!.id;
+  const subcategoryId = sub!.id;
   const [caseType] = await systemDb
     .insert(practiceAreaCaseTypes)
     .values({
@@ -907,27 +906,27 @@ const main = async () => {
 
       // The column now holds the new date, so the trail is the only place the
       // old one survives. An audit that cannot say what changed is not one.
+      // finance_events had title + description; audit_events renders one
+      // sentence at write time and keeps the structured detail in metadata,
+      // so both halves of the old assertion read off `summary`.
       const [extendEvent] = await systemDb
-        .select({
-          title: financeEvents.title,
-          description: financeEvents.description,
-        })
-        .from(financeEvents)
+        .select({ summary: auditEvents.summary })
+        .from(auditEvents)
         .where(
           and(
-            eq(financeEvents.invoiceId, second.id),
-            like(financeEvents.title, "%due date extended%"),
+            eq(auditEvents.entityId, second.id),
+            like(auditEvents.summary, "%due date extended%"),
           ),
         );
       check("the extension is recorded", extendEvent != null);
       check(
         "with the date it moved from",
-        extendEvent?.description?.includes(beforeExtend!.dueDate) ?? false,
-        extendEvent?.description,
+        extendEvent?.summary?.includes(beforeExtend!.dueDate) ?? false,
+        extendEvent?.summary,
       );
       check(
         "and the reason given",
-        extendEvent?.description?.includes("another fortnight") ?? false,
+        extendEvent?.summary?.includes("another fortnight") ?? false,
       );
 
       // Forward only. This is the whole reason it is not just a PATCH.
@@ -2663,16 +2662,16 @@ const main = async () => {
       section("activity trail");
 
       const events = await systemDb
-        .select({ eventType: financeEvents.eventType })
-        .from(financeEvents)
-        .where(eq(financeEvents.organizationId, orgId));
-      const types = new Set(events.map((e) => e.eventType));
-      check("invoice creation is recorded", types.has("invoice_sent"));
-      check("payment is recorded", types.has("invoice_partially_paid"));
-      check("settlement is recorded", types.has("invoice_paid"));
-      check("follow-up is recorded", types.has("payment_followup_sent"));
-      check("void is recorded", types.has("invoice_voided"));
-      check("time approval is recorded", types.has("time_entry_approved"));
+        .select({ action: auditEvents.action })
+        .from(auditEvents)
+        .where(eq(auditEvents.organizationId, orgId));
+      const types = new Set(events.map((e) => e.action));
+      check("invoice creation is recorded", types.has("finance.invoice_sent"));
+      check("payment is recorded", types.has("finance.invoice_partially_paid"));
+      check("settlement is recorded", types.has("finance.invoice_paid"));
+      check("follow-up is recorded", types.has("finance.payment_followup_sent"));
+      check("void is recorded", types.has("finance.invoice_voided"));
+      check("time approval is recorded", types.has("finance.time_entry_approved"));
       check("a schedule being set is recorded", types.has("invoice_schedule_set"));
       check("a revision is recorded", types.has("invoice_schedule_revised"));
       check("a removal is recorded", types.has("invoice_schedule_removed"));
@@ -2707,7 +2706,7 @@ const main = async () => {
     await systemDb
       .delete(paymentWebhookEvents)
       .where(eq(paymentWebhookEvents.eventId, "evt_check_1"));
-    await systemDb.delete(financeEvents).where(eq(financeEvents.organizationId, orgId));
+    await systemDb.delete(auditEvents).where(eq(auditEvents.organizationId, orgId));
     await systemDb.delete(invoices).where(eq(invoices.organizationId, orgId));
     await systemDb
       .delete(invoiceNumberSequences)
