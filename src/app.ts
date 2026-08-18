@@ -98,10 +98,6 @@ export class App {
      * webhook avoids this only because it receives multipart and uses multer.
      */
     this.express.use(
-      "/webhooks/payments",
-      express.raw({ type: "application/json" }),
-    );
-    this.express.use(
       "/webhooks/confido",
       express.raw({ type: "application/json" }),
     );

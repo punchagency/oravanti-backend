@@ -54,12 +54,8 @@ import * as paymentsService from "../../src/modules/finance/payments.service";
 import * as deliveriesService from "../../src/modules/finance/deliveries.service";
 import { invoiceDeliveries } from "../../src/db/schema/invoice-deliveries";
 import * as feeAgreementBilling from "../../src/modules/finance/fee-agreement-billing.service";
+import { paymentsEnabledFor } from "../../src/modules/finance/confido/payments-enabled";
 import * as paymentLinks from "../../src/modules/finance/payment-links.service";
-import * as paymentWebhooks from "../../src/modules/finance/payment-webhooks.service";
-import {
-  getPaymentProvider,
-  isPaymentProviderConfigured,
-} from "../../src/modules/finance/payment.provider";
 import { paymentWebhookEvents } from "../../src/db/schema/payment-webhook-events";
 import * as reportsService from "../../src/modules/finance/reports.service";
 import * as timeBilling from "../../src/modules/finance/time-billing.service";
@@ -2212,47 +2208,39 @@ const main = async () => {
       );
 
       // ── Payment provider seam ─────────────────────────────────────────────
-      section("payment provider seam");
+      section("payment readiness");
 
-      // Nothing is configured in any environment yet, and every path that could
-      // take money has to say so rather than pretend.
+      // Readiness is per ORGANIZATION now, not per deployment. This org has no
+      // confido_firms row, so it cannot take money — and every path that could
+      // has to say so rather than pretend.
       checkEqual(
-        "no provider is configured",
-        isPaymentProviderConfigured(),
-        false,
-      );
-      // The e-signature stub returns true here; this one must not. It guards an
-      // unauthenticated endpoint that writes to the ledger, so "I cannot verify
-      // this" has to mean refuse, not accept.
-      checkEqual(
-        "the stub verifies nothing",
-        getPaymentProvider().verifyWebhook(Buffer.from("{}"), "sig"),
+        "an org with no Confido account cannot take payments",
+        await paymentsEnabledFor(orgId),
         false,
       );
 
-      let unconfiguredCheckoutRefused = false;
+      // The refusal must come from readiness, not from an unrelated failure. A
+      // check that passes because the token was bogus proves nothing, which is
+      // what the previous version of this section did once a provider existed.
+      const readyInvoiceToken = await paymentLinks.mintPaymentLink(
+        orgId,
+        second.id,
+      );
+      let unreadyCheckoutRefused = false;
+      let refusalMessage = "";
       try {
-        await paymentLinks.startCheckout("whatever");
-      } catch {
-        unconfiguredCheckoutRefused = true;
+        await paymentLinks.startCheckout(readyInvoiceToken);
+      } catch (err) {
+        unreadyCheckoutRefused = true;
+        refusalMessage = err instanceof Error ? err.message : "";
       }
+      check("checkout is refused for an unready firm", unreadyCheckoutRefused);
       check(
-        "checkout is refused while no provider exists",
-        unconfiguredCheckoutRefused,
+        "and refused for the right reason",
+        refusalMessage.includes("not available yet"),
+        refusalMessage,
       );
 
-      let unconfiguredWebhookRefused = false;
-      try {
-        await paymentWebhooks.handlePaymentWebhook(Buffer.from("{}"), "sig");
-      } catch {
-        unconfiguredWebhookRefused = true;
-      }
-      check(
-        "and so is the webhook",
-        unconfiguredWebhookRefused,
-      );
-
-      // ── Payment links ─────────────────────────────────────────────────────
       section("payment links");
 
       const linkToken = await paymentLinks.mintPaymentLink(orgId, second.id);

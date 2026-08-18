@@ -25,6 +25,12 @@ export type ConfidoWebhookJob = {
   eventType: string;
   /** Confido's Firm id — the only tenant identifier the payload carries. */
   firmId: string;
+  /**
+   * Present on `transaction.*` events. Their payloads carry only an id, so the
+   * worker queries the transaction back rather than trusting the delivery — which
+   * is also what makes out-of-order delivery converge on the truth.
+   */
+  transactionId?: string;
 };
 
 // ─── Producers ────────────────────────────────────────────────────────────────
