@@ -18,7 +18,8 @@
 import postgres from "postgres";
 import { eq, inArray } from "drizzle-orm";
 import { systemDb } from "../../src/db/client";
-import { caseIssueEvents, caseIssues } from "../../src/db/schema/case-issues";
+import { auditEvents } from "../../src/db/schema/audit-events";
+import { caseIssues } from "../../src/db/schema/case-issues";
 import { invoiceLinePresets } from "../../src/db/schema/invoice-line-presets";
 import { RLS_PROBE_PASSWORD, RLS_PROBE_USER } from "../test-db/rls-probe";
 import { check, checkEqual, report, section, withTempFixture } from "./_bootstrap";
@@ -38,12 +39,16 @@ const probeUrl = () => {
 };
 
 const TENANT_TABLES = [
+  // The audit trail is tenant data too, and the most sensitive of it: one
+  // table naming what every other table was used for. It also replaced
+  // case_issue_events and finance_events, both of which this list went on
+  // naming for months after they were dropped.
+  "audit_events",
   "leads",
   "cases",
   "clients",
   "case_issues",
   "case_issue_documents",
-  "case_issue_events",
   "ai_scan_jobs",
   "invoices",
   "invoice_line_items",
@@ -52,7 +57,6 @@ const TENANT_TABLES = [
   "invoice_followups",
   "invoice_deliveries",
   "invoice_line_presets",
-  "finance_events",
   "billing_rates",
   "time_entries",
 ] as const;
@@ -110,7 +114,6 @@ const main = async () => {
   const mine = new Set([
     "case_issues",
     "case_issue_documents",
-    "case_issue_events",
     "ai_scan_jobs",
   ]);
 
@@ -173,9 +176,21 @@ const main = async () => {
       })
       .returning();
 
-    await systemDb.insert(caseIssueEvents).values({
-      issueId: issue.id,
-      toStatus: "open",
+    // Stands in for the case_issue_events row this used to write. That table
+    // is gone; the trail is an audit_events row, which is org-scoped directly
+    // rather than through its parent issue -- so this now asserts the audit
+    // trail's own isolation, which is the stronger property.
+    await systemDb.insert(auditEvents).values({
+      organizationId: fx.organizationId,
+      actorType: "system",
+      actorName: "rls-check",
+      category: "business",
+      action: "case_review.issue_detected",
+      actionType: "create",
+      entityType: "case_issue",
+      entityId: issue.id,
+      summary: "Issue detected",
+      source: "cli",
     });
 
     const presetIds: string[] = [];
@@ -192,8 +207,8 @@ const main = async () => {
       checkEqual("the owning tenant sees its issue", own[0].n, 1);
 
       const ownEvents =
-        await sql`SELECT count(*)::int AS n FROM case_issue_events WHERE issue_id = ${issue.id}`;
-      checkEqual("the owning tenant sees the issue's events", ownEvents[0].n, 1);
+        await sql`SELECT count(*)::int AS n FROM audit_events WHERE entity_id = ${issue.id}`;
+      checkEqual("the owning tenant sees the issue's audit trail", ownEvents[0].n, 1);
 
       // ── Another tenant sees nothing ─────────────────────────────────────
       await sql.unsafe(`SET app.current_organization_id = 'some-other-org'`);
@@ -202,9 +217,9 @@ const main = async () => {
       checkEqual("another tenant cannot see the issue", other[0].n, 0);
 
       const otherEvents =
-        await sql`SELECT count(*)::int AS n FROM case_issue_events WHERE issue_id = ${issue.id}`;
+        await sql`SELECT count(*)::int AS n FROM audit_events WHERE entity_id = ${issue.id}`;
       checkEqual(
-        "another tenant cannot see the events (inherited scope)",
+        "another tenant cannot see the issue's audit trail",
         otherEvents[0].n,
         0,
       );
