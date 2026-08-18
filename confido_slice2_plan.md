@@ -210,12 +210,9 @@ actually about.
 within 30 days". So a returned payment is not necessarily final, which argues for modelling returns
 as reversing entries rather than deletions — the shape slice 3 already plans.
 
-**Working assumption: the updated platform and the new sponsor bank.** Confido documents two
-configurations on each of two axes and provides no way to read either from the API — the refund
-article ends by saying *"Contact support@confidolegal.com to determine which configuration is set for
-your firm"*, which is as close to an answer as the docs get. Since we are onboarding new firms onto a
-platform whose updated version is already in production, assuming the current configuration is the
-reasonable default. Confirm with support, but build on it.
+**Confirmed: we deploy on the updated platform.** The sponsor-bank axis is still open — the two are
+described in separate articles and may be independent — and it is question 2 in
+`confido_support_questions.md`.
 
 What that assumption buys:
 
