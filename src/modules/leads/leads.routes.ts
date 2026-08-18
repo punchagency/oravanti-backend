@@ -172,18 +172,6 @@ export class LeadWorkflowRouter {
       ctrl.getLeadTimeline,
     );
 
-    this.router.post(
-      "/:leadId/timeline",
-      requireAuth,
-      validateRequest({
-        params: v.leadIdParamsSchema,
-        body: v.createTimelineEventBodySchema,
-      }),
-      ctrl.createLeadTimelineEvent,
-    );
-
-    // Audit Log
-
     this.router.get(
       "/:leadId/audit-log",
       requireAuth,

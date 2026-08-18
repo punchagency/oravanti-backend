@@ -591,35 +591,5 @@ export class WorkflowRouter {
       this.workflowController.bulkPinNotes,
     );
 
-    // â”€â”€ Case Audit Log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-    /**
-     * @openapi
-     * /cases/{caseId}/audit-log:
-     *   get:
-     *     tags: [Workflow]
-     *     summary: Get case audit log (case events)
-     *     security: [{ bearerAuth: [] }]
-     *     parameters:
-     *       - in: path
-     *         name: caseId
-     *         required: true
-     *         schema: { type: string }
-     *       - in: query
-     *         name: page
-     *         schema: { type: integer }
-     *       - in: query
-     *         name: limit
-     *         schema: { type: integer }
-     *     responses:
-     *       200:
-     *         description: Paginated audit log entries
-     */
-    this.router.get(
-      "/:caseId/audit-log",
-      requireAuth,
-      validateRequest({ params: this.validation.params("caseId") }),
-      this.workflowController.getAuditLog,
-    );
   }
 }
