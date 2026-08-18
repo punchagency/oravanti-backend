@@ -133,9 +133,27 @@ export function requestContextMiddleware(req: Request, res: Response, next: Next
       database connection permanently. "close" fires in all of those cases and
       also after a normal finish, which is why cleanupTenantContext is
       idempotent.
+
+      `context` is passed explicitly rather than read from the store inside the
+      handler, and that is load-bearing. An EventEmitter listener runs in the
+      async context active when `emit()` is called, NOT the one active when
+      `.on()` registered it — Node does not snapshot the context for listeners.
+      On a normal response the emit happens to originate inside the handler, so
+      a lookup would work; on an aborted one, "close" is emitted from the
+      socket's own teardown, outside this request's context, and the lookup
+      returns undefined. The cleanup would then find nothing to release and the
+      reserved connection would leak for the lifetime of the process.
+
+      Aborts are not an edge case in development — StrictMode double-mounts,
+      cancelled queries and HMR reloads all produce them — so this leaked the
+      pool empty within a couple of dozen requests, after which every request
+      blocked forever waiting for a connection that was never coming back.
     */
-    res.on("finish", cleanupTenantContext);
-    res.on("close", cleanupTenantContext);
+    const releaseTenantConnection = () => {
+      void cleanupTenantContext(context);
+    };
+    res.on("finish", releaseTenantConnection);
+    res.on("close", releaseTenantConnection);
     next();
   });
 }
@@ -277,10 +295,13 @@ export async function initializeTenantContext(): Promise<void> {
  * Bound to both `finish` and `close` (see requestContextMiddleware). Idempotent
  * because both can fire for the same request, and because `release()` itself
  * guards against a second call.
+ *
+ * Takes the context as an argument on purpose — it must not read the store,
+ * because it runs from an event listener where the request's async context may
+ * no longer be active. See the comment at the registration site.
  */
-async function cleanupTenantContext(): Promise<void> {
-  const store = requestContextStore.getStore();
-  if (!store?.releaseTenantDb) return;
+async function cleanupTenantContext(store: RequestContext): Promise<void> {
+  if (!store.releaseTenantDb) return;
 
   const release = store.releaseTenantDb;
   // Cleared first, so a second event finds nothing to do even if the release

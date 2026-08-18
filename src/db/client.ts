@@ -37,18 +37,15 @@ import { getTx } from "./transaction-context";
 // that genuinely needs to see data across all tenants?" If the answer is no,
 // use `db` instead.
 /*
-  One pool, shared by system queries and by every request's tenant connection.
+  The system pool. Short queries only, never held across a request.
 
-  `max` is explicit because it is now load-bearing in a way it was not before.
-  Each authenticated request reserves a connection from this pool for its
-  duration (see createTenantDb), so this number is the ceiling on concurrent
-  authenticated requests, not just on concurrent queries. Postgres's own
-  max_connections must be at least this plus whatever the worker process and
-  any admin session need.
+  Explicit `max` because the default is easy to outgrow silently. Postgres's own
+  max_connections must cover this plus one connection per concurrent
+  authenticated request (see createTenantDb) plus the worker process.
 */
-const client = postgres(env.databaseUrl, {
-  max: Number(process.env.DATABASE_POOL_MAX ?? 20),
-});
+const SYSTEM_POOL_MAX = Number(process.env.DATABASE_SYSTEM_POOL_MAX ?? 10);
+
+const client = postgres(env.databaseUrl, { max: SYSTEM_POOL_MAX });
 
 export const systemDb = drizzle(client, {
   logger: false,
@@ -57,9 +54,10 @@ export const systemDb = drizzle(client, {
 export const closeDb = () => client.end();
 
 // ── Tenant-scoped connection factory ─────────────────────────────────────────
-// Reserves a connection from the shared pool, binds the RLS session
-// variable(s) on it, and returns a drizzle instance scoped to that connection.
-// Supports both org-scoped (staff) and user-scoped (client/contractor) RLS.
+// Opens a connection for one request, binds the RLS session variable(s) on it,
+// and returns a drizzle instance scoped to that connection plus the release
+// that closes it. Supports both org-scoped (staff) and user-scoped
+// (client/contractor) RLS.
 /**
  * Session identifiers are the only thing standing between tenants, so they are
  * shape-checked before they are allowed near a connection. Better Auth issues
@@ -80,92 +78,97 @@ const assertSafeId = (value: string, label: string): string => {
 export type TenantConnection = {
   db: ReturnType<typeof drizzle>;
   /**
-   * Clears the RLS session variables and returns the connection to the pool.
-   * Safe to call twice; the second call is a no-op.
+   * Closes the connection. Safe to call twice; the second call is a no-op.
    */
   release: () => Promise<void>;
 };
 
 /**
- * Binds a request's tenant identity to a connection taken from the shared pool.
+ * Binds a request's tenant identity to a connection of its own.
  *
- * ─── Why `reserve()` and not a new client ───────────────────────────────────
+ * ─── Why a dedicated client, and not a connection from a pool ───────────────
  *
- * This used to be `postgres(env.databaseUrl, { max: 1 })` — a brand new client
- * per authenticated request, which meant a fresh TCP connect, TLS handshake
- * and Postgres authentication on every call, and exhausted `max_connections`
- * under any real concurrency. `reserve()` takes an already-open connection out
- * of the pool and gives this request exclusive use of it, so the session
- * variables below cannot be seen by anyone else while it is held.
+ * This is one `postgres()` instance per authenticated request, which costs a
+ * TCP connect, a TLS handshake and a Postgres authentication each time. That
+ * cost is real and it is paid deliberately, because the two cheaper designs
+ * both fail:
  *
- * Exclusivity is the whole requirement. `set_config(..., false)` sets a
- * *session* GUC, which outlives the statement; on a shared connection the next
- * borrower would inherit another tenant's organization id, which is the worst
- * possible bug in this file. A reserved connection is not shared, and
- * `release()` resets both variables before handing it back.
+ *   - **`pool.reserve()`** looks ideal — an already-open connection, held
+ *     exclusively — but postgres.js returns a bare `Sql` handle from it, and
+ *     drizzle cannot drive one. `drizzle()` writes its date parsers into
+ *     `client.options.parsers`, which a reserved handle does not have, and
+ *     `db.transaction()` calls `client.begin()`, which it also does not have.
+ *     Both are absent by construction, not by version; only the top-level
+ *     instance carries them. This was tried and reverted — the first failure
+ *     broke every authenticated request, and the second broke every one that
+ *     opened a transaction.
  *
- * The alternative the plan named — `SET LOCAL` inside a per-request
- * transaction — also isolates correctly, but wrapping every request in one
- * transaction changes semantics well beyond RLS: long requests would pin a
- * transaction open, and the ~34 existing `db.transaction()` call sites would
- * all become nested. Reservation buys the same isolation without touching
- * transaction boundaries.
+ *   - **`SET LOCAL` inside a per-request transaction** isolates correctly but
+ *     changes semantics well beyond RLS: a long request would pin a
+ *     transaction open for its whole life, and every existing
+ *     `db.transaction()` call site would silently become nested.
+ *
+ * ─── Why exclusivity is the requirement ─────────────────────────────────────
+ *
+ * `set_config(..., false)` sets a *session* GUC, which outlives the statement.
+ * On a shared connection the next borrower would inherit the previous tenant's
+ * organization id — the worst possible bug in this file. A connection nothing
+ * else can reach cannot leak one tenant's identity into another's request.
+ *
+ * ─── The connection must be handed back ─────────────────────────────────────
+ *
+ * `release()` ends the client. It is not optional and it is not best-effort:
+ * this used to return a bare drizzle instance with no way to close anything, so
+ * every authenticated request leaked a connection until Postgres refused new
+ * ones. Callers get `{ db, release }` precisely so the release cannot be
+ * forgotten — see the `finish`/`close` handlers in requestContextMiddleware.
  */
 export async function createTenantDb(
   organizationId: string | null,
   userId: string | null,
 ): Promise<TenantConnection> {
-  const reserved = await client.reserve();
+  const tenantClient = postgres(env.databaseUrl, { max: 1 });
   let released = false;
 
   const release = async () => {
     if (released) return;
     released = true;
     try {
-      // Reset before returning to the pool. Without this the next request to
-      // borrow this connection starts life inside the previous tenant.
-      await reserved.unsafe(
-        `SELECT set_config('app.current_organization_id', NULL, false),
-                set_config('app.current_user_id', NULL, false)`,
-      );
+      // `end()` closes the connection outright, so there is no pooled session
+      // left holding this tenant's GUCs and nothing to reset first.
+      await tenantClient.end({ timeout: 5 });
     } catch {
-      // A connection we cannot reset must not go back into rotation carrying
-      // another tenant's identity. Closing it costs one reconnect; the pool
-      // opens a replacement on demand.
-      try {
-        await reserved.release();
-      } catch {
-        /* already gone */
-      }
-      return;
+      // Already gone, or refusing to close. Either way the socket is not going
+      // back into service, and there is nothing further this can do.
     }
-    reserved.release();
   };
 
   try {
     // `SET` does not accept bind parameters; `set_config()` does. Never
     // interpolate these values into the statement text.
     if (organizationId) {
-      await reserved.unsafe(
+      await tenantClient.unsafe(
         `SELECT set_config('app.current_organization_id', $1, false)`,
         [assertSafeId(organizationId, "organization id")],
       );
     }
 
     if (userId) {
-      await reserved.unsafe(
+      await tenantClient.unsafe(
         `SELECT set_config('app.current_user_id', $1, false)`,
         [assertSafeId(userId, "user id")],
       );
     }
+
+    // Constructed inside the try: `drizzle()` can throw, and anything that
+    // throws while a connection is open has to close it.
+    return { db: drizzle(tenantClient, { logger: false }), release };
   } catch (err) {
     // A half-bound connection must never reach a handler: it would carry one
     // of the two identities and silently widen what the request can see.
     await release();
     throw err;
   }
-
-  return { db: drizzle(reserved, { logger: false }), release };
 }
 
 // ── Context-aware db export ──────────────────────────────────────────────────

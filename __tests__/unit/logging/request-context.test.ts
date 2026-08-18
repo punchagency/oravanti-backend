@@ -1,4 +1,5 @@
 import { describe, expect, it, jest } from "@jest/globals";
+import { EventEmitter } from "node:events";
 import type { Request, Response } from "express";
 import {
   getRequestContext,
@@ -117,6 +118,83 @@ describe("requestContextMiddleware", () => {
     });
 
     expect(ids[0]).toBe(ids[1]);
+  });
+});
+
+describe("releasing the tenant connection", () => {
+  /*
+    A reserved connection is held for the whole request and handed back on
+    `finish` or `close`. If that hand-back is ever missed the connection is
+    gone for the life of the process, and once the pool is empty every request
+    blocks forever waiting for one — no error, no status, no log line.
+
+    These use a real EventEmitter, because the bug this guards against was
+    invisible to a mocked `on`: the listener was registered correctly and simply
+    could not find what to release when it ran.
+  */
+  const makeEmitterRes = (): { res: Response; emit: (evt: string) => void } => {
+    const emitter = new EventEmitter();
+    const res = {
+      setHeader: () => {},
+      on: (evt: string, fn: () => void) => emitter.on(evt, fn),
+    } as unknown as Response;
+    return { res, emit: (evt) => emitter.emit(evt) };
+  };
+
+  /** Runs the middleware and attaches a release, as requireAuth would. */
+  const withReservedConnection = () => {
+    const release = jest.fn(async () => {});
+    const { res, emit } = makeEmitterRes();
+
+    requestContextMiddleware(makeReq(), res, () => {
+      const ctx = getRequestContext();
+      ctx.tenantDb = {} as never;
+      ctx.releaseTenantDb = release;
+    });
+
+    return { release, emit };
+  };
+
+  // The regression. `close` fires from the socket's own teardown when a client
+  // aborts, which is outside the request's async context — so a cleanup that
+  // looked the context up at emit time found nothing and released nothing.
+  // Emitting here, after the middleware has returned, reproduces that exactly.
+  it("releases when the client aborts, with no async context active", async () => {
+    const { release, emit } = withReservedConnection();
+
+    emit("close");
+    await new Promise(setImmediate);
+
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases on a normally finished response", async () => {
+    const { release, emit } = withReservedConnection();
+
+    emit("finish");
+    await new Promise(setImmediate);
+
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases once when both events fire", async () => {
+    const { release, emit } = withReservedConnection();
+
+    emit("finish");
+    emit("close");
+    await new Promise(setImmediate);
+
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("does nothing when the request never reserved one", async () => {
+    const { res, emit } = makeEmitterRes();
+    requestContextMiddleware(makeReq(), res, () => {});
+
+    emit("close");
+    await new Promise(setImmediate);
+    // Nothing to assert beyond not throwing: an unauthenticated request holds
+    // no connection, and cleanup must be a no-op rather than an error.
   });
 });
 
