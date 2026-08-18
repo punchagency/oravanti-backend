@@ -12,6 +12,8 @@ export interface ConfidoBankAccount {
   category: string;
   isDefault: boolean;
   nickname: string;
+  /** True on the one account Confido debits monthly fees from. */
+  isFeeAccount: boolean;
 }
 
 export interface ConfidoFirmSnapshot {

@@ -69,7 +69,7 @@ export class ConfidoClient {
           id
           status
           apiToken
-          bankAccounts { id category isDefault nickname }
+          bankAccounts { id category isDefault nickname isFeeAccount }
         }
       }`,
       { input },
@@ -99,7 +99,7 @@ export class ConfidoClient {
     }>(
       firmToken,
       `query BankAccounts {
-        bankAccountsList { bankAccounts { id category isDefault nickname } }
+        bankAccountsList { bankAccounts { id category isDefault nickname isFeeAccount } }
       }`,
     );
     return data.bankAccountsList.bankAccounts;
@@ -199,6 +199,36 @@ export class ConfidoClient {
         inviteUser(input: $input) { id }
       }`,
       { input: { ...input, firmId } },
+    );
+  }
+
+  /**
+   * Point the firm's fee debits at a specific bank account.
+   *
+   * Confido does not net its fee out of a deposit — a $500 trust payment puts
+   * the full $500 in trust — and instead accumulates fees and debits them
+   * monthly from whichever account carries `isFeeAccount`. That separation is
+   * what keeps a trust deposit whole, and it only works if the fee account is
+   * the OPERATING one. Left unset, it is whatever Confido defaulted to.
+   */
+  async updateFirmAccounts(
+    firmToken: string,
+    input: {
+      feeBankAccountId?: string;
+      defaultOperatingId?: string;
+      defaultTrustId?: string;
+    },
+  ): Promise<void> {
+    // Firm-level, unlike its neighbours: `FirmUpdateInput` has no `firmId`
+    // field, so the token identifies the firm. `paymentSettingsUpdate` takes one
+    // and `firmBrandingUpdate` takes one — this does not, and passing it would
+    // be rejected as an unknown field.
+    await this.gql(
+      firmToken,
+      `mutation FirmUpdate($input: FirmUpdateInput!) {
+        firmUpdate(input: $input) { id }
+      }`,
+      { input },
     );
   }
 

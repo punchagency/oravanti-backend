@@ -464,6 +464,55 @@ const inviteFirmAdmin = async (
 // ─── Status ──────────────────────────────────────────────────────────────────
 
 /**
+ * Point the firm's monthly fee debit at its operating account.
+ *
+ * Confido does not net its fee out of a deposit — a $500 trust payment puts the
+ * full $500 in trust — and instead accumulates fees and debits them monthly
+ * from whichever account carries `isFeeAccount`. That separation is exactly
+ * what keeps a trust deposit whole, and it only holds if the fee account is the
+ * operating one.
+ *
+ * Left alone it is whatever Confido defaulted to, which we have never set and
+ * therefore never verified. Setting it explicitly is cheap; the failure mode if
+ * it were ever trust is a firm's IOLTA account being debited for card
+ * processing, which is the kind of thing that ends in a bar complaint.
+ *
+ * Non-fatal and idempotent: called on every status refresh, but only acts when
+ * the flag is actually on the wrong account.
+ */
+const ensureFeeAccount = async (
+  organizationId: string,
+  firmToken: string,
+  accounts: ConfidoBankAccount[],
+): Promise<void> => {
+  const operating = accounts.find(
+    (a) => a.category === "operating" && a.isDefault,
+  );
+  if (!operating) return;
+
+  const feeAccount = accounts.find((a) => a.isFeeAccount);
+  if (feeAccount?.id === operating.id) return;
+
+  if (feeAccount && feeAccount.category === "trust") {
+    console.error(
+      `[confido] org ${organizationId} had its fee account set to a TRUST ` +
+        `account (${feeAccount.nickname}); repointing at operating`,
+    );
+  }
+
+  try {
+    await getConfidoClient().updateFirmAccounts(firmToken, {
+      feeBankAccountId: operating.id,
+    });
+  } catch (err) {
+    console.error(
+      `[confido] could not set the fee account for org ${organizationId}:`,
+      (err as Error).message,
+    );
+  }
+};
+
+/**
  * Re-read the firm from Confido and store what it says.
  *
  * Shared by the manual Refresh button and the webhook worker, which is why it
@@ -494,7 +543,9 @@ export const refreshStatus = async (
   };
   if (canAcceptPayments(status, accepting) && !defaults.trust) {
     try {
-      defaults = pickDefaults(await client.listBankAccounts(firmToken));
+      const accounts = await client.listBankAccounts(firmToken);
+      defaults = pickDefaults(accounts);
+      await ensureFeeAccount(organizationId, firmToken, accounts);
     } catch (err) {
       console.error(
         `[confido] bank account lookup failed for org ${organizationId}:`,
