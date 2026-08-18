@@ -31,6 +31,7 @@ $$ LANGUAGE sql STABLE SECURITY DEFINER;
 ```
 
 **What it does:**
+
 - Reads `app.current_organization_id` session variable
 - Returns `NULL` if empty (via `NULLIF`)
 - `STABLE` — constant within a transaction (PostgreSQL optimization)
@@ -48,6 +49,7 @@ $$ LANGUAGE sql STABLE SECURITY DEFINER;
 ```
 
 **What it does:**
+
 - Reads `app.current_user_id` session variable
 - Returns `NULL` if empty
 - Used for client/contractor user-ownership policies
@@ -57,6 +59,7 @@ $$ LANGUAGE sql STABLE SECURITY DEFINER;
 **File:** `drizzle/migrations/0006_rls_consolidated.sql`
 
 **Must be created BEFORE:**
+
 - Any RLS policy that references them
 - Any table DEFAULT that references them
 - Any `ALTER TABLE ... SET DEFAULT` that references them
@@ -84,11 +87,13 @@ SELECT get_current_organization_id();  -- should return NULL
 Every table that stores tenant data must have an `organization_id` column.
 
 **Required column definition:**
+
 ```sql
 organization_id TEXT NOT NULL REFERENCES organization(id)
 ```
 
 **With default (for defense-in-depth):**
+
 ```sql
 organization_id TEXT NOT NULL DEFAULT get_current_organization_id() REFERENCES organization(id)
 ```
@@ -96,6 +101,7 @@ organization_id TEXT NOT NULL DEFAULT get_current_organization_id() REFERENCES o
 ### 2.2 Complete Table List (66 tables)
 
 #### Auth & Membership (6)
+
 - [ ] `admin_sessions`
 - [ ] `admins`
 - [ ] `team`
@@ -104,6 +110,7 @@ organization_id TEXT NOT NULL DEFAULT get_current_organization_id() REFERENCES o
 - [ ] `staff`
 
 #### Cases & Workflow (7)
+
 - [ ] `cases`
 - [ ] `certifications`
 - [ ] `case_events`
@@ -113,6 +120,7 @@ organization_id TEXT NOT NULL DEFAULT get_current_organization_id() REFERENCES o
 - [ ] `workflow_log`
 
 #### Leads & Lead Events (5)
+
 - [ ] `leads`
 - [ ] `lead_events`
 - [ ] `lead_document_links`
@@ -120,12 +128,14 @@ organization_id TEXT NOT NULL DEFAULT get_current_organization_id() REFERENCES o
 - [ ] `lead_timeline_events`
 
 #### Clients (4)
+
 - [ ] `clients`
 - [ ] `client_companies`
 - [ ] `client_contacts`
 - [ ] `client_requests`
 
 #### Documents (7)
+
 - [ ] `documents`
 - [ ] `document_versions`
 - [ ] `document_case_links`
@@ -135,6 +145,7 @@ organization_id TEXT NOT NULL DEFAULT get_current_organization_id() REFERENCES o
 - [ ] `document_activity_logs`
 
 #### Consultations & Fees (5)
+
 - [ ] `consultations`
 - [ ] `consultation_participants`
 - [ ] `consultation_locations`
@@ -142,6 +153,7 @@ organization_id TEXT NOT NULL DEFAULT get_current_organization_id() REFERENCES o
 - [ ] `fee_agreements`
 
 #### Questionnaires (7)
+
 - [ ] `firm_questionnaire_sections`
 - [ ] `firm_questionnaire_questions`
 - [ ] `firm_questionnaire_logic_rules`
@@ -151,65 +163,78 @@ organization_id TEXT NOT NULL DEFAULT get_current_organization_id() REFERENCES o
 - [ ] `questionnaire_response_files`
 
 #### Staff Availability (3)
+
 - [ ] `staff_availability`
 - [ ] `staff_availability_breaks`
 - [ ] `staff_availability_overrides`
 
 #### Conflict Checks & Assignments (2)
+
 - [ ] `conflict_checks`
 - [ ] `assignments`
 
 #### Calendar & Time (2)
+
 - [ ] `calendar_events`
 - [ ] `time_entries`
 
 #### Tasks (1)
+
 - [ ] `tasks`
 
 #### Companies (1)
+
 - [ ] `companies`
 
 #### AI & Config (2)
+
 - [ ] `ai_error_flags`
 - [ ] `ai_system_config`
 
 #### Approvals & Workflows (2)
+
 - [ ] `approval_workflows`
 - [ ] `step_action_logs`
 
 #### Permissions & Data Access (4)
+
 - [ ] `module_permissions`
 - [ ] `permission_audit_log`
 - [ ] `data_access_controls`
 - [ ] `financial_access_controls`
 
 #### Adverse Parties (1)
+
 - [ ] `adverse_parties`
 
 #### Paralegal (3)
+
 - [ ] `paralegal_profiles`
 - [ ] `paralegal_activation_requirements`
 - [ ] `paralegal_certification_gates`
 
 #### Practice Areas & Subscriptions (2)
+
 - [ ] `firm_practice_areas`
 - [ ] `subscriptions`
 
 #### Leave Requests (1)
+
 - [ ] `leave_requests`
 
 #### Email (1)
+
 - [ ] `connected_email_account`
 
 ### 2.3 Migration Files
 
-| Migration | Purpose | File |
-|-----------|---------|------|
-| 0003 | RLS function + permissive policies | `0003_rls_tenant_isolation.sql` |
-| 0004 | `get_current_user_id()` + user ownership schema | `0004_rls_user_ownership.sql` |
-| 0005 | Restrictive + permissive policies | `0005_rls_restrictive_policies.sql` |
-| 0006 | Consolidated RLS (functions + policies) | `0006_rls_consolidated.sql` |
-| 0007 | DEFAULT on all organization_id columns | `0007_org_id_defaults.sql` |
+| Migration | Purpose                                         | File                                |
+| --------- | ----------------------------------------------- | ----------------------------------- |
+| 0003      | RLS function + permissive policies              | `0003_rls_tenant_isolation.sql`     |
+| 0004      | `get_current_user_id()` + user ownership schema | `0004_rls_user_ownership.sql`       |
+| 0005      | Restrictive + permissive policies               | `0005_rls_restrictive_policies.sql` |
+| 0006      | Consolidated RLS (functions + policies)         | `0006_rls_consolidated.sql`         |
+| 0007      | DEFAULT on all organization_id columns          | `0007_org_id_defaults.sql`          |
 
 ---
 
@@ -219,17 +244,19 @@ organization_id TEXT NOT NULL DEFAULT get_current_organization_id() REFERENCES o
 
 PostgreSQL RLS supports two policy types that combine using specific logic:
 
-| Type | Logic | When Used |
-|------|-------|-----------|
-| `RESTRICTIVE` | AND — ALL restrictive policies must pass | Baseline filter for staff/firm_admin |
-| `PERMISSIVE` | OR — ANY permissive policy can pass | Alternative access for clients/contractors |
+| Type          | Logic                                    | When Used                                  |
+| ------------- | ---------------------------------------- | ------------------------------------------ |
+| `RESTRICTIVE` | AND — ALL restrictive policies must pass | Baseline filter for staff/firm_admin       |
+| `PERMISSIVE`  | OR — ANY permissive policy can pass      | Alternative access for clients/contractors |
 
 **How they combine:**
+
 ```
 Final result = (at least one PERMISSIVE passes) AND (ALL RESTRICTIVE pass)
 ```
 
 **Why this matters:**
+
 - Staff users: restrictive org policy passes → sees all org data
 - Client users: restrictive org policy FAILS (no org set) → permissive self policy passes → sees only their data
 - Contractor users: restrictive org policy FAILS → permissive assignment policy passes → sees only assigned data
@@ -249,10 +276,10 @@ Query arrives at PostgreSQL
 
 Every policy references one or both custom functions:
 
-| Function | Session Variable | Set By | Used By |
-|----------|-----------------|--------|---------|
-| `get_current_organization_id()` | `app.current_organization_id` | `requireAuth` for staff/firm_admin | All restrictive org policies |
-| `get_current_user_id()` | `app.current_user_id` | `requireAuth` for all users | All permissive user-ownership policies |
+| Function                        | Session Variable              | Set By                             | Used By                                |
+| ------------------------------- | ----------------------------- | ---------------------------------- | -------------------------------------- |
+| `get_current_organization_id()` | `app.current_organization_id` | `requireAuth` for staff/firm_admin | All restrictive org policies           |
+| `get_current_user_id()`         | `app.current_user_id`         | `requireAuth` for all users        | All permissive user-ownership policies |
 
 **Critical:** If neither function exists, ALL policies fail → no data visible.
 
@@ -264,18 +291,20 @@ Every policy references one or both custom functions:
 
 **Policies:** 3 (1 restrictive + 2 permissive)
 
-| Policy Name | Type | FOR | USING | WITH CHECK |
-|-------------|------|-----|-------|------------|
-| `rls_cases_org` | RESTRICTIVE | ALL | `organization_id = get_current_organization_id()` | `organization_id = get_current_organization_id()` |
-| `rls_cases_client` | PERMISSIVE | ALL | `client_user_id = get_current_user_id()` | `client_user_id = get_current_user_id()` |
-| `rls_cases_contractor` | PERMISSIVE | ALL | `EXISTS (SELECT 1 FROM case_assignments ca WHERE ca.case_id = id AND ca.user_id = get_current_user_id())` | Same as USING |
+| Policy Name            | Type        | FOR | USING                                                                                                     | WITH CHECK                                        |
+| ---------------------- | ----------- | --- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `rls_cases_org`        | RESTRICTIVE | ALL | `organization_id = get_current_organization_id()`                                                         | `organization_id = get_current_organization_id()` |
+| `rls_cases_client`     | PERMISSIVE  | ALL | `client_user_id = get_current_user_id()`                                                                  | `client_user_id = get_current_user_id()`          |
+| `rls_cases_contractor` | PERMISSIVE  | ALL | `EXISTS (SELECT 1 FROM case_assignments ca WHERE ca.case_id = id AND ca.user_id = get_current_user_id())` | Same as USING                                     |
 
 **Access patterns:**
+
 - Staff: org policy passes → sees all cases in their firm
 - Client: org policy fails (NULL org) → client policy passes → sees only cases where they are `client_user_id`
 - Contractor: org policy fails → contractor policy passes → sees only cases where they have an assignment in `case_assignments`
 
 **Additional columns required:**
+
 - `client_user_id TEXT` — links case to client's auth user ID
 - `case_assignments` junction table — links cases to contractor user IDs
 
@@ -285,11 +314,11 @@ Every policy references one or both custom functions:
 
 **Policies:** 3 (1 restrictive + 2 permissive)
 
-| Policy Name | Type | FOR | USING | WITH CHECK |
-|-------------|------|-----|-------|------------|
-| `rls_case_events_staff` | RESTRICTIVE | ALL | `case_id IN (SELECT c.id FROM cases c WHERE c.organization_id = get_current_organization_id())` | Same as USING |
-| `rls_case_events_client` | PERMISSIVE | ALL | `case_id IN (SELECT c.id FROM cases c WHERE c.client_user_id = get_current_user_id())` | Same as USING |
-| `rls_case_events_contractor` | PERMISSIVE | ALL | `case_id IN (SELECT ca.case_id FROM case_assignments ca WHERE ca.user_id = get_current_user_id())` | Same as USING |
+| Policy Name                  | Type        | FOR | USING                                                                                              | WITH CHECK    |
+| ---------------------------- | ----------- | --- | -------------------------------------------------------------------------------------------------- | ------------- |
+| `rls_case_events_staff`      | RESTRICTIVE | ALL | `case_id IN (SELECT c.id FROM cases c WHERE c.organization_id = get_current_organization_id())`    | Same as USING |
+| `rls_case_events_client`     | PERMISSIVE  | ALL | `case_id IN (SELECT c.id FROM cases c WHERE c.client_user_id = get_current_user_id())`             | Same as USING |
+| `rls_case_events_contractor` | PERMISSIVE  | ALL | `case_id IN (SELECT ca.case_id FROM case_assignments ca WHERE ca.user_id = get_current_user_id())` | Same as USING |
 
 **Access pattern:** Inherited from parent `cases` table via subquery. If you can see the case, you can see its events.
 
@@ -299,11 +328,11 @@ Every policy references one or both custom functions:
 
 **Policies:** 3 (1 restrictive + 2 permissive)
 
-| Policy Name | Type | FOR | USING | WITH CHECK |
-|-------------|------|-----|-------|------------|
-| `rls_case_record_notes_staff` | RESTRICTIVE | ALL | `case_id IN (SELECT c.id FROM cases c WHERE c.organization_id = get_current_organization_id())` | Same as USING |
-| `rls_case_record_notes_client` | PERMISSIVE | ALL | `case_id IN (SELECT c.id FROM cases c WHERE c.client_user_id = get_current_user_id())` | Same as USING |
-| `rls_case_record_notes_contractor` | PERMISSIVE | ALL | `case_id IN (SELECT ca.case_id FROM case_assignments ca WHERE ca.user_id = get_current_user_id())` | Same as USING |
+| Policy Name                        | Type        | FOR | USING                                                                                              | WITH CHECK    |
+| ---------------------------------- | ----------- | --- | -------------------------------------------------------------------------------------------------- | ------------- |
+| `rls_case_record_notes_staff`      | RESTRICTIVE | ALL | `case_id IN (SELECT c.id FROM cases c WHERE c.organization_id = get_current_organization_id())`    | Same as USING |
+| `rls_case_record_notes_client`     | PERMISSIVE  | ALL | `case_id IN (SELECT c.id FROM cases c WHERE c.client_user_id = get_current_user_id())`             | Same as USING |
+| `rls_case_record_notes_contractor` | PERMISSIVE  | ALL | `case_id IN (SELECT ca.case_id FROM case_assignments ca WHERE ca.user_id = get_current_user_id())` | Same as USING |
 
 **Access pattern:** Inherited from parent `cases` table via subquery.
 
@@ -313,16 +342,18 @@ Every policy references one or both custom functions:
 
 **Policies:** 2 (1 restrictive + 1 permissive)
 
-| Policy Name | Type | FOR | USING | WITH CHECK |
-|-------------|------|-----|-------|------------|
-| `rls_clients_org` | RESTRICTIVE | ALL | `organization_id = get_current_organization_id()` | `organization_id = get_current_organization_id()` |
-| `rls_clients_self` | PERMISSIVE | ALL | `user_id = get_current_user_id()` | `user_id = get_current_user_id()` |
+| Policy Name        | Type        | FOR | USING                                             | WITH CHECK                                        |
+| ------------------ | ----------- | --- | ------------------------------------------------- | ------------------------------------------------- |
+| `rls_clients_org`  | RESTRICTIVE | ALL | `organization_id = get_current_organization_id()` | `organization_id = get_current_organization_id()` |
+| `rls_clients_self` | PERMISSIVE  | ALL | `user_id = get_current_user_id()`                 | `user_id = get_current_user_id()`                 |
 
 **Access patterns:**
+
 - Staff: org policy passes → sees all clients in their firm
 - Client: org policy fails → self policy passes → sees only their own profile
 
 **Additional column required:**
+
 - `user_id TEXT` — links client record to auth user ID
 
 ---
@@ -331,8 +362,8 @@ Every policy references one or both custom functions:
 
 **Policies:** 1 (restrictive only)
 
-| Policy Name | Type | FOR | USING | WITH CHECK |
-|-------------|------|-----|-------|------------|
+| Policy Name     | Type        | FOR | USING                                             | WITH CHECK                                        |
+| --------------- | ----------- | --- | ------------------------------------------------- | ------------------------------------------------- |
 | `rls_leads_org` | RESTRICTIVE | ALL | `organization_id = get_current_organization_id()` | `organization_id = get_current_organization_id()` |
 
 **Access pattern:** Staff only. Clients and contractors do not access leads.
@@ -343,8 +374,8 @@ Every policy references one or both custom functions:
 
 **Policies:** 1 (restrictive only)
 
-| Policy Name | Type | FOR | USING | WITH CHECK |
-|-------------|------|-----|-------|------------|
+| Policy Name             | Type        | FOR | USING                                                                                           | WITH CHECK    |
+| ----------------------- | ----------- | --- | ----------------------------------------------------------------------------------------------- | ------------- |
 | `rls_lead_events_staff` | RESTRICTIVE | ALL | `lead_id IN (SELECT l.id FROM leads l WHERE l.organization_id = get_current_organization_id())` | Same as USING |
 
 **Access pattern:** Inherited from parent `leads` table via subquery. Staff only.
@@ -355,8 +386,8 @@ Every policy references one or both custom functions:
 
 **Policies:** 1 (restrictive only)
 
-| Policy Name | Type | FOR | USING | WITH CHECK |
-|-------------|------|-----|-------|------------|
+| Policy Name            | Type        | FOR | USING                                                                                           | WITH CHECK    |
+| ---------------------- | ----------- | --- | ----------------------------------------------------------------------------------------------- | ------------- |
 | `rls_lead_notes_staff` | RESTRICTIVE | ALL | `lead_id IN (SELECT l.id FROM leads l WHERE l.organization_id = get_current_organization_id())` | Same as USING |
 
 **Access pattern:** Inherited from parent `leads` table via subquery. Staff only.
@@ -377,96 +408,97 @@ CREATE POLICY rls_{table_name}_org ON {table_name}
 
 **Tables with this standard policy (no special policies):**
 
-| Table | Policy Name |
-|-------|-------------|
-| `admin_sessions` | `rls_admin_sessions_org` |
-| `admins` | `rls_admins_org` |
-| `team` | `rls_team_org` |
-| `member` | `rls_member_org` |
-| `invitation` | `rls_invitation_org` |
-| `staff` | `rls_staff_org` |
-| `certifications` | `rls_certifications_org` |
-| `case_workflow_steps` | `rls_case_workflow_steps_org` |
-| `case_notes` | `rls_case_notes_org` |
-| `case_timeline_events` | `rls_case_timeline_events_org` |
-| `workflow_log` | `rls_workflow_log_org` |
-| `lead_document_links` | `rls_lead_document_links_org` |
-| `lead_tasks` | `rls_lead_tasks_org` |
-| `lead_timeline_events` | `rls_lead_timeline_events_org` |
-| `client_companies` | `rls_client_companies_org` |
-| `client_contacts` | `rls_client_contacts_org` |
-| `client_requests` | `rls_client_requests_org` |
-| `documents` | `rls_documents_org` |
-| `document_versions` | `rls_document_versions_org` |
-| `document_case_links` | `rls_document_case_links_org` |
-| `document_access` | `rls_document_access_org` |
-| `document_requests` | `rls_document_requests_org` |
-| `external_submissions` | `rls_external_submissions_org` |
-| `document_activity_logs` | `rls_document_activity_logs_org` |
-| `consultations` | `rls_consultations_org` |
-| `consultation_participants` | `rls_consultation_participants_org` |
-| `consultation_locations` | `rls_consultation_locations_org` |
-| `consultation_settings` | `rls_consultation_settings_org` |
-| `fee_agreements` | `rls_fee_agreements_org` |
-| `firm_questionnaire_sections` | `rls_firm_questionnaire_sections_org` |
-| `firm_questionnaire_questions` | `rls_firm_questionnaire_questions_org` |
-| `firm_questionnaire_logic_rules` | `rls_firm_questionnaire_logic_rules_org` |
-| `questionnaire_sends` | `rls_questionnaire_sends_org` |
-| `questionnaire_responses` | `rls_questionnaire_responses_org` |
-| `questionnaire_answers` | `rls_questionnaire_answers_org` |
-| `questionnaire_response_files` | `rls_questionnaire_response_files_org` |
-| `staff_availability` | `rls_staff_availability_org` |
-| `staff_availability_breaks` | `rls_staff_availability_breaks_org` |
-| `staff_availability_overrides` | `rls_staff_availability_overrides_org` |
-| `conflict_checks` | `rls_conflict_checks_org` |
-| `assignments` | `rls_assignments_org` |
-| `calendar_events` | `rls_calendar_events_org` |
-| `time_entries` | `rls_time_entries_org` |
-| `tasks` | `rls_tasks_org` |
-| `companies` | `rls_companies_org` |
-| `ai_error_flags` | `rls_ai_error_flags_org` |
-| `ai_system_config` | `rls_ai_system_config_org` |
-| `approval_workflows` | `rls_approval_workflows_org` |
-| `step_action_logs` | `rls_step_action_logs_org` |
-| `module_permissions` | `rls_module_permissions_org` |
-| `permission_audit_log` | `rls_permission_audit_log_org` |
-| `data_access_controls` | `rls_data_access_controls_org` |
-| `financial_access_controls` | `rls_financial_access_controls_org` |
-| `adverse_parties` | `rls_adverse_parties_org` |
-| `paralegal_profiles` | `rls_paralegal_profiles_org` |
+| Table                               | Policy Name                                 |
+| ----------------------------------- | ------------------------------------------- |
+| `admin_sessions`                    | `rls_admin_sessions_org`                    |
+| `admins`                            | `rls_admins_org`                            |
+| `team`                              | `rls_team_org`                              |
+| `member`                            | `rls_member_org`                            |
+| `invitation`                        | `rls_invitation_org`                        |
+| `staff`                             | `rls_staff_org`                             |
+| `certifications`                    | `rls_certifications_org`                    |
+| `case_workflow_steps`               | `rls_case_workflow_steps_org`               |
+| `case_notes`                        | `rls_case_notes_org`                        |
+| `case_timeline_events`              | `rls_case_timeline_events_org`              |
+| `workflow_log`                      | `rls_workflow_log_org`                      |
+| `lead_document_links`               | `rls_lead_document_links_org`               |
+| `lead_tasks`                        | `rls_lead_tasks_org`                        |
+| `lead_timeline_events`              | `rls_lead_timeline_events_org`              |
+| `client_companies`                  | `rls_client_companies_org`                  |
+| `client_contacts`                   | `rls_client_contacts_org`                   |
+| `client_requests`                   | `rls_client_requests_org`                   |
+| `documents`                         | `rls_documents_org`                         |
+| `document_versions`                 | `rls_document_versions_org`                 |
+| `document_case_links`               | `rls_document_case_links_org`               |
+| `document_access`                   | `rls_document_access_org`                   |
+| `document_requests`                 | `rls_document_requests_org`                 |
+| `external_submissions`              | `rls_external_submissions_org`              |
+| `document_activity_logs`            | `rls_document_activity_logs_org`            |
+| `consultations`                     | `rls_consultations_org`                     |
+| `consultation_participants`         | `rls_consultation_participants_org`         |
+| `consultation_locations`            | `rls_consultation_locations_org`            |
+| `consultation_settings`             | `rls_consultation_settings_org`             |
+| `fee_agreements`                    | `rls_fee_agreements_org`                    |
+| `firm_questionnaire_sections`       | `rls_firm_questionnaire_sections_org`       |
+| `firm_questionnaire_questions`      | `rls_firm_questionnaire_questions_org`      |
+| `firm_questionnaire_logic_rules`    | `rls_firm_questionnaire_logic_rules_org`    |
+| `questionnaire_sends`               | `rls_questionnaire_sends_org`               |
+| `questionnaire_responses`           | `rls_questionnaire_responses_org`           |
+| `questionnaire_answers`             | `rls_questionnaire_answers_org`             |
+| `questionnaire_response_files`      | `rls_questionnaire_response_files_org`      |
+| `staff_availability`                | `rls_staff_availability_org`                |
+| `staff_availability_breaks`         | `rls_staff_availability_breaks_org`         |
+| `staff_availability_overrides`      | `rls_staff_availability_overrides_org`      |
+| `conflict_checks`                   | `rls_conflict_checks_org`                   |
+| `assignments`                       | `rls_assignments_org`                       |
+| `calendar_events`                   | `rls_calendar_events_org`                   |
+| `time_entries`                      | `rls_time_entries_org`                      |
+| `tasks`                             | `rls_tasks_org`                             |
+| `companies`                         | `rls_companies_org`                         |
+| `ai_error_flags`                    | `rls_ai_error_flags_org`                    |
+| `ai_system_config`                  | `rls_ai_system_config_org`                  |
+| `approval_workflows`                | `rls_approval_workflows_org`                |
+| `step_action_logs`                  | `rls_step_action_logs_org`                  |
+| `module_permissions`                | `rls_module_permissions_org`                |
+| `permission_audit_log`              | `rls_permission_audit_log_org`              |
+| `data_access_controls`              | `rls_data_access_controls_org`              |
+| `financial_access_controls`         | `rls_financial_access_controls_org`         |
+| `adverse_parties`                   | `rls_adverse_parties_org`                   |
+| `paralegal_profiles`                | `rls_paralegal_profiles_org`                |
 | `paralegal_activation_requirements` | `rls_paralegal_activation_requirements_org` |
-| `paralegal_certification_gates` | `rls_paralegal_certification_gates_org` |
-| `firm_practice_areas` | `rls_firm_practice_areas_org` |
-| `subscriptions` | `rls_subscriptions_org` |
-| `leave_requests` | `rls_leave_requests_org` |
-| `connected_email_account` | `rls_connected_email_account_org` |
+| `paralegal_certification_gates`     | `rls_paralegal_certification_gates_org`     |
+| `firm_practice_areas`               | `rls_firm_practice_areas_org`               |
+| `subscriptions`                     | `rls_subscriptions_org`                     |
+| `leave_requests`                    | `rls_leave_requests_org`                    |
+| `connected_email_account`           | `rls_connected_email_account_org`           |
 
 ---
 
 ### 3.6 Complete Policy Summary
 
-| Table | Restrictive Policies | Permissive Policies | Total |
-|-------|---------------------|---------------------|-------|
-| `cases` | 1 (`rls_cases_org`) | 2 (`rls_cases_client`, `rls_cases_contractor`) | 3 |
-| `case_events` | 1 (`rls_case_events_staff`) | 2 (`rls_case_events_client`, `rls_case_events_contractor`) | 3 |
-| `case_record_notes` | 1 (`rls_case_record_notes_staff`) | 2 (`rls_case_record_notes_client`, `rls_case_record_notes_contractor`) | 3 |
-| `clients` | 1 (`rls_clients_org`) | 1 (`rls_clients_self`) | 2 |
-| `leads` | 1 (`rls_leads_org`) | 0 | 1 |
-| `lead_events` | 1 (`rls_lead_events_staff`) | 0 | 1 |
-| `lead_notes` | 1 (`rls_lead_notes_staff`) | 0 | 1 |
-| All other 59 tables | 1 each (`rls_{table}_org`) | 0 | 59 |
-| **TOTAL** | **66** | **7** | **73** |
+| Table               | Restrictive Policies              | Permissive Policies                                                    | Total  |
+| ------------------- | --------------------------------- | ---------------------------------------------------------------------- | ------ |
+| `cases`             | 1 (`rls_cases_org`)               | 2 (`rls_cases_client`, `rls_cases_contractor`)                         | 3      |
+| `case_events`       | 1 (`rls_case_events_staff`)       | 2 (`rls_case_events_client`, `rls_case_events_contractor`)             | 3      |
+| `case_record_notes` | 1 (`rls_case_record_notes_staff`) | 2 (`rls_case_record_notes_client`, `rls_case_record_notes_contractor`) | 3      |
+| `clients`           | 1 (`rls_clients_org`)             | 1 (`rls_clients_self`)                                                 | 2      |
+| `leads`             | 1 (`rls_leads_org`)               | 0                                                                      | 1      |
+| `lead_events`       | 1 (`rls_lead_events_staff`)       | 0                                                                      | 1      |
+| `lead_notes`        | 1 (`rls_lead_notes_staff`)        | 0                                                                      | 1      |
+| All other 59 tables | 1 each (`rls_{table}_org`)        | 0                                                                      | 59     |
+| **TOTAL**           | **66**                            | **7**                                                                  | **73** |
 
 ---
 
 ### 3.7 Policy Implementation Files
 
-| File | Purpose |
-|------|---------|
-| `src/db/schema/rls.ts` | Drizzle `pgPolicy().link()` definitions for 7 tables with special policies |
-| `drizzle/migrations/0006_rls_consolidated.sql` | Raw SQL: functions + RLS enable + all 73 policies |
+| File                                           | Purpose                                                                    |
+| ---------------------------------------------- | -------------------------------------------------------------------------- |
+| `src/db/schema/rls.ts`                         | Drizzle `pgPolicy().link()` definitions for 7 tables with special policies |
+| `drizzle/migrations/0006_rls_consolidated.sql` | Raw SQL: functions + RLS enable + all 73 policies                          |
 
 **Why two files?**
+
 - `rls.ts` — Drizzle-native, type-safe, auto-discovered by `drizzle-kit`
 - `0006_rls_consolidated.sql` — Raw SQL reference, run manually, includes the dynamic loop for standard org policies
 
@@ -535,10 +567,10 @@ ROLLBACK;
 
 PostgreSQL raises specific error codes when RLS denies access:
 
-| Error Code | Meaning | Application Response |
-|------------|---------|---------------------|
-| `42501` | Insufficient privilege (RLS denied) | 403 `TENANT_ISOLATION_VIOLATION` |
-| `44000` | WITH CHECK violation (INSERT/UPDATE failed) | 403 `TENANT_ISOLATION_VIOLATION` |
+| Error Code | Meaning                                     | Application Response             |
+| ---------- | ------------------------------------------- | -------------------------------- |
+| `42501`    | Insufficient privilege (RLS denied)         | 403 `TENANT_ISOLATION_VIOLATION` |
+| `44000`    | WITH CHECK violation (INSERT/UPDATE failed) | 403 `TENANT_ISOLATION_VIOLATION` |
 
 **File:** `src/middleware/error.middleware.ts` intercepts these PG error codes and returns a structured 403 response.
 
@@ -547,27 +579,32 @@ PostgreSQL raises specific error codes when RLS denies access:
 ### 3.10 Policy Edge Cases
 
 #### Case 1: Staff user with no org set
+
 - `get_current_organization_id()` returns NULL
 - `organization_id = NULL` → always FALSE
 - Result: sees nothing (correct — staff must have an org)
 
 #### Case 2: Client user with org set (shouldn't happen)
+
 - `get_current_organization_id()` returns the org ID
 - Restrictive org policy passes
 - Permissive self policy also passes
 - Result: sees all org data (too permissive — but `requireAuth` never sets org for clients)
 
 #### Case 3: Contractor with no assignments
+
 - `get_current_user_id()` returns their user ID
 - Contractor policy: `EXISTS (SELECT 1 FROM case_assignments WHERE user_id = ...)` → FALSE
 - Result: sees nothing (correct — no assigned cases)
 
 #### Case 4: New table without RLS
+
 - No policies created
 - RLS enabled but no policies → all queries blocked
 - Fix: add the table to the migration or create policies manually
 
 #### Case 5: Table without organization_id
+
 - No RLS enabled
 - No policies created
 - All users see all data (no tenant isolation)
@@ -595,9 +632,7 @@ export async function createTenantDb(
   }
 
   if (userId) {
-    await tenantClient.unsafe(
-      `SET app.current_user_id = '${userId}'`,
-    );
+    await tenantClient.unsafe(`SET app.current_user_id = '${userId}'`);
   }
 
   return drizzle(tenantClient, { logger: false });
@@ -640,27 +675,31 @@ Request arrives
 
 ### 5.1 Import Rules
 
-| Use Case | Import |
-|----------|--------|
-| Normal business logic (cases, leads, documents, etc.) | `db` from `@/db/client` |
-| Auth queries, DEK lookups, system operations | `systemDb` from `@/db/client` |
-| Middleware (auth, permissions, etc.) | `systemDb` from `@/db/client` |
+| Use Case                                              | Import                        |
+| ----------------------------------------------------- | ----------------------------- |
+| Normal business logic (cases, leads, documents, etc.) | `db` from `@/db/client`       |
+| Auth queries, DEK lookups, system operations          | `systemDb` from `@/db/client` |
+| Middleware (auth, permissions, etc.)                  | `systemDb` from `@/db/client` |
 
 ### 5.2 Query Requirements
 
 **INSERT:**
+
 - Can omit `organizationId` if table has `DEFAULT get_current_organization_id()`
 - Recommended: pass `organizationId` explicitly for defense-in-depth
 
 **SELECT:**
+
 - Always filter by `organizationId` even though RLS handles it
 - Defense-in-depth: works even if RLS is disabled or bypassed
 
 **UPDATE:**
+
 - Always include `organizationId` in WHERE clause
 - Prevents cross-tenant updates
 
 **DELETE:**
+
 - Always include `organizationId` in WHERE clause
 - Prevents cross-tenant deletes
 
@@ -787,6 +826,7 @@ ROLLBACK;
 **Cause:** RLS policy rejecting the query.
 
 **Fix:** Check that:
+
 1. `app.current_organization_id` is set correctly
 2. The user's organization matches the row's organization_id
 3. RLS policies are applied correctly
@@ -807,18 +847,18 @@ ROLLBACK;
 
 ## Phase 8: File Reference
 
-| File | Purpose |
-|------|---------|
-| `src/db/client.ts` | `systemDb` (bypasses RLS), `db` (Proxy, RLS-aware), `createTenantDb()` |
-| `src/db/schema/rls.ts` | Drizzle pgPolicy definitions linked to tables |
-| `src/middleware/auth.middleware.ts` | Sets session variables, creates tenant connection |
-| `src/middleware/request-context.ts` | AsyncLocalStorage for tenant context |
-| `src/middleware/error.middleware.ts` | Intercepts PG RLS errors (42501, 44000) → 403 |
-| `drizzle/migrations/0006_rls_consolidated.sql` | RLS functions + policies (raw SQL) |
-| `drizzle/migrations/0007_org_id_defaults.sql` | DEFAULT on all organization_id columns |
-| `.agents/DRIZZLE-POSTGRES-FUNCTIONS.md` | Drizzle + PostgreSQL functions reference |
-| `.agents/SESSION-VARIABLES-AND-ORG-ID.md` | Session variables + organization_id in queries |
-| `.agents/HOW-ORG-ID-DEFAULT-WORKS.md` | How defaults work for new records |
+| File                                           | Purpose                                                                |
+| ---------------------------------------------- | ---------------------------------------------------------------------- |
+| `src/db/client.ts`                             | `systemDb` (bypasses RLS), `db` (Proxy, RLS-aware), `createTenantDb()` |
+| `src/db/schema/rls.ts`                         | Drizzle pgPolicy definitions linked to tables                          |
+| `src/middleware/auth.middleware.ts`            | Sets session variables, creates tenant connection                      |
+| `src/middleware/request-context.ts`            | AsyncLocalStorage for tenant context                                   |
+| `src/middleware/error.middleware.ts`           | Intercepts PG RLS errors (42501, 44000) → 403                          |
+| `drizzle/migrations/0006_rls_consolidated.sql` | RLS functions + policies (raw SQL)                                     |
+| `drizzle/migrations/0007_org_id_defaults.sql`  | DEFAULT on all organization_id columns                                 |
+| `.agents/DRIZZLE-POSTGRES-FUNCTIONS.md`        | Drizzle + PostgreSQL functions reference                               |
+| `.agents/SESSION-VARIABLES-AND-ORG-ID.md`      | Session variables + organization_id in queries                         |
+| `.agents/HOW-ORG-ID-DEFAULT-WORKS.md`          | How defaults work for new records                                      |
 
 ---
 
