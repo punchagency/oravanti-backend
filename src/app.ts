@@ -101,6 +101,10 @@ export class App {
       "/webhooks/payments",
       express.raw({ type: "application/json" }),
     );
+    this.express.use(
+      "/webhooks/confido",
+      express.raw({ type: "application/json" }),
+    );
     this.express.use(express.json());
     this.express.use(requestContextMiddleware);
   }

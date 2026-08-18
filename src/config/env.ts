@@ -55,6 +55,29 @@ type AppEnv = Record<RequiredEnvKey, string> & {
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   STRIPE_PUBLISHABLE_KEY?: string;
+  /**
+   * Confido Legal — the processor that replaces Stripe, chosen because it routes
+   * a single client payment into separate trust (IOLTA) and operating bank
+   * accounts, which Stripe cannot do.
+   *
+   * The partner token and the webhook secret are required TOGETHER, for the same
+   * reason as Stripe's pair above: a partner token with no webhook secret would
+   * leave a public endpoint unable to verify what it is sent.
+   *
+   * The partner token is the platform-level credential used to create Firms. Each
+   * Firm then gets its own long-lived, unscoped API token, which is stored
+   * per-organization and encrypted at rest — never here.
+   */
+  CONFIDO_PARTNER_TOKEN?: string;
+  CONFIDO_WEBHOOK_SECRET?: string;
+  CONFIDO_API_URL?: string;
+  /**
+   * The onboarding.js bundle the frontend embeds. Deliberately a backend value
+   * returned in the session payload rather than a `VITE_` variable: it keeps one
+   * source of truth for the sandbox/production switch, so the frontend never has
+   * to know which environment it is pointed at.
+   */
+  CONFIDO_ONBOARDING_JS_URL?: string;
   // When true (default outside production) signature requests are created in
   // test mode and do not consume signature quota.
   DROPBOX_SIGN_TEST_MODE: boolean;
@@ -115,6 +138,10 @@ const validateEnv = (): AppEnv => {
   const stripeSecretKey = readEnv("STRIPE_SECRET_KEY");
   const stripeWebhookSecret = readEnv("STRIPE_WEBHOOK_SECRET");
   const stripePublishableKey = readEnv("STRIPE_PUBLISHABLE_KEY");
+  const confidoPartnerToken = readEnv("CONFIDO_PARTNER_TOKEN");
+  const confidoWebhookSecret = readEnv("CONFIDO_WEBHOOK_SECRET");
+  const confidoApiUrl = readEnv("CONFIDO_API_URL");
+  const confidoOnboardingJsUrl = readEnv("CONFIDO_ONBOARDING_JS_URL");
   const dropboxSignApiKey = readEnv("DROPBOX_SIGN_API_KEY");
   const dropboxSignClientId = readEnv("DROPBOX_SIGN_CLIENT_ID");
   // Defaults to test mode everywhere except production so quota is never
@@ -139,6 +166,16 @@ const validateEnv = (): AppEnv => {
     ...(stripeWebhookSecret ? { STRIPE_WEBHOOK_SECRET: stripeWebhookSecret } : {}),
     ...(stripePublishableKey
       ? { STRIPE_PUBLISHABLE_KEY: stripePublishableKey }
+      : {}),
+    ...(confidoPartnerToken
+      ? { CONFIDO_PARTNER_TOKEN: confidoPartnerToken }
+      : {}),
+    ...(confidoWebhookSecret
+      ? { CONFIDO_WEBHOOK_SECRET: confidoWebhookSecret }
+      : {}),
+    ...(confidoApiUrl ? { CONFIDO_API_URL: confidoApiUrl } : {}),
+    ...(confidoOnboardingJsUrl
+      ? { CONFIDO_ONBOARDING_JS_URL: confidoOnboardingJsUrl }
       : {}),
     ...(dropboxSignApiKey ? { DROPBOX_SIGN_API_KEY: dropboxSignApiKey } : {}),
     ...(dropboxSignClientId ? { DROPBOX_SIGN_CLIENT_ID: dropboxSignClientId } : {}),
