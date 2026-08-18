@@ -11,6 +11,7 @@ import {
   setSurchargeEnabled,
   startOnboardingSession,
 } from "./payment-settings.service";
+import { listStatementsForOrg } from "../../finance/confido/statements.service";
 
 export class PaymentSettingsController {
   private orgId(): string {
@@ -78,6 +79,11 @@ export class PaymentSettingsController {
       req.body.enabled === true,
     );
     sendSuccess(res, settings, "Surcharge settings saved");
+  });
+
+  listStatements = asyncWrap(async (_req: Request, res: Response) => {
+    const statements = await listStatementsForOrg(this.orgId());
+    sendSuccess(res, statements, "Statements retrieved");
   });
 
   refresh = asyncWrap(async (_req: Request, res: Response) => {

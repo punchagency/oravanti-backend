@@ -46,6 +46,9 @@ export class PaymentSettingsRouter {
     );
     this.router.post("/refresh", configure, this.controller.refresh);
 
+    // Reconciliation data: what Confido charged and debited, by month.
+    this.router.get("/statements", configure, this.controller.listStatements);
+
     this.router.get("/surcharge", configure, this.controller.getSurcharge);
     this.router.patch(
       "/surcharge",
