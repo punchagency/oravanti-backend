@@ -363,9 +363,21 @@ export function renderJsonPretty(record: Record_, colour = false): string {
     ordered[key] = record[key];
   }
 
-  const err = ordered.err as Record_ | undefined;
-  if (err && typeof err === "object" && typeof err.stack === "string") {
-    ordered.err = { ...err, stack: stackFrames(err.stack) };
+  // Recursive, because the error that explains the failure is usually the
+  // innermost `cause` — drizzle's wrapper carries the SQL, the cause carries
+  // the reason — and an unsplit stack there is a single unreadable line.
+  const splitStacks = (value: unknown, depth = 0): unknown => {
+    if (!value || typeof value !== "object" || depth > 5) return value;
+    const node = value as Record_;
+    const out: Record_ = { ...node };
+    if (typeof node.stack === "string") out.stack = stackFrames(node.stack);
+    if (node.cause) out.cause = splitStacks(node.cause, depth + 1) as Record_;
+    return out;
+  };
+
+  const err = ordered.err;
+  if (err && typeof err === "object") {
+    ordered.err = splitStacks(err) as Record_;
   }
 
   // The blank line is what separates one multi-line record from the next.

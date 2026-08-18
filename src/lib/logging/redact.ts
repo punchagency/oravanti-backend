@@ -18,17 +18,62 @@ export interface SerialisedError {
   stack?: string;
   /** Postgres and HTTP libraries hang useful codes off the error. */
   code?: string | number;
+  /**
+   * What actually went wrong, when the top-level error is only a wrapper.
+   *
+   * Drizzle reports every failure as `Failed query: <sql>` and hangs the real
+   * Postgres error — the one naming the missing column, the violated
+   * constraint, the refused permission — off `cause`. Dropping it, as this did,
+   * turns every database 500 into a stack trace with no reason in it: you can
+   * see which query failed and never why. Nested, because wrappers wrap
+   * wrappers.
+   */
+  cause?: SerialisedError;
 }
 
-export function serialiseError(value: unknown): SerialisedError {
+/**
+ * Fields Postgres sets on a driver error that say what to actually fix.
+ * `detail` names the conflicting value, `constraint` and `column` name the
+ * thing that rejected it, `hint` is Postgres's own suggestion.
+ */
+const PG_ERROR_FIELDS = [
+  "detail",
+  "hint",
+  "constraint",
+  "table",
+  "column",
+  "schema",
+  "routine",
+  "severity",
+] as const;
+
+const MAX_CAUSE_DEPTH = 5;
+
+export function serialiseError(value: unknown, depth = 0): SerialisedError {
   if (value instanceof Error) {
     const out: SerialisedError = {
       type: value.name,
       message: value.message,
       stack: value.stack,
     };
-    const code = (value as { code?: string | number }).code;
-    if (code !== undefined) out.code = code;
+
+    const source = value as unknown as Record<string, unknown>;
+
+    const code = source.code;
+    if (code !== undefined) out.code = code as string | number;
+
+    for (const field of PG_ERROR_FIELDS) {
+      const detail = source[field];
+      if (detail !== undefined && detail !== null && detail !== "") {
+        (out as unknown as Record<string, unknown>)[field] = detail;
+      }
+    }
+
+    // Depth-capped so a cyclic or self-referential chain terminates.
+    if (value.cause !== undefined && value.cause !== null && depth < MAX_CAUSE_DEPTH) {
+      out.cause = serialiseError(value.cause, depth + 1);
+    }
+
     return out;
   }
 
