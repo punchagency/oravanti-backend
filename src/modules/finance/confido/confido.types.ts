@@ -38,9 +38,21 @@ export interface ConfidoOnboardingToken {
   expiresAt: string;
 }
 
+/**
+ * Reserved slot for a header image.
+ *
+ * Confido ingests the bytes rather than hot-linking ours, so a logo is
+ * reserve -> PUT -> reference by key.
+ */
+export interface ConfidoBrandingImageUpload {
+  s3Key: string;
+  uploadUrl: string;
+}
+
 export interface ConfidoBrandingInput {
   headerName?: string;
-  headerImg?: { url: string };
+  /** Refers to bytes already uploaded via `createBrandingImageUpload`. */
+  headerImg?: { s3Key: string; filename: string; contentType: string };
   backgroundColor?: string;
   centerColor?: string;
   footerText?: string;

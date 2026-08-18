@@ -339,6 +339,12 @@ Two mitigations, and they compose:
   `headerName`, `backgroundColor`, `centerColor` and `footerText`; `FirmSettings.brandingPageUrl`
   points at the same thing in Confido's UI. Worth calling at onboarding so the page a client lands
   on carries the firm's identity, not Confido's.
+  **`headerImg` is not a URL.** It is `{ s3Key, filename, contentType }`, and the bytes go to
+  Confido first: `firmBrandingHeaderImgUploadUrl(firmId, filename, contentType)` returns
+  `{ s3Key, uploadUrl }`, you PUT the image there, then reference the key. They ingest into their
+  own storage, so nothing of ours is hot-linked and there is no expiring-URL problem to design
+  around — which matters because our own R2 download URLs last one hour and SigV4 caps them at
+  seven days regardless.
 - **Embed rather than redirect.** Confido supports putting a Payment Link in an iframe — same link,
   same PCI posture, same automatic access to future payment methods. The client stays on our
   `/invoice-payment/:token` page, we keep our chrome around it, and we can poll our own endpoint so

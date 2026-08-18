@@ -3,6 +3,7 @@ import { env } from "../../../config/env";
 import { ExternalServiceError } from "../../../utils/error/app-error";
 import type {
   ConfidoBankAccount,
+  ConfidoBrandingImageUpload,
   ConfidoBrandingInput,
   ConfidoCreateFirmResult,
   ConfidoExchangeCodeResult,
@@ -112,10 +113,69 @@ export class ConfidoClient {
     await this.gql(
       this.partnerToken,
       `mutation Branding($firmId: String, $input: FirmBrandingUpdateInput!) {
-        firmBrandingUpdate(firmId: $firmId, input: $input) { headerName }
+        firmBrandingUpdate(firmId: $firmId, input: $input) { headerName headerImg }
       }`,
       { firmId, input },
     );
+  }
+
+  /**
+   * Reserve a slot for a header image.
+   *
+   * `headerImg` is not a URL — Confido ingests the bytes into their own storage
+   * and the branding mutation then refers to them by `s3Key`. So a logo is a
+   * three-step affair: reserve, PUT, then reference. That is also why there is no
+   * expiring-URL problem to design around: nothing of ours is hot-linked.
+   */
+  async createBrandingImageUpload(
+    firmId: string,
+    filename: string,
+    contentType: string,
+  ): Promise<ConfidoBrandingImageUpload> {
+    const data = await this.gql<{
+      firmBrandingHeaderImgUploadUrl: ConfidoBrandingImageUpload;
+    }>(
+      this.partnerToken,
+      `query BrandingUpload($firmId: String, $filename: String!, $contentType: String!) {
+        firmBrandingHeaderImgUploadUrl(
+          firmId: $firmId, filename: $filename, contentType: $contentType
+        ) { s3Key uploadUrl }
+      }`,
+      { firmId, filename, contentType },
+    );
+    return data.firmBrandingHeaderImgUploadUrl;
+  }
+
+  /**
+   * PUT the bytes at the reserved slot.
+   *
+   * Not a GraphQL call — `uploadUrl` is a presigned storage URL, so it takes the
+   * raw body and none of our headers. Sending `x-api-key` here would break the
+   * signature.
+   */
+  async uploadBrandingImage(
+    uploadUrl: string,
+    bytes: Buffer,
+    contentType: string,
+  ): Promise<void> {
+    let res: Response;
+    try {
+      res = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": contentType },
+        body: new Uint8Array(bytes),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (err) {
+      throw new ExternalServiceError(
+        `Confido image upload failed: ${(err as Error).message}`,
+      );
+    }
+    if (!res.ok) {
+      throw new ExternalServiceError(
+        `Confido image upload failed (${res.status})`,
+      );
+    }
   }
 
   /**

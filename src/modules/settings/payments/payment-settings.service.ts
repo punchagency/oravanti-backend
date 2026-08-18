@@ -14,11 +14,15 @@ import {
   encryptPaymentValue,
   PaymentDecryptionError,
 } from "../../../utils/payment-crypto";
+import { storageService } from "../../../utils/storage/storage.service";
 import {
   getConfidoClient,
   isConfidoConfigured,
 } from "../../finance/confido/confido.client";
-import type { ConfidoBankAccount } from "../../finance/confido/confido.types";
+import type {
+  ConfidoBankAccount,
+  ConfidoBrandingInput,
+} from "../../finance/confido/confido.types";
 import {
   canAcceptPayments,
   normalizeFirmStatus,
@@ -228,7 +232,11 @@ export const startOnboardingSession = async (
     }
 
     const [org] = await db
-      .select({ name: organization.name, displayName: organization.displayName })
+      .select({
+        name: organization.name,
+        displayName: organization.displayName,
+        logo: organization.logo,
+      })
       .from(organization)
       .where(eq(organization.id, organizationId))
       .limit(1);
@@ -269,7 +277,12 @@ export const startOnboardingSession = async (
       })
       .where(eq(confidoFirms.organizationId, organizationId));
 
-    await applyBranding(organizationId, created.id, org.displayName || org.name);
+    await applyBranding(
+      organizationId,
+      created.id,
+      org.displayName || org.name,
+      org.logo ?? null,
+    );
     await inviteFirmAdmin(organizationId, created.id, actorStaffId);
   }
 
@@ -290,24 +303,109 @@ export const startOnboardingSession = async (
   };
 };
 
+const IMAGE_CONTENT_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+};
+
+/** Confido stores the bytes, so it needs a type — and R2 does not hand one back. */
+const contentTypeFor = (key: string): string | null => {
+  const ext = key.split(".").pop()?.toLowerCase();
+  return ext ? (IMAGE_CONTENT_TYPES[ext] ?? null) : null;
+};
+
+/**
+ * Fetch the firm's logo, wherever it lives.
+ *
+ * `organization.logo` is normally an R2 object key, but `firm-profile.service`
+ * documents that legacy rows hold an absolute URL, and both still exist.
+ */
+const readLogo = async (
+  logo: string,
+): Promise<{ bytes: Buffer; filename: string; contentType: string } | null> => {
+  const filename = logo.split("/").pop() || "logo";
+  const contentType = contentTypeFor(filename);
+  if (!contentType) return null;
+
+  if (/^https?:\/\//.test(logo)) {
+    const res = await fetch(logo, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) return null;
+    return {
+      bytes: Buffer.from(await res.arrayBuffer()),
+      filename,
+      contentType,
+    };
+  }
+
+  return {
+    bytes: await storageService.download(logo),
+    filename,
+    contentType,
+  };
+};
+
 /**
  * Brand the Confido-hosted payment page.
  *
- * Non-fatal: a failure here must never abort firm creation, which is the one
- * step in this flow that cannot be safely repeated.
+ * Since the payer is never redirected back to us, that page is the last thing
+ * they see — so it carrying the firm's identity rather than Confido's is worth
+ * the extra calls.
  *
- * `headerImg` is deliberately omitted. `organization.logo` holds an R2 object
- * key that we sign on demand, and a signed URL expires — handing one to Confido
- * would leave the payment page's logo broken weeks later, silently. A stable
- * public URL is a follow-up.
+ * The logo is a three-step affair because `headerImg` is not a URL: Confido
+ * reserves a slot, we PUT the bytes, then the mutation refers to them by key.
+ * Nothing of ours is hot-linked, so there is no expiring-URL problem — which is
+ * also why the R2 object key works fine as a source despite our own download
+ * URLs lasting only an hour.
+ *
+ * Wholly non-fatal. A failure here must never abort firm creation, which is the
+ * one step in this flow that cannot be safely repeated, and a missing logo is
+ * cosmetic. The logo is attempted separately from the name and colours so a bad
+ * image does not cost the firm its branding entirely.
  */
 const applyBranding = async (
   organizationId: string,
   confidoFirmId: string,
   headerName: string,
+  logo: string | null,
 ): Promise<void> => {
+  const client = getConfidoClient();
+  const input: ConfidoBrandingInput = { headerName };
+
+  if (logo) {
+    try {
+      const image = await readLogo(logo);
+      if (image) {
+        const slot = await client.createBrandingImageUpload(
+          confidoFirmId,
+          image.filename,
+          image.contentType,
+        );
+        await client.uploadBrandingImage(
+          slot.uploadUrl,
+          image.bytes,
+          image.contentType,
+        );
+        input.headerImg = {
+          s3Key: slot.s3Key,
+          filename: image.filename,
+          contentType: image.contentType,
+        };
+      }
+    } catch (err) {
+      // Fall through with name and colours only.
+      console.error(
+        `[confido] logo upload failed for org ${organizationId}:`,
+        (err as Error).message,
+      );
+    }
+  }
+
   try {
-    await getConfidoClient().updateBranding(confidoFirmId, { headerName });
+    await client.updateBranding(confidoFirmId, input);
     await db
       .update(confidoFirms)
       .set({ brandingAppliedAt: new Date(), updatedAt: new Date() })
