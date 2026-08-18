@@ -464,6 +464,55 @@ const inviteFirmAdmin = async (
 // ─── Status ──────────────────────────────────────────────────────────────────
 
 /**
+ * Point the firm's monthly fee debit at its operating account.
+ *
+ * Confido does not net its fee out of a deposit — a $500 trust payment puts the
+ * full $500 in trust — and instead accumulates fees and debits them monthly
+ * from whichever account carries `isFeeAccount`. That separation is exactly
+ * what keeps a trust deposit whole, and it only holds if the fee account is the
+ * operating one.
+ *
+ * Left alone it is whatever Confido defaulted to, which we have never set and
+ * therefore never verified. Setting it explicitly is cheap; the failure mode if
+ * it were ever trust is a firm's IOLTA account being debited for card
+ * processing, which is the kind of thing that ends in a bar complaint.
+ *
+ * Non-fatal and idempotent: called on every status refresh, but only acts when
+ * the flag is actually on the wrong account.
+ */
+const ensureFeeAccount = async (
+  organizationId: string,
+  firmToken: string,
+  accounts: ConfidoBankAccount[],
+): Promise<void> => {
+  const operating = accounts.find(
+    (a) => a.category === "operating" && a.isDefault,
+  );
+  if (!operating) return;
+
+  const feeAccount = accounts.find((a) => a.isFeeAccount);
+  if (feeAccount?.id === operating.id) return;
+
+  if (feeAccount && feeAccount.category === "trust") {
+    console.error(
+      `[confido] org ${organizationId} had its fee account set to a TRUST ` +
+        `account (${feeAccount.nickname}); repointing at operating`,
+    );
+  }
+
+  try {
+    await getConfidoClient().updateFirmAccounts(firmToken, {
+      feeBankAccountId: operating.id,
+    });
+  } catch (err) {
+    console.error(
+      `[confido] could not set the fee account for org ${organizationId}:`,
+      (err as Error).message,
+    );
+  }
+};
+
+/**
  * Re-read the firm from Confido and store what it says.
  *
  * Shared by the manual Refresh button and the webhook worker, which is why it
@@ -494,7 +543,9 @@ export const refreshStatus = async (
   };
   if (canAcceptPayments(status, accepting) && !defaults.trust) {
     try {
-      defaults = pickDefaults(await client.listBankAccounts(firmToken));
+      const accounts = await client.listBankAccounts(firmToken);
+      defaults = pickDefaults(accounts);
+      await ensureFeeAccount(organizationId, firmToken, accounts);
     } catch (err) {
       console.error(
         `[confido] bank account lookup failed for org ${organizationId}:`,
@@ -517,6 +568,37 @@ export const refreshStatus = async (
     .where(eq(confidoFirms.organizationId, organizationId));
 
   return getPaymentAccount(organizationId);
+};
+
+/**
+ * A firm's Confido credential, for paths that have no request context.
+ *
+ * `firmTokenFor` reads through `db`, which is right for the settings routes but
+ * wrong here: the public payment page and the webhook worker have no request
+ * context, so `db` would fall back to `systemDb` and RLS would not apply while
+ * looking as though it did. This reads `systemDb` explicitly with the
+ * organization named, which is the same discipline `organizationForConfidoFirm`
+ * follows.
+ *
+ * Returns the firm id alongside the token because creating a payer needs both,
+ * and fetching them separately would be two queries for one row.
+ */
+export const confidoCredentialFor = async (
+  organizationId: string,
+): Promise<{ credential: string; firmId: string }> => {
+  const [row] = await systemDb
+    .select({
+      token: confidoFirms.encryptedApiToken,
+      firmId: confidoFirms.confidoFirmId,
+    })
+    .from(confidoFirms)
+    .where(eq(confidoFirms.organizationId, organizationId))
+    .limit(1);
+
+  if (!row?.token || !row.firmId) {
+    throw new BadRequestError("This firm has no Confido credential yet");
+  }
+  return { credential: decryptPaymentValue(row.token), firmId: row.firmId };
 };
 
 /**

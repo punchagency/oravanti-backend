@@ -2,7 +2,11 @@ import { and, eq, isNull } from "drizzle-orm";
 import { systemDb } from "../../../db/client";
 import { paymentWebhookEvents } from "../../../db/schema/payment-webhook-events";
 import { enqueueConfidoWebhook } from "../../../queue/queues";
+import type { PaymentMethod } from "../../../db/schema/invoices";
+import { systemAccess } from "../account-access";
+import { recordPayment } from "../payments.service";
 import {
+  confidoCredentialFor,
   markWebhookSeen,
   organizationForConfidoFirm,
   refreshStatus,
@@ -32,8 +36,31 @@ import type { ConfidoWebhookEvent } from "./confido.types";
 
 export const CONFIDO_PROVIDER = "confido";
 
-/** Event types slice 1 acts on. Anything else is acknowledged and dropped. */
-const HANDLED_TYPES = new Set(["firm.updated"]);
+/** Event types we act on. Anything else is acknowledged and dropped. */
+const HANDLED_TYPES = new Set([
+  "firm.updated",
+  // The ledger write. Settlement events only advance status.
+  "transaction.created",
+  "transaction.funds_in_transit",
+  "transaction.deposited",
+]);
+
+/**
+ * Transaction types that represent a client paying an invoice.
+ *
+ * An allowlist rather than a denylist, deliberately. Money arriving at an
+ * invoice is not always revenue for it: a surcharge can land as its own
+ * operating transaction against a trust-only link, and refunds, returns and
+ * chargebacks all reference the same payment link. Recording one of those as a
+ * payment overpays the invoice and marks it settled — a ledger bug that fails
+ * silently rather than loudly, which is the worst kind. Anything unrecognised
+ * is logged and skipped so it is visible rather than booked.
+ */
+const PAYMENT_TRANSACTION_TYPES = new Set([
+  "ccPayment",
+  "achPayment",
+  "manualPayment",
+]);
 
 export type ConfidoWebhookOutcome = {
   received: number;
@@ -109,11 +136,26 @@ export const receiveConfidoWebhook = async (
       eventId: event.eventId,
       eventType: event.type,
       firmId: event.firmId,
+      ...(transactionIdOf(event) ? { transactionId: transactionIdOf(event)! } : {}),
     });
     claimed += 1;
   }
 
   return { received: events.length, claimed, ignored };
+};
+
+/**
+ * Dig the transaction id out of a thin payload.
+ *
+ * `transaction.created` nests it as `{ transaction: { id } }`; the settlement
+ * events use the same shape. Typed loosely because the payload is theirs, and a
+ * shape change should degrade to "no id" rather than throw inside the five
+ * second window.
+ */
+const transactionIdOf = (event: ConfidoWebhookEvent): string | null => {
+  const txn = (event.data as { transaction?: { id?: unknown } } | undefined)
+    ?.transaction;
+  return typeof txn?.id === "string" ? txn.id : null;
 };
 
 /**
@@ -128,6 +170,7 @@ export const processConfidoWebhook = async (job: {
   eventId: string;
   eventType: string;
   firmId: string;
+  transactionId?: string;
 }): Promise<void> => {
   const organizationId = await organizationForConfidoFirm(job.firmId);
 
@@ -142,6 +185,8 @@ export const processConfidoWebhook = async (job: {
 
   if (job.eventType === "firm.updated") {
     await refreshStatus(organizationId);
+  } else if (job.eventType.startsWith("transaction.") && job.transactionId) {
+    await recordConfidoTransaction(organizationId, job.transactionId);
   }
 
   await markProcessed(job.eventId);
@@ -165,4 +210,94 @@ const markProcessed = async (eventId: string): Promise<void> => {
         isNull(paymentWebhookEvents.processedAt),
       ),
     );
+};
+
+
+/**
+ * Turn one Confido transaction into a ledger row.
+ *
+ * Confido credits one bank account per transaction, so a payment split across
+ * trust and operating arrives as two events and becomes two single-sided rows —
+ * each carrying its own transaction id as `providerReference`, which is what
+ * keeps `invoice_payments_provider_ref_uidx` working as the replay guard per
+ * leg rather than per payment.
+ *
+ * Every early return here is a decision not to book money, and each one is a
+ * case where booking it would be wrong rather than merely unnecessary.
+ */
+const recordConfidoTransaction = async (
+  organizationId: string,
+  transactionId: string,
+): Promise<void> => {
+  const { credential } = await confidoCredentialFor(organizationId);
+  const txn = await getConfidoClient().getTransaction(credential, transactionId);
+
+  // Not invoice revenue. A standalone surcharge, a refund, a return or a
+  // chargeback all reference the same payment link, and recording any of them
+  // as a payment overpays the invoice and marks it settled.
+  if (!PAYMENT_TRANSACTION_TYPES.has(txn.type)) {
+    console.log(
+      `[confido] skipping transaction ${transactionId}: type "${txn.type}" is not a client payment`,
+    );
+    return;
+  }
+
+  // Our invoice id rides on the link's externalId. A transaction with no link
+  // came from a standing link or a stored payment method — real money, but not
+  // against an invoice we issued, so there is nothing to credit.
+  const invoiceId = txn.paymentLink?.externalId;
+  if (!invoiceId) {
+    console.log(
+      `[confido] transaction ${transactionId} has no invoice reference; skipped`,
+    );
+    return;
+  }
+
+  const account = accountFor(txn.bankAccount.category);
+  if (!account) {
+    // An unrecognised category cannot be assigned to a side, and guessing would
+    // put client money in the firm's revenue or vice versa.
+    console.error(
+      `[confido] transaction ${transactionId} has unknown bank account category "${txn.bankAccount.category}"; skipped`,
+    );
+    return;
+  }
+
+  // Cents to money. `amountProcessed` deliberately excludes any surcharge, so
+  // this is what the invoice is actually credited.
+  const amount = txn.amountProcessed / 100;
+  if (amount <= 0) return;
+
+  try {
+    await recordPayment(organizationId, invoiceId, null, systemAccess(), {
+      amount,
+      paymentDate: new Date().toISOString().slice(0, 10),
+      method: methodFor(txn.type),
+      reference: txn.payment?.id ?? txn.id,
+      provider: CONFIDO_PROVIDER,
+      legs: [{ account, amount, providerReference: txn.id }],
+    });
+  } catch (err) {
+    // The ledger's own uniqueness guard firing means this leg is already
+    // recorded — a redelivery that outran the event claim. Not an error.
+    const message = err instanceof Error ? err.message : "";
+    if (message.includes("invoice_payments_provider_ref_uidx")) return;
+    throw err;
+  }
+};
+
+/** Confido's untyped `category` string onto our account enum. */
+const accountFor = (
+  category: string,
+): "operating" | "trust_iolta" | null => {
+  if (category === "operating") return "operating";
+  if (category === "trust") return "trust_iolta";
+  return null;
+};
+
+/** Their transaction type onto our payment-method enum. */
+const methodFor = (type: string): PaymentMethod => {
+  if (type === "achPayment") return "bank_transfer";
+  if (type === "ccPayment") return "credit_card";
+  return "other";
 };

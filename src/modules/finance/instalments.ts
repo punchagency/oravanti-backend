@@ -65,8 +65,7 @@ const advance = (
  * Cut `total` into `count` dated instalments.
  *
  * The remainder goes on the FINAL instalment so the rows sum to `total`
- * exactly — the same discipline as `proRateSplit`, where the remainder is
- * placed rather than lost. Dividing without placing it gives
+ * exactly — placed rather than lost. Dividing without placing it gives
  * `1000 / 3 = 333.33 x 3 = 999.99`, which fails `assertScheduleBalances` every
  * time; the fee-agreement wizard has exactly that bug today.
  */

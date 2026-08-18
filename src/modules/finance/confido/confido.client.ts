@@ -3,6 +3,9 @@ import { env } from "../../../config/env";
 import { ExternalServiceError } from "../../../utils/error/app-error";
 import type {
   ConfidoBankAccount,
+  ConfidoPayer,
+  ConfidoPaymentLink,
+  ConfidoTransaction,
   ConfidoBrandingImageUpload,
   ConfidoBrandingInput,
   ConfidoCreateFirmResult,
@@ -31,14 +34,62 @@ import type {
  * takes toward money.
  */
 
+/** Selected wherever a PaymentLink comes back, so the shapes cannot drift. */
+const LINK_FIELDS = `
+  id
+  url
+  status
+  externalId
+  amounts { amount bankAccount { id category } }
+`;
+
 const DEFAULT_API_URL = "https://api.sandbox.gravity-legal.com/v2";
 
 /** An admin is waiting on these inside an HTTP request; do not hang the tab. */
 const REQUEST_TIMEOUT_MS = 15_000;
 
+interface GqlError {
+  message: string;
+  code?: string;
+  status?: number;
+  extensions?: { code?: string };
+}
+
 interface GqlResponse<T> {
   data?: T;
-  errors?: { message: string }[];
+  errors?: GqlError[];
+}
+
+/**
+ * A GraphQL-level failure, carrying Confido's own classification.
+ *
+ * Callers need to tell "this record does not exist" from "Confido is having a
+ * bad day", and the difference matters: a lookup-then-create flow that treats
+ * every failure as absence will happily create a duplicate every time the API
+ * is briefly down. Confido has no delete endpoint, so duplicates are permanent.
+ *
+ * Their reporting is not consistent enough to classify by status alone —
+ * a missing Client is a 400 `USER_INPUT_ERROR`, while a missing PaymentLink is
+ * a 500 `INTERNAL_SERVER_ERROR` reading "Paylink not found" — so the codes,
+ * statuses and messages are all preserved and each call site decides.
+ */
+export class ConfidoApiError extends ExternalServiceError {
+  constructor(
+    message: string,
+    readonly codes: string[] = [],
+    readonly statuses: number[] = [],
+    readonly messages: string[] = [],
+  ) {
+    super(message);
+  }
+
+  /** True when Confido is reporting absence rather than failure. */
+  isNotFound(...messageFragments: string[]): boolean {
+    if (this.codes.includes("USER_INPUT_ERROR")) return true;
+    return messageFragments.some((f) =>
+      this.messages.some((m) => m.toLowerCase().includes(f.toLowerCase())),
+    );
+  }
 }
 
 export class ConfidoClient {
@@ -69,7 +120,7 @@ export class ConfidoClient {
           id
           status
           apiToken
-          bankAccounts { id category isDefault nickname }
+          bankAccounts { id category isDefault nickname isFeeAccount }
         }
       }`,
       { input },
@@ -99,7 +150,7 @@ export class ConfidoClient {
     }>(
       firmToken,
       `query BankAccounts {
-        bankAccountsList { bankAccounts { id category isDefault nickname } }
+        bankAccountsList { bankAccounts { id category isDefault nickname isFeeAccount } }
       }`,
     );
     return data.bankAccountsList.bankAccounts;
@@ -202,6 +253,36 @@ export class ConfidoClient {
     );
   }
 
+  /**
+   * Point the firm's fee debits at a specific bank account.
+   *
+   * Confido does not net its fee out of a deposit — a $500 trust payment puts
+   * the full $500 in trust — and instead accumulates fees and debits them
+   * monthly from whichever account carries `isFeeAccount`. That separation is
+   * what keeps a trust deposit whole, and it only works if the fee account is
+   * the OPERATING one. Left unset, it is whatever Confido defaulted to.
+   */
+  async updateFirmAccounts(
+    firmToken: string,
+    input: {
+      feeBankAccountId?: string;
+      defaultOperatingId?: string;
+      defaultTrustId?: string;
+    },
+  ): Promise<void> {
+    // Firm-level, unlike its neighbours: `FirmUpdateInput` has no `firmId`
+    // field, so the token identifies the firm. `paymentSettingsUpdate` takes one
+    // and `firmBrandingUpdate` takes one — this does not, and passing it would
+    // be rejected as an unknown field.
+    await this.gql(
+      firmToken,
+      `mutation FirmUpdate($input: FirmUpdateInput!) {
+        firmUpdate(input: $input) { id }
+      }`,
+      { input },
+    );
+  }
+
   /** Connect: trade an authorization code for a firm token we then store. */
   async exchangeCodeForFirmToken(
     code: string,
@@ -240,6 +321,140 @@ export class ConfidoClient {
       }`,
     );
     return data.createOnboardingToken;
+  }
+
+  /**
+   * Find the Confido Client standing for one of our leads or clients.
+   *
+   * Keyed on `externalId` — our own uuid — so no mapping table is needed and
+   * the relationship survives `openCase` repointing an invoice from a lead to
+   * the client it became.
+   *
+   * Returns null when absent rather than throwing, but ONLY for a genuine
+   * absence: Confido reports a missing Client as a 400 `USER_INPUT_ERROR`, and
+   * anything else propagates. Treating every failure as absence would create a
+   * duplicate Client each time the API hiccuped, and there is no delete
+   * endpoint to undo that.
+   */
+  async findClientByExternalId(
+    firmToken: string,
+    externalId: string,
+  ): Promise<ConfidoPayer | null> {
+    try {
+      const data = await this.gql<{ client: ConfidoPayer | null }>(
+        firmToken,
+        `query FindClient($externalId: String) {
+          client(externalId: $externalId) { id externalId }
+        }`,
+        { externalId },
+      );
+      return data.client ?? null;
+    } catch (err) {
+      if (err instanceof ConfidoApiError && err.isNotFound("could not find")) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  async createClient(
+    firmToken: string,
+    input: {
+      firmId: string;
+      clientName: string;
+      externalId: string;
+      email?: string;
+    },
+  ): Promise<ConfidoPayer> {
+    const data = await this.gql<{ addClient: ConfidoPayer }>(
+      firmToken,
+      `mutation AddClient($input: AddClientInput!) {
+        addClient(input: $input) { id externalId }
+      }`,
+      { input },
+    );
+    return data.addClient;
+  }
+
+  /**
+   * Find the payment link for one of our invoices, by `externalId`.
+   *
+   * Same absence-vs-failure care as `findClientByExternalId`, but Confido is
+   * less helpful here: a missing link comes back as a **500
+   * `INTERNAL_SERVER_ERROR`** reading "Paylink not found", not a 400. So this
+   * has to match on the message, which is fragile — if Confido ever reworded
+   * it, this would start reporting real outages as absence and mint duplicate
+   * links. Worth a periodic check against the sandbox.
+   */
+  async findPaymentLinkByExternalId(
+    firmToken: string,
+    externalId: string,
+  ): Promise<ConfidoPaymentLink | null> {
+    try {
+      const data = await this.gql<{ paymentLink: ConfidoPaymentLink | null }>(
+        firmToken,
+        `query FindLink($externalId: String) {
+          paymentLink(externalId: $externalId) { ${LINK_FIELDS} }
+        }`,
+        { externalId },
+      );
+      return data.paymentLink ?? null;
+    } catch (err) {
+      if (err instanceof ConfidoApiError && err.isNotFound("paylink not found")) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Create a payment link.
+   *
+   * **Never retry**, for the same reason as `createFirm`: there is no
+   * idempotency key and no delete endpoint, so a retry after a timeout that
+   * actually succeeded leaves a second link against the same invoice. Recovery
+   * is `findPaymentLinkByExternalId`, not another create.
+   */
+  async addPaymentLink(
+    firmToken: string,
+    input: {
+      clientId: string;
+      externalId: string;
+      trust?: number;
+      operating?: number;
+      memo?: string;
+      partialPaymentAllowed?: boolean;
+      sendReceipts?: boolean;
+    },
+  ): Promise<ConfidoPaymentLink> {
+    const data = await this.gql<{ addPaymentLink: ConfidoPaymentLink }>(
+      firmToken,
+      `mutation AddLink($input: AddPaymentLinkInput!) {
+        addPaymentLink(input: $input) { ${LINK_FIELDS} }
+      }`,
+      { input },
+    );
+    return data.addPaymentLink;
+  }
+
+  /** One transaction, for turning a thin webhook into a ledger row. */
+  async getTransaction(
+    firmToken: string,
+    id: string,
+  ): Promise<ConfidoTransaction> {
+    const data = await this.gql<{ transaction: ConfidoTransaction }>(
+      firmToken,
+      `query GetTransaction($id: String!) {
+        transaction(id: $id) {
+          id type status_v2 amountProcessed surchargeAmount
+          bankAccount { id category }
+          paymentLink { id externalId }
+          payment { id }
+        }
+      }`,
+      { id },
+    );
+    return data.transaction;
   }
 
   // ─── Webhooks ──────────────────────────────────────────────────────────────
@@ -301,9 +516,16 @@ export class ConfidoClient {
 
     // The GraphQL trap: a 200 whose body carries the failure.
     if (payload.errors?.length) {
-      const message = payload.errors.map((e) => e.message).join("; ");
-      throw new ExternalServiceError(
-        `Confido API error: ${message.slice(0, 300)}`,
+      const messages = payload.errors.map((e) => e.message);
+      throw new ConfidoApiError(
+        `Confido API error: ${messages.join("; ").slice(0, 300)}`,
+        payload.errors
+          .map((e) => e.extensions?.code ?? e.code)
+          .filter((c): c is string => Boolean(c)),
+        payload.errors
+          .map((e) => e.status)
+          .filter((n): n is number => typeof n === "number"),
+        messages,
       );
     }
 

@@ -12,6 +12,8 @@ export interface ConfidoBankAccount {
   category: string;
   isDefault: boolean;
   nickname: string;
+  /** True on the one account Confido debits monthly fees from. */
+  isFeeAccount: boolean;
 }
 
 export interface ConfidoFirmSnapshot {
@@ -69,4 +71,41 @@ export interface ConfidoWebhookEvent {
   firmId: string;
   eventId: string;
   data?: Record<string, unknown>;
+}
+
+/**
+ * A payer, keyed on our own uuid via `externalId`.
+ *
+ * Named "payer" rather than "client" because `ConfidoClient` is the API client
+ * class — Confido calls this a Client, we call the thing that talks to them one.
+ */
+export interface ConfidoPayer {
+  id: string;
+  externalId: string | null;
+}
+
+export interface ConfidoAmountLeg {
+  amount: number;
+  bankAccount: { id: string; category: string };
+}
+
+export interface ConfidoPaymentLink {
+  id: string;
+  url: string;
+  status: string;
+  externalId: string | null;
+  amounts: ConfidoAmountLeg[];
+}
+
+/** A single movement of money. One per bank account Confido credits. */
+export interface ConfidoTransaction {
+  id: string;
+  type: string;
+  status_v2: string;
+  /** Cents, and deliberately EXCLUSIVE of any surcharge. */
+  amountProcessed: number;
+  surchargeAmount: number;
+  bankAccount: { id: string; category: string };
+  paymentLink: { id: string; externalId: string | null } | null;
+  payment: { id: string } | null;
 }

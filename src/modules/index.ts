@@ -16,7 +16,6 @@ import {
   FinanceReportsModule,
   InvoicesModule,
   PaymentPublicModule,
-  PaymentWebhookModule,
   TimeBillingModule,
 } from "./finance/finance.module";
 import { RevenueAnalyticsModule } from "./revenue-analytics/revenue-analytics.module";
@@ -67,7 +66,6 @@ export const modules: Module[] = [
   new FinanceReportsModule(),
   // Public: the token is the credential, no requireAuth.
   new PaymentPublicModule(),
-  new PaymentWebhookModule(),
   // Public: the HMAC signature is the credential, no requireAuth.
   new ConfidoWebhookModule(),
   new PermissionAuditLogModule(),
