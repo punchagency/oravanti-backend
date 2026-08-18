@@ -650,7 +650,7 @@ export class ConsultationBookingRouter {
     this.router.post(
       "/:token/pay",
       validateRequest({ params: v.bookingTokenParamsSchema }),
-      ctrl.payConsultationFee,
+      ctrl.startConsultationPayment,
     );
 
     this.router.post(

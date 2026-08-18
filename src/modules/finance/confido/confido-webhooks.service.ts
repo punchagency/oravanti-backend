@@ -12,6 +12,7 @@ import {
   refreshStatus,
 } from "../../settings/payments/payment-settings.service";
 import { getConfidoClient, isConfidoConfigured } from "./confido.client";
+import { settleConsultationForInvoice } from "../../leads/leads.service";
 import { syncStatements } from "./statements.service";
 import type { ConfidoWebhookEvent } from "./confido.types";
 
@@ -290,6 +291,21 @@ const recordConfidoTransaction = async (
     const message = err instanceof Error ? err.message : "";
     if (message.includes("invoice_payments_provider_ref_uidx")) return;
     throw err;
+  }
+
+  // A consultation fee that is now settled moves the consultation on — unlocking
+  // slot selection, scheduling an urgent call, or beginning an instant one.
+  // Downstream of money actually arriving, rather than of a button being
+  // clicked, which is the whole point of moving it here. Idempotent, and
+  // non-fatal: a consultation that fails to advance is recoverable, a payment
+  // that fails to record is not.
+  try {
+    await settleConsultationForInvoice(organizationId, invoiceId);
+  } catch (err) {
+    console.error(
+      `[confido] consultation settlement failed for invoice ${invoiceId}:`,
+      (err as Error).message,
+    );
   }
 };
 
