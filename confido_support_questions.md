@@ -13,6 +13,8 @@ your **updated platform** — that is confirmed, and the questions below assume 
 
 ## Blocking — we cannot build these without an answer
 
+*(Question 2 below is now resolved; kept in place so the numbering matches earlier correspondence.)*
+
 ### 1. Connect (OAuth) — the whole flow except the last step
 
 We can see `firmApiTokenExchangeCode(input: { code, nickname })` in the schema, and the docs
@@ -27,25 +29,29 @@ exchange to the session that started it, an attacker-supplied `code` could bind 
 account to another firm's organization — meaning that firm's client payments would settle into the
 attacker's bank account. We are not willing to ship that on an assumption.
 
-### 2. Sponsor bank configuration — where does a refund debit from?
+### 2. Sponsor bank configuration — RESOLVED (decision), one thing to action
 
-Your article *"Issued a refund to a client from my trust account…"* describes two configurations:
-legacy (refund debits **operating**, firm must then transfer trust→operating manually) and the new
-sponsor bank (refund debits **trust** directly). It ends by saying to contact you to find out which
-applies, and nothing in the API exposes it.
+**Decided: our firms are on the new sponsor bank configuration**, following from Confido's
+confirmation that they are all on the newer platform. Refunds therefore debit the **trust account
+directly**, and a trust refund moves trust money rather than requiring a manual transfer.
 
-- **Which sponsor bank configuration will our firms be on?** Is it partner-wide or per firm?
-- **Is "updated platform" the same thing as "new sponsor bank configuration",** or are they
-  independent? They are described in separate articles and we cannot tell.
+Recorded as a decision rather than a quotation: Confido confirmed the *platform* in the context of
+surcharge deposits, and describes the sponsor-bank configuration in a separate article. If they ever
+diverge for us, slice 3's refund model is what changes.
 
-We have confirmation that our firms are on the **newer platform** (see question 4), but that was
-about surcharge deposits and does not tell us which account a refund debits. If the two are the same
-thing, saying so answers this outright.
+**The one thing this makes actionable**, and it fails silently until the first refund:
 
-This decides our entire refund model. On the new configuration a trust refund moves trust money and
-our ledger matches the bank. On legacy it does not, and we would have to model a manual transfer the
-firm may never make — which would leave the trust ledger disagreeing with the trust bank account,
-the one reconciliation that must never drift.
+- Each firm's bank must permit Confido's originator IDs to debit their **trust** account:
+
+  ```
+  2638633811   9263863381   8263863381
+  4263863381   3263863381   2263863380
+  ```
+
+  > "If these IDs are not allowed by your bank, the refund may be blocked."
+
+- **Is that list current and complete?** Worth confirming, since a firm has to take it to their bank
+  during onboarding and a stale ID means a blocked refund months later.
 
 ### 3. Trusted Domains — does it cover iframes and onboarding.js?
 

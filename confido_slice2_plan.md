@@ -176,20 +176,30 @@ trust, that changes our posture entirely.
 The API docs describe mechanics; the knowledgebase describes money movement, and it contradicts
 some assumptions. Four findings, in descending order of how much they cost if missed.
 
-**1. Refunds come out of the OPERATING account, not trust — on the legacy configuration.**
+**1. Refunds debit the trust account directly — the good case, now decided.**
 
-> "The refund amount is withdrawn from your operating account and sent to your client. You must then
-> transfer the same amount from trust to operating to balance the accounts."
+Confido documents two configurations. On the legacy sponsor bank a refund is withdrawn from
+*operating* and the firm must then transfer trust→operating by hand to balance; on the new sponsor
+bank it debits trust directly. We are on the newer platform, so the new configuration applies.
 
-Trust accounts were historically set up to block all debits, which is exactly the safeguard you want
-and exactly what makes refunds awkward. On the newer sponsor-bank configuration refunds debit trust
-directly, provided the firm's bank allows Confido's originator IDs.
+That matters more than it sounds. Under the legacy model a trust refund would leave the trust bank
+balance unchanged while our ledger recorded a reversal, and the correction depended on a firm
+remembering to make a manual transfer — leaving the trust ledger disagreeing with the trust bank
+account, the one reconciliation that must never drift. Under the new model the ledger reversal and
+the bank movement are the same event, which is what makes slice 3's refund handling tractable.
 
-This is **slice 3's biggest problem**, and it is worse than the API suggested. The spike observed a
-trust-leg refund reducing `trustPaid` on the payment link — but that is Confido's ledger view, not
-the bank movement. On legacy, the trust bank balance does not change and the firm owes itself a
-manual transfer. A refund ledger that mirrors Confido without modelling that will disagree with the
-trust bank statement, which is the one reconciliation that must never drift.
+**It carries one onboarding prerequisite**, and it fails silently until a firm's first refund: the
+firm's bank must permit Confido's originator IDs to debit the trust account.
+
+```
+2638633811   9263863381   8263863381
+4263863381   3263863381   2263863380
+```
+
+> "If these IDs are not allowed by your bank, the refund may be blocked."
+
+Surfaced on the Payments settings tab once a firm is active, since it is the firm's own bank they
+have to arrange it with and nobody finds out otherwise until a client is owed money.
 
 **2. `TransactionStatus2.HELD` is a high-dollar risk hold**, previously unexplained. Payments that
 deviate from a firm's normal pattern are held pending documentation, cleared manually by Confido
