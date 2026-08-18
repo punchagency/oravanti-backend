@@ -14,12 +14,12 @@ import {
 } from "@opentelemetry/semantic-conventions";
 
 import { addLogSink, removeLogSink } from "../lib/logging/sinks";
-import { LogEvent, createModuleLogger } from "../lib/logging/log";
+import { createModuleLogger } from "../lib/logging/log";
 import { loadTelemetryConfig, type TelemetryConfig } from "./config";
 import { createLogBridge } from "./log-bridge";
 
 /**
- * OpenTelemetry bootstrap (plan-02 step 34).
+ * OpenTelemetry bootstrap.
  *
  * ── Import order matters more than anything else in this file ────────────────
  *
@@ -119,11 +119,11 @@ function installDiagnostics(): void {
   diag.setLogger(
     {
       error: (message, ...args) =>
-        log.failure(LogEvent.TELEMETRY_ERROR, args[0], { message }),
-      warn: (message) => log.warn(LogEvent.TELEMETRY_WARNING, { message }),
-      info: (message) => log.debug(LogEvent.TELEMETRY_DIAGNOSTIC, { message }),
-      debug: (message) => log.trace(LogEvent.TELEMETRY_DIAGNOSTIC, { message }),
-      verbose: (message) => log.trace(LogEvent.TELEMETRY_DIAGNOSTIC, { message }),
+        log.failure("telemetry.error", args[0], { message }),
+      warn: (message) => log.warn("telemetry.warning", { message }),
+      info: (message) => log.debug("telemetry.diagnostic", { message }),
+      debug: (message) => log.trace("telemetry.diagnostic", { message }),
+      verbose: (message) => log.trace("telemetry.diagnostic", { message }),
     },
     // Warnings and errors only. The SDK's info level narrates every export.
     DiagLogLevel.WARN,
@@ -219,7 +219,7 @@ export function startTelemetry(): boolean {
     // will behave for its whole life, and one line at startup is what stops
     // someone concluding the pipeline is broken when it was never switched on.
     log.info(
-      LogEvent.TELEMETRY_DISABLED,
+      "telemetry.disabled",
       { hint: "set OTEL_ENABLED=true, or OTEL_EXPORTER_OTLP_ENDPOINT" },
       "telemetry disabled — logs will carry no trace_id",
     );
@@ -243,7 +243,7 @@ export function startTelemetry(): boolean {
     }
 
     log.info(
-      LogEvent.TELEMETRY_STARTED,
+      "telemetry.started",
       {
         service: config.serviceName,
         environment: config.environment,
@@ -260,7 +260,7 @@ export function startTelemetry(): boolean {
     return true;
   } catch (error) {
     sdk = undefined;
-    log.failure(LogEvent.TELEMETRY_START_FAILED, error);
+    log.failure("telemetry.start_failed", error);
     return false;
   }
 }
@@ -284,7 +284,7 @@ export async function shutdownTelemetry(): Promise<void> {
   try {
     await sdk.shutdown();
   } catch (error) {
-    log.failure(LogEvent.TELEMETRY_SHUTDOWN_FAILED, error);
+    log.failure("telemetry.shutdown_failed", error);
   } finally {
     sdk = undefined;
     active = undefined;

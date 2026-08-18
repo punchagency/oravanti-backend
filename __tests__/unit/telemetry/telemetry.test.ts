@@ -17,7 +17,7 @@ import { toSpanAttributes } from "../../../src/telemetry/attributes";
 import { loadTelemetryConfig } from "../../../src/telemetry/config";
 
 /**
- * OpenTelemetry integration (plan-02 step 34).
+ * OpenTelemetry integration.
  *
  * No SDK is started in any of these. That is deliberate for the trace-context
  * tests — the API facade's behaviour with no provider registered is exactly

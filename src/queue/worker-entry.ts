@@ -7,13 +7,16 @@ import "../telemetry/bootstrap";
 import "dotenv/config";
 import { shutdownTelemetry } from "../telemetry";
 import { closeDb } from "../db/client";
+import { createModuleLogger, LogEvent } from "../lib/logging/log";
 import { redisConnection } from "./connection";
 import { startWorkers } from "./index";
+
+const log = createModuleLogger("worker-entry");
 
 const workers = startWorkers();
 
 const shutdown = async () => {
-  console.log("[queue] shutting down workers…");
+  log.info(LogEvent.QUEUE_SHUTDOWN_REQUESTED);
   await Promise.all(workers.map((w) => w.close()));
   await redisConnection.quit();
   await closeDb();

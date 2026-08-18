@@ -8,7 +8,7 @@ import {
 import { correlationFields } from "../../../src/lib/logging/service-logger";
 
 /**
- * Request correlation (plan-02 step 8).
+ * Request correlation.
  *
  * One id ties the access log, every diagnostic line, and every audit row to a
  * single user action. These tests cover the two things that would quietly

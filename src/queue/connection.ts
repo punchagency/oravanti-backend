@@ -1,6 +1,6 @@
 import { Redis } from "ioredis";
 import { env } from "../config/env";
-import { LogEvent, createModuleLogger } from "../lib/logging/log";
+import { createModuleLogger } from "../lib/logging/log";
 
 const log = createModuleLogger("queue.connection");
 
@@ -20,5 +20,5 @@ redisConnection.on("error", (err) => {
   // The whole error, not `err.message`. ioredis attaches the syscall, errno
   // and address, which is the difference between "connection error" and
   // knowing it is ECONNREFUSED against the wrong host.
-  log.failure(LogEvent.QUEUE_REDIS_ERROR, err);
+  log.failure("queue.redis_error", err);
 });

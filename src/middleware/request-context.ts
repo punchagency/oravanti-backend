@@ -49,6 +49,16 @@ export interface RequestContext {
   actorName: string | null;
   rawUserDEK: Buffer | null;
   tenantDb: any | null;
+  /**
+   * Hands the tenant connection back to the pool and clears its RLS session
+   * variables. Set alongside `tenantDb`; null whenever there is no reservation
+   * to return.
+   *
+   * Kept as its own field rather than reaching into `tenantDb.session.client`
+   * the way cleanup used to: that reached for `.end()`, which on a pooled
+   * connection would close the underlying socket instead of releasing it.
+   */
+  releaseTenantDb: (() => Promise<void>) | null;
 }
 
 export const requestContextStore = new AsyncLocalStorage<RequestContext>();
@@ -75,6 +85,7 @@ const createEmptyContext = (): RequestContext => ({
   actorName: null,
   rawUserDEK: null,
   tenantDb: null,
+  releaseTenantDb: null,
 });
 
 /**
@@ -113,7 +124,18 @@ export function requestContextMiddleware(req: Request, res: Response, next: Next
     // request id lands on it before any handler runs. That is the join between
     // a log line and a trace: both carry the same id, from the same place.
     annotateSpanFromContext(context);
+    /*
+      Both events, not just "finish".
+
+      "finish" fires when the response is fully written. It does NOT fire when
+      the client hangs up mid-response, when the socket errors, or when the
+      request is aborted — and every one of those used to leak the request's
+      database connection permanently. "close" fires in all of those cases and
+      also after a normal finish, which is why cleanupTenantContext is
+      idempotent.
+    */
     res.on("finish", cleanupTenantContext);
+    res.on("close", cleanupTenantContext);
     next();
   });
 }
@@ -244,24 +266,32 @@ export async function initializeTenantContext(): Promise<void> {
 
   // Dynamic import to avoid circular dependency
   const { createTenantDb } = await import("../db/client");
-  store.tenantDb = await createTenantDb(store.organizationId, store.userId);
+  const tenant = await createTenantDb(store.organizationId, store.userId);
+  store.tenantDb = tenant.db;
+  store.releaseTenantDb = tenant.release;
 }
 
 /**
- * Cleans up the tenant-scoped connection when the request completes.
+ * Returns the tenant-scoped connection to the pool when the request ends.
+ *
+ * Bound to both `finish` and `close` (see requestContextMiddleware). Idempotent
+ * because both can fire for the same request, and because `release()` itself
+ * guards against a second call.
  */
 async function cleanupTenantContext(): Promise<void> {
   const store = requestContextStore.getStore();
-  if (store?.tenantDb) {
-    try {
-      // drizzle-orm postgres-js sessions have a .client property
-      const client = store.tenantDb.session?.client;
-      if (client && typeof client.end === "function") {
-        await client.end();
-      }
-    } catch {
-      // Connection cleanup is best-effort
-    }
-    store.tenantDb = null;
+  if (!store?.releaseTenantDb) return;
+
+  const release = store.releaseTenantDb;
+  // Cleared first, so a second event finds nothing to do even if the release
+  // below is still in flight.
+  store.releaseTenantDb = null;
+  store.tenantDb = null;
+
+  try {
+    await release();
+  } catch {
+    // Best effort. A connection that cannot be reset is closed rather than
+    // returned to the pool, which release() already handles.
   }
 }

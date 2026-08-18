@@ -132,6 +132,9 @@ describe("the log bridge", () => {
   });
 
   it("emits a record with no trace context when there was no span", () => {
+    // trace_id/span_id/trace_flags are named only to omit them from the
+    // rest spread — that omission IS the fixture. ignoreRestSiblings in the
+    // eslint config keeps them from reading as dead bindings.
     const { trace_id, span_id, trace_flags, ...untraced } = RECORD;
     const [record] = bridge(untraced);
 

@@ -7,7 +7,7 @@ import { tagModule } from "../../../src/middleware/module-context";
 import { captureLogs, type LogCapture } from "./capture";
 
 /**
- * Access logging (plan-02 step 9).
+ * Access logging.
  *
  * Assertions are against the records the real drivers emit, not against a mock
  * of the logging API — so redaction and the field envelope are covered by the

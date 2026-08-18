@@ -1,5 +1,5 @@
 import { NextFunction, Request, RequestHandler, Response } from "express";
-import { LogEvent, isLogLevelEnabled, logDebug } from "../lib/logging/log";
+import { isLogLevelEnabled, logDebug } from "../lib/logging/log";
 import { getRequestContext } from "../middleware/request-context";
 import { routePattern, safePath } from "./request-info";
 
@@ -36,14 +36,14 @@ const asyncWrap = (callback: RequestHandler, name?: string) => {
     const trace = isLogLevelEnabled("debug");
 
     if (trace) {
-      logDebug(LogEvent.HTTP_HANDLER_STARTED, where(req, name));
+      logDebug("http.handler_started", where(req, name));
     }
 
     try {
       await callback(req, res, next);
 
       if (trace) {
-        logDebug(LogEvent.HTTP_HANDLER_COMPLETED, where(req, name));
+        logDebug("http.handler_completed", where(req, name));
       }
     } catch (error: any) {
       // Not logged here. error.middleware logs every failed request exactly

@@ -11,7 +11,7 @@ import { auth } from "./auth";
 import { db } from "./db/client";
 import { env } from "./config/env";
 
-import { createModuleLogger, LogEvent } from "./lib/logging/log";
+import { createModuleLogger } from "./lib/logging/log";
 import { errorMiddleware } from "./middleware/error.middleware";
 import { tagModule } from "./middleware/module-context";
 import { notFoundMiddleware } from "./middleware/notFound.middleware";
@@ -193,7 +193,7 @@ export class App {
         await db.execute(sql`SELECT 1`);
         res.json({ status: "ok", database: "ok" });
       } catch (error) {
-        log.failure(LogEvent.DB_HEALTH_CHECK_FAILED, error);
+        log.failure("db.health_check_failed", error);
         res.status(503).json({ status: "degraded", database: "unreachable" });
       }
     });
@@ -249,7 +249,7 @@ export class App {
 
   public async testDbConnection() {
     await db.execute(sql`SELECT 1`);
-    log.info(LogEvent.DB_CONNECTED, undefined, "database connection verified");
+    log.info("db.connected", undefined, "database connection verified");
   }
 
   public async listen(): Promise<Server> {
@@ -257,7 +257,7 @@ export class App {
 
     return this.express.listen(this.port, () => {
       log.info(
-        LogEvent.APP_STARTED,
+        "app.started",
         { port: this.port },
         `app listening on port ${this.port}`,
       );

@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { LogEvent, isLogLevelEnabled, logAt } from "../lib/logging/log";
+import { isLogLevelEnabled, logAt } from "../lib/logging/log";
 import type { LogLevel } from "../lib/logging/types";
 import { getRequestContext } from "./request-context";
 import {
@@ -90,7 +90,7 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
 
     logAt(
       arrival,
-      LogEvent.HTTP_REQUEST_RECEIVED,
+      "http.request_received",
       {
         method: req.method,
         path: safePath(req),
@@ -128,7 +128,7 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
     // repeated here — two sources for one field is two chances to disagree.
     logAt(
       levelFor(res.statusCode),
-      LogEvent.HTTP_REQUEST,
+      "http.request",
       {
         method: req.method,
         path,
