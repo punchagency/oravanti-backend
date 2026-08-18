@@ -18,7 +18,7 @@ import { canChaseInvoice } from "./deliveries.service";
 import { agingOverDues } from "./dues";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
-import { money, num, proRateSplit, toMoney } from "./money";
+import { money, num, toMoney, trustFirstSplit } from "./money";
 import { onClient, onLead, partyEmail, partyName, partyPhone } from "./party";
 import { dueBy, firmToday } from "./status";
 import { recalculateInvoiceTotals } from "./totals";
@@ -39,6 +39,26 @@ export type RecordPaymentInput = {
    * constraint violation instead of the same money recorded twice.
    */
   provider?: string;
+  providerReference?: string;
+  /**
+   * One row per credited account, for provider payments.
+   *
+   * Confido emits one transaction per bank account it credits, each with its
+   * own id, so a payment touching both accounts arrives as two events. Given
+   * legs, this writes one single-sided row each rather than one combined row:
+   * `sum(amount)` stays equal to the money received, which is the invariant
+   * `invoices.amount_paid` folds on, and each row can carry its own
+   * `providerReference` so the replay guard still works per transaction.
+   *
+   * Mutually exclusive with `amountOperating`/`amountTrust`.
+   */
+  legs?: PaymentLeg[];
+};
+
+export type PaymentLeg = {
+  account: "operating" | "trust_iolta";
+  amount: number;
+  /** The provider's id for THIS leg — one transaction, one reference. */
   providerReference?: string;
 };
 
@@ -95,7 +115,7 @@ export const recordPayment = async (
         operating: toMoney(input.amountOperating ?? 0),
         trust: toMoney(input.amountTrust ?? 0),
       }
-    : proRateSplit(input.amount, operatingOutstanding, trustOutstanding);
+    : trustFirstSplit(input.amount, operatingOutstanding, trustOutstanding);
 
   if (explicit) {
     const sum = toMoney(split.operating + split.trust);
@@ -106,25 +126,67 @@ export const recordPayment = async (
     }
   }
 
+  // What actually lands in each account. With provider legs that is the legs
+  // themselves, not the fallback split — checking the wrong one would gate
+  // trust access on a number this payment never uses.
+  const effective = input.legs?.length
+    ? {
+        operating: toMoney(
+          input.legs
+            .filter((l) => l.account === "operating")
+            .reduce((sum, l) => sum + l.amount, 0),
+        ),
+        trust: toMoney(
+          input.legs
+            .filter((l) => l.account === "trust_iolta")
+            .reduce((sum, l) => sum + l.amount, 0),
+        ),
+      }
+    : split;
+
   // Touching trust money is a write, so it needs full access — not merely the
-  // read grant that lets someone see the figures.
-  if (split.trust > 0) requireTrustWrite(access);
+  // read grant that lets someone see the figures. Asked once for the whole
+  // payment, not per leg.
+  if (effective.trust > 0) requireTrustWrite(access);
+
+  // One row per credited account when the provider gave us legs, one combined
+  // row otherwise. A zero leg produces NO row: `invoice_payments_amount_positive`
+  // rejects a 0.00 amount, and a row for money that did not move would be a lie
+  // anyway.
+  const rows = (input.legs ?? [])
+    .filter((leg) => toMoney(leg.amount) > 0)
+    .map((leg) => ({
+      amount: money(leg.amount),
+      amountOperating: money(leg.account === "operating" ? leg.amount : 0),
+      amountTrust: money(leg.account === "trust_iolta" ? leg.amount : 0),
+      providerReference: leg.providerReference ?? input.providerReference ?? null,
+    }));
+
+  const toInsert = rows.length
+    ? rows
+    : [
+        {
+          amount: money(input.amount),
+          amountOperating: money(split.operating),
+          amountTrust: money(split.trust),
+          providerReference: input.providerReference ?? null,
+        },
+      ];
 
   return withTransaction(db, async () => {
-    await db.insert(invoicePayments).values({
-      organizationId,
-      invoiceId,
-      amount: money(input.amount),
-      amountOperating: money(split.operating),
-      amountTrust: money(split.trust),
-      paymentDate: input.paymentDate,
-      method: input.method,
-      reference: input.reference ?? null,
-      notes: input.notes ?? null,
-      provider: input.provider ?? null,
-      providerReference: input.providerReference ?? null,
-      recordedById: actorStaffId,
-    });
+    for (const row of toInsert) {
+      await db.insert(invoicePayments).values({
+        organizationId,
+        invoiceId,
+        ...row,
+        paymentDate: input.paymentDate,
+        method: input.method,
+        reference: input.reference ?? null,
+        notes: input.notes ?? null,
+        provider: input.provider ?? null,
+        recordedById: actorStaffId,
+      });
+    }
 
     const totals = await recalculateInvoiceTotals(organizationId, invoiceId);
     const fullySettled = totals.status === "paid";
@@ -143,9 +205,13 @@ export const recordPayment = async (
       clientId: invoice.clientId,
       actorId: actorStaffId,
       metadata: {
-        amountOperating: split.operating,
-        amountTrust: split.trust,
-        splitSource: explicit ? "explicit" : "pro_rata",
+        amountOperating: effective.operating,
+        amountTrust: effective.trust,
+        splitSource: input.legs?.length
+          ? "provider_legs"
+          : explicit
+            ? "explicit"
+            : "trust_first",
       },
     });
 

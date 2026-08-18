@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { env } from "../../config/env";
-import { db } from "../../db/client";
+import { db, systemDb } from "../../db/client";
+import { invoicePayments } from "../../db/schema/invoice-payments";
 import { invoices } from "../../db/schema/invoices";
 import { createModuleLogger } from "../../lib/logging/log";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
@@ -9,7 +10,9 @@ import { onClient, onLead, partyEmail, partyName } from "./party";
 import { clients } from "../../db/schema/clients";
 import { leads } from "../../db/schema/leads";
 import { num } from "./money";
-import { getPaymentProvider, isPaymentProviderConfigured } from "./payment.provider";
+import { paymentsEnabledFor } from "./confido/payments-enabled";
+import { getConfidoClient } from "./confido/confido.client";
+import { confidoCredentialFor } from "../settings/payments/payment-settings.service";
 
 const log = createModuleLogger("payment-links.service");
 
@@ -78,8 +81,14 @@ export type PayableInvoice = {
   balanceDue: number;
   dueDate: string;
   status: string;
-  /** False while no provider is configured — the page says so rather than lying. */
+  /** False while this firm cannot take money — the page says so rather than lying. */
   paymentsEnabled: boolean;
+  /**
+   * Our uuid for whoever is billed — the client, or the lead if no client row
+   * exists yet. Becomes the Confido payer's `externalId`, which is what lets us
+   * map without a table of our own.
+   */
+  payerExternalId: string;
 };
 
 /**
@@ -105,6 +114,8 @@ export const invoiceByPaymentToken = async (
       expiresAt: invoices.paymentLinkExpiresAt,
       payerName: partyName,
       payerEmail: partyEmail,
+      clientId: invoices.clientId,
+      leadId: invoices.leadId,
     })
     .from(invoices)
     .leftJoin(clients, onClient)
@@ -141,7 +152,8 @@ export const invoiceByPaymentToken = async (
     balanceDue: num(row.balanceDue),
     dueDate: row.dueDate,
     status: row.status,
-    paymentsEnabled: isPaymentProviderConfigured(),
+    paymentsEnabled: await paymentsEnabledFor(row.organizationId),
+    payerExternalId: row.clientId ?? row.leadId!,
   };
 };
 
@@ -157,28 +169,136 @@ export const invoiceByPaymentToken = async (
 export const startCheckout = async (token: string) => {
   const invoice = await invoiceByPaymentToken(token);
 
-  if (!isPaymentProviderConfigured()) {
-    log.warn("payment_link.sent", { reason: "no provider" });
+  if (!(await paymentsEnabledFor(invoice.organizationId))) {
     throw new BadRequestError(
       "Online payment is not available yet. Please contact the firm to arrange payment.",
     );
   }
 
-  const provider = getPaymentProvider();
-  const session = await provider.createCheckoutSession({
-    invoiceId: invoice.invoiceId,
-    organizationId: invoice.organizationId,
-    invoiceNumber: invoice.invoiceNumber,
-    // Minor units: handing a float to a payment API is how rounding disputes
-    // start.
-    amountCents: Math.round(invoice.balanceDue * 100),
-    currency: "usd",
-    description: `Invoice ${invoice.invoiceNumber}`,
-    payerEmail: invoice.payerEmail,
-    returnUrl: paymentLinkFor(token),
+  const link = await ensurePaymentLink(invoice);
+  return { url: link.url, reference: link.id };
+};
+
+/**
+ * The Confido payment link for an invoice — found, or created once.
+ *
+ * Created lazily rather than at send time, so an invoice nobody opens costs
+ * nothing at Confido and a Confido outage cannot block sending an invoice.
+ *
+ * Idempotency is `externalId` = our invoice id, which is why the lookup comes
+ * first. `addPaymentLink` has no idempotency key and Confido has no delete
+ * endpoint, so a second create against the same invoice is permanent — the
+ * lookup is not an optimisation, it is the guard.
+ */
+const ensurePaymentLink = async (invoice: PayableInvoice) => {
+  const { credential, firmId } = await confidoCredentialFor(
+    invoice.organizationId,
+  );
+  const client = getConfidoClient();
+
+  const existing = await client.findPaymentLinkByExternalId(
+    credential,
+    invoice.invoiceId,
+  );
+  if (existing) return existing;
+
+  const payer = await ensurePayer(credential, firmId, invoice);
+  const outstanding = await outstandingBySide(
+    invoice.organizationId,
+    invoice.invoiceId,
+  );
+
+  return client.addPaymentLink(credential, {
+    clientId: payer.id,
+    externalId: invoice.invoiceId,
+    // Cents, and only the sides that are actually owed — a zero leg would ask
+    // Confido to route money to an account this invoice has no claim on.
+    ...(outstanding.trust > 0
+      ? { trust: Math.round(outstanding.trust * 100) }
+      : {}),
+    ...(outstanding.operating > 0
+      ? { operating: Math.round(outstanding.operating * 100) }
+      : {}),
+    memo: `Invoice ${invoice.invoiceNumber}`,
+    // Confido emails the receipt. Ours would be a second one saying the same
+    // thing, and theirs carries the card details we do not hold.
+    sendReceipts: true,
   });
+};
 
-  log.action("payment_link.sent", { invoiceId: invoice.invoiceId });
+/**
+ * The Confido payer standing for whoever this invoice bills.
+ *
+ * An invoice bills a client or a lead, never both — `invoices_one_billed_party`
+ * enforces it — and consultation invoices are raised against a lead because no
+ * client row exists that early. Confido needs a Client either way, so our uuid
+ * for whichever party it is becomes the `externalId`.
+ *
+ * No mapping table: the lookup is the mapping, and it survives `openCase`
+ * repointing the invoice from lead to client (the lead-keyed payer simply stops
+ * being referenced).
+ */
+const ensurePayer = async (
+  firmToken: string,
+  firmId: string,
+  invoice: PayableInvoice,
+) => {
+  const client = getConfidoClient();
+  const existing = await client.findClientByExternalId(
+    firmToken,
+    invoice.payerExternalId,
+  );
+  if (existing) return existing;
 
-  return { url: session.url, reference: session.reference };
+  return client.createClient(firmToken, {
+    firmId,
+    clientName: invoice.payerName,
+    externalId: invoice.payerExternalId,
+    ...(invoice.payerEmail ? { email: invoice.payerEmail } : {}),
+  });
+};
+
+/**
+ * What each side of the invoice still owes.
+ *
+ * Drives the link's trust/operating split, so the client is asked for the right
+ * amount against the right account. Reads through `systemDb` with an explicit
+ * organization predicate: this runs on the public payment route, which has no
+ * request context and therefore no RLS.
+ */
+const outstandingBySide = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<{ operating: number; trust: number }> => {
+  const [totals] = await systemDb
+    .select({
+      operating: invoices.subtotalOperating,
+      trust: invoices.subtotalTrust,
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.organizationId, organizationId),
+        eq(invoices.id, invoiceId),
+      ),
+    )
+    .limit(1);
+
+  const [paid] = await systemDb
+    .select({
+      operating: sql<string>`coalesce(sum(${invoicePayments.amountOperating}), 0)`,
+      trust: sql<string>`coalesce(sum(${invoicePayments.amountTrust}), 0)`,
+    })
+    .from(invoicePayments)
+    .where(
+      and(
+        eq(invoicePayments.organizationId, organizationId),
+        eq(invoicePayments.invoiceId, invoiceId),
+      ),
+    );
+
+  return {
+    operating: Math.max(num(totals?.operating) - num(paid?.operating), 0),
+    trust: Math.max(num(totals?.trust) - num(paid?.trust), 0),
+  };
 };

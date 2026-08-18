@@ -10,6 +10,8 @@ export const QUESTIONNAIRE_REMINDERS_QUEUE = "questionnaire-reminders";
 export const AI_SCAN_QUEUE = "ai-scan";
 /** Python worker → backend: scan results (consumed in a later Phase 3 task). */
 export const AI_SCAN_RESULTS_QUEUE = "ai-scan-results";
+/** Confido webhook deliveries, handled off the HTTP request. */
+export const CONFIDO_WEBHOOKS_QUEUE = "confido-webhooks";
 
 // ─── Job payloads ─────────────────────────────────────────────────────────────
 
@@ -38,6 +40,20 @@ export const withOrigin = <T extends object>(payload: T): T & JobOrigin => ({
 export type QuestionnaireReminderJob = JobOrigin & {
   /** questionnaire_sends.id whose response is awaited */
   sendId: string;
+};
+
+export type ConfidoWebhookJob = {
+  /** Confido's event id, already claimed in payment_webhook_events. */
+  eventId: string;
+  eventType: string;
+  /** Confido's Firm id — the only tenant identifier the payload carries. */
+  firmId: string;
+  /**
+   * Present on `transaction.*` events. Their payloads carry only an id, so the
+   * worker queries the transaction back rather than trusting the delivery — which
+   * is also what makes out-of-order delivery converge on the truth.
+   */
+  transactionId?: string;
 };
 
 // ─── Producers ────────────────────────────────────────────────────────────────
@@ -111,4 +127,29 @@ export const enqueueAiScanJob = async (
 export const removeAiScanJob = async (jobId: string) => {
   const job = await aiScanQueue.getJob(jobId);
   if (job) await job.remove();
+};
+
+export const confidoWebhooksQueue = new Queue<ConfidoWebhookJob, void, string>(
+  CONFIDO_WEBHOOKS_QUEUE,
+  { connection: redisConnection, defaultJobOptions },
+);
+
+/**
+ * Hand a verified Confido webhook to the worker.
+ *
+ * Confido marks a delivery failed if we do not answer within five seconds, and
+ * disables the URL entirely after repeated failures over 24 hours — recoverable
+ * only from their portal. So the HTTP route verifies, claims the event and
+ * enqueues; everything that touches the network happens here.
+ *
+ * The job id is the event id: BullMQ-level dedupe on top of the database claim.
+ * Safe to make deterministic because, unlike a scan, there is never a legitimate
+ * second job for the same event.
+ */
+export const enqueueConfidoWebhook = async (
+  job: ConfidoWebhookJob,
+): Promise<void> => {
+  await confidoWebhooksQueue.add("event", job, {
+    jobId: `confido-${job.eventId}`,
+  });
 };

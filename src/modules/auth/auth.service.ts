@@ -1,5 +1,5 @@
 import { fromNodeHeaders } from "better-auth/node";
-import { createCipheriv, createHash, randomBytes, randomUUID } from "crypto";
+import { randomUUID } from "crypto";
 import { inArray } from "drizzle-orm";
 import { Request } from "express";
 import { auth } from "../../auth";
@@ -31,38 +31,12 @@ import {
   ExternalServiceError,
   ValidationError,
 } from "../../utils/error/app-error";
+import { encryptPaymentValue } from "../../utils/payment-crypto";
 import { storageService } from "../../utils/storage/storage.service";
 import { AccountType } from "./enums";
 
 
 const normalizeEmail = (email: string) => email.toLowerCase().trim();
-
-const getPaymentEncryptionKey = () => {
-  const secret =
-    env.CONTRACTOR_PAYMENT_ENCRYPTION_KEY || env.PAYMENT_ENCRYPTION_KEY;
-
-  if (!secret) {
-    throw new ExternalServiceError("Payment encryption key is not configured");
-  }
-
-  return createHash("sha256").update(secret).digest();
-};
-
-const encryptPaymentValue = (value: string) => {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", getPaymentEncryptionKey(), iv);
-  const encrypted = Buffer.concat([
-    cipher.update(value.trim(), "utf8"),
-    cipher.final(),
-  ]);
-  const authTag = cipher.getAuthTag();
-
-  return [
-    iv.toString("hex"),
-    authTag.toString("hex"),
-    encrypted.toString("hex"),
-  ].join(":");
-};
 
 const parseOptionalDate = (value?: string) => {
   if (!value) return undefined;

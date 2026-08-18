@@ -18,8 +18,8 @@
  * org it creates.
  */
 import { randomUUID } from "crypto";
-import { and, eq, inArray, like } from "drizzle-orm";
-import { closeDb, db, systemDb } from "../../src/db/client";
+import { and, eq, inArray, isNull, like } from "drizzle-orm";
+import { closeDb, systemDb } from "../../src/db/client";
 import { organization, team, user } from "../../src/db/schema/auth-schema";
 import { billingRates } from "../../src/db/schema/billing-rates";
 import { cases } from "../../src/db/schema/cases";
@@ -48,18 +48,14 @@ import { allocate, generateSchedule } from "../../src/modules/finance/instalment
 import * as instalmentsService from "../../src/modules/finance/instalments.service";
 import * as invoicesService from "../../src/modules/finance/invoices.service";
 import { formatInvoiceNumber } from "../../src/modules/finance/invoice-number";
-import { num, proRateSplit, toMoney } from "../../src/modules/finance/money";
+import { num, trustFirstSplit, toMoney } from "../../src/modules/finance/money";
 import { firmToday } from "../../src/modules/finance/status";
 import * as paymentsService from "../../src/modules/finance/payments.service";
 import * as deliveriesService from "../../src/modules/finance/deliveries.service";
 import { invoiceDeliveries } from "../../src/db/schema/invoice-deliveries";
 import * as feeAgreementBilling from "../../src/modules/finance/fee-agreement-billing.service";
+import { paymentsEnabledFor } from "../../src/modules/finance/confido/payments-enabled";
 import * as paymentLinks from "../../src/modules/finance/payment-links.service";
-import * as paymentWebhooks from "../../src/modules/finance/payment-webhooks.service";
-import {
-  getPaymentProvider,
-  isPaymentProviderConfigured,
-} from "../../src/modules/finance/payment.provider";
 import { paymentWebhookEvents } from "../../src/db/schema/payment-webhook-events";
 import * as reportsService from "../../src/modules/finance/reports.service";
 import * as timeBilling from "../../src/modules/finance/time-billing.service";
@@ -231,14 +227,18 @@ const main = async () => {
         "void",
       );
 
-      const split = proRateSplit(600, 500, 1500);
-      checkEqual("pro-rata trust share", split.trust, 450);
-      checkEqual("pro-rata operating share", split.operating, 150);
+      const split = trustFirstSplit(600, 500, 1500);
+      checkEqual("trust is filled first", split.trust, 600);
+      checkEqual("operating gets nothing until trust is covered", split.operating, 0);
       checkEqual(
-        "pro-rata split sums exactly",
+        "the split sums exactly",
         toMoney(split.operating + split.trust),
         600,
       );
+      // The case that proves it is trust-FIRST rather than trust-only.
+      const spill = trustFirstSplit(1000, 900, 400);
+      checkEqual("it spills into operating once trust is covered", spill.operating, 600);
+      checkEqual("with trust capped at what it owed", spill.trust, 400);
 
       // ── Finance role resolution ───────────────────────────────────────────
       section("finance role resolution");
@@ -692,18 +692,31 @@ const main = async () => {
         "bank_transfer",
       );
 
-      const [storedSplit] = await systemDb
+      // Ordered explicitly: once a provider payment writes one row per credited
+      // leg there can be several rows here, and an unordered select would pick
+      // an arbitrary one.
+      const storedRows = await systemDb
         .select({
           operating: invoicePayments.amountOperating,
           trust: invoicePayments.amountTrust,
+          amount: invoicePayments.amount,
         })
         .from(invoicePayments)
-        .where(eq(invoicePayments.invoiceId, invoice.id));
-      // 940 apportioned over 500 operating / 1440 trust outstanding.
+        .where(eq(invoicePayments.invoiceId, invoice.id))
+        .orderBy(invoicePayments.createdAt);
+
+      checkEqual("one row per recorded payment so far", storedRows.length, 1);
+      const storedSplit = storedRows[0];
+      // 940 against 1440 owed to trust: trust-first takes all of it.
       checkEqual(
         "trust share is stored, not inferred",
         Number(storedSplit!.trust),
-        toMoney((940 * 1440) / 1940),
+        940,
+      );
+      checkEqual(
+        "and operating gets nothing while trust is still owed",
+        Number(storedSplit!.operating),
+        0,
       );
       checkEqual(
         "the split sums to the payment",
@@ -2194,47 +2207,39 @@ const main = async () => {
       );
 
       // ── Payment provider seam ─────────────────────────────────────────────
-      section("payment provider seam");
+      section("payment readiness");
 
-      // Nothing is configured in any environment yet, and every path that could
-      // take money has to say so rather than pretend.
+      // Readiness is per ORGANIZATION now, not per deployment. This org has no
+      // confido_firms row, so it cannot take money — and every path that could
+      // has to say so rather than pretend.
       checkEqual(
-        "no provider is configured",
-        isPaymentProviderConfigured(),
-        false,
-      );
-      // The e-signature stub returns true here; this one must not. It guards an
-      // unauthenticated endpoint that writes to the ledger, so "I cannot verify
-      // this" has to mean refuse, not accept.
-      checkEqual(
-        "the stub verifies nothing",
-        getPaymentProvider().verifyWebhook(Buffer.from("{}"), "sig"),
+        "an org with no Confido account cannot take payments",
+        await paymentsEnabledFor(orgId),
         false,
       );
 
-      let unconfiguredCheckoutRefused = false;
+      // The refusal must come from readiness, not from an unrelated failure. A
+      // check that passes because the token was bogus proves nothing, which is
+      // what the previous version of this section did once a provider existed.
+      const readyInvoiceToken = await paymentLinks.mintPaymentLink(
+        orgId,
+        second.id,
+      );
+      let unreadyCheckoutRefused = false;
+      let refusalMessage = "";
       try {
-        await paymentLinks.startCheckout("whatever");
-      } catch {
-        unconfiguredCheckoutRefused = true;
+        await paymentLinks.startCheckout(readyInvoiceToken);
+      } catch (err) {
+        unreadyCheckoutRefused = true;
+        refusalMessage = err instanceof Error ? err.message : "";
       }
+      check("checkout is refused for an unready firm", unreadyCheckoutRefused);
       check(
-        "checkout is refused while no provider exists",
-        unconfiguredCheckoutRefused,
+        "and refused for the right reason",
+        refusalMessage.includes("not available yet"),
+        refusalMessage,
       );
 
-      let unconfiguredWebhookRefused = false;
-      try {
-        await paymentWebhooks.handlePaymentWebhook(Buffer.from("{}"), "sig");
-      } catch {
-        unconfiguredWebhookRefused = true;
-      }
-      check(
-        "and so is the webhook",
-        unconfiguredWebhookRefused,
-      );
-
-      // ── Payment links ─────────────────────────────────────────────────────
       section("payment links");
 
       const linkToken = await paymentLinks.mintPaymentLink(orgId, second.id);
@@ -2583,25 +2588,21 @@ const main = async () => {
         99,
       );
 
-      // ── RLS: the read admits NULL, the write does not ─────────────────────
-      let shippedWriteRefused = false;
-      try {
-        // `db` is the TENANT connection inside withOrgContext. A firm minting a
-        // row every other firm would then see is exactly what the withCheck
-        // clause exists to stop.
-        await db.insert(invoiceLinePresets).values({
-          organizationId: null,
-          name: "Check — smuggled shipped row",
-          account: "operating",
-          defaultRate: "1.0000",
-        });
-      } catch {
-        shippedWriteRefused = true;
-      }
-      check(
-        "a firm cannot author a shipped preset",
-        shippedWriteRefused,
-      );
+      // ── RLS on the shared catalog ─────────────────────────────────────────
+      //
+      // Asserted in `07-rls`, not here. That a firm cannot author a shipped
+      // (NULL-organization) preset is an RLS property, and RLS is INERT on the
+      // connection this check uses: `oravanti_admin` owns the table, so
+      // policies do not apply to it and the write simply succeeds. `07-rls`
+      // connects as `oravanti_rls_probe` — non-superuser, non-owner, no
+      // BYPASSRLS — which is the only way to demonstrate the policy at all.
+      //
+      // This check previously tried to assert it through `db` and therefore
+      // failed on any clean database, "passing" only when a leftover row from
+      // an earlier failed run tripped the unique index instead. It also leaked
+      // that row: inserted without `.returning()`, its id never reached
+      // `presetIdsToClean`, so every failure left a NULL-organization preset —
+      // a shipped catalog entry visible to every firm — behind.
 
       // ── Provenance on the line ────────────────────────────────────────────
       const presetInvoice = await invoicesService.create(orgId, staffBId, FULL, {
@@ -2702,6 +2703,18 @@ const main = async () => {
         .delete(invoiceLinePresets)
         .where(inArray(invoiceLinePresets.id, presetIdsToClean));
     }
+    // Belt and braces for the shared catalog: anything NULL-organization this
+    // check named, whether or not its id was captured. A leaked shipped preset
+    // is visible to every firm, so it is worth sweeping by name rather than
+    // trusting that every insert remembered to return its id.
+    await systemDb
+      .delete(invoiceLinePresets)
+      .where(
+        and(
+          isNull(invoiceLinePresets.organizationId),
+          like(invoiceLinePresets.name, "Check %"),
+        ),
+      );
     // Not org-scoped by design, so cleaned by the ids this check invents.
     await systemDb
       .delete(paymentWebhookEvents)

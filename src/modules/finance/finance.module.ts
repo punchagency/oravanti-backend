@@ -6,7 +6,6 @@ import { TimeBillingController } from "./time-billing.controller";
 import { TimeBillingRouter } from "./time-billing.routes";
 import {
   PaymentPublicRouter,
-  PaymentWebhookRouter,
 } from "./payments-public.routes";
 
 /**
@@ -74,13 +73,3 @@ export class PaymentPublicModule {
  * Provider webhooks. Mounted at a path app.ts gives `express.raw`, because the
  * signature covers the exact bytes and a parsed body cannot reproduce them.
  */
-export class PaymentWebhookModule {
-  public router: import("express").Router;
-  public path: string;
-
-  constructor() {
-    const router = new PaymentWebhookRouter();
-    this.router = router.router;
-    this.path = router.path;
-  }
-}

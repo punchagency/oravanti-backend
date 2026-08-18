@@ -50,14 +50,24 @@ const PUBLICLY_REACHABLE: Record<string, string> = {
   auth: "sign-in, sign-up and password reset — there is no session yet",
   "payments-public":
     "provider webhooks and token-authenticated payment pages: authenticated by signature or URL token, not by a session",
+  "confido-webhooks":
+    "Confido posts server-to-server with no session to present. The HMAC over the raw body is the authentication: it is verified before the payload is parsed, an unverifiable signature is a 401, and an unconfigured secret refuses outright rather than accepting unsigned events",
 };
 
 /**
  * Routes per module that have no permission gate at all.
  *
- * Every line is an open authorization gap. Lower a number when you gate some of
- * a module's routes; delete the line when you gate all of them. Adding a line,
- * or raising a number, needs a reason.
+ * Most lines are an open authorization gap. Lower a number when you gate some
+ * of a module's routes; delete the line when you gate all of them. Adding a
+ * line, or raising a number, needs a reason.
+ *
+ * The exception is the modules also listed in PUBLICLY_REACHABLE — `auth`,
+ * `payments-public`, `confido-webhooks`. A permission check needs a session to
+ * check permissions *of*, and these are reached without one, so their routes
+ * count as ungated here while being authenticated by other means. They are
+ * listed rather than excluded so the census stays a count of what the resolver
+ * actually sees, and so removing a module from PUBLICLY_REACHABLE cannot
+ * quietly hide its routes.
  */
 const UNGATED_BUDGET: Record<string, number> = {
   auth: 17,
@@ -76,6 +86,7 @@ const UNGATED_BUDGET: Record<string, number> = {
   "financial-access": 2,
   "firm-info": 2,
   "revenue-analytics": 2,
+  "confido-webhooks": 1,
   onboarding: 1,
   "permission-audit-log": 1,
 };

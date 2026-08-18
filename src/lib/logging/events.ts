@@ -375,6 +375,14 @@ export const LogEvent = {
   PAYMENT_WEBHOOK_PROCESSED: "payment_webhook.processed",
   PAYMENT_WEBHOOK_SIGNATURE_INVALID: "payment_webhook.signature_invalid",
   PAYMENT_WEBHOOK_DUPLICATE_SKIPPED: "payment_webhook.duplicate_skipped",
+  /**
+   * A webhook arrived, was genuine, and was deliberately not turned into a
+   * payment. One event with a `reason` rather than three near-identical ones:
+   * the transaction was not a client payment, carried no invoice reference, or
+   * named a bank-account category we cannot assign to trust or operating.
+   * Every one of them means money moved that this system did not record.
+   */
+  PAYMENT_WEBHOOK_TRANSACTION_SKIPPED: "payment_webhook.transaction_skipped",
   PAYMENT_LINK_CREATED: "payment_link.created",
   PAYMENT_LINK_SENT: "payment_link.sent",
   PAYMENT_LINK_EXPIRED: "payment_link.expired",
@@ -383,6 +391,23 @@ export const LogEvent = {
   FEE_AGREEMENT_GENERATED: "fee_agreement.generated",
   FEE_AGREEMENT_SENT: "fee_agreement.sent",
   CONSULTATION_BILLING_GENERATED: "consultation_billing.generated",
+
+  // ── Payment provider configuration ────────────────────────────────────────
+  // Setting a firm up to take money. Each of these leaves the firm working but
+  // configured differently from what was asked, so none of them can be silent.
+  PAYMENT_SETTINGS_BRANDING_FAILED: "payment_settings.branding_failed",
+  PAYMENT_SETTINGS_LOGO_UPLOAD_FAILED: "payment_settings.logo_upload_failed",
+  PAYMENT_SETTINGS_PORTAL_INVITE_FAILED: "payment_settings.portal_invite_failed",
+  /**
+   * The firm's fee debit was pointed at a trust (IOLTA) account. Repointed at
+   * operating, because taking processor fees out of client money is the error
+   * this integration exists to avoid.
+   */
+  PAYMENT_SETTINGS_FEE_ACCOUNT_REPOINTED: "payment_settings.fee_account_repointed",
+  PAYMENT_SETTINGS_FEE_ACCOUNT_UPDATE_FAILED:
+    "payment_settings.fee_account_update_failed",
+  PAYMENT_SETTINGS_BANK_ACCOUNTS_UNAVAILABLE:
+    "payment_settings.bank_accounts_unavailable",
   CONSULTATION_BILLING_SENT: "consultation_billing.sent",
   BILLING_RATE_CREATED: "billing_rate.created",
   BILLING_RATE_UPDATED: "billing_rate.updated",

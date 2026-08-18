@@ -22,14 +22,26 @@ const swcTransform = [
       target: "es2022",
       parser: { syntax: "typescript", decorators: false },
       /*
-        Hoists jest.mock() above the imports in the same file, which is what
-        makes it intercept anything.
+        Hoists jest.mock() above the imports in the same file. @swc/jest sets
+        this itself; it is repeated here so the requirement is visible.
 
-        Without it, swc's commonjs transform emits the require() calls first
-        and the jest.mock() registration runs afterwards — too late, so the
-        test silently exercises the real module. Suites got away with it only
-        by using `await import()` inside the test body. ts-jest did this via
-        babel-plugin-jest-hoist; nothing carried it over with the swc switch.
+        ⚠️ It only recognises a BARE `jest.mock(...)`. Import `jest` from
+        @jest/globals and the call compiles to `_globals.jest.mock(...)`, which
+        swc leaves exactly where it stands — after the require() it was meant
+        to intercept. The mock registers too late, jest serves the real module,
+        and the suite passes while testing production code. It fails silently:
+        there is no warning, and assertions that happen to hold against the
+        real module still go green.
+
+        So, in a suite that calls jest.mock:
+          - use the bare `jest` global (typed by @types/jest), NOT the import; and
+          - do not dereference an outer `const` inside the factory, because
+            hoisting puts the factory above that declaration — use a getter.
+        Or sidestep both by loading the module under test with `await import()`
+        inside the test body, which is what several suites here do.
+
+        ts-jest handled all of this via babel-plugin-jest-hoist; nothing carried
+        it over with the swc switch.
       */
       transform: { hidden: { jest: true } },
     },
