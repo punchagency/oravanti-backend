@@ -12,6 +12,7 @@ import {
   refreshStatus,
 } from "../../settings/payments/payment-settings.service";
 import { getConfidoClient, isConfidoConfigured } from "./confido.client";
+import { syncStatements } from "./statements.service";
 import type { ConfidoWebhookEvent } from "./confido.types";
 
 /**
@@ -43,6 +44,10 @@ const HANDLED_TYPES = new Set([
   "transaction.created",
   "transaction.funds_in_transit",
   "transaction.deposited",
+  // Reconciliation: the monthly fee debit never reaches invoice_payments, so
+  // the statement is the only thing that explains the operating balance.
+  "statement.created",
+  "statement.updated",
 ]);
 
 /**
@@ -187,6 +192,8 @@ export const processConfidoWebhook = async (job: {
     await refreshStatus(organizationId);
   } else if (job.eventType.startsWith("transaction.") && job.transactionId) {
     await recordConfidoTransaction(organizationId, job.transactionId);
+  } else if (job.eventType.startsWith("statement.")) {
+    await syncStatements(organizationId);
   }
 
   await markProcessed(job.eventId);

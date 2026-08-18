@@ -5,6 +5,7 @@ import type {
   ConfidoBankAccount,
   ConfidoPayer,
   ConfidoPaymentLink,
+  ConfidoStatementRecord,
   ConfidoTransaction,
   ConfidoBrandingImageUpload,
   ConfidoBrandingInput,
@@ -455,6 +456,42 @@ export class ConfidoClient {
       { id },
     );
     return data.transaction;
+  }
+
+  /**
+   * Recent statements.
+   *
+   * There is no `statement(id:)` query, so a webhook carrying only a statement
+   * id has to fetch a window and match within it. `limit` is required by their
+   * schema. A statement older than the window is unreachable this way, which is
+   * why ingestion also runs on a lookback rather than webhooks alone.
+   */
+  async listStatements(
+    firmToken: string,
+    limit = 12,
+  ): Promise<ConfidoStatementRecord[]> {
+    const data = await this.gql<{
+      statements: { records: ConfidoStatementRecord[] };
+    }>(
+      firmToken,
+      `query Statements($limit: Int!) {
+        statements(limit: $limit, orderDir: desc) {
+          records {
+            id
+            month
+            bankAccounts {
+              bankAccountCategory bankAccountMask bankAccountNickname
+              totalPaymentVolume totalFees cardFees achFees surchargeFeesCollected
+            }
+            debits { amount fromBankAccountCategory fromBankAccountMask statementDescriptor }
+            additionalFees { amount description type }
+            additionalCredits { amount description type }
+          }
+        }
+      }`,
+      { limit },
+    );
+    return data.statements.records;
   }
 
   // ─── Webhooks ──────────────────────────────────────────────────────────────

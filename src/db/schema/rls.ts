@@ -47,13 +47,14 @@
 //
 // ─── Coverage ───────────────────────────────────────────────────────────────
 //
-// Currently covered tables (22):
+// Currently covered tables (24):
 //   cases, case_events, case_record_notes, clients,
 //   leads, lead_events, lead_notes,
 //   case_issues, case_issue_documents, case_issue_events, ai_scan_jobs,
 //   invoices, invoice_line_items, invoice_payments, invoice_instalments,
 //   invoice_followups, invoice_deliveries, invoice_line_presets,
-//   finance_events, billing_rates, time_entries, confido_firms
+//   finance_events, billing_rates, time_entries, confido_firms,
+//   confido_statements, confido_statement_debits
 //
 // One of these — invoice_line_presets — holds shared rows with a NULL
 // organization_id, so its read and write clauses are not the same expression.
@@ -95,6 +96,10 @@ import { invoiceLinePresets } from "./invoice-line-presets";
 import { invoiceNumberSequences } from "./invoice-number-sequences";
 import { invoiceInstalments } from "./invoice-instalments";
 import { confidoFirms } from "./confido-firms";
+import {
+  confidoStatementDebits,
+  confidoStatements,
+} from "./confido-statements";
 import { invoicePayments } from "./invoice-payments";
 import { invoices, invoiceLineItems } from "./invoices";
 import { leads, leadEvents, leadNotes } from "./leads";
@@ -762,3 +767,29 @@ export const rlsConfidoFirmsOrg = pgPolicy("rls_confido_firms_org", {
 // adding a scope would defeat the cache. Reaching a row requires already
 // knowing the checksum, which is only obtainable via a document the caller can
 // already see.
+
+/**
+ * confido_statements / confido_statement_debits — a firm's processing costs.
+ *
+ * Not client money, but commercially sensitive: volume, effective rate and what
+ * the firm pays to take payments. Scoped like everything else.
+ *
+ * Written only by the webhook worker, which runs outside RLS and therefore
+ * carries an explicit organization predicate resolved from confido_firm_id.
+ */
+export const rlsConfidoStatementsOrg = pgPolicy("rls_confido_statements_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(confidoStatements);
+
+export const rlsConfidoStatementDebitsOrg = pgPolicy(
+  "rls_confido_statement_debits_org",
+  {
+    as: "permissive",
+    for: "all",
+    using: sql`organization_id = ${currentOrgId}`,
+    withCheck: sql`organization_id = ${currentOrgId}`,
+  },
+).link(confidoStatementDebits);
