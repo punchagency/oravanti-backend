@@ -18,7 +18,7 @@
  * org it creates.
  */
 import { randomUUID } from "crypto";
-import { and, eq, inArray, like } from "drizzle-orm";
+import { and, eq, inArray, isNull, like } from "drizzle-orm";
 import { closeDb, db, systemDb } from "../../src/db/client";
 import { organization, team, user } from "../../src/db/schema/auth-schema";
 import { billingRates } from "../../src/db/schema/billing-rates";
@@ -2584,25 +2584,21 @@ const main = async () => {
         99,
       );
 
-      // ── RLS: the read admits NULL, the write does not ─────────────────────
-      let shippedWriteRefused = false;
-      try {
-        // `db` is the TENANT connection inside withOrgContext. A firm minting a
-        // row every other firm would then see is exactly what the withCheck
-        // clause exists to stop.
-        await db.insert(invoiceLinePresets).values({
-          organizationId: null,
-          name: "Check — smuggled shipped row",
-          account: "operating",
-          defaultRate: "1.0000",
-        });
-      } catch {
-        shippedWriteRefused = true;
-      }
-      check(
-        "a firm cannot author a shipped preset",
-        shippedWriteRefused,
-      );
+      // ── RLS on the shared catalog ─────────────────────────────────────────
+      //
+      // Asserted in `07-rls`, not here. That a firm cannot author a shipped
+      // (NULL-organization) preset is an RLS property, and RLS is INERT on the
+      // connection this check uses: `oravanti_admin` owns the table, so
+      // policies do not apply to it and the write simply succeeds. `07-rls`
+      // connects as `oravanti_rls_probe` — non-superuser, non-owner, no
+      // BYPASSRLS — which is the only way to demonstrate the policy at all.
+      //
+      // This check previously tried to assert it through `db` and therefore
+      // failed on any clean database, "passing" only when a leftover row from
+      // an earlier failed run tripped the unique index instead. It also leaked
+      // that row: inserted without `.returning()`, its id never reached
+      // `presetIdsToClean`, so every failure left a NULL-organization preset —
+      // a shipped catalog entry visible to every firm — behind.
 
       // ── Provenance on the line ────────────────────────────────────────────
       const presetInvoice = await invoicesService.create(orgId, staffBId, FULL, {
@@ -2703,6 +2699,18 @@ const main = async () => {
         .delete(invoiceLinePresets)
         .where(inArray(invoiceLinePresets.id, presetIdsToClean));
     }
+    // Belt and braces for the shared catalog: anything NULL-organization this
+    // check named, whether or not its id was captured. A leaked shipped preset
+    // is visible to every firm, so it is worth sweeping by name rather than
+    // trusting that every insert remembered to return its id.
+    await systemDb
+      .delete(invoiceLinePresets)
+      .where(
+        and(
+          isNull(invoiceLinePresets.organizationId),
+          like(invoiceLinePresets.name, "Check %"),
+        ),
+      );
     // Not org-scoped by design, so cleaned by the ids this check invents.
     await systemDb
       .delete(paymentWebhookEvents)
