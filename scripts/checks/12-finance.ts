@@ -53,6 +53,7 @@ import { formatInvoiceNumber } from "../../src/modules/finance/invoice-number";
 import { num, trustFirstSplit, toMoney } from "../../src/modules/finance/money";
 import { firmToday } from "../../src/modules/finance/status";
 import * as paymentsService from "../../src/modules/finance/payments.service";
+import * as refundsService from "../../src/modules/finance/refunds.service";
 import * as deliveriesService from "../../src/modules/finance/deliveries.service";
 import { invoiceDeliveries } from "../../src/db/schema/invoice-deliveries";
 import * as feeAgreementBilling from "../../src/modules/finance/fee-agreement-billing.service";
@@ -2825,6 +2826,97 @@ const main = async () => {
         unlinkedReversalRejected = true;
       }
       check("a reversal pointing at nothing is rejected too", unlinkedReversalRejected);
+
+      section("refunding a whole invoice");
+
+      // What cancelling a paid consultation does. The invoice is the unit here,
+      // not one payment: the caller is undoing a transaction rather than
+      // choosing a leg to reverse.
+      const cancelled = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(-2),
+        dueDate: daysFromNow(28),
+        status: "draft",
+        lineItems: [
+          { description: "Consultation fee", quantity: 1, rate: 400, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, cancelled.id));
+
+      await paymentsService.recordPayment(orgId, cancelled.id, staffBId, FULL, {
+        amount: 400,
+        paymentDate: daysFromNow(-1),
+        method: "credit_card",
+        provider: "confido",
+        legs: [{ account: "operating", amount: 400, providerReference: "txn_consult_fee" }],
+      });
+
+      checkEqual(
+        "the firm is holding the fee",
+        await refundsService.netPaidOnInvoice(orgId, cancelled.id),
+        400,
+      );
+
+      // A hand-recorded payment on the same invoice. Confido has nothing to
+      // refund for this one, so it must be reported rather than dropped.
+      await paymentsService.recordPayment(orgId, cancelled.id, staffBId, FULL, {
+        amount: 60,
+        paymentDate: daysFromNow(-1),
+        method: "check",
+        reference: "cheque 1191",
+      });
+
+      const summary = await refundsService.refundInvoiceInFull(
+        orgId,
+        cancelled.id,
+        staffBId,
+        FULL,
+        "Consultation cancelled",
+      );
+
+      checkEqual(
+        "money taken outside the processor is reported, not silently kept",
+        summary.manualOutstanding,
+        60,
+      );
+
+      // This fixture has no Confido credential, so the card leg cannot reach the
+      // processor — which is the more valuable thing to assert. A cancellation
+      // must not be blocked because a refund failed, so the failure is COLLECTED
+      // rather than thrown, and the money stays visibly held. The successful
+      // refund path needs a sandbox and is covered by 19-confido-reversals.
+      checkEqual(
+        "a leg that cannot reach the processor is collected, not thrown",
+        summary.failures.length,
+        1,
+      );
+      checkEqual("and nothing is claimed as refunded", summary.refunded, 0);
+      checkEqual(
+        "so the full amount still reads as held",
+        await refundsService.netPaidOnInvoice(orgId, cancelled.id),
+        460,
+      );
+
+      // What makes "refund owed" safe to derive: the figure is a fold over the
+      // ledger, so a second attempt cannot double-refund — it re-reads the same
+      // outstanding amounts and fails the same way.
+      const rerun = await refundsService.refundInvoiceInFull(
+        orgId,
+        cancelled.id,
+        staffBId,
+        FULL,
+      );
+      checkEqual("a second attempt sends nothing more", rerun.refunded, 0);
+      checkEqual(
+        "and the held figure is unchanged",
+        await refundsService.netPaidOnInvoice(orgId, cancelled.id),
+        460,
+      );
 
       section("clearing policy");
 

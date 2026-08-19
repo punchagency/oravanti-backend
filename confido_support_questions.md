@@ -53,19 +53,47 @@ diverge for us, slice 3's refund model is what changes.
 - **Is that list current and complete?** Worth confirming, since a firm has to take it to their bank
   during onboarding and a stale ID means a blocked refund months later.
 
-### 3. Trusted Domains — does it cover iframes and onboarding.js?
+### 3. Trusted Domains — REPRODUCED, and it is blocking us today
 
-Trusted Domains is documented under Hosted Fields. We use two other embeds: `onboarding.js` and a
-Payment Link in an iframe.
+We previously filed this as a risk for production. It is not a risk; it is happening now in sandbox,
+and the earlier note that "sandbox does not enforce domain restrictions at all" was wrong.
 
-- **Does registering a domain under Settings → Trusted Domains also permit `onboarding.js` to load
-  there, and permit a Payment Link to be framed there?**
+Embedding a Payment Link in an iframe on our origin gives a page that **renders but cannot be
+used**: the layout, the amount, the Pay button and your branding all appear, while the card number,
+expiry and CVV fields stay greyed with a spinner and cannot be focused.
 
-We ask because the hosted payment page currently returns
-`content-security-policy-report-only: … frame-ancestors https://*.confidolegal.com …` — our domain
-is not in that list, and the policy is report-only. If it is ever enforced without our domain being
-added, every embedded payment breaks at once. **Sandbox does not enforce domain restrictions at
-all**, so nothing we can test will catch this before production.
+The console shows why. The outer page's policy is report-only and passes:
+
+```
+Framing 'https://pay.sandbox.confidolegal.com/' violates the following report-only
+Content Security Policy directive: "frame-ancestors https://*.confidolegal.com
+https://pay.sandbox.confidolegal.com". The violation has been logged, but no further
+action has been taken.
+```
+
+The hosted-field frames inside it are **enforcing**, and are blocked — three times, once per field:
+
+```
+Framing 'https://pay.sandbox.confidolegal.com/' violates the following Content Security
+Policy directive: "frame-ancestors https://*.confidolegal.com
+https://pay.sandbox.confidolegal.com". The request has been blocked.     — hosted-fields.js
+```
+
+`frame-ancestors` matches the whole ancestor chain, so our origin at the top of
+`our-app → pay.sandbox.confidolegal.com → hosted-fields` blocks the innermost frames even though the
+outer page loaded.
+
+**What we need:**
+
+1. **Confirm that registering an origin under Trusted Domains adds it to the `frame-ancestors` list
+   above**, for the hosted-field frames and not only the outer page — and that the same registration
+   covers `onboarding.js`.
+2. **Can a local development origin be registered at all?** Ours is `http://localhost:5173`: plain
+   HTTP, and not a domain anyone can prove ownership of. If it cannot, please say so plainly — we
+   will route developers through a tunnel instead. Right now this fails as a silent spinner with no
+   error a developer can act on, which is an expensive way to learn it.
+3. Which origins should we register for sandbox versus production, and does a wildcard work for
+   preview deployments (`*.vercel.app`-style hostnames that change per branch)?
 
 ---
 
