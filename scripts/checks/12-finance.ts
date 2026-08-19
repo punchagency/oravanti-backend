@@ -18,7 +18,7 @@
  * org it creates.
  */
 import { randomUUID } from "crypto";
-import { and, eq, inArray, isNull, like } from "drizzle-orm";
+import { and, eq, inArray, isNull, like, sql } from "drizzle-orm";
 import { closeDb, systemDb } from "../../src/db/client";
 import { organization, team, user } from "../../src/db/schema/auth-schema";
 import { billingRates } from "../../src/db/schema/billing-rates";
@@ -919,11 +919,17 @@ const main = async () => {
 
       // The column now holds the new date, so the trail is the only place the
       // old one survives. An audit that cannot say what changed is not one.
-      // finance_events had title + description; audit_events renders one
-      // sentence at write time and keeps the structured detail in metadata,
-      // so both halves of the old assertion read off `summary`.
+      //
+      // finance_events had title + description as two columns; audit_events
+      // renders the sentence into `summary` and keeps the structured detail in
+      // `metadata`. Both halves are still asserted, they just live in different
+      // places now — and they read from metadata rather than summary because
+      // that is where `description` actually goes.
       const [extendEvent] = await systemDb
-        .select({ summary: auditEvents.summary })
+        .select({
+          summary: auditEvents.summary,
+          description: sql<string | null>`(${auditEvents.metadata}->>'description')`,
+        })
         .from(auditEvents)
         .where(
           and(
@@ -934,12 +940,13 @@ const main = async () => {
       check("the extension is recorded", extendEvent != null);
       check(
         "with the date it moved from",
-        extendEvent?.summary?.includes(beforeExtend!.dueDate) ?? false,
-        extendEvent?.summary,
+        extendEvent?.description?.includes(beforeExtend!.dueDate) ?? false,
+        extendEvent?.description ?? "(no description recorded)",
       );
       check(
         "and the reason given",
-        extendEvent?.summary?.includes("another fortnight") ?? false,
+        extendEvent?.description?.includes("another fortnight") ?? false,
+        extendEvent?.description ?? "(no description recorded)",
       );
 
       // Forward only. This is the whole reason it is not just a PATCH.
@@ -2678,9 +2685,9 @@ const main = async () => {
       check("follow-up is recorded", types.has("finance.payment_followup_sent"));
       check("void is recorded", types.has("finance.invoice_voided"));
       check("time approval is recorded", types.has("finance.time_entry_approved"));
-      check("a schedule being set is recorded", types.has("invoice_schedule_set"));
-      check("a revision is recorded", types.has("invoice_schedule_revised"));
-      check("a removal is recorded", types.has("invoice_schedule_removed"));
+      check("a schedule being set is recorded", types.has("finance.invoice_schedule_set"));
+      check("a revision is recorded", types.has("finance.invoice_schedule_revised"));
+      check("a removal is recorded", types.has("finance.invoice_schedule_removed"));
     });
   } finally {
     // ── Cleanup ──────────────────────────────────────────────────────────────
