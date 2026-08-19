@@ -39,22 +39,22 @@ after a crash.
 
 ## Tiers
 
-| Script | Needs | What it inspects |
-|---|---|---|
-| `01-case-review-logic` | nothing | Fingerprint identity/revision, normalisation, the date-like gate |
-| `02-issue-sync` | Postgres | Diff engine: NEW → UNCHANGED → CHANGED → SUPERSEDED → REOPEN, sweep guard |
-| `03-wire-contract` | Postgres | Request built from a real scenario; wire parity with the Python service |
-| `04-live-storage` | R2 | Upload/download round trip, presigned URLs, remove, checksum parity with the Python worker |
-| `05-queue` | Postgres + Redis | Producer: job row, coalescing, the payload on the queue. Consumer: cache write, terminal status, idempotency |
-| `06-roundtrip` | Postgres + Redis | The real cross-language seam, end to end |
-| `07-rls` | Postgres | Proves tenant isolation using a role RLS applies to; audits policy coverage |
-| `08-reconcile-sweep` | Postgres | Stuck-job reconciliation and the time-driven deterministic sweep |
-| `09-live-roundtrip` | Everything | The whole system with nothing stubbed |
-| `14-confido-sandbox` | Confido sandbox token | Firm onboarding + trust/operating payment routing. Network only — touches no tables |
-| `15-confido-partial-payment` | Confido sandbox token + a browser | How Confido splits a **partial** payment across the trust and operating legs |
-| `16-confido-onboarding` | Postgres | The concurrency and idempotency behind firm onboarding. No network |
-| `17-confido-payments` | Confido sandbox token + Postgres | The three shapes a payment can land in, and that the legs sum to what was paid |
-| `18-webhook-staleness` | Postgres | That webhook events accepted but never handled are actually detected |
+| Script                       | Needs                             | What it inspects                                                                                             |
+| ---------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `01-case-review-logic`       | nothing                           | Fingerprint identity/revision, normalisation, the date-like gate                                             |
+| `02-issue-sync`              | Postgres                          | Diff engine: NEW → UNCHANGED → CHANGED → SUPERSEDED → REOPEN, sweep guard                                    |
+| `03-wire-contract`           | Postgres                          | Request built from a real scenario; wire parity with the Python service                                      |
+| `04-live-storage`            | R2                                | Upload/download round trip, presigned URLs, remove, checksum parity with the Python worker                   |
+| `05-queue`                   | Postgres + Redis                  | Producer: job row, coalescing, the payload on the queue. Consumer: cache write, terminal status, idempotency |
+| `06-roundtrip`               | Postgres + Redis                  | The real cross-language seam, end to end                                                                     |
+| `07-rls`                     | Postgres                          | Proves tenant isolation using a role RLS applies to; audits policy coverage                                  |
+| `08-reconcile-sweep`         | Postgres                          | Stuck-job reconciliation and the time-driven deterministic sweep                                             |
+| `09-live-roundtrip`          | Everything                        | The whole system with nothing stubbed                                                                        |
+| `14-confido-sandbox`         | Confido sandbox token             | Firm onboarding + trust/operating payment routing. Network only — touches no tables                          |
+| `15-confido-partial-payment` | Confido sandbox token + a browser | How Confido splits a **partial** payment across the trust and operating legs                                 |
+| `16-confido-onboarding`      | Postgres                          | The concurrency and idempotency behind firm onboarding. No network                                           |
+| `17-confido-payments`        | Confido sandbox token + Postgres  | The three shapes a payment can land in, and that the legs sum to what was paid                               |
+| `18-webhook-staleness`       | Postgres                          | That webhook events accepted but never handled are actually detected                                         |
 
 ## Tier 3 — Confido Legal sandbox
 
@@ -148,10 +148,26 @@ The AI service's own Tier 3 checks (live Document AI, Gemini, and the full
 pipeline) live in the `oravanti-ai-detection-server` repo under
 `scripts/checks/`.
 
+## Email
+
+Checks run against the real service layer, so anything reaching
+`emailService.sendEmail` — invoice delivery, payment follow-ups — hits a live
+SMTP transport. `silenceEmail()` from `_bootstrap` intercepts it, and any check
+that touches a send path must call it first.
+
+It is deliberately not a blanket no-op. A malformed recipient still throws, with
+the wording nodemailer uses, because the delivery-failure path is itself under
+test: an invoice whose send fails must stay a draft with the reason recorded.
+Swallowing that would turn real assertions into ones that cannot fail.
+`capturedEmails()` returns what was intercepted, if a check wants to assert on
+it.
+
 ## Writing a check
 
 Import from `_bootstrap`:
 
+- `silenceEmail()` — intercept outbound mail. **Required** for anything that
+  reaches a send path.
 - `withTempFixture(spec, fn)` — seeds org/user/lead/documents/analyses, tears down after.
 - `withOrgContext(orgId, userId, fn)` — runs `fn` inside the AsyncLocalStorage
   request context bound to a tenant connection. **Required for anything that
@@ -187,7 +203,7 @@ column, by design.
 ## Not covered
 
 - **Extraction accuracy.** Every check asserts shape and configuration. Whether
-  Gemini reads a given field *correctly* is not asserted and cannot be without a
+  Gemini reads a given field _correctly_ is not asserted and cannot be without a
   labelled corpus.
 - **Multi-page OCR.** `imageless_mode` raises the ceiling to 30 pages; every
   sample is single-page.
