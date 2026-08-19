@@ -7,6 +7,7 @@ import type {
   ConfidoPaymentLink,
   ConfidoPaymentSettings,
   ConfidoStatementRecord,
+  ConfidoReversalResult,
   ConfidoTransaction,
   ConfidoBrandingImageUpload,
   ConfidoBrandingInput,
@@ -449,6 +450,8 @@ export class ConfidoClient {
       `query GetTransaction($id: String!) {
         transaction(id: $id) {
           id type status_v2 amountProcessed surchargeAmount
+          originalTransactionId achReturnCode achReturnReason
+          amountRefunded settledOn
           bankAccount { id category }
           paymentLink { id externalId }
           payment { id }
@@ -493,6 +496,110 @@ export class ConfidoClient {
       { limit },
     );
     return data.statements.records;
+  }
+
+  /**
+   * Send money back for one transaction.
+   *
+   * Confido offers three mutations and the choice between two of them is a
+   * race we would lose:
+   *
+   *   transactionVoid         — no `amount`; always whole. Pre-settlement only
+   *   transactionRefund       — takes `amount` in cents. Post-settlement only
+   *   transactionVoidOrRefund — picks, and reports which it did
+   *
+   * Reading `canVoid`/`canRefund` and then acting on the answer leaves a window
+   * in which the payment settles and the call we chose becomes the wrong one.
+   * `transactionVoidOrRefund` makes that Confido's race to lose, so a full
+   * reversal goes through it. A PARTIAL amount can only be expressed by
+   * `transactionRefund`, so that is what a partial uses — and a partial refund
+   * of an unsettled payment is a thing Confido will refuse, correctly.
+   *
+   * `externalId` is Confido's idempotency key on both. We pass our own uuid so
+   * a retry after a timeout cannot send the money twice.
+   *
+   * The returned transactions are recorded directly by the caller as well as by
+   * the webhook that follows. Two writers, one unique index: relying on the
+   * webhook alone risks money moving that our ledger never hears about, and
+   * relying on the response alone misses the documented AWAITING_RESULT path
+   * where the transactions are not final yet.
+   */
+  async reverseTransaction(
+    firmToken: string,
+    input: {
+      transactionId: string;
+      /** Cents. Omit for a full reversal. */
+      amount?: number;
+      externalId: string;
+    },
+  ): Promise<ConfidoReversalResult> {
+    const fields = `
+      id type status_v2 amountProcessed surchargeAmount
+      originalTransactionId achReturnCode achReturnReason
+      amountRefunded settledOn
+      bankAccount { id category }
+      paymentLink { id externalId }
+      payment { id }
+    `;
+
+    if (input.amount != null) {
+      const data = await this.gql<{
+        transactionRefund: {
+          refundRequest: { status: string };
+          refundTransactions: ConfidoTransaction[] | null;
+        };
+      }>(
+        firmToken,
+        `mutation Refund($input: TransactionRefundInput!) {
+          transactionRefund(input: $input) {
+            refundRequest { status }
+            refundTransactions { ${fields} }
+          }
+        }`,
+        {
+          input: {
+            transactionId: input.transactionId,
+            amount: input.amount,
+            externalId: input.externalId,
+          },
+        },
+      );
+
+      return {
+        type: "refund",
+        status: data.transactionRefund.refundRequest.status,
+        transactions: data.transactionRefund.refundTransactions ?? [],
+      };
+    }
+
+    const data = await this.gql<{
+      transactionVoidOrRefund: {
+        type: string;
+        status: string;
+        voidOrRefundTransactions: ConfidoTransaction[] | null;
+      };
+    }>(
+      firmToken,
+      `mutation VoidOrRefund($input: TransactionVoidOrRefundInput!) {
+        transactionVoidOrRefund(input: $input) {
+          type
+          status
+          voidOrRefundTransactions { ${fields} }
+        }
+      }`,
+      {
+        input: {
+          transactionId: input.transactionId,
+          externalId: input.externalId,
+        },
+      },
+    );
+
+    return {
+      type: data.transactionVoidOrRefund.type,
+      status: data.transactionVoidOrRefund.status,
+      transactions: data.transactionVoidOrRefund.voidOrRefundTransactions ?? [],
+    };
   }
 
   /** The firm's payment settings, including whether surcharging is permitted. */

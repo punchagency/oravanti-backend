@@ -6,7 +6,13 @@ import { paymentWebhookEvents } from "../../../db/schema/payment-webhook-events"
 import { enqueueConfidoWebhook } from "../../../queue/queues";
 import type { PaymentMethod } from "../../../db/schema/invoices";
 import { systemAccess } from "../account-access";
-import { recordPayment } from "../payments.service";
+import {
+  findPaymentByProviderReference,
+  markPaymentSettled,
+  recordPayment,
+  recordReversal,
+  type ReversalKind,
+} from "../payments.service";
 import {
   confidoCredentialFor,
   markWebhookSeen,
@@ -16,7 +22,10 @@ import {
 import { getConfidoClient, isConfidoConfigured } from "./confido.client";
 import { settleConsultationForInvoice } from "../../leads/leads.service";
 import { syncStatements } from "./statements.service";
-import type { ConfidoWebhookEvent } from "./confido.types";
+import type {
+  ConfidoTransaction,
+  ConfidoWebhookEvent,
+} from "./confido.types";
 
 const log = createModuleLogger("confido-webhooks.service");
 
@@ -49,6 +58,14 @@ const HANDLED_TYPES = new Set([
   "transaction.created",
   "transaction.funds_in_transit",
   "transaction.deposited",
+  // Money going back out. These four carry a DIFFERENT payload shape to the
+  // three above — `originalTransaction` plus a named reversing transaction,
+  // with no `transaction` key at all — which is why `transactionIdsOf` had to
+  // learn about them rather than silently extracting null.
+  "transaction.voided",
+  "transaction.refunded",
+  "transaction.partially_refunded",
+  "transaction.ach_returned",
   // Reconciliation: the monthly fee debit never reaches invoice_payments, so
   // the statement is the only thing that explains the operating balance.
   "statement.created",
@@ -142,11 +159,15 @@ export const receiveConfidoWebhook = async (
       continue;
     }
 
+    const ids = transactionIdsOf(event);
     await enqueueConfidoWebhook({
       eventId: event.eventId,
       eventType: event.type,
       firmId: event.firmId,
-      ...(transactionIdOf(event) ? { transactionId: transactionIdOf(event)! } : {}),
+      ...(ids.transactionId ? { transactionId: ids.transactionId } : {}),
+      ...(ids.originalTransactionId
+        ? { originalTransactionId: ids.originalTransactionId }
+        : {}),
     });
     claimed += 1;
   }
@@ -155,17 +176,45 @@ export const receiveConfidoWebhook = async (
 };
 
 /**
- * Dig the transaction id out of a thin payload.
+ * Dig the transaction ids out of a thin payload.
  *
- * `transaction.created` nests it as `{ transaction: { id } }`; the settlement
- * events use the same shape. Typed loosely because the payload is theirs, and a
- * shape change should degrade to "no id" rather than throw inside the five
- * second window.
+ * Confido uses two payload shapes and does not flag which is which:
+ *
+ *   transaction.created / .funds_in_transit / .deposited
+ *     → { transaction: { id } }
+ *   transaction.voided       → { originalTransaction, voidTransaction }
+ *   transaction.refunded     → { originalTransaction, refundTransaction }
+ *   .partially_refunded      → { originalTransaction, refundTransaction }
+ *   transaction.ach_returned → { originalTransaction, returnTransaction }
+ *
+ * The reversal shape has no `transaction` key, so reading only that returned
+ * null for every one of them — the event was claimed, enqueued, and quietly did
+ * nothing, because a missing id is tolerated further down.
+ *
+ * Typed loosely because the payload is theirs, and a shape change should
+ * degrade to "no id" rather than throw inside the five second window.
  */
-const transactionIdOf = (event: ConfidoWebhookEvent): string | null => {
-  const txn = (event.data as { transaction?: { id?: unknown } } | undefined)
-    ?.transaction;
-  return typeof txn?.id === "string" ? txn.id : null;
+const transactionIdsOf = (
+  event: ConfidoWebhookEvent,
+): { transactionId: string | null; originalTransactionId: string | null } => {
+  const data = event.data as
+    | Record<string, { id?: unknown } | undefined>
+    | undefined;
+
+  const idAt = (key: string): string | null => {
+    const id = data?.[key]?.id;
+    return typeof id === "string" ? id : null;
+  };
+
+  return {
+    // First match wins; only one of these is ever present.
+    transactionId:
+      idAt("transaction") ??
+      idAt("voidTransaction") ??
+      idAt("refundTransaction") ??
+      idAt("returnTransaction"),
+    originalTransactionId: idAt("originalTransaction"),
+  };
 };
 
 /**
@@ -181,6 +230,7 @@ export const processConfidoWebhook = async (job: {
   eventType: string;
   firmId: string;
   transactionId?: string;
+  originalTransactionId?: string;
 }): Promise<void> => {
   const organizationId = await organizationForConfidoFirm(job.firmId);
 
@@ -195,8 +245,27 @@ export const processConfidoWebhook = async (job: {
 
   if (job.eventType === "firm.updated") {
     await refreshStatus(organizationId);
-  } else if (job.eventType.startsWith("transaction.") && job.transactionId) {
+  } else if (job.originalTransactionId && job.transactionId) {
+    // Both ids present means a reversal, whatever the event is called. Keyed on
+    // the payload shape rather than the event name so a reversal type Confido
+    // adds later still lands somewhere — and because a chargeback, which has no
+    // documented event at all, would arrive through `transaction.created`
+    // carrying `originalTransactionId` and nothing else to identify it.
+    await recordConfidoReversal(
+      organizationId,
+      job.transactionId,
+      job.originalTransactionId,
+    );
+  } else if (job.eventType === "transaction.created" && job.transactionId) {
     await recordConfidoTransaction(organizationId, job.transactionId);
+  } else if (
+    job.eventType.startsWith("transaction.") &&
+    job.transactionId
+  ) {
+    // funds_in_transit / deposited. These used to fall through to
+    // `recordConfidoTransaction`, hit the replay guard and return — busy work
+    // that looked like handling. They now do the one job they are good for.
+    await advanceSettlement(organizationId, job.transactionId);
   } else if (job.eventType.startsWith("statement.")) {
     await syncStatements(organizationId);
   }
@@ -244,9 +313,23 @@ const recordConfidoTransaction = async (
   const { credential } = await confidoCredentialFor(organizationId);
   const txn = await getConfidoClient().getTransaction(credential, transactionId);
 
-  // Not invoice revenue. A standalone surcharge, a refund, a return or a
-  // chargeback all reference the same payment link, and recording any of them
-  // as a payment overpays the invoice and marks it settled.
+  // A transaction that names another is money going back out, whatever it is
+  // called. Checked here as well as at dispatch because a chargeback has NO
+  // documented webhook of its own — if one reaches us at all it arrives as an
+  // ordinary `transaction.created`, and this is the only thing that would
+  // recognise it.
+  if (txn.originalTransactionId) {
+    await recordReversalFromTransaction(
+      organizationId,
+      txn,
+      txn.originalTransactionId,
+    );
+    return;
+  }
+
+  // Not invoice revenue. A standalone surcharge in particular references the
+  // same payment link, and recording it as a payment overpays the invoice and
+  // marks it settled.
   if (!PAYMENT_TRANSACTION_TYPES.has(txn.type)) {
     log.warn("payment_webhook.transaction_skipped", {
       transactionId,
@@ -293,6 +376,12 @@ const recordConfidoTransaction = async (
       reference: txn.payment?.id ?? txn.id,
       provider: CONFIDO_PROVIDER,
       legs: [{ account, amount, providerReference: txn.id }],
+      // Usually null — a card lands PENDING and deposits about two business
+      // days later. Read rather than assumed because an API-recorded manual
+      // payment is DEPOSITED from the outset, and a payment that never gets a
+      // settlement event would otherwise sit unsettled forever.
+      settledAt: settledAtFor(txn),
+      providerStatus: txn.status_v2,
     });
   } catch (err) {
     // The ledger's own uniqueness guard firing means this leg is already
@@ -316,6 +405,204 @@ const recordConfidoTransaction = async (
       err,
       { invoiceId, organizationId },
     );
+  }
+};
+
+/**
+ * Statuses that mean the money is in the firm's bank account.
+ *
+ * `DEPOSITED` only. `SUCCESSFUL` looks like a candidate and is deliberately not
+ * one: it is set while a card authorisation has succeeded but the batch has not
+ * deposited, which is exactly the window in which a payment can still be
+ * voided — the window the case-opening gate exists to respect. Confirmed
+ * shapes are recorded by `19-confido-reversals`.
+ */
+const SETTLED_STATUSES = new Set(["DEPOSITED"]);
+
+/**
+ * Statuses that mean this money is never arriving.
+ *
+ * Distinct from "not settled yet": a returned or voided payment is finished,
+ * and leaving it looking in-flight would hold a case open forever under a
+ * clearing policy that waits.
+ */
+const DEAD_STATUSES = new Set([
+  "RETURNED",
+  "VOIDED",
+  "REFUNDED",
+  "CHARGED_BACK",
+  "ERROR",
+]);
+
+const settledAtFor = (txn: ConfidoTransaction): Date | null => {
+  if (!SETTLED_STATUSES.has(txn.status_v2)) return null;
+  // Their own settlement date when they give one, so the ledger records when
+  // the money landed rather than when we happened to hear about it.
+  const parsed = txn.settledOn ? new Date(txn.settledOn) : null;
+  return parsed && !Number.isNaN(parsed.getTime()) ? parsed : new Date();
+};
+
+/**
+ * Which of our reversal kinds a Confido transaction represents.
+ *
+ * Their `type` is an untyped String, so this is a mapping with a fallback
+ * rather than an exhaustive switch. `reversal` is the honest answer for a type
+ * we have not seen: the money moved either way, and refusing to record it
+ * because we cannot name it would leave the ledger wrong.
+ */
+const reversalKindFor = (txn: ConfidoTransaction): ReversalKind => {
+  const type = txn.type.toLowerCase();
+  if (type.includes("return")) return "return";
+  if (type.includes("chargeback")) return "chargeback";
+  if (type.includes("void")) return "void";
+  if (type.includes("refund")) return "refund";
+  // A returned ACH always carries a return code, even if the type is worded in
+  // a way this does not recognise.
+  if (txn.achReturnCode) return "return";
+  if (txn.status_v2 === "CHARGED_BACK") return "chargeback";
+  if (txn.status_v2 === "VOIDED") return "void";
+  return "reversal";
+};
+
+/**
+ * A reversal webhook: fetch the reversing transaction, then record it.
+ *
+ * The event names both ids, so the original is known without a second call —
+ * but the reversing transaction still has to be fetched for its amount, its
+ * account and its ACH return code, none of which the payload carries.
+ */
+const recordConfidoReversal = async (
+  organizationId: string,
+  reversalTransactionId: string,
+  originalTransactionId: string,
+): Promise<void> => {
+  const { credential } = await confidoCredentialFor(organizationId);
+  const txn = await getConfidoClient().getTransaction(
+    credential,
+    reversalTransactionId,
+  );
+  await recordReversalFromTransaction(organizationId, txn, originalTransactionId);
+};
+
+/**
+ * Record money going back out, from the reversing transaction itself.
+ *
+ * Shared by the four reversal webhooks and by `transaction.created`, since a
+ * chargeback can only reach us through the latter.
+ */
+const recordReversalFromTransaction = async (
+  organizationId: string,
+  txn: ConfidoTransaction,
+  originalTransactionId: string,
+): Promise<void> => {
+  const original = await findPaymentByProviderReference(
+    organizationId,
+    CONFIDO_PROVIDER,
+    originalTransactionId,
+  );
+
+  // A reversal of a payment we never recorded is a reconciliation exception,
+  // not a ledger entry. Subtracting money we never added would drive
+  // `amount_paid` negative and mark a paid invoice unpaid — worse than an
+  // unexplained line a human has to look at. Logged at warn so it is visible
+  // rather than silent.
+  if (!original) {
+    log.warn("payment_webhook.transaction_skipped", {
+      transactionId: txn.id,
+      originalTransactionId,
+      transactionType: txn.type,
+      reason: "reversal_of_unrecorded_payment",
+    });
+    return;
+  }
+
+  const account = accountFor(txn.bankAccount.category);
+  if (!account) {
+    log.warn("payment_webhook.transaction_skipped", {
+      transactionId: txn.id,
+      bankAccountCategory: txn.bankAccount.category,
+      reason: "unknown_bank_account_category",
+    });
+    return;
+  }
+
+  // Positive on their side — a return is a separate transaction with a positive
+  // amount — and negated by `recordReversal`, which owns the sign convention.
+  const amount = txn.amountProcessed / 100;
+  if (amount <= 0) return;
+
+  try {
+    await recordReversal(organizationId, original.invoiceId, null, systemAccess(), {
+      kind: reversalKindFor(txn),
+      reversesPaymentId: original.id,
+      amount,
+      account,
+      paymentDate: new Date().toISOString().slice(0, 10),
+      method: methodFor(txn.type),
+      reference: txn.payment?.id ?? txn.id,
+      ...(txn.achReturnCode
+        ? {
+            notes: `${txn.achReturnCode} — ${txn.achReturnReason ?? "returned"}`,
+          }
+        : {}),
+      provider: CONFIDO_PROVIDER,
+      providerReference: txn.id,
+      providerStatus: txn.status_v2,
+    });
+  } catch (err) {
+    // Already recorded: the firm-initiated refund path wrote it from the
+    // mutation's own response before this webhook arrived. That double write is
+    // deliberate; this is where it collapses.
+    const message = err instanceof Error ? err.message : "";
+    if (message.includes("invoice_payments_provider_ref_uidx")) return;
+    throw err;
+  }
+};
+
+/**
+ * Move a payment along its settlement lifecycle.
+ *
+ * What `transaction.funds_in_transit` and `transaction.deposited` are actually
+ * for. They previously fell through to the recording path, hit the replay guard
+ * and returned — which looked like handling and achieved nothing, leaving every
+ * provider payment permanently unsettled.
+ */
+const advanceSettlement = async (
+  organizationId: string,
+  transactionId: string,
+): Promise<void> => {
+  const { credential } = await confidoCredentialFor(organizationId);
+  const txn = await getConfidoClient().getTransaction(credential, transactionId);
+
+  const found = await markPaymentSettled(
+    organizationId,
+    CONFIDO_PROVIDER,
+    txn.id,
+    txn.status_v2,
+    SETTLED_STATUSES.has(txn.status_v2),
+  );
+
+  if (!found) {
+    // A settlement event for a transaction we never booked. Usually benign —
+    // a surcharge leg, or a payment against a link we did not issue — but it is
+    // the same shape as a lost `transaction.created`, so it is worth seeing.
+    log.warn("payment_webhook.transaction_skipped", {
+      transactionId,
+      status: txn.status_v2,
+      reason: "settlement_for_unrecorded_payment",
+    });
+    return;
+  }
+
+  if (DEAD_STATUSES.has(txn.status_v2) && txn.originalTransactionId == null) {
+    // The payment itself has gone terminal without a reversing transaction we
+    // have seen. The reversal event should follow; if it never does, this line
+    // is what explains an invoice whose money quietly stopped being real.
+    log.warn("payment_webhook.transaction_skipped", {
+      transactionId,
+      status: txn.status_v2,
+      reason: "payment_terminal_without_reversal",
+    });
   }
 };
 

@@ -108,6 +108,29 @@ export interface ConfidoTransaction {
   bankAccount: { id: string; category: string };
   paymentLink: { id: string; externalId: string | null } | null;
   payment: { id: string } | null;
+  /**
+   * Set on a reversal, naming the transaction it undoes.
+   *
+   * The structural signal that this is money going back out, and the reason the
+   * webhook does not have to recognise every reversal `type` string Confido
+   * might use. A chargeback in particular has no documented webhook of its own,
+   * so this field is the only thing that identifies one.
+   */
+  originalTransactionId: string | null;
+  /** Populated on a returned ACH payment — "R01", "Insufficient Funds". */
+  achReturnCode: string | null;
+  achReturnReason: string | null;
+  /** How much of THIS transaction has been given back, in cents. */
+  amountRefunded: number;
+  settledOn: string | null;
+}
+
+/** What `transactionVoidOrRefund` did, since it decides rather than asking. */
+export interface ConfidoReversalResult {
+  /** Confido's own word: which of the two operations it performed. */
+  type: string;
+  status: string;
+  transactions: ConfidoTransaction[];
 }
 
 /**
