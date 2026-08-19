@@ -276,14 +276,21 @@ export const feeInvoiceSatisfied = async (
   // A link pointing at nothing must not block a case indefinitely.
   if (!invoice) return true;
   if (invoice.status === "void") return true;
-  if (invoice.status === "paid") return true;
   // Still a draft: it was never sent, so the client has not been asked. Do not
   // hold the case hostage to a billing step the firm has not completed.
   if (invoice.status === "draft") return true;
 
-  // Not `invoice.amountPaid`: that is every payment reported, including money
-  // still in flight and money Confido is holding for review.
-  if ((await countedPaid(organizationId, invoiceId)) <= 0) return false;
+  // Deliberately BEFORE the `paid` short-circuit that used to sit above.
+  // `status` is derived from `amount_paid`, which is gross of settlement, so an
+  // invoice paid in full by a card that has not deposited reads as "paid" — and
+  // returning true on that would wave through exactly the money this gate
+  // exists to wait for, under every policy including all_payments.
+  const counted = await countedPaid(organizationId, invoiceId);
+  if (counted <= 0) return false;
+
+  // Covered outright by money that counts. Equivalent to the old `paid`
+  // short-circuit, but measured against cleared money rather than reported.
+  if (counted - num(invoice.totalAmount) >= -0.005) return true;
 
   const today = await firmToday(organizationId);
   const overdue = await agingOverDues(
