@@ -19,9 +19,11 @@ import {
   extendDueDateBodySchema,
   followUpBodySchema,
   invoiceParamsSchema,
+  paymentParamsSchema,
   listInvoicesQuerySchema,
   listLinePresetsQuerySchema,
   recordPaymentBodySchema,
+  refundPaymentBodySchema,
   setScheduleBodySchema,
   unbilledTimeQuerySchema,
   updateInvoiceBodySchema,
@@ -50,6 +52,10 @@ export class InvoicesRouter {
     const create = requirePermission({ finance: ["create"] });
     const update = requirePermission({ finance: ["update"] });
     const recordPayment = requirePermission({ finance: ["record_payment"] });
+    // Deliberately not `record_payment`. Owner and admin only — recording a
+    // payment wrongly is corrected from the same screen, whereas a refund moves
+    // money out of the firm's account and cannot be taken back.
+    const refund = requirePermission({ finance: ["refund"] });
 
     // ── Static paths FIRST ───────────────────────────────────────────────────
     // Express 5 matches in declaration order, so any of these declared after
@@ -397,6 +403,25 @@ export class InvoicesRouter {
         body: recordPaymentBodySchema,
       }),
       controller.recordPayment,
+    );
+
+    /**
+     * @openapi
+     * /finance/invoices/{id}/payments/{paymentId}/refund:
+     *   post:
+     *     tags: [Finance — Invoicing]
+     *     summary: Send a payment back; voids it if it has not settled yet
+     *     responses:
+     *       201: { description: Refund issued or payment voided }
+     */
+    this.router.post(
+      "/:id/payments/:paymentId/refund",
+      refund,
+      validateRequest({
+        params: paymentParamsSchema,
+        body: refundPaymentBodySchema,
+      }),
+      controller.refundPayment,
     );
 
     /**
