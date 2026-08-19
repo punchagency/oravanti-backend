@@ -16,6 +16,7 @@ import * as instalmentsService from "./instalments.service";
 import { listPresets, saveFirmPreset } from "./line-presets.service";
 import * as invoicesService from "./invoices.service";
 import * as paymentsService from "./payments.service";
+import * as refundsService from "./refunds.service";
 import type { AccountFilter, InvoiceStatusFilter } from "./types";
 
 export class InvoicesController {
@@ -297,6 +298,27 @@ export class InvoicesController {
       req.body,
     );
     sendSuccess(res, invoice, "Payment recorded successfully", 201);
+  };
+
+  refundPayment = async (req: Request, res: Response) => {
+    const { organizationId, staffId } = getRequestContext();
+    const access = await accessForRequest();
+    const result = await refundsService.refundPayment(
+      organizationId!,
+      req.params.id as string,
+      req.params.paymentId as string,
+      staffId ?? null,
+      access,
+      req.body,
+    );
+    sendSuccess(
+      res,
+      result,
+      result.executedAs.toLowerCase().includes("void")
+        ? "Payment voided before it settled"
+        : "Refund issued",
+      201,
+    );
   };
 
   sendFollowUp = async (req: Request, res: Response) => {

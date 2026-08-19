@@ -218,6 +218,24 @@ export const extendDueDateBodySchema = z.object({
   reason: z.string().trim().max(500).optional(),
 });
 
+/** Which payment on the invoice, for the refund route. */
+export const paymentParamsSchema = z.object({
+  id: z.string().uuid(),
+  paymentId: z.string().uuid(),
+});
+
+/**
+ * Refunding a payment.
+ *
+ * `amount` omitted means the whole payment, which is the case that can execute
+ * as a void. A partial can only be a refund, and Confido accepts one only after
+ * the payment has settled.
+ */
+export const refundPaymentBodySchema = z.object({
+  amount: z.coerce.number().positive().optional(),
+  reason: z.string().trim().max(500).optional(),
+});
+
 export const recordPaymentBodySchema = z
   .object({
     amount: z.coerce.number().positive(),
