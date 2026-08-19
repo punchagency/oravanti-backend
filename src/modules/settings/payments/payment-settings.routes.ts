@@ -11,7 +11,10 @@ import { requirePermission } from "../../../middleware/permission.middleware";
 import { resolveActorContext } from "../../../middleware/resolve-actor-context";
 import { validateRequest } from "../../../middleware/validate.middleware";
 import { PaymentSettingsController } from "./payment-settings.controller";
-import { setSurchargeSchema } from "./payment-settings.validation";
+import {
+  setClearingPolicySchema,
+  setSurchargeSchema,
+} from "./payment-settings.validation";
 
 export class PaymentSettingsRouter {
   public router: Router;
@@ -55,6 +58,16 @@ export class PaymentSettingsRouter {
       configure,
       validateRequest({ body: setSurchargeSchema }),
       this.controller.setSurcharge,
+    );
+
+    // How settled a payment must be before it opens a case. Ours, not
+    // Confido's — see `clearing-policy.ts`.
+    this.router.get("/clearing-policy", configure, this.controller.getClearingPolicy);
+    this.router.patch(
+      "/clearing-policy",
+      configure,
+      validateRequest({ body: setClearingPolicySchema }),
+      this.controller.setClearingPolicy,
     );
 
     // Connect (attaching an EXISTING Confido account) is intentionally not

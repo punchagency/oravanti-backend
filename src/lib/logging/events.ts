@@ -426,6 +426,8 @@ export const LogEvent = {
   PAYMENT_SETTINGS_FEE_ACCOUNT_REPOINTED: "payment_settings.fee_account_repointed",
   PAYMENT_SETTINGS_FEE_ACCOUNT_UPDATE_FAILED:
     "payment_settings.fee_account_update_failed",
+  /** The firm changed how settled a payment must be before it opens a case. */
+  PAYMENT_SETTINGS_CLEARING_POLICY_SET: "payment_settings.clearing_policy_set",
   PAYMENT_SETTINGS_BANK_ACCOUNTS_UNAVAILABLE:
     "payment_settings.bank_accounts_unavailable",
   CONSULTATION_BILLING_SENT: "consultation_billing.sent",

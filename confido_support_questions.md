@@ -13,7 +13,7 @@ your **updated platform** — that is confirmed, and the questions below assume 
 
 ## Blocking — we cannot build these without an answer
 
-*(Question 2 below is now resolved; kept in place so the numbering matches earlier correspondence.)*
+_(Question 2 below is now resolved; kept in place so the numbering matches earlier correspondence.)_
 
 ### 1. Connect (OAuth) — the whole flow except the last step
 
@@ -35,7 +35,7 @@ attacker's bank account. We are not willing to ship that on an assumption.
 confirmation that they are all on the newer platform. Refunds therefore debit the **trust account
 directly**, and a trust refund moves trust money rather than requiring a manual transfer.
 
-Recorded as a decision rather than a quotation: Confido confirmed the *platform* in the context of
+Recorded as a decision rather than a quotation: Confido confirmed the _platform_ in the context of
 surcharge deposits, and describes the sponsor-bank configuration in a separate article. If they ever
 diverge for us, slice 3's refund model is what changes.
 
@@ -112,6 +112,39 @@ complaint, not an accounting problem.
 We handle it in our state machine, but the message we show a firm is currently a guess.
 
 ---
+
+### 13. Chargebacks appear to have no webhook at all
+
+_(Numbered out of sequence, to keep the numbers above stable.)_
+
+`TransactionStatus2.CHARGED_BACK` exists, and `sandboxOnlyTriggerChargeback` exists, but
+`docs/webhooks/webhook-types` lists no `transaction.charged_back` event. The documented set is:
+
+```
+transaction.created           transaction.voided
+transaction.funds_in_transit  transaction.refunded
+transaction.deposited         transaction.partially_refunded
+                              transaction.ach_returned
+```
+
+A chargeback moves money out of a firm's account with no action by the firm, so it is the reversal
+we most need to hear about and the only one with nothing to announce it.
+
+**The questions:**
+
+1. Is there a chargeback webhook that is simply undocumented?
+2. If not, does `transaction.created` fire for the chargeback transaction? We recognise reversals
+   structurally — any transaction carrying `originalTransactionId` is treated as one — so if
+   `transaction.created` fires we would record it correctly without needing a named event.
+3. Is `transaction.charged_back` planned?
+
+We could not settle this ourselves: `sandboxOnlyTriggerChargeback` refuses with _"must be card
+transaction"_, and every transaction our scripts can create is a `manualPayment`. Reaching a real
+card transaction means a payer entering card details on the hosted page.
+
+**The workaround we have shipped:** monthly statement ingestion. A chargeback appears as a debit
+line whether or not an event announces it — but that is reconciliation after the fact, not
+notification, and the gap is a month wide.
 
 ## Confirmations — we believe we have these right, but they are load-bearing
 
