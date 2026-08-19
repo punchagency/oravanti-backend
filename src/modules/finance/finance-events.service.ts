@@ -45,6 +45,12 @@ export const logFinanceEvent = async (
   const entityId = data.timeEntryId ?? data.invoiceId ?? null;
 
   const metadata: Record<string, unknown> = { ...(data.metadata ?? {}) };
+  // The detail that says WHAT changed — the due date an invoice moved from, the
+  // reason given, a payment's reference. `summary` is one rendered sentence and
+  // does not carry it, so without this the trail records that something
+  // happened and nothing about it. Kept structured rather than appended to the
+  // sentence, because the feed has a field for it.
+  if (data.description) metadata.description = data.description;
   if (data.amount != null) metadata.amount = money(data.amount);
   if (data.paymentMethod != null) metadata.paymentMethod = data.paymentMethod;
   if (data.caseId != null) metadata.caseId = data.caseId;
@@ -87,6 +93,7 @@ export const getRecentActivity = async (
         summary: auditEvents.summary,
         entityType: auditEvents.entityType,
         entityId: auditEvents.entityId,
+        description: sql<string | null>`(${auditEvents.metadata}->>'description')`,
         amount: sql<string | null>`(${auditEvents.metadata}->>'amount')`,
         paymentMethod: sql<string | null>`(${auditEvents.metadata}->>'paymentMethod')`,
         invoiceNumber: invoices.invoiceNumber,
@@ -119,7 +126,7 @@ export const getRecentActivity = async (
     id: r.id,
     eventType: r.action,
     title: r.summary,
-    description: null,
+    description: r.description,
     amount: numOrNull(r.amount),
     paymentMethod: r.paymentMethod as PaymentMethod | null,
     invoiceId:
