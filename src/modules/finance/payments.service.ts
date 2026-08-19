@@ -4,7 +4,10 @@ import { organization } from "../../db/schema/auth-schema";
 import { clients } from "../../db/schema/clients";
 import { leads } from "../../db/schema/leads";
 import { invoiceFollowups } from "../../db/schema/invoice-followups";
-import { invoicePayments } from "../../db/schema/invoice-payments";
+import {
+  invoicePayments,
+  type PaymentEntryKind,
+} from "../../db/schema/invoice-payments";
 import { invoices, type PaymentMethod } from "../../db/schema/invoices";
 import { withTransaction } from "../../db/transaction-context";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
@@ -53,6 +56,16 @@ export type RecordPaymentInput = {
    * Mutually exclusive with `amountOperating`/`amountTrust`.
    */
   legs?: PaymentLeg[];
+  /**
+   * When the money actually landed.
+   *
+   * Omitted on a staff entry, which settles at insert — there is no webhook
+   * coming to confirm a cheque. Passed as `null` by a provider webhook for a
+   * payment still in flight, and filled later by `transaction.deposited`.
+   */
+  settledAt?: Date | null;
+  /** The provider's own status string, kept verbatim. */
+  providerStatus?: string | null;
 };
 
 export type PaymentLeg = {
@@ -150,9 +163,9 @@ export const recordPayment = async (
   if (effective.trust > 0) requireTrustWrite(access);
 
   // One row per credited account when the provider gave us legs, one combined
-  // row otherwise. A zero leg produces NO row: `invoice_payments_amount_positive`
-  // rejects a 0.00 amount, and a row for money that did not move would be a lie
-  // anyway.
+  // row otherwise. A zero leg produces NO row: `invoice_payments_amount_sign`
+  // requires a payment to be strictly positive, and a row for money that did
+  // not move would be a lie anyway.
   const rows = (input.legs ?? [])
     .filter((leg) => toMoney(leg.amount) > 0)
     .map((leg) => ({
@@ -173,17 +186,32 @@ export const recordPayment = async (
         },
       ];
 
+  // Staff entries settle on the spot: a member of staff recording a cheque is
+  // asserting the money is in the firm's hands, and no webhook is coming to
+  // confirm it. Provider payments start unsettled unless the caller says
+  // otherwise, because "reported" and "cleared" are days apart on ACH — the gap
+  // the case-opening gate exists to respect.
+  const settledAt =
+    input.settledAt !== undefined
+      ? input.settledAt
+      : input.provider
+        ? null
+        : new Date();
+
   return withTransaction(db, async () => {
     for (const row of toInsert) {
       await db.insert(invoicePayments).values({
         organizationId,
         invoiceId,
         ...row,
+        kind: "payment",
         paymentDate: input.paymentDate,
         method: input.method,
         reference: input.reference ?? null,
         notes: input.notes ?? null,
         provider: input.provider ?? null,
+        settledAt,
+        providerStatus: input.providerStatus ?? null,
         recordedById: actorStaffId,
       });
     }
@@ -249,6 +277,257 @@ const sumPaidBySide = async (
     );
 
   return { operating: num(row?.operating), trust: num(row?.trust) };
+};
+
+// ── Reversals ────────────────────────────────────────────────────────────────
+
+export type ReversalKind = Exclude<PaymentEntryKind, "payment">;
+
+export type RecordReversalInput = {
+  kind: ReversalKind;
+  /** The ledger row being undone. Resolved by the caller, never guessed here. */
+  reversesPaymentId: string;
+  /** A POSITIVE magnitude. Stored negated — callers pass what moved, not a sign. */
+  amount: number;
+  /** Which account the money came back out of. */
+  account: "operating" | "trust_iolta";
+  paymentDate: string;
+  method: PaymentMethod;
+  reference?: string;
+  notes?: string;
+  provider: string;
+  /** The reversal's OWN provider id, not the original's. The replay guard. */
+  providerReference: string;
+  providerStatus?: string | null;
+};
+
+/**
+ * Record money going back out.
+ *
+ * Written as a NEGATIVE row rather than a positive one a reader must remember
+ * to subtract — see the header on `invoice_payments`. Callers pass the
+ * magnitude that moved and this negates it, so no call site has to hold the
+ * sign convention in its head.
+ *
+ * The row this reverses must already exist. That is the caller's job to
+ * resolve, and a reversal whose original we never recorded must be dropped
+ * rather than passed here: subtracting money we never added drives
+ * `amount_paid` negative and marks a paid invoice unpaid, which is worse than
+ * an unreconciled line a human has to look at.
+ *
+ * Unlike `recordPayment`, this does NOT refuse a voided invoice. Voiding an
+ * invoice does not un-take the money that arrived against it, and issuing a
+ * refund is exactly what a firm does next.
+ */
+export const recordReversal = async (
+  organizationId: string,
+  invoiceId: string,
+  actorStaffId: string | null,
+  access: AccountAccess,
+  input: RecordReversalInput,
+) => {
+  const magnitude = toMoney(Math.abs(input.amount));
+  if (magnitude <= 0) {
+    throw new BadRequestError("A reversal must move a non-zero amount");
+  }
+
+  const [original] = await db
+    .select({
+      id: invoicePayments.id,
+      invoiceId: invoicePayments.invoiceId,
+      amount: invoicePayments.amount,
+      kind: invoicePayments.kind,
+      invoiceNumber: invoices.invoiceNumber,
+      caseId: invoices.caseId,
+      clientId: invoices.clientId,
+    })
+    .from(invoicePayments)
+    .innerJoin(invoices, eq(invoices.id, invoicePayments.invoiceId))
+    .where(
+      and(
+        eq(invoicePayments.organizationId, organizationId),
+        eq(invoicePayments.id, input.reversesPaymentId),
+      ),
+    )
+    .limit(1);
+
+  if (!original) {
+    throw new NotFoundError("The payment being reversed was not found");
+  }
+  if (original.kind !== "payment") {
+    throw new BadRequestError(
+      "Only a payment can be reversed, not another reversal",
+    );
+  }
+  if (original.invoiceId !== invoiceId) {
+    throw new BadRequestError("That payment belongs to a different invoice");
+  }
+
+  // Giving back more than came in is never right, and it is how a
+  // double-processed event would show up — the unique index catches a replay of
+  // the SAME reversal, but not two distinct provider events describing one real
+  // refund. Checked against the original rather than the invoice so a partial
+  // refund of one leg cannot overdraw a different leg.
+  const alreadyReversed = await sumReversedAgainst(organizationId, original.id);
+  const headroom = toMoney(num(original.amount) - alreadyReversed);
+  if (magnitude - headroom >= 0.005) {
+    throw new BadRequestError(
+      `Only ${headroom.toFixed(2)} of this payment remains to reverse`,
+    );
+  }
+
+  const trust = input.account === "trust_iolta" ? magnitude : 0;
+  // Money leaving a trust account is a trust write, exactly as money entering
+  // one is. A void of an unsettled trust payment is still trust money moving.
+  if (trust > 0) requireTrustWrite(access);
+
+  return withTransaction(db, async () => {
+    await db.insert(invoicePayments).values({
+      organizationId,
+      invoiceId,
+      kind: input.kind,
+      reversesPaymentId: original.id,
+      amount: money(-magnitude),
+      amountOperating: money(input.account === "operating" ? -magnitude : 0),
+      amountTrust: money(-trust),
+      paymentDate: input.paymentDate,
+      method: input.method,
+      reference: input.reference ?? null,
+      notes: input.notes ?? null,
+      provider: input.provider,
+      providerReference: input.providerReference,
+      // Money going out counts against the firm the moment we hear about it.
+      // The asymmetry with an incoming payment is deliberate: the conservative
+      // direction for a gate is to recognise outflows early and inflows late.
+      settledAt: new Date(),
+      providerStatus: input.providerStatus ?? null,
+      recordedById: actorStaffId,
+    });
+
+    const totals = await recalculateInvoiceTotals(organizationId, invoiceId);
+
+    await logFinanceEvent({
+      organizationId,
+      action: "finance.payment_reversed",
+      title: `${original.invoiceNumber} — ${magnitude.toFixed(2)} ${reversalWord(input.kind)}`,
+      description: input.notes ?? input.reference ?? null,
+      amount: -magnitude,
+      paymentMethod: input.method,
+      invoiceId,
+      caseId: original.caseId,
+      clientId: original.clientId,
+      actorId: actorStaffId,
+      metadata: {
+        kind: input.kind,
+        reversesPaymentId: original.id,
+        account: input.account,
+        providerReference: input.providerReference,
+      },
+    });
+
+    return totals;
+  });
+};
+
+/** How much of one payment has already been given back, as a positive number. */
+const sumReversedAgainst = async (
+  organizationId: string,
+  paymentId: string,
+): Promise<number> => {
+  const [row] = await db
+    .select({
+      total: sql<string>`coalesce(sum(${invoicePayments.amount}), 0)`,
+    })
+    .from(invoicePayments)
+    .where(
+      and(
+        eq(invoicePayments.organizationId, organizationId),
+        eq(invoicePayments.reversesPaymentId, paymentId),
+      ),
+    );
+
+  // Reversal rows are negative; the caller wants a magnitude.
+  return Math.abs(num(row?.total));
+};
+
+/** The word a firm would use, for the activity trail. */
+const reversalWord = (kind: ReversalKind): string => {
+  switch (kind) {
+    case "refund":
+      return "refunded";
+    case "return":
+      return "returned by the bank";
+    case "void":
+      return "voided";
+    case "chargeback":
+      return "charged back";
+    default:
+      return "reversed";
+  }
+};
+
+/**
+ * Advance a provider payment's settlement state.
+ *
+ * Idempotent and monotonic: `settled_at` only ever moves off null, so a
+ * redelivered `transaction.deposited` cannot rewrite the date, and a status
+ * arriving out of order cannot un-settle money that has landed.
+ *
+ * Returns whether a row was found, so the caller can tell "already up to date"
+ * from "we have never seen this transaction".
+ */
+export const markPaymentSettled = async (
+  organizationId: string,
+  provider: string,
+  providerReference: string,
+  providerStatus: string,
+  settled: boolean,
+): Promise<boolean> => {
+  const updated = await db
+    .update(invoicePayments)
+    .set({
+      providerStatus,
+      ...(settled
+        ? { settledAt: sql`coalesce(${invoicePayments.settledAt}, now())` }
+        : {}),
+    })
+    .where(
+      and(
+        eq(invoicePayments.organizationId, organizationId),
+        eq(invoicePayments.provider, provider),
+        eq(invoicePayments.providerReference, providerReference),
+      ),
+    )
+    .returning({ id: invoicePayments.id });
+
+  return updated.length > 0;
+};
+
+/**
+ * Find a ledger row by the provider's id for it.
+ *
+ * How a reversal locates the payment it undoes: Confido's reversal webhooks
+ * carry `originalTransaction.id`, which is exactly the `provider_reference` we
+ * stored when the payment landed.
+ */
+export const findPaymentByProviderReference = async (
+  organizationId: string,
+  provider: string,
+  providerReference: string,
+): Promise<{ id: string; invoiceId: string } | null> => {
+  const [row] = await db
+    .select({ id: invoicePayments.id, invoiceId: invoicePayments.invoiceId })
+    .from(invoicePayments)
+    .where(
+      and(
+        eq(invoicePayments.organizationId, organizationId),
+        eq(invoicePayments.provider, provider),
+        eq(invoicePayments.providerReference, providerReference),
+      ),
+    )
+    .limit(1);
+
+  return row ?? null;
 };
 
 // ── Follow-ups ───────────────────────────────────────────────────────────────
