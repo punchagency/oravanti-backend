@@ -488,9 +488,20 @@ export const getById = async (
       })),
     payments: paymentRows.map((p) => ({
       id: p.id,
+      // Negative on a reversal. The sign IS the information — a UI that showed
+      // the magnitude alone would render a refund identically to the payment it
+      // undoes.
       amount: num(p.amount),
       amountOperating: num(p.amountOperating),
       amountTrust: maskTrust(access, num(p.amountTrust)),
+      kind: p.kind,
+      reversesPaymentId: p.reversesPaymentId,
+      /** Null while the money is still in flight. */
+      settledAt: p.settledAt,
+      /** Confido's word for it, so HELD reads as HELD rather than "pending". */
+      providerStatus: p.providerStatus,
+      /** Only a processor payment can be refunded through us. */
+      refundable: p.kind === "payment" && p.provider != null,
       paymentDate: p.paymentDate,
       method: p.method,
       reference: p.reference,

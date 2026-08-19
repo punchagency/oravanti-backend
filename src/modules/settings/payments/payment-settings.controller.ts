@@ -6,8 +6,10 @@ import { PaymentDecryptionError } from "../../../utils/payment-crypto";
 import { sendSuccess } from "../../../utils/send-success";
 import {
   getPaymentAccount,
+  getClearingPolicy,
   getSurchargeSettings,
   refreshStatus,
+  setClearingPolicy,
   setSurchargeEnabled,
   startOnboardingSession,
 } from "./payment-settings.service";
@@ -79,6 +81,16 @@ export class PaymentSettingsController {
       req.body.enabled === true,
     );
     sendSuccess(res, settings, "Surcharge settings saved");
+  });
+
+  getClearingPolicy = asyncWrap(async (_req: Request, res: Response) => {
+    const settings = await getClearingPolicy(this.orgId());
+    sendSuccess(res, settings, "Clearing policy retrieved successfully");
+  });
+
+  setClearingPolicy = asyncWrap(async (req: Request, res: Response) => {
+    const settings = await setClearingPolicy(this.orgId(), req.body.policy);
+    sendSuccess(res, settings, "Clearing policy updated successfully");
   });
 
   listStatements = asyncWrap(async (_req: Request, res: Response) => {
