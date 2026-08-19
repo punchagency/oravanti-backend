@@ -30,6 +30,11 @@ import {
   type PaymentAccountState,
 } from "../../finance/confido/firm-status";
 import { createModuleLogger } from "../../../lib/logging/log";
+import { LogEvent } from "../../../lib/logging/events";
+import {
+  clearingPolicyFor,
+  type ClearingPolicy,
+} from "../../finance/clearing-policy";
 
 const log = createModuleLogger("payment-settings.service");
 
@@ -694,6 +699,51 @@ export const setSurchargeEnabled = async (
   }
 
   return getSurchargeSettings(organizationId);
+};
+
+// ─── Case-opening clearing policy ────────────────────────────────────────────
+
+/**
+ * How settled a payment must be before it opens a case.
+ *
+ * Ours, not Confido's — unlike surcharging, which is read live from them
+ * because they own both gates. This is a firm's answer to a trade-off in OUR
+ * pipeline, so it is stored, and `confido_firms` is where it lives because it
+ * only has meaning once a processor is connected: without one every payment is
+ * hand-recorded and settles at insert under any policy.
+ */
+export const getClearingPolicy = async (
+  organizationId: string,
+): Promise<{ policy: ClearingPolicy; configurable: boolean }> => {
+  const row = await readAccount(organizationId);
+  return {
+    policy: await clearingPolicyFor(organizationId),
+    // Nothing to configure until the firm can take a processor payment; before
+    // that the setting would be a control with no observable effect.
+    configurable: Boolean(row?.confidoFirmId),
+  };
+};
+
+export const setClearingPolicy = async (
+  organizationId: string,
+  policy: ClearingPolicy,
+): Promise<{ policy: ClearingPolicy; configurable: boolean }> => {
+  const row = await readAccount(organizationId);
+  if (!row?.confidoFirmId) {
+    throw new BadRequestError("This firm has no payment account yet");
+  }
+
+  await db
+    .update(confidoFirms)
+    .set({ paymentClearingPolicy: policy, updatedAt: new Date() })
+    .where(eq(confidoFirms.organizationId, organizationId));
+
+  log.action(LogEvent.PAYMENT_SETTINGS_CLEARING_POLICY_SET, {
+    organizationId,
+    policy,
+  });
+
+  return getClearingPolicy(organizationId);
 };
 
 // ─── Connect ─────────────────────────────────────────────────────────────────

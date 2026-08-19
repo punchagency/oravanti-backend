@@ -55,6 +55,7 @@ after a crash.
 | `16-confido-onboarding`      | Postgres                          | The concurrency and idempotency behind firm onboarding. No network                                           |
 | `17-confido-payments`        | Confido sandbox token + Postgres  | The three shapes a payment can land in, and that the legs sum to what was paid                               |
 | `18-webhook-staleness`       | Postgres                          | That webhook events accepted but never handled are actually detected                                         |
+| `19-confido-reversals`       | Confido sandbox token             | What a void, refund, partial refund, ACH return and chargeback actually look like. Network only              |
 
 ## Tier 3 — Confido Legal sandbox
 
@@ -100,6 +101,21 @@ at it. Needs an ACH payment on the link first.
 
 State lives in `.confido-partial.json` (gitignored, `0600` — it holds a firm API
 token). Delete it to start over.
+
+`19-confido-reversals` drives all four ways money goes back out against a fresh
+sandbox firm, because slice 3 has to classify them from an untyped `type` string
+that the docs never enumerate.
+
+```bash
+CONFIDO_PARTNER_TOKEN=p_secret_sandbox_… npm run check 19-confido-reversals
+```
+
+The load-bearing assertion is that every reversal carries
+`originalTransactionId`. The webhook recognises a reversal by that field rather
+than by its type string — which is what lets it handle a chargeback, whose
+webhook Confido does not document at all — so a reversal missing it is money we
+would silently fail to record. The type strings it observes are printed as a
+NOTE for `reversalKindFor`.
 
 ## Tier 2 — the queue round trip
 

@@ -1,5 +1,7 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   index,
   pgTable,
   text,
@@ -100,6 +102,36 @@ export const confidoFirms = pgTable(
     defaultTrustBankAccountId: text("default_trust_bank_account_id"),
     defaultOperatingBankAccountId: text("default_operating_bank_account_id"),
 
+    /**
+     * How settled a payment must be before it opens a case.
+     *
+     * The firm's answer to a real trade-off. A card payment sits at `PENDING`
+     * for around two business days with `canVoid: true`, and an ACH payment can
+     * be returned by the client's bank days after it appears — so opening a
+     * case the moment money is reported means occasionally doing billable work
+     * against money that goes back. Waiting for everything to clear is safe and
+     * slow.
+     *
+     *   on_report     — money counts as soon as Confido reports it
+     *   ach_only      — DEFAULT. Cards open a case at once; ACH must clear
+     *   all_payments  — nothing counts until it has settled
+     *
+     * `ach_only` is the default because the risks are not symmetric: an ACH
+     * return is routine, arrives within days, and is exactly what this guards
+     * against, whereas a card is far more likely to be disputed months later as
+     * a chargeback, which no gate can prevent.
+     *
+     * `HELD` is excluded under every policy but `on_report` — see
+     * `countsTowardCaseOpening`.
+     *
+     * Text with a check rather than a pgEnum: this is our vocabulary and it is
+     * likely to gain a value, and an enum addition cannot be used in the
+     * transaction that adds it.
+     */
+    paymentClearingPolicy: text("payment_clearing_policy")
+      .notNull()
+      .default("ach_only"),
+
     /** Set only on a successful `firmBrandingUpdate`, so a failure can be retried. */
     brandingAppliedAt: timestamp("branding_applied_at"),
     /** When the status was last confirmed against Confido, webhook or manual refresh. */
@@ -118,6 +150,10 @@ export const confidoFirms = pgTable(
     // financial write.
     uniqueIndex("confido_firms_confido_firm_uidx").on(table.confidoFirmId),
     index("confido_firms_status_idx").on(table.status),
+    check(
+      "confido_firms_clearing_policy_known",
+      sql`${table.paymentClearingPolicy} in ('on_report', 'ach_only', 'all_payments')`,
+    ),
   ],
 );
 

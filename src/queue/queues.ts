@@ -52,8 +52,20 @@ export type ConfidoWebhookJob = {
    * Present on `transaction.*` events. Their payloads carry only an id, so the
    * worker queries the transaction back rather than trusting the delivery — which
    * is also what makes out-of-order delivery converge on the truth.
+   *
+   * On a reversal event this is the id of the REVERSING transaction — the
+   * refund, void or return — not the payment it undoes.
    */
   transactionId?: string;
+  /**
+   * Present only on the four reversal events, which name both transactions.
+   *
+   * This is the payment being undone, and it is how the reversal finds its
+   * ledger row: we stored this id as `provider_reference` when the money
+   * landed. Carrying it avoids an extra API round trip, and its absence is what
+   * distinguishes a reversal event from an ordinary `transaction.created`.
+   */
+  originalTransactionId?: string;
 };
 
 // ─── Producers ────────────────────────────────────────────────────────────────
