@@ -5,6 +5,8 @@ import type {
   ConfidoBankAccount,
   ConfidoPayer,
   ConfidoPaymentLink,
+  ConfidoPaymentSettings,
+  ConfidoStatementRecord,
   ConfidoTransaction,
   ConfidoBrandingImageUpload,
   ConfidoBrandingInput,
@@ -455,6 +457,87 @@ export class ConfidoClient {
       { id },
     );
     return data.transaction;
+  }
+
+  /**
+   * Recent statements.
+   *
+   * There is no `statement(id:)` query, so a webhook carrying only a statement
+   * id has to fetch a window and match within it. `limit` is required by their
+   * schema. A statement older than the window is unreachable this way, which is
+   * why ingestion also runs on a lookback rather than webhooks alone.
+   */
+  async listStatements(
+    firmToken: string,
+    limit = 12,
+  ): Promise<ConfidoStatementRecord[]> {
+    const data = await this.gql<{
+      statements: { records: ConfidoStatementRecord[] };
+    }>(
+      firmToken,
+      `query Statements($limit: Int!) {
+        statements(limit: $limit, orderDir: desc) {
+          records {
+            id
+            month
+            bankAccounts {
+              bankAccountCategory bankAccountMask bankAccountNickname
+              totalPaymentVolume totalFees cardFees achFees surchargeFeesCollected
+            }
+            debits { amount fromBankAccountCategory fromBankAccountMask statementDescriptor }
+            additionalFees { amount description type }
+            additionalCredits { amount description type }
+          }
+        }
+      }`,
+      { limit },
+    );
+    return data.statements.records;
+  }
+
+  /** The firm's payment settings, including whether surcharging is permitted. */
+  async getPaymentSettings(
+    firmToken: string,
+  ): Promise<ConfidoPaymentSettings> {
+    const data = await this.gql<{
+      firm: { paymentSettings: ConfidoPaymentSettings };
+    }>(
+      firmToken,
+      `query PaymentSettings {
+        firm {
+          paymentSettings {
+            id surchargeAllowed surchargeEnabled surchargeDefaulted surchargeRate
+          }
+        }
+      }`,
+    );
+    return data.firm.paymentSettings;
+  }
+
+  /**
+   * Turn surcharging on or off for a firm.
+   *
+   * `surchargeDefaulted` is set alongside `surchargeEnabled` so new payment
+   * links inherit the firm's choice rather than needing it passed per link.
+   */
+  async updateSurcharge(
+    firmToken: string,
+    firmId: string,
+    enabled: boolean,
+  ): Promise<void> {
+    await this.gql(
+      firmToken,
+      `mutation Surcharge($input: PaymentSettingsUpdateInput!) {
+        paymentSettingsUpdate(input: $input) { id surchargeEnabled }
+      }`,
+      {
+        input: {
+          firmId,
+          surchargeEnabled: enabled,
+          surchargeDefaulted: enabled,
+        },
+      },
+    );
   }
 
   // ─── Webhooks ──────────────────────────────────────────────────────────────

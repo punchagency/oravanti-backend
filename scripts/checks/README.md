@@ -53,6 +53,8 @@ after a crash.
 | `14-confido-sandbox` | Confido sandbox token | Firm onboarding + trust/operating payment routing. Network only — touches no tables |
 | `15-confido-partial-payment` | Confido sandbox token + a browser | How Confido splits a **partial** payment across the trust and operating legs |
 | `16-confido-onboarding` | Postgres | The concurrency and idempotency behind firm onboarding. No network |
+| `17-confido-payments` | Confido sandbox token + Postgres | The three shapes a payment can land in, and that the legs sum to what was paid |
+| `18-webhook-staleness` | Postgres | That webhook events accepted but never handled are actually detected |
 
 ## Tier 3 — Confido Legal sandbox
 

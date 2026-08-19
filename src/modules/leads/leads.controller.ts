@@ -471,13 +471,13 @@ export class LeadsController {
     sendSuccess(res, result, "Booking data retrieved successfully");
   };
 
-  payConsultationFee = async (req: Request, res: Response) => {
+  startConsultationPayment = async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
 
-    const result = await this.svc.payConsultationFee(
+    const result = await this.svc.startConsultationPayment(
       req.params.token as string,
     );
-    sendSuccess(res, result, "Payment processed successfully");
+    sendSuccess(res, result, "Payment session started");
   };
 
   selectConsultationSlot = async (req: Request, res: Response) => {
@@ -491,8 +491,10 @@ export class LeadsController {
   };
 
   updateBookingTimezone = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
-
+    await this.svc.updateBookingTimezone(
+      req.params.token as string,
+      req.body.timezone as string,
+    );
     sendSuccess(res, null, "Timezone updated successfully");
   };
 

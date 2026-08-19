@@ -2272,16 +2272,21 @@ const main = async () => {
       }
       check("an unknown token is refused", unknownTokenRejected);
 
-      // Paying a settled invoice must not be possible — `invoice` was paid in
-      // full earlier, then voided, so it is refused twice over.
+      // A settled invoice still RESOLVES — the page polls this while a card is
+      // processing, and throwing the moment the balance clears would flip it
+      // into an error at the instant of success. Taking money against one is
+      // what must be refused.
+      //
+      // `invoice` here was paid in full earlier and then voided, so it is
+      // refused on both counts; the void check fires first.
       const paidToken = await paymentLinks.mintPaymentLink(orgId, invoice.id);
-      let settledRejected = false;
+      let settledCheckoutRejected = false;
       try {
-        await paymentLinks.invoiceByPaymentToken(paidToken);
+        await paymentLinks.startCheckout(paidToken);
       } catch {
-        settledRejected = true;
+        settledCheckoutRejected = true;
       }
-      check("a settled invoice cannot be paid again", settledRejected);
+      check("a settled invoice cannot be paid again", settledCheckoutRejected);
 
       // ── Ledger idempotency ────────────────────────────────────────────────
       section("ledger idempotency");

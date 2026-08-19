@@ -75,6 +75,10 @@ import {
   scheduleQuestionnaireReminder,
 } from "../../queue/queues";
 import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
+import {
+  mintPaymentLink,
+  startCheckout,
+} from "../finance/payment-links.service";
 import { emailService } from "../../utils/email/email.service";
 import {
   AuthorizationError,
@@ -3142,7 +3146,11 @@ const getConsultationBooking = async (token: string) => {
   const consultation = await getConsultationByBookingToken(token, true);
 
   const [lead] = await db
-    .select({ firstName: leads.firstName, lastName: leads.lastName })
+    .select({
+      firstName: leads.firstName,
+      lastName: leads.lastName,
+      timezone: leads.timezone,
+    })
     .from(leads)
     .where(eq(leads.id, consultation.leadId))
     .limit(1);
@@ -3185,7 +3193,7 @@ const getConsultationBooking = async (token: string) => {
     firmName: firm?.name ?? null,
     leadName,
     firmTimezone,
-    leadTimezone: null,
+    leadTimezone: lead?.timezone ?? null,
     mode: consultation.mode,
     durationMinutes: consultation.duration,
     requiresPayment,
@@ -3215,30 +3223,90 @@ const getLeadTimezone = async (
 };
 
 /**
- * The lead-facing "pay" action on the booking page.
+ * Record the timezone the lead is viewing their booking page in.
  *
- * **This does not take money and must not write to the ledger.** There is no
- * payment provider wired anywhere in this repo; the button has always been a
- * dummy that flips flags. What changed is that consultation fees are now real
- * invoices, so pretending here would put payments in `invoice_payments` that
- * never happened — turning a UI that overstates itself into accounts that do.
- *
- * So the split is deliberate:
- *
- *   - `consultations.feeStatus` is flipped, because it gates the consultation
- *     LIFECYCLE — whether the call starts, whether a slot can be picked. That
- *     is a product decision already made and this keeps the demo flow working.
- *   - The invoice is left alone. It stays outstanding and keeps appearing in
- *     receivables, which is the truth: nobody has paid. Staff record the real
- *     payment through the finance module when it arrives.
- *
- * Phase 3 replaces this with a provider, at which point the webhook records the
- * payment and the two stop disagreeing.
+ * Stored on the lead so every later rendering — confirmation emails, reminders,
+ * the staff view of "their time" — agrees with what they saw when they picked a
+ * slot. The controller previously answered success without calling anything, so
+ * this has been silently discarded since the page shipped.
  */
-const payConsultationFee = async (token: string) => {
+const updateBookingTimezone = async (
+  token: string,
+  timezone: string,
+): Promise<void> => {
   const consultation = await getConsultationByBookingToken(token);
-  if (consultation.feeStatus !== "unpaid")
+  await db
+    .update(leads)
+    .set({ timezone, updatedAt: new Date() })
+    .where(
+      and(
+        eq(leads.organizationId, consultation.organizationId),
+        eq(leads.id, consultation.leadId),
+      ),
+    );
+};
+
+/**
+ * Start a real payment for a consultation fee.
+ *
+ * Replaces a button that flipped `feeStatus` and moved no money. That was
+ * deliberate while no provider existed — the alternative was writing payments to
+ * `invoice_payments` that never happened — but it left the booking page saying
+ * "paid" while the invoice stayed outstanding, and the two have been disagreeing
+ * ever since.
+ *
+ * Now it returns a Confido payment link for the consultation's own invoice. The
+ * lifecycle no longer moves here: it moves when the money is actually recorded,
+ * in `settleConsultationForInvoice` below, which the transaction webhook calls.
+ * Clicking pay and having paid are different events and are finally modelled as
+ * such.
+ */
+const startConsultationPayment = async (token: string) => {
+  const consultation = await getConsultationByBookingToken(token);
+  if (consultation.feeStatus !== "unpaid") {
     throw new ConflictError("No payment is required for this consultation");
+  }
+
+  // A consultation can be unpaid with no invoice: the lead had no practice area,
+  // or the raise threw and was swallowed at booking time. Nothing to pay
+  // against, and inventing one here would bill money nobody agreed to.
+  if (!consultation.invoiceId) {
+    throw new BadRequestError(
+      "No invoice has been raised for this consultation yet. Please contact the firm.",
+    );
+  }
+
+  const paymentToken = await mintPaymentLink(
+    consultation.organizationId,
+    consultation.invoiceId,
+  );
+  const session = await startCheckout(paymentToken);
+  return { url: session.url };
+};
+
+/**
+ * Move the consultation on, now that its fee is genuinely paid.
+ *
+ * Called from the payment webhook rather than from the pay button, so every
+ * transition below is downstream of money that actually arrived. Idempotent on
+ * `feeStatus`: a redelivered webhook finds it already settled and does nothing.
+ */
+export const settleConsultationForInvoice = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<void> => {
+  const [consultation] = await db
+    .select()
+    .from(consultations)
+    .where(
+      and(
+        eq(consultations.organizationId, organizationId),
+        eq(consultations.invoiceId, invoiceId),
+      ),
+    )
+    .limit(1);
+
+  if (!consultation || consultation.feeStatus !== "unpaid") return;
 
   // Instant consultations: pay_now begins the consultation at payment time;
   // invoice_after / pay_in_person fees paid after the call just get marked
@@ -3255,7 +3323,7 @@ const payConsultationFee = async (token: string) => {
       })
       .where(eq(consultations.id, consultation.id))
       .returning();
-    if (begins) await finalizeConsultation(paid, { begin: true });
+    if (begins) await finalizeConsultation(paid!, { begin: true });
 
     await logLeadEvent({
       organizationId: consultation.organizationId,
@@ -3265,20 +3333,14 @@ const payConsultationFee = async (token: string) => {
         consultationId: consultation.id,
         amount: Number(consultation.feeAmount),
         instant: true,
-        // No provider is wired, so no money actually moved and the invoice is
-        // deliberately untouched. Recorded so the trail does not read as a
-        // settled payment.
-        demo: true,
       },
     });
-
-    return { success: true };
+    return;
   }
 
-  // Dummy payment: flip the fee flags. Urgent consultations are auto-scheduled
-  // ASAP at payment time and finalized immediately (connect ASAP) rather than
-  // sending the lead back to pick a slot. Legacy urgent rows created with an
-  // admin-chosen time keep it (the !scheduledAt guard).
+  // Urgent consultations are scheduled ASAP at payment time and finalized
+  // immediately rather than sending the lead back to pick a slot. Legacy urgent
+  // rows created with an admin-chosen time keep it (the !scheduledAt guard).
   const asapAt =
     consultation.isUrgent && !consultation.scheduledAt ? nextAsapSlot() : null;
   const [paid] = await db
@@ -3296,8 +3358,7 @@ const payConsultationFee = async (token: string) => {
     .returning();
 
   if (consultation.isUrgent) {
-    await finalizeConsultation(paid);
-
+    await finalizeConsultation(paid!);
     await logLeadEvent({
       organizationId: consultation.organizationId,
       leadId: consultation.leadId,
@@ -3308,8 +3369,7 @@ const payConsultationFee = async (token: string) => {
         urgent: true,
       },
     });
-
-    return { success: true };
+    return;
   }
 
   const [lead] = await db
@@ -3324,14 +3384,15 @@ const payConsultationFee = async (token: string) => {
 
   if (lead) {
     const leadName = `${lead.firstName} ${lead.lastName}`;
-    const bookingLink = `${env.FRONTEND_APP_URL}/consultation-booking/${token}`;
+    // The booking token is hash-only, so it cannot be recovered here. The lead
+    // already has the link from the original invitation; this tells them it is
+    // now theirs to use.
     emailService
       .sendEmail({
         to: lead.email,
         subject: "Payment received — pick a time for your consultation",
         html: `<p>Dear ${leadName},</p>
-          <p>Thanks, your payment was received. Please choose a time that works for you:</p>
-          <p><a href="${bookingLink}">${bookingLink}</a></p>`,
+          <p>Thanks, your payment was received. Please return to your booking link to choose a time that works for you.</p>`,
       })
       .catch(console.error);
   }
@@ -3345,8 +3406,6 @@ const payConsultationFee = async (token: string) => {
       amount: Number(consultation.feeAmount),
     },
   });
-
-  return { success: true };
 };
 
 // Gathers the people to notify about a consultation: the lead, the lead
@@ -5464,7 +5523,8 @@ export class LeadsService {
   cancelConsultation = cancelConsultation;
   getConsultationBooking = getConsultationBooking;
   getLeadTimezone = getLeadTimezone;
-  payConsultationFee = payConsultationFee;
+  startConsultationPayment = startConsultationPayment;
+  updateBookingTimezone = updateBookingTimezone;
   selectConsultationSlot = selectConsultationSlot;
   generateFeeAgreement = generateFeeAgreement;
   discardDraftFeeAgreement = discardDraftFeeAgreement;
