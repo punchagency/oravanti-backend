@@ -107,13 +107,7 @@ import { subscriptions } from "./subscriptions";
 import { tasks } from "./tasks";
 import { teamMembers } from "./team-members";
 import { teamPracticeAreaCaseTypes } from "./team-practice-area-case-types";
-import {
-  caseNotes,
-  caseWorkflowSteps,
-  workflowModules,
-  workflowTemplateSteps,
-  workflowTemplates,
-} from "./workflow";
+import { caseNotes, caseWorkflowSteps } from "./workflow";
 
 const currentOrgId = sql`get_current_organization_id()`;
 const currentUserId = sql`get_current_user_id()`;
@@ -227,9 +221,6 @@ export const [rlsStaffAvailabilityOverridesOrg, rlsStaffAvailabilityOverridesSta
 export const [rlsStaffOrg, rlsStaffStaff] = orgScoped("staff", staff);
 export const [rlsSubscriptionsOrg, rlsSubscriptionsStaff] = orgScoped("subscriptions", subscriptions);
 export const [rlsTasksOrg, rlsTasksStaff] = orgScoped("tasks", tasks);
-export const [rlsWorkflowTemplatesOrg, rlsWorkflowTemplatesStaff] = orgScoped("workflow_templates", workflowTemplates);
-export const [rlsWorkflowModulesOrg, rlsWorkflowModulesStaff] = orgScoped("workflow_modules", workflowModules);
-export const [rlsWorkflowTemplateStepsOrg, rlsWorkflowTemplateStepsStaff] = orgScoped("workflow_template_steps", workflowTemplateSteps);
 export const [rlsCaseWorkflowStepsOrg, rlsCaseWorkflowStepsStaff] = orgScoped("case_workflow_steps", caseWorkflowSteps);
 export const [rlsCaseNotesOrg, rlsCaseNotesStaff] = orgScoped("case_notes", caseNotes);
 
@@ -245,7 +236,7 @@ export const [rlsIntakePipelineTemplateStepsOrg, rlsIntakePipelineTemplateStepsS
 export const [rlsLeadDocumentLinksOrg, rlsLeadDocumentLinksStaff] = parentScoped("lead_document_links", leadDocumentLinks, "lead_id", "leads");
 export const [rlsStaffCertificationsOrg, rlsStaffCertificationsStaff] = parentScoped("staff_certifications", staffCertifications, "staff_id", "staff");
 export const [rlsStaffPracticeAreaCaseTypesOrg, rlsStaffPracticeAreaCaseTypesStaff] = parentScoped("staff_practice_area_case_types", staffPracticeAreaCaseTypes, "staff_id", "staff");
-export const [rlsExternalSubmissionsOrg, rlsExternalSubmissionsStaff] = parentScoped("external_submissions", externalSubmissions, "document_request_id", "document_requests");
+export const [rlsExternalSubmissionsOrg, rlsExternalSubmissionsStaff] = parentScoped("external_submissions", externalSubmissions, "request_id", "document_requests");
 
 // `team` and `team_member` are better-auth tables (see the exemptions below),
 // but `team` does carry `organization_id`, so these two join through it.
@@ -264,6 +255,15 @@ export const [rlsTeamPracticeAreaCaseTypesOrg, rlsTeamPracticeAreaCaseTypesStaff
  * make an orphaned upload visible to whoever performed it regardless of which
  * firm they now belong to, which is the opposite of tenancy.
  */
+/*
+  The third clause reaches a document through `external_submissions`, not
+  through `document_requests` directly. A request is an ASK for a document and
+  carries no `document_id`; the upload that answers it is the submission row,
+  and that is what holds the link.
+
+  Keep comments OUT of the template string. Drizzle emits it onto a single line,
+  so a `--` comment silently swallows the rest of the policy.
+*/
 const documentVisibleSql = (documentIdExpr: string) => `(
   EXISTS (
     SELECT 1 FROM document_case_links dcl
@@ -278,8 +278,9 @@ const documentVisibleSql = (documentIdExpr: string) => `(
       AND l.organization_id = get_current_organization_id()
   )
   OR EXISTS (
-    SELECT 1 FROM document_requests dr
-    WHERE dr.document_id = ${documentIdExpr}
+    SELECT 1 FROM external_submissions es
+    JOIN document_requests dr ON dr.id = es.request_id
+    WHERE es.document_id = ${documentIdExpr}
       AND dr.organization_id = get_current_organization_id()
   )
 )`;
@@ -391,6 +392,16 @@ export const RLS_EXEMPTIONS: Record<string, string> = {
   case_type_questionnaire_sections: "platform-authored template, not firm data",
   case_type_questionnaire_questions: "platform-authored template, not firm data",
   case_type_questionnaire_logic_rules: "platform-authored template, not firm data",
+  // The workflow BLUEPRINTS, not a firm's workflows. `workflow_templates` hangs
+  // off `practice_areas` — which is itself exempt as global taxonomy — with a
+  // UNIQUE practice_area_id, so there is exactly one template per practice area
+  // for the whole platform. Modules and steps hang off that in turn. None of
+  // the three has an organization_id to scope by, and giving them one would
+  // mean duplicating the taxonomy per firm. A firm's actual workflow state is
+  // `case_workflow_steps`, which IS org-scoped and covered above.
+  workflow_templates: "platform-authored blueprint, keyed to the global practice-area taxonomy",
+  workflow_modules: "platform-authored blueprint, hangs off workflow_templates",
+  workflow_template_steps: "platform-authored blueprint, hangs off workflow_modules",
 
   // ── Content-addressed caches ─────────────────────────────────────────────
   // Keyed on a checksum: identical bytes resolve to one row whoever uploaded
