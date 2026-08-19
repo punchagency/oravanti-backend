@@ -1,4 +1,5 @@
 import { and, eq, isNull } from "drizzle-orm";
+import { LogEvent } from "../../../lib/logging/events";
 import { createModuleLogger } from "../../../lib/logging/log";
 import { systemDb } from "../../../db/client";
 import { paymentWebhookEvents } from "../../../db/schema/payment-webhook-events";
@@ -13,6 +14,8 @@ import {
   refreshStatus,
 } from "../../settings/payments/payment-settings.service";
 import { getConfidoClient, isConfidoConfigured } from "./confido.client";
+import { settleConsultationForInvoice } from "../../leads/leads.service";
+import { syncStatements } from "./statements.service";
 import type { ConfidoWebhookEvent } from "./confido.types";
 
 const log = createModuleLogger("confido-webhooks.service");
@@ -46,6 +49,10 @@ const HANDLED_TYPES = new Set([
   "transaction.created",
   "transaction.funds_in_transit",
   "transaction.deposited",
+  // Reconciliation: the monthly fee debit never reaches invoice_payments, so
+  // the statement is the only thing that explains the operating balance.
+  "statement.created",
+  "statement.updated",
 ]);
 
 /**
@@ -190,6 +197,8 @@ export const processConfidoWebhook = async (job: {
     await refreshStatus(organizationId);
   } else if (job.eventType.startsWith("transaction.") && job.transactionId) {
     await recordConfidoTransaction(organizationId, job.transactionId);
+  } else if (job.eventType.startsWith("statement.")) {
+    await syncStatements(organizationId);
   }
 
   await markProcessed(job.eventId);
@@ -291,6 +300,22 @@ const recordConfidoTransaction = async (
     const message = err instanceof Error ? err.message : "";
     if (message.includes("invoice_payments_provider_ref_uidx")) return;
     throw err;
+  }
+
+  // A consultation fee that is now settled moves the consultation on — unlocking
+  // slot selection, scheduling an urgent call, or beginning an instant one.
+  // Downstream of money actually arriving, rather than of a button being
+  // clicked, which is the whole point of moving it here. Idempotent, and
+  // non-fatal: a consultation that fails to advance is recoverable, a payment
+  // that fails to record is not.
+  try {
+    await settleConsultationForInvoice(organizationId, invoiceId);
+  } catch (err) {
+    log.failure(
+      LogEvent.PAYMENT_WEBHOOK_CONSULTATION_SETTLEMENT_FAILED,
+      err,
+      { invoiceId, organizationId },
+    );
   }
 };
 

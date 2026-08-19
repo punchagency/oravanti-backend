@@ -383,6 +383,26 @@ export const LogEvent = {
    * Every one of them means money moved that this system did not record.
    */
   PAYMENT_WEBHOOK_TRANSACTION_SKIPPED: "payment_webhook.transaction_skipped",
+  /**
+   * Webhook events accepted but never handled.
+   *
+   * The failure this exists for is a worker that is running and consuming
+   * nothing: the endpoint answers 200, the event row is claimed, and the money
+   * is never recorded. Nothing else in the system notices, because every
+   * surface reports success.
+   */
+  /**
+   * The payment recorded, but the consultation it pays for did not advance.
+   *
+   * Deliberately not fatal to the webhook: a consultation that fails to move on
+   * is recoverable by hand, a payment that fails to record is not. Logged so
+   * the recoverable half is visible rather than silent.
+   */
+  PAYMENT_WEBHOOK_CONSULTATION_SETTLEMENT_FAILED:
+    "payment_webhook.consultation_settlement_failed",
+  PAYMENT_WEBHOOK_STALE_EVENTS_FOUND: "payment_webhook.stale_events_found",
+  PAYMENT_WEBHOOK_STALENESS_SWEEP_FAILED:
+    "payment_webhook.staleness_sweep_failed",
   PAYMENT_LINK_CREATED: "payment_link.created",
   PAYMENT_LINK_SENT: "payment_link.sent",
   PAYMENT_LINK_EXPIRED: "payment_link.expired",

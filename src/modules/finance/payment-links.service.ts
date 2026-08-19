@@ -84,6 +84,15 @@ export type PayableInvoice = {
   /** False while this firm cannot take money — the page says so rather than lying. */
   paymentsEnabled: boolean;
   /**
+   * True once nothing is owed.
+   *
+   * Returned rather than thrown, because the payment page POLLS this while a
+   * card is being processed. Throwing the moment the balance clears would flip
+   * the page into "this link is not available" at exactly the moment the payment
+   * succeeded — the one instant the payer most needs reassurance.
+   */
+  settled: boolean;
+  /**
    * Our uuid for whoever is billed — the client, or the lead if no client row
    * exists yet. Becomes the Confido payer's `externalId`, which is what lets us
    * map without a table of our own.
@@ -95,8 +104,15 @@ export type PayableInvoice = {
  * Resolve a payment link, for the public page.
  *
  * Guard vocabulary copied from `getConsultationByBookingToken`: not found,
- * expired, and states where paying makes no sense. A voided or fully paid
- * invoice is refused rather than silently accepting money against it.
+ * expired, and states where paying makes no sense. A voided invoice is refused
+ * rather than silently accepting money against it.
+ *
+ * A SETTLED invoice is deliberately not refused. The page polls this while the
+ * payer is watching their card go through, so throwing the moment the balance
+ * reaches zero would flip them into an error card at the exact instant they
+ * succeeded. It returns `settled: true` instead and the page renders it;
+ * `startCheckout` carries the refusal, which is where it belongs — that is the
+ * call that would take money against nothing owed.
  */
 export const invoiceByPaymentToken = async (
   token: string,
@@ -136,10 +152,6 @@ export const invoiceByPaymentToken = async (
     log.warn("payment_link.expired", { reason: "invoice draft" });
     throw new BadRequestError("This invoice is not ready for payment");
   }
-  if (num(row.balanceDue) <= 0) {
-    log.warn("payment_link.expired", { reason: "already paid" });
-    throw new BadRequestError("This invoice has already been paid in full");
-  }
 
   return {
     invoiceId: row.id,
@@ -152,6 +164,7 @@ export const invoiceByPaymentToken = async (
     balanceDue: num(row.balanceDue),
     dueDate: row.dueDate,
     status: row.status,
+    settled: num(row.balanceDue) <= 0,
     paymentsEnabled: await paymentsEnabledFor(row.organizationId),
     payerExternalId: row.clientId ?? row.leadId!,
   };
@@ -168,6 +181,13 @@ export const invoiceByPaymentToken = async (
  */
 export const startCheckout = async (token: string) => {
   const invoice = await invoiceByPaymentToken(token);
+
+  // The guard `invoiceByPaymentToken` used to carry. Resolving a settled
+  // invoice is fine — the page needs to say "paid" — but taking money against
+  // one is not.
+  if (invoice.settled) {
+    throw new BadRequestError("This invoice has already been paid in full");
+  }
 
   if (!(await paymentsEnabledFor(invoice.organizationId))) {
     throw new BadRequestError(
