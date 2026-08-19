@@ -21,6 +21,7 @@ import { randomUUID } from "crypto";
 import { and, eq, inArray, isNull, like, sql } from "drizzle-orm";
 import { closeDb, systemDb } from "../../src/db/client";
 import { organization, team, user } from "../../src/db/schema/auth-schema";
+import * as financeEvents from "../../src/modules/finance/finance-events.service";
 import { confidoFirms } from "../../src/db/schema/confido-firms";
 import { billingRates } from "../../src/db/schema/billing-rates";
 import { cases } from "../../src/db/schema/cases";
@@ -2917,6 +2918,25 @@ const main = async () => {
       check("a schedule being set is recorded", types.has("finance.invoice_schedule_set"));
       check("a revision is recorded", types.has("finance.invoice_schedule_revised"));
       check("a removal is recorded", types.has("finance.invoice_schedule_removed"));
+
+      // Everything above reads `audit_events` DIRECTLY, which is why a broken
+      // read path shipped: `getRecentActivity` joins invoices on
+      // `invoices.id = audit_events.entity_id`, and that is `uuid = text` —
+      // refused by Postgres every single time. The endpoint 500'd from the day
+      // the audit tables landed and no assertion here noticed, because none of
+      // them called the function the route calls.
+      const feed = await financeEvents.getRecentActivity(orgId, 8);
+      check("the activity feed loads at all", feed.length > 0);
+      check(
+        "and resolves the invoice each entry belongs to",
+        feed.some((e) => e.invoiceNumber != null),
+        "every entry has invoiceNumber null — the invoices join matched nothing",
+      );
+      check(
+        "and carries the detail saying what changed",
+        feed.some((e) => e.description != null),
+        "description is null throughout — logFinanceEvent is dropping it again",
+      );
     });
   } finally {
     // ── Cleanup ──────────────────────────────────────────────────────────────

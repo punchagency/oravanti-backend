@@ -101,13 +101,25 @@ export const getRecentActivity = async (
         occurredAt: auditEvents.occurredAt,
       })
       .from(auditEvents)
+      // Both joins compare as TEXT, and neither casts the other way round.
+      //
+      // `audit_events.entity_id` is deliberately `text` with no foreign key —
+      // it identifies rows in any table, so it cannot be a uuid column. Joining
+      // it to `invoices.id` directly is `uuid = text`, which Postgres refuses
+      // outright (42883): there is no implicit cast between them, so this query
+      // failed every time it ran rather than only on odd data.
+      //
+      // Casting the other way — `entity_id::uuid` — would compile and then
+      // throw on any non-uuid identifier the audit table ever holds. Widening
+      // the uuid to text cannot fail, and a uuid renders identically either
+      // side, so nothing stops matching.
       .leftJoin(
         invoices,
-        eq(invoices.id, auditEvents.entityId),
+        sql`${invoices.id}::text = ${auditEvents.entityId}`,
       )
       .leftJoin(
         clients,
-        sql`${clients.id} = (${auditEvents.metadata}->>'clientId')::uuid`,
+        sql`${clients.id}::text = (${auditEvents.metadata}->>'clientId')`,
       )
       .where(
         and(
