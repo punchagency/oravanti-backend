@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import { netPaidOnInvoice } from "./refunds.service";
 import { db } from "../../db/client";
 import { consultations } from "../../db/schema/consultations";
 import { invoices } from "../../db/schema/invoices";
@@ -119,6 +120,16 @@ export type ConsultationFee = {
   status: "none" | "unpaid" | "paid" | "waived";
   invoiceId: string | null;
   invoiceNumber: string | null;
+  /**
+   * What the firm is still holding of this fee.
+   *
+   * Net of reversals by construction — a refund is a negative ledger row — so
+   * it answers two questions at once: how much a cancellation would send back,
+   * and, once the consultation IS cancelled, how much is still owed. The
+   * caller decides which of those it is; nothing is stored either way, so it
+   * cannot fall out of step with the ledger.
+   */
+  netPaid: number;
 };
 
 /**
@@ -147,6 +158,9 @@ export const consultationFee = async (
       status: row.feeStatus,
       invoiceId: null,
       invoiceNumber: null,
+      // No invoice means no ledger rows. The legacy `feeStatus` flag was never
+      // backed by money moving, so claiming an amount is held would be a guess.
+      netPaid: 0,
     };
   }
 
@@ -174,6 +188,7 @@ export const consultationFee = async (
       status: row.feeStatus,
       invoiceId: row.invoiceId,
       invoiceNumber: null,
+      netPaid: 0,
     };
   }
 
@@ -187,5 +202,6 @@ export const consultationFee = async (
           : "unpaid",
     invoiceId: row.invoiceId,
     invoiceNumber: invoice.invoiceNumber,
+    netPaid: await netPaidOnInvoice(organizationId, row.invoiceId),
   };
 };

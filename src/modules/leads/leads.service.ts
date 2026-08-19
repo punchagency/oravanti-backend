@@ -31,10 +31,17 @@ import { clientContacts } from "../../db/schema/client-contacts";
 import { clients } from "../../db/schema/clients";
 import { conflictChecks } from "../../db/schema/conflict-checks";
 import { invoices } from "../../db/schema/invoices";
+import { systemAccess } from "../finance/account-access";
 import {
   consultationFee,
   raiseConsultationInvoice,
 } from "../finance/consultation-billing.service";
+import { sendInvoice } from "../finance/deliveries.service";
+import { voidInvoice } from "../finance/invoices.service";
+import {
+  netPaidOnInvoice,
+  refundInvoiceInFull,
+} from "../finance/refunds.service";
 import {
   feeInvoiceSatisfied,
   raiseFeeAgreementInvoice,
@@ -2591,7 +2598,7 @@ const initiateConsultation = async (
   // this existed.
   if (feeAmount != null && feeStatus === "unpaid") {
     try {
-      await raiseConsultationInvoice(organizationId, scheduledById ?? null, {
+      const invoiceId = await raiseConsultationInvoice(organizationId, scheduledById ?? null, {
         consultationId: consultation!.id,
         leadId,
         amount: Number(feeAmount),
@@ -2603,6 +2610,21 @@ const initiateConsultation = async (
         // due the moment it is raised.
         dueImmediately: data.paymentTiming === "pay_now" || !startNow,
       });
+
+      // Sent, not left as a draft.
+      //
+      // A draft is a dead end for this invoice in particular: it bills a LEAD,
+      // and the invoice edit dialog is built around clients, so nobody can open
+      // it, finish it and send it by hand. Leaving it a draft means the lead is
+      // never actually asked for the money.
+      //
+      // Delivering also mints the payment token, which is what puts a working
+      // pay link in the email — the whole point of raising it. A lead always
+      // has an address (`leads.email` is NOT NULL), so the missing-recipient
+      // guard in `deliver()` cannot fire here.
+      if (invoiceId) {
+        await sendInvoice(organizationId, invoiceId, scheduledById ?? null, systemAccess());
+      }
     } catch (err) {
       log.failure("leads.consultation_invoice_failed", err, { leadId, consultationId: consultation!.id });
     }
@@ -3688,11 +3710,36 @@ const selectConsultationSlot = async (token: string, startIso: string) => {
 // link, remove the Google Meet event, and notify the lead + attorney +
 // participants. The active-consultation guard in initiateConsultation then lets
 // the lead be re-scheduled. `leadId` is the lead id (route :id).
+export type ConsultationCancellation = {
+  /** Sent back through Confido as part of this cancellation. */
+  refunded: number;
+  /**
+   * Money still held that this cancellation did NOT return — either because the
+   * actor lacks `finance:refund`, or because it arrived outside the processor.
+   * Non-zero means somebody still owes the client.
+   */
+  refundOwed: number;
+  /** True when the money is only waiting on someone with the permission. */
+  awaitingAdmin: boolean;
+  /** Paid by cheque or cash, so it has to go back the same way. */
+  manualOutstanding: number;
+};
+
 const cancelConsultation = async (
   leadId: string,
   organizationId: string,
   data: { reason?: string } = {},
   actorId?: string,
+  /**
+   * Whether the actor may send money back. Resolved in the controller, which is
+   * the only layer holding the request headers Better Auth needs.
+   *
+   * Cancelling is an intake action and refunding is a finance one, so the two
+   * come apart: anyone may cancel, and a cancellation by someone without the
+   * permission leaves the refund owed rather than blocking the cancellation or
+   * quietly moving money on their authority.
+   */
+  canRefund = false,
 ) => {
   const [lead] = await db
     .select({ consultationId: leads.consultationId })
@@ -3769,7 +3816,66 @@ const cancelConsultation = async (
   // Remove the calendar/Meet event (no-op for placeholder/unconfigured).
   await googleMeetService.deleteMeetEvent(consultation.meetExternalId);
 
-  // Dummy fee: no real refund is processed this phase; feeStatus is left as-is.
+  // Money the client has already handed over for a consultation that is no
+  // longer happening.
+  //
+  // Derived from the ledger rather than from `feeStatus`, and deliberately so:
+  // a reversal is a negative row, so this figure clears itself the moment a
+  // refund lands and cannot drift the way a stored "refunded" flag would. It is
+  // also the same expression `consultationFee()` reads, which is what lets the
+  // UI show "refund owed" without a second source of truth.
+  const cancellation: ConsultationCancellation = {
+    refunded: 0,
+    refundOwed: 0,
+    awaitingAdmin: false,
+    manualOutstanding: 0,
+  };
+
+  if (consultation.invoiceId) {
+    const held = await netPaidOnInvoice(organizationId, consultation.invoiceId);
+
+    if (held > 0 && canRefund) {
+      const summary = await refundInvoiceInFull(
+        organizationId,
+        consultation.invoiceId,
+        actorId ?? null,
+        systemAccess(),
+        `Consultation cancelled${data.reason ? `: ${data.reason}` : ""}`,
+      );
+      cancellation.refunded = summary.refunded;
+      cancellation.manualOutstanding = summary.manualOutstanding;
+      // Whatever the refund could not reach — a failed leg, or money that never
+      // went through Confido — is still the client's.
+      cancellation.refundOwed = await netPaidOnInvoice(
+        organizationId,
+        consultation.invoiceId,
+      );
+    } else if (held > 0) {
+      cancellation.refundOwed = held;
+      cancellation.awaitingAdmin = true;
+    } else {
+      // Nothing was ever paid, so the invoice is asking for money against a
+      // consultation that will not happen. Void it. A paid one is left standing
+      // — the payment and reversal rows are the record of what happened, and
+      // hiding that behind a void would lose it.
+      await voidInvoiceForCancelledConsultation(
+        organizationId,
+        consultation.invoiceId,
+        actorId ?? null,
+      );
+    }
+  }
+
+  if (cancellation.refundOwed > 0) {
+    log.warn("leads.consultation_refund_owed", {
+      leadId,
+      consultationId: consultation.id,
+      invoiceId: consultation.invoiceId,
+      amount: cancellation.refundOwed,
+      awaitingAdmin: cancellation.awaitingAdmin,
+      manualOutstanding: cancellation.manualOutstanding,
+    });
+  }
 
   const { lead: leadRow, staffEmails } =
     await getConsultationRecipients(updated);
@@ -3813,7 +3919,37 @@ const cancelConsultation = async (
       .catch((err) => log.failure("email.send_failed", err, { leadId }));
   }
 
-  return updated;
+  // The refund outcome rides back with the consultation so the UI can say what
+  // actually happened to the money, rather than the caller having to guess from
+  // a 200.
+  return { ...updated, cancellation };
+};
+
+/**
+ * Void an invoice for a consultation that will not happen.
+ *
+ * Only ever called when nothing was paid. Uses `systemAccess` because the
+ * decision was already authorised — the actor was permitted to cancel, and this
+ * is bookkeeping that follows from it, not a separate act of invoice editing.
+ * Non-fatal: an invoice left standing is untidy, a cancellation that fails
+ * because of it is worse.
+ */
+const voidInvoiceForCancelledConsultation = async (
+  organizationId: string,
+  invoiceId: string,
+  actorStaffId: string | null,
+): Promise<void> => {
+  try {
+    await voidInvoice(
+      organizationId,
+      invoiceId,
+      "Consultation cancelled",
+      actorStaffId,
+      systemAccess(),
+    );
+  } catch (err) {
+    log.failure("leads.consultation_invoice_void_failed", err, { invoiceId });
+  }
 };
 
 // ─── Fee Agreement ─────────────────────────────────────────────────────────────

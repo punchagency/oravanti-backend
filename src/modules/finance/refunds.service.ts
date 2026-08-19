@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import { invoicePayments } from "../../db/schema/invoice-payments";
 import { invoices } from "../../db/schema/invoices";
@@ -214,4 +214,157 @@ const recordFromTransaction = async (
     if (message.includes("invoice_payments_provider_ref_uidx")) return false;
     throw err;
   }
+};
+
+// ── Refunding a whole invoice ────────────────────────────────────────────────
+
+export type InvoiceRefundSummary = {
+  /** Sent back through the processor, in full. */
+  refunded: number;
+  /**
+   * Money that reached the firm outside Confido — a cheque or cash somebody
+   * keyed in — which we have no way to return. The firm owes it and has to
+   * settle it at the bank, so it is reported rather than silently dropped.
+   */
+  manualOutstanding: number;
+  /** Per-payment failures, so a partial success is still legible. */
+  failures: { paymentId: string; reason: string }[];
+};
+
+/**
+ * Send back everything still held against one invoice.
+ *
+ * Written for cancellation, where the caller is undoing a whole transaction
+ * rather than choosing a payment to reverse. Each payment is refunded for the
+ * amount that has not already been reversed, so running this twice is a no-op
+ * rather than a double refund — the second pass finds nothing outstanding.
+ *
+ * Failures are collected, not thrown. A cancellation must not be blocked
+ * because one leg of the refund failed; the caller reports what happened and
+ * the remainder stays visible as still owed, which is exactly the state a
+ * derived "refund owed" check reads.
+ */
+export const refundInvoiceInFull = async (
+  organizationId: string,
+  invoiceId: string,
+  actorStaffId: string | null,
+  access: AccountAccess,
+  reason?: string,
+): Promise<InvoiceRefundSummary> => {
+  const summary: InvoiceRefundSummary = {
+    refunded: 0,
+    manualOutstanding: 0,
+    failures: [],
+  };
+
+  const payments = await db
+    .select({
+      id: invoicePayments.id,
+      amount: invoicePayments.amount,
+      provider: invoicePayments.provider,
+      providerReference: invoicePayments.providerReference,
+    })
+    .from(invoicePayments)
+    .where(
+      and(
+        eq(invoicePayments.organizationId, organizationId),
+        eq(invoicePayments.invoiceId, invoiceId),
+        eq(invoicePayments.kind, "payment"),
+      ),
+    );
+
+  for (const payment of payments) {
+    const outstanding = await unreversedAmount(organizationId, payment.id);
+    if (outstanding <= 0) continue;
+
+    // Nothing to ask a processor for. The money arrived by cheque, cash or
+    // wire and goes back the same way.
+    if (payment.provider !== CONFIDO_PROVIDER || !payment.providerReference) {
+      summary.manualOutstanding = toMoney(
+        summary.manualOutstanding + outstanding,
+      );
+      continue;
+    }
+
+    try {
+      const result = await refundPayment(
+        organizationId,
+        invoiceId,
+        payment.id,
+        actorStaffId,
+        access,
+        { amount: outstanding, ...(reason ? { reason } : {}) },
+      );
+      summary.refunded = toMoney(summary.refunded + result.amount);
+    } catch (err) {
+      summary.failures.push({
+        paymentId: payment.id,
+        reason: err instanceof Error ? err.message : "Refund failed",
+      });
+      log.failure(LogEvent.PAYMENT_FAILED, err, { invoiceId, paymentId: payment.id });
+    }
+  }
+
+  return summary;
+};
+
+/** What is left of one payment after everything already reversed against it. */
+const unreversedAmount = async (
+  organizationId: string,
+  paymentId: string,
+): Promise<number> => {
+  const [payment] = await db
+    .select({ amount: invoicePayments.amount })
+    .from(invoicePayments)
+    .where(
+      and(
+        eq(invoicePayments.organizationId, organizationId),
+        eq(invoicePayments.id, paymentId),
+      ),
+    )
+    .limit(1);
+
+  if (!payment) return 0;
+
+  const [reversed] = await db
+    .select({
+      total: sql<string>`coalesce(sum(${invoicePayments.amount}), 0)`,
+    })
+    .from(invoicePayments)
+    .where(
+      and(
+        eq(invoicePayments.organizationId, organizationId),
+        eq(invoicePayments.reversesPaymentId, paymentId),
+      ),
+    );
+
+  // Reversal rows are negative; the caller wants a magnitude.
+  return Math.max(toMoney(num(payment.amount) - Math.abs(num(reversed?.total))), 0);
+};
+
+/**
+ * How much of this invoice the firm is still holding.
+ *
+ * The derived answer to "is a refund owed here". Net of reversals by
+ * construction, because a reversal is a negative row — which means it clears
+ * itself the moment the refund lands, and cannot drift the way a stored flag
+ * would.
+ */
+export const netPaidOnInvoice = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<number> => {
+  const [row] = await db
+    .select({
+      total: sql<string>`coalesce(sum(${invoicePayments.amount}), 0)`,
+    })
+    .from(invoicePayments)
+    .where(
+      and(
+        eq(invoicePayments.organizationId, organizationId),
+        eq(invoicePayments.invoiceId, invoiceId),
+      ),
+    );
+
+  return Math.max(toMoney(num(row?.total)), 0);
 };
