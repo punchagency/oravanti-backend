@@ -3,12 +3,15 @@ import { db } from "../../db/client";
 import { feeAgreements } from "../../db/schema/fee-agreements";
 import { invoices } from "../../db/schema/invoices";
 import { leads } from "../../db/schema/leads";
+import { createModuleLogger } from "../../lib/logging/log";
 import { systemAccess } from "./account-access";
 import { agingOverDues } from "./dues";
 import type { ScheduleRow } from "./instalments";
 import { create, type CreateInvoiceLine } from "./invoices.service";
 import { num, toMoney } from "./money";
 import { firmToday } from "./status";
+
+const log = createModuleLogger("fee-agreement-billing.service");
 
 /**
  * Fee agreements, as invoices.
@@ -214,6 +217,8 @@ export const raiseFeeAgreementInvoice = async (
     .update(feeAgreements)
     .set({ invoiceId: invoice.id, updatedAt: new Date() })
     .where(eq(feeAgreements.id, input.agreementId));
+
+  log.action("fee_agreement.generated", { agreementId: input.agreementId, invoiceId: invoice.id });
 
   return invoice.id;
 };

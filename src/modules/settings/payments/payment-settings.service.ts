@@ -29,6 +29,9 @@ import {
   stateForStatus,
   type PaymentAccountState,
 } from "../../finance/confido/firm-status";
+import { createModuleLogger } from "../../../lib/logging/log";
+
+const log = createModuleLogger("payment-settings.service");
 
 /**
  * The firm's payment-processor setup.
@@ -397,10 +400,9 @@ const applyBranding = async (
       }
     } catch (err) {
       // Fall through with name and colours only.
-      console.error(
-        `[confido] logo upload failed for org ${organizationId}:`,
-        (err as Error).message,
-      );
+      log.failure("payment_settings.logo_upload_failed", err, {
+        organizationId,
+      });
     }
   }
 
@@ -411,10 +413,7 @@ const applyBranding = async (
       .set({ brandingAppliedAt: new Date(), updatedAt: new Date() })
       .where(eq(confidoFirms.organizationId, organizationId));
   } catch (err) {
-    console.error(
-      `[confido] branding failed for org ${organizationId}:`,
-      (err as Error).message,
-    );
+    log.failure("payment_settings.branding_failed", err, { organizationId });
   }
 };
 
@@ -454,10 +453,9 @@ const inviteFirmAdmin = async (
       role: "FIRM_ADMIN",
     });
   } catch (err) {
-    console.error(
-      `[confido] portal invite failed for org ${organizationId}:`,
-      (err as Error).message,
-    );
+    log.failure("payment_settings.portal_invite_failed", err, {
+      organizationId,
+    });
   }
 };
 
@@ -494,10 +492,13 @@ const ensureFeeAccount = async (
   if (feeAccount?.id === operating.id) return;
 
   if (feeAccount && feeAccount.category === "trust") {
-    console.error(
-      `[confido] org ${organizationId} had its fee account set to a TRUST ` +
-        `account (${feeAccount.nickname}); repointing at operating`,
-    );
+    // Not a failure — it is corrected below — but processor fees were pointed
+    // at client money, which someone needs to see even though the code fixed it.
+    log.warn("payment_settings.fee_account_repointed", {
+      organizationId,
+      fromAccount: feeAccount.nickname,
+      fromCategory: feeAccount.category,
+    });
   }
 
   try {
@@ -505,10 +506,9 @@ const ensureFeeAccount = async (
       feeBankAccountId: operating.id,
     });
   } catch (err) {
-    console.error(
-      `[confido] could not set the fee account for org ${organizationId}:`,
-      (err as Error).message,
-    );
+    log.failure("payment_settings.fee_account_update_failed", err, {
+      organizationId,
+    });
   }
 };
 
@@ -547,10 +547,9 @@ export const refreshStatus = async (
       defaults = pickDefaults(accounts);
       await ensureFeeAccount(organizationId, firmToken, accounts);
     } catch (err) {
-      console.error(
-        `[confido] bank account lookup failed for org ${organizationId}:`,
-        (err as Error).message,
-      );
+      log.failure("payment_settings.bank_accounts_unavailable", err, {
+        organizationId,
+      });
     }
   }
 

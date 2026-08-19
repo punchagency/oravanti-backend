@@ -1,4 +1,6 @@
-import { describe, expect, it, jest } from "@jest/globals";
+// `jest` is deliberately NOT imported from @jest/globals here — see the note on
+// jest.mock below. The bare global is typed via @types/jest.
+import { describe, expect, it } from "@jest/globals";
 
 // `payment-crypto` reads the key through `config/env`, which validates the whole
 // environment at import time and throws when required vars are absent. Mocking
@@ -8,7 +10,32 @@ const mockEnv: { CONTRACTOR_PAYMENT_ENCRYPTION_KEY?: string; PAYMENT_ENCRYPTION_
   PAYMENT_ENCRYPTION_KEY: "unit-test-payment-key",
 };
 
-jest.mock("../../../src/config/env", () => ({ env: mockEnv }));
+/*
+  Two things here are load-bearing, and both are about swc's hoisting.
+
+  **`jest` must be the global, not the `@jest/globals` import.** swc only
+  recognises a bare `jest.mock(...)` call. Import `jest` and the call compiles
+  to `_globals.jest.mock(...)`, which swc leaves exactly where it stands —
+  after the `require()` it was supposed to intercept. The mock then registers
+  too late, jest serves the real module, and the suite silently tests
+  production code against whatever is in the developer's own `.env`. That is
+  what was happening here: the cases that only read the initial key passed, and
+  the three that mutate it failed.
+
+  **The factory must not dereference `mockEnv` eagerly.** Hoisting puts
+  `jest.mock` above everything, including the `const mockEnv` below, so the
+  factory runs while that binding is still in its temporal dead zone. A getter
+  defers the lookup to each property access, by which point the declaration has
+  run.
+
+  The alternative, used by other suites in this repo, is `await import()`
+  inside the test body — it defers the require rather than advancing the mock.
+*/
+jest.mock("../../../src/config/env", () => ({
+  get env() {
+    return mockEnv;
+  },
+}));
 
 import {
   decryptPaymentValue,

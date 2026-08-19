@@ -1,5 +1,6 @@
 import { Queue } from "bullmq";
 import type { AiScanRequestJob } from "../modules/ai-scan/contract";
+import { getRequestContext } from "../middleware/request-context";
 import { redisConnection } from "./connection";
 
 // ─── Queue names ──────────────────────────────────────────────────────────────
@@ -14,7 +15,29 @@ export const CONFIDO_WEBHOOKS_QUEUE = "confido-webhooks";
 
 // ─── Job payloads ─────────────────────────────────────────────────────────────
 
-export type QuestionnaireReminderJob = {
+/**
+ * Carried on every job payload so async work stays joined to the request that
+ * queued it.
+ *
+ * A job runs minutes or days after the HTTP request that scheduled it, in a
+ * different process, with no AsyncLocalStorage context of its own — so without
+ * this the worker's logs and audit rows are unattributable, which is how the
+ * old event tables filled up with null actors on rows written by workers. The
+ * worker re-enters a context with this id (see runWithRequestContext), and one
+ * search then returns the request, the job, and everything the job did.
+ */
+export type JobOrigin = {
+  /** The requestId of the request that enqueued this job, when there was one. */
+  requestId?: string;
+};
+
+/** Stamps the enqueuing request's id onto a payload. */
+export const withOrigin = <T extends object>(payload: T): T & JobOrigin => ({
+  ...payload,
+  requestId: getRequestContext().requestId,
+});
+
+export type QuestionnaireReminderJob = JobOrigin & {
   /** questionnaire_sends.id whose response is awaited */
   sendId: string;
 };
@@ -61,7 +84,7 @@ export const scheduleQuestionnaireReminder = async (
 ): Promise<string | undefined> => {
   const job = await questionnaireRemindersQueue.add(
     "reminder",
-    { sendId },
+    withOrigin({ sendId }),
     { delay: days * 24 * 60 * 60 * 1000, jobId: `reminder-${sendId}` },
   );
   return job.id;
@@ -93,7 +116,10 @@ export const enqueueAiScanJob = async (
   payload: AiScanRequestJob,
   delayMs = 0,
 ): Promise<string | undefined> => {
-  const job = await aiScanQueue.add("scan", payload, { jobId, delay: delayMs });
+  const job = await aiScanQueue.add("scan", withOrigin(payload), {
+    jobId,
+    delay: delayMs,
+  });
   return job.id;
 };
 

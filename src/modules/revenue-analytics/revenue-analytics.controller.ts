@@ -12,7 +12,7 @@ export class RevenueAnalyticsController {
   }
 
   getAnalytics = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const period = (req.query.period as Period) ?? "month";
     const teamId = req.query.teamId as string | undefined;
 
@@ -25,7 +25,7 @@ export class RevenueAnalyticsController {
   });
 
   exportReport = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const period = (req.query.period as Period) ?? "month";
     const teamId = req.query.teamId as string | undefined;
 

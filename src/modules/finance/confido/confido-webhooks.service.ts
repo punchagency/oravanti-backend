@@ -1,4 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
+import { LogEvent } from "../../../lib/logging/events";
+import { createModuleLogger } from "../../../lib/logging/log";
 import { systemDb } from "../../../db/client";
 import { paymentWebhookEvents } from "../../../db/schema/payment-webhook-events";
 import { enqueueConfidoWebhook } from "../../../queue/queues";
@@ -15,6 +17,8 @@ import { getConfidoClient, isConfidoConfigured } from "./confido.client";
 import { settleConsultationForInvoice } from "../../leads/leads.service";
 import { syncStatements } from "./statements.service";
 import type { ConfidoWebhookEvent } from "./confido.types";
+
+const log = createModuleLogger("confido-webhooks.service");
 
 /**
  * Confido webhooks.
@@ -244,9 +248,11 @@ const recordConfidoTransaction = async (
   // chargeback all reference the same payment link, and recording any of them
   // as a payment overpays the invoice and marks it settled.
   if (!PAYMENT_TRANSACTION_TYPES.has(txn.type)) {
-    console.log(
-      `[confido] skipping transaction ${transactionId}: type "${txn.type}" is not a client payment`,
-    );
+    log.warn("payment_webhook.transaction_skipped", {
+      transactionId,
+      transactionType: txn.type,
+      reason: "not_a_client_payment",
+    });
     return;
   }
 
@@ -255,9 +261,10 @@ const recordConfidoTransaction = async (
   // against an invoice we issued, so there is nothing to credit.
   const invoiceId = txn.paymentLink?.externalId;
   if (!invoiceId) {
-    console.log(
-      `[confido] transaction ${transactionId} has no invoice reference; skipped`,
-    );
+    log.warn("payment_webhook.transaction_skipped", {
+      transactionId,
+      reason: "no_invoice_reference",
+    });
     return;
   }
 
@@ -265,9 +272,11 @@ const recordConfidoTransaction = async (
   if (!account) {
     // An unrecognised category cannot be assigned to a side, and guessing would
     // put client money in the firm's revenue or vice versa.
-    console.error(
-      `[confido] transaction ${transactionId} has unknown bank account category "${txn.bankAccount.category}"; skipped`,
-    );
+    log.warn("payment_webhook.transaction_skipped", {
+      transactionId,
+      bankAccountCategory: txn.bankAccount.category,
+      reason: "unknown_bank_account_category",
+    });
     return;
   }
 
@@ -302,9 +311,10 @@ const recordConfidoTransaction = async (
   try {
     await settleConsultationForInvoice(organizationId, invoiceId);
   } catch (err) {
-    console.error(
-      `[confido] consultation settlement failed for invoice ${invoiceId}:`,
-      (err as Error).message,
+    log.failure(
+      LogEvent.PAYMENT_WEBHOOK_CONSULTATION_SETTLEMENT_FAILED,
+      err,
+      { invoiceId, organizationId },
     );
   }
 };

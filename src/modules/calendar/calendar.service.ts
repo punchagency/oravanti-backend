@@ -1,5 +1,7 @@
 import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import { db } from "../../db/client";
+import type { UpdateCalendarEventInput } from "./calendar.validation";
+import { createModuleLogger } from "../../lib/logging/log";
 import {
   CalendarEvent,
   calendarEvents,
@@ -11,6 +13,8 @@ import { leads } from "../../db/schema/leads";
 import { staff } from "../../db/schema/staff";
 import { dayjs } from "../../utils/date";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
+
+const log = createModuleLogger("calendar.service");
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -442,13 +446,15 @@ export const createCalendarEvent = async (
 
   await insertDeadlines(event);
 
+  log.action("calendar.event_created", { eventId: event.id, eventType: event.eventType });
+
   return fetchEventWithJoins(event.id, organizationId);
 };
 
 export const updateCalendarEvent = async (
   id: string,
   organizationId: string,
-  data: Partial<NewCalendarEvent>,
+  data: UpdateCalendarEventInput,
 ) => {
   const [existing] = await db
     .select({ status: calendarEvents.status })
@@ -463,6 +469,7 @@ export const updateCalendarEvent = async (
 
   if (!existing) return null;
   if (existing.status === "completed" || existing.status === "cancelled") {
+    log.warn("calendar.update_rejected", { eventId: id, status: existing.status });
     throw new Error(
       `Cannot update a ${existing.status} event`,
     );
@@ -490,6 +497,8 @@ export const updateCalendarEvent = async (
     await insertDeadlines(updated);
   }
 
+  log.action("calendar.event_updated", { eventId: id, eventType: updated.eventType });
+
   return fetchEventWithJoins(id, organizationId);
 };
 
@@ -510,6 +519,7 @@ export const deleteCalendarEvent = async (
 
   if (!existing) return;
   if (existing.status === "completed" || existing.status === "cancelled") {
+    log.warn("calendar.delete_rejected", { eventId: id, status: existing.status });
     throw new Error(
       `Cannot delete a ${existing.status} event`,
     );
@@ -524,6 +534,8 @@ export const deleteCalendarEvent = async (
         eq(calendarEvents.organizationId, organizationId),
       ),
     );
+
+  log.action("calendar.event_deleted", { eventId: id });
 };
 
 // ─── Dashboard Strip ──────────────────────────────────────────────────────────

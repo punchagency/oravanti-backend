@@ -4,10 +4,13 @@ import { cases } from "../../db/schema/cases";
 import { documentCaseLinks } from "../../db/schema/documents";
 import { leadDocumentLinks } from "../../db/schema/lead-document-links";
 import { leads } from "../../db/schema/leads";
+import { createModuleLogger } from "../../lib/logging/log";
 import {
   enqueueScenarioScan,
   type EnqueueScenarioScanParams,
 } from "./scan-producer";
+
+const log = createModuleLogger("ai-scan.scan-triggers");
 
 /**
  * Fire-and-forget scan trigger.
@@ -18,10 +21,7 @@ import {
  */
 export const triggerScenarioScan = (params: EnqueueScenarioScanParams): void => {
   void enqueueScenarioScan(params).catch((err) => {
-    console.error(
-      `[ai-scan] failed to enqueue scan for ${params.scenarioType} ${params.scenarioId}:`,
-      err,
-    );
+    log.failure("ai_scan.trigger_failed", err, { scenarioType: params.scenarioType, scenarioId: params.scenarioId });
   });
 };
 
@@ -43,10 +43,7 @@ export const triggerScanForDocument = async (
   } catch (err) {
     // Fire-and-forget: resolving the document's scenarios must never break the
     // upload that triggered it.
-    console.error(
-      `[ai-scan] failed to resolve scenarios for document ${documentId}:`,
-      err,
-    );
+    log.failure("ai_scan.scenario_resolve_failed", err, { documentId });
   }
 };
 

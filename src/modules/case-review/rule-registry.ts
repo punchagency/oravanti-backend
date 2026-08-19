@@ -1,5 +1,8 @@
+import { createModuleLogger } from "../../lib/logging/log";
 import { ALL_RULES } from "./rules";
 import type { CandidateIssue, Rule, RuleContext } from "./types";
+
+const log = createModuleLogger("case-review.rule-registry");
 
 /**
  * Run every enabled rule against the context and collect candidate issues.
@@ -18,7 +21,7 @@ export const runRules = (
     try {
       candidates.push(...rule.evaluate(ctx));
     } catch (err) {
-      console.error(`[case-review] rule ${rule.issueType} failed:`, err);
+      log.failure("case_review.rule_failed", err, { issueType: rule.issueType });
     }
   }
   return candidates;

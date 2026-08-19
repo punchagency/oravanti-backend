@@ -12,7 +12,7 @@ export class PermissionAuditLogController {
   }
 
   getPermissionAuditLog = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const limit = req.query.limit ? parseInt(req.query.limit as string) : 20;
 
     const result = await this.auditLogService.getPermissionAuditLog(

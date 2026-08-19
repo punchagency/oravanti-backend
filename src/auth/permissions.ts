@@ -15,6 +15,10 @@ const statement = {
   conflicts: ["review"], // conflict-check resolution (owners + admins only)
   documents: ["read", "download", "create", "update", "delete"], // download gates client docs
   case_review: ["read", "resolve", "configure"], // AI case review dashboard
+  // The firm-wide audit trail. Reading it means reading every action every
+  // colleague has taken, so it is an owner/admin surface — the per-entity
+  // activity feeds on a lead or a matter are gated by that entity instead.
+  audit: ["read", "export"],
   // Finance: invoicing, payments, time & billing, reports.
   // `trust` is the coarse yes/no on IOLTA data; `financial_access_controls`
   // holds the firm's own fine-grained answer and is checked as well.
@@ -43,6 +47,7 @@ export const paralegal = ac.newRole({
   conflicts: [],
   documents: ["read"],
   case_review: ["read"],
+  audit: [],
   // Sees the billing screens and logs their own time. No invoice creation, no
   // money handling, no trust.
   finance: ["read", "log_time"],
@@ -56,6 +61,7 @@ export const attorney = ac.newRole({
   conflicts: [],
   documents: ["read", "download"],
   case_review: ["read"],
+  audit: [],
   // Drafts an invoice for their own matter. Deliberately NOT record_payment or
   // approve_time — money handling and time approval stay with admin/owner, and
   // this role is kept thin by design.
@@ -71,6 +77,7 @@ export const owner = ac.newRole({
   conflicts: ["review"],
   documents: ["read", "download", "create", "update", "delete"],
   case_review: ["read", "resolve", "configure"],
+  audit: ["read", "export"],
   finance: [
     "read",
     "create",
@@ -92,6 +99,7 @@ export const admin = ac.newRole({
   conflicts: ["review"],
   documents: ["read", "download", "create", "update", "delete"],
   case_review: ["read", "resolve", "configure"],
+  audit: ["read", "export"],
   finance: [
     "read",
     "create",
@@ -113,6 +121,7 @@ const memberRole = ac.newRole({
   conflicts: [],
   documents: [],
   case_review: [],
+  audit: [],
   finance: [],
 });
 
@@ -123,6 +132,7 @@ export const client = ac.newRole({
   conflicts: [],
   documents: ["read", "download"],
   case_review: [],
+  audit: [],
   ...memberAc.statements,
 });
 

@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { eq } from "drizzle-orm";
 import { auth } from "../../auth";
 import { db } from "../../db/client";
+import { createModuleLogger } from "../../lib/logging/log";
 import { organization, user } from "../../db/schema/auth-schema";
 import { staff } from "../../db/schema/staff";
 import {
@@ -10,6 +11,8 @@ import {
   NotFoundError,
 } from "../../utils/error/app-error";
 import type { AccountType } from "../auth/enums";
+
+const log = createModuleLogger("onboarding.service");
 
 export class OnboardingService {
   submitOnboardingData = async (
@@ -40,6 +43,7 @@ export class OnboardingService {
     const { accountType, referralSource, profile, firmDetails } = body;
 
     if (accountType !== "firm_admin") {
+      log.warn("onboarding.step_rejected", { userId, reason: "invalid_account_type" });
       throw new BadRequestError(
         "Invalid account type for onboarding submission.",
       );
@@ -56,6 +60,7 @@ export class OnboardingService {
     }
 
     if (userRecord.onboardingState === "completed") {
+      log.warn("onboarding.step_rejected", { userId, reason: "already_completed" });
       throw new ConflictError("Onboarding has already been completed.");
     }
 
@@ -121,6 +126,8 @@ export class OnboardingService {
         })
         .where(eq(user.id, userId));
     });
+
+    log.action("onboarding.completed", { userId, organizationId: newOrg.id });
 
     return { nextStep: "/admin" };
   };

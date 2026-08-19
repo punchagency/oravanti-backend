@@ -1,3 +1,4 @@
+import { AuditModule } from "./audit/audit.module";
 import { AuthModule } from "./auth/auth.module";
 import { CalendarModule } from "./calendar/calendar.module";
 import { CasesModule } from "./cases/cases.module";
@@ -45,6 +46,7 @@ import type { Module } from "../app";
 
 export const modules: Module[] = [
   new AuthModule(),
+  new AuditModule(),
   new StaffsModule(),
   new StaffAvailabilityModule(),
   new DocumentsModule(),

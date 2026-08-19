@@ -1,9 +1,14 @@
 import { and, count, desc, eq, gte, lte, or } from "drizzle-orm";
 import { db } from "../../db/client";
+import type { UpdateTaskInput } from "./tasks.validation";
 import { admins, cases, clients, staff, tasks } from "../../db/schema";
 import { assertAssignableStaff } from "../../utils/assignable-staff";
 import { dayjs } from "../../utils/date";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
+import { recordAuditEvent } from "../shared/audit.service";
+import { createModuleLogger } from "../../lib/logging/log";
+
+const log = createModuleLogger("tasks.service");
 
 export class TasksService {
   // ─── Stats ───────────────────────────────────────────────────────────────────
@@ -211,19 +216,41 @@ export class TasksService {
       })
       .returning();
 
+    await recordAuditEvent({
+      action: "task.created",
+      entityId: newTask.id,
+      summary: `Task created: ${newTask.title}`,
+      after: { title: newTask.title, status: newTask.status, priority: newTask.priority },
+      onWriteFailure: "log",
+    });
+
+    log.action("task.created", { taskId: newTask.id });
+
     return newTask;
   };
 
   updateTask = async (
     id: string,
     organizationId: string,
-    data: Partial<typeof tasks.$inferInsert>,
+    data: UpdateTaskInput,
   ) => {
     const [updated] = await db
       .update(tasks)
       .set({ ...data, updatedAt: new Date() })
       .where(and(eq(tasks.id, id), eq(tasks.organizationId, organizationId)))
       .returning();
+
+    if (updated) {
+      await recordAuditEvent({
+        action: "task.updated",
+        entityId: updated.id,
+        summary: `Task updated: ${updated.title}`,
+        after: { title: updated.title, status: updated.status, priority: updated.priority },
+        onWriteFailure: "log",
+      });
+    }
+
+    log.action("task.updated", { taskId: id });
 
     return updated ?? null;
   };
@@ -232,5 +259,7 @@ export class TasksService {
     await db
       .delete(tasks)
       .where(and(eq(tasks.id, id), eq(tasks.organizationId, organizationId)));
+
+    log.action("task.deleted", { taskId: id });
   };
 }

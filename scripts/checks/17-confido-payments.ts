@@ -15,7 +15,7 @@
  * silently.
  */
 import { randomUUID } from "crypto";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { systemDb } from "../../src/db/client";
 import { organization } from "../../src/db/schema/auth-schema";
 import { confidoFirms } from "../../src/db/schema/confido-firms";

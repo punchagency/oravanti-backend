@@ -12,6 +12,9 @@ import {
 import { env } from "../../config/env";
 import { DnsService } from "../../utils/dns.service";
 import { ConflictError, NotFoundError } from "../../utils/error/app-error";
+import { createModuleLogger } from "../../lib/logging/log";
+
+const log = createModuleLogger("email-account.service");
 
 function getFrontendUrl(): string {
   const origins = env.CORS_ORIGIN.split(",").map((o) => o.trim());
@@ -21,7 +24,7 @@ function getFrontendUrl(): string {
 export class EmailAccountService {
   private dnsService: DnsService;
 
-  constructor(dnsService: DnsService) {
+  constructor(_dnsService: DnsService) {
     this.dnsService = new DnsService();
   }
   identifyProvider = async (
@@ -71,11 +74,8 @@ export class EmailAccountService {
           return "microsoft";
         }
       }
-    } catch (e) {
-      console.warn(
-        `DNS infrastructure resolve failure on domain: ${domain}`,
-        e,
-      );
+    } catch (_e) {
+      log.warn("email.dns_resolution_failed", { domain });
     }
     await this.cacheDomain(domain, "custom");
 
@@ -91,7 +91,7 @@ export class EmailAccountService {
         .insert(emailDomainCache)
         .values({ domain, provider })
         .onConflictDoNothing();
-    } catch (e) {
+    } catch (_e) {
       // Absorb concurrent structural insertion conflicts gracefully
     }
   };
@@ -116,7 +116,9 @@ export class EmailAccountService {
       await client.NOOP();
       await client.QUIT();
     } catch (err: any) {
-      throw new Error(`POP3 verification failed: ${err.message}`);
+      throw new Error(`POP3 verification failed: ${err.message}`, {
+        cause: err,
+      });
     }
   };
 

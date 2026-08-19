@@ -518,7 +518,7 @@ export async function seedPICases(organizationId?: string) {
     const prefix = `${year}-${caseType.caseNumberPrefix}-`;
     let seq = 1;
     let caseNumber: string;
-    // eslint-disable-next-line no-constant-condition
+     
     while (true) {
       caseNumber = `${prefix}${String(seq).padStart(3, "0")}`;
       const [exists] = await db

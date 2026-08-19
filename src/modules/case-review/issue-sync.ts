@@ -4,10 +4,10 @@ import { withTransaction } from "../../db/transaction-context";
 import type { AiScanResultJob } from "../ai-scan/contract";
 import {
   caseIssueDocuments,
-  caseIssueEvents,
   caseIssues,
 } from "../../db/schema/case-issues";
 import { documents } from "../../db/schema/documents";
+import { recordAuditEvent } from "../shared/audit.service";
 import { computeFingerprint } from "./fingerprint";
 import { buildRuleContext, type ScenarioParams } from "./rule-context";
 import { ALL_RULES, runRules } from "./rule-registry";
@@ -161,11 +161,12 @@ export const syncScenarioIssues = async (
             detectedAt: now,
           })
           .returning({ id: caseIssues.id });
-        await db.insert(caseIssueEvents).values({
-          issueId: inserted.id,
-          fromStatus: null,
-          toStatus: "open",
-          note: "detected",
+        await recordAuditEvent({
+          action: "case_review.issue_detected",
+          entityId: inserted.id,
+          entityType: "case_issue",
+          summary: "Issue detected",
+          onWriteFailure: "log",
         });
         // documentIds are part of the issueKey, so they're fixed for the life of
         // an issue — the junction is written once, on creation.
@@ -211,13 +212,16 @@ export const syncScenarioIssues = async (
             : {}),
         })
         .where(eq(caseIssues.id, ex.id));
-      await db.insert(caseIssueEvents).values({
-        issueId: ex.id,
-        fromStatus: ex.status,
-        toStatus: reopening ? "open" : ex.status,
-        note: "content changed",
+      await recordAuditEvent({
+        action: reopening ? "case_review.issue_reopened" : "case_review.issue_updated",
+        entityId: ex.id,
+        entityType: "case_issue",
+        summary: reopening ? "Issue reopened (content changed)" : "Issue updated (content changed)",
+        metadata: { fromStatus: ex.status, toStatus: reopening ? "open" : ex.status },
+        onWriteFailure: "log",
       });
-      reopening ? (summary.reopened += 1) : (summary.updated += 1);
+      if (reopening) summary.reopened += 1;
+      else summary.updated += 1;
     }
 
     // Supersede active issues the current run no longer detects.
@@ -232,11 +236,13 @@ export const syncScenarioIssues = async (
         .update(caseIssues)
         .set({ status: "superseded", supersededAt: now, updatedAt: now })
         .where(eq(caseIssues.id, ex.id));
-      await db.insert(caseIssueEvents).values({
-        issueId: ex.id,
-        fromStatus: ex.status,
-        toStatus: "superseded",
-        note: "no longer detected",
+      await recordAuditEvent({
+        action: "case_review.issue_superseded",
+        entityId: ex.id,
+        entityType: "case_issue",
+        summary: "Issue superseded (no longer detected)",
+        metadata: { fromStatus: ex.status },
+        onWriteFailure: "log",
       });
       summary.superseded += 1;
     }

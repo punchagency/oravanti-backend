@@ -6,6 +6,10 @@ import {
   paralegalProfiles,
   staffCertifications,
 } from "../../../db/schema";
+import { recordAuditEvent } from "../../shared/audit.service";
+import { createModuleLogger } from "../../../lib/logging/log";
+
+const log = createModuleLogger("certification-gates.service");
 
 export class CertificationGatesService {
   getCertificationGates = async (organizationId: string) => {
@@ -35,6 +39,15 @@ export class CertificationGatesService {
           ),
       ),
     );
+
+    await recordAuditEvent({
+      action: "admin.certification_gate_changed",
+      entityId: organizationId,
+      organizationId,
+      after: { gates: gates.map((g) => ({ action: g.action, requiredCertifications: g.requiredCertifications })) },
+      onWriteFailure: "log",
+    });
+    log.action("settings.certification_gate_updated", { organizationId });
   };
 
   getActivationRequirements = async (organizationId: string) => {
@@ -86,6 +99,15 @@ export class CertificationGatesService {
           .where(eq(paralegalProfiles.id, paralegal.id));
       }),
     );
+
+    await recordAuditEvent({
+      action: "admin.certification_gate_changed",
+      entityId: organizationId,
+      organizationId,
+      after: { certificationCodes, affectedParalegals: allParalegals.length },
+      onWriteFailure: "log",
+    });
+    log.action("settings.certification_gate_updated", { organizationId, affectedParalegals: allParalegals.length });
 
     return { updated: allParalegals.length };
   };

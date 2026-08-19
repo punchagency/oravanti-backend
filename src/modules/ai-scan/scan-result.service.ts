@@ -12,10 +12,13 @@ import {
   documentVersions,
 } from "../../db/schema/documents";
 import { leadDocumentLinks } from "../../db/schema/lead-document-links";
+import { createModuleLogger } from "../../lib/logging/log";
 import type { AiScanResultJob } from "./contract";
 import { syncScenarioIssues } from "../case-review/issue-sync";
 import { enqueueScenarioScan } from "./scan-producer";
 import type { ScenarioType } from "./scan-payload";
+
+const log = createModuleLogger("ai-scan.scan-result");
 
 const scenarioOf = (job: {
   leadId: string | null;
@@ -85,7 +88,7 @@ export const persistScanResult = async (
     .limit(1);
 
   if (!job) {
-    console.warn(`[ai-scan] result for unknown job ${result.job_id} — dropping`);
+    log.warn("ai_scan.result_orphaned", { jobId: result.job_id });
     return;
   }
   if (
@@ -235,7 +238,7 @@ export const persistScanResult = async (
         .set({ issuesFound: sync.active, updatedAt: new Date() })
         .where(eq(aiScanJobs.id, job.id));
     } catch (err) {
-      console.error(`[ai-scan] issue sync failed for job ${job.id}:`, err);
+      log.failure("ai_scan.issue_sync_failed", err, { jobId: job.id });
     }
   }
 
@@ -247,8 +250,8 @@ export const persistScanResult = async (
       scenarioType: scenario.type,
       scenarioId: scenario.id,
       trigger: "upload",
-    }).catch((err) =>
-      console.error("[ai-scan] re-scan enqueue failed:", err),
+    }    ).catch((err) =>
+      log.failure("ai_scan.rescan_enqueue_failed", err),
     );
   }
 };

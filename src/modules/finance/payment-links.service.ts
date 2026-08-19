@@ -4,6 +4,7 @@ import { env } from "../../config/env";
 import { db, systemDb } from "../../db/client";
 import { invoicePayments } from "../../db/schema/invoice-payments";
 import { invoices } from "../../db/schema/invoices";
+import { createModuleLogger } from "../../lib/logging/log";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { onClient, onLead, partyEmail, partyName } from "./party";
 import { clients } from "../../db/schema/clients";
@@ -12,6 +13,8 @@ import { num } from "./money";
 import { paymentsEnabledFor } from "./confido/payments-enabled";
 import { getConfidoClient } from "./confido/confido.client";
 import { confidoCredentialFor } from "../settings/payments/payment-settings.service";
+
+const log = createModuleLogger("payment-links.service");
 
 /**
  * Client-facing payment links.
@@ -61,6 +64,9 @@ export const mintPaymentLink = async (
     .where(
       and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
     );
+
+  log.action("payment_link.created", { invoiceId });
+
   return token;
 };
 
@@ -98,8 +104,15 @@ export type PayableInvoice = {
  * Resolve a payment link, for the public page.
  *
  * Guard vocabulary copied from `getConsultationByBookingToken`: not found,
- * expired, and states where paying makes no sense. A voided or fully paid
- * invoice is refused rather than silently accepting money against it.
+ * expired, and states where paying makes no sense. A voided invoice is refused
+ * rather than silently accepting money against it.
+ *
+ * A SETTLED invoice is deliberately not refused. The page polls this while the
+ * payer is watching their card go through, so throwing the moment the balance
+ * reaches zero would flip them into an error card at the exact instant they
+ * succeeded. It returns `settled: true` instead and the page renders it;
+ * `startCheckout` carries the refusal, which is where it belongs — that is the
+ * call that would take money against nothing owed.
  */
 export const invoiceByPaymentToken = async (
   token: string,
@@ -126,14 +139,17 @@ export const invoiceByPaymentToken = async (
     .where(eq(invoices.paymentTokenHash, tokenHash(token)))
     .limit(1);
 
-  if (!row) throw new NotFoundError("Payment link not found");
+  if (!row) { log.warn("payment_link.expired", { reason: "not found" }); throw new NotFoundError("Payment link not found"); }
   if (row.expiresAt && row.expiresAt.getTime() < Date.now()) {
+    log.warn("payment_link.expired", { reason: "link expired" });
     throw new BadRequestError("This payment link has expired");
   }
   if (row.status === "void") {
+    log.warn("payment_link.expired", { reason: "invoice voided" });
     throw new BadRequestError("This invoice has been cancelled");
   }
   if (row.status === "draft") {
+    log.warn("payment_link.expired", { reason: "invoice draft" });
     throw new BadRequestError("This invoice is not ready for payment");
   }
 

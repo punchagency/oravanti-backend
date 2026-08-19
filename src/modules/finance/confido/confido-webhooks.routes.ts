@@ -1,5 +1,8 @@
 import { Request, Response, Router } from "express";
+import { createModuleLogger } from "../../../lib/logging/log";
 import { receiveConfidoWebhook } from "./confido-webhooks.service";
+
+const log = createModuleLogger("confido-webhooks.routes");
 
 /**
  * `POST /webhooks/confido` — the single Confido endpoint.
@@ -58,7 +61,7 @@ export class ConfidoWebhookRouter {
 
       // Anything else is ours — a database or Redis failure. 500 so Confido
       // retries, since the event is real and we simply could not take it.
-      console.error("[confido] webhook failed:", message);
+      log.failure("payment.webhook_failed", err, { provider: "confido" });
       res.status(500).json({ message: "Webhook processing failed" });
     }
   };

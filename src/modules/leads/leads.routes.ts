@@ -1,5 +1,5 @@
 ﻿import { Router } from "express";
-import multer from "multer";
+import { fieldsOnlyUpload } from "../../middleware/upload";
 
 import { requireAuth } from "../../middleware/auth.middleware";
 import { resolveActorContext } from "../../middleware/resolve-actor-context";
@@ -139,6 +139,23 @@ export class LeadWorkflowRouter {
       ctrl.rejectLeadTask,
     );
 
+    this.router.post(
+      "/:leadId/tasks/:taskId/reopen",
+      requireAuth,
+      validateRequest({
+        params: v.leadTaskIdParamsSchema,
+        body: v.submitReviewBodySchema,
+      }),
+      ctrl.reopenLeadTask,
+    );
+
+    this.router.get(
+      "/:leadId/tasks/:taskId/review-thread",
+      requireAuth,
+      validateRequest({ params: v.leadTaskIdParamsSchema }),
+      ctrl.getLeadTaskReviewThread,
+    );
+
     this.router.delete(
       "/:leadId/tasks/:taskId",
       requireAuth,
@@ -154,18 +171,6 @@ export class LeadWorkflowRouter {
       validateRequest({ params: v.leadIdParamsSchema, query: v.paginationQuerySchema }),
       ctrl.getLeadTimeline,
     );
-
-    this.router.post(
-      "/:leadId/timeline",
-      requireAuth,
-      validateRequest({
-        params: v.leadIdParamsSchema,
-        body: v.createTimelineEventBodySchema,
-      }),
-      ctrl.createLeadTimelineEvent,
-    );
-
-    // Audit Log
 
     this.router.get(
       "/:leadId/audit-log",
@@ -580,7 +585,7 @@ export class WebhooksRouter {
   private ctrl: LeadsController;
   // Dropbox Sign posts multipart/form-data with a single `json` field and no
   // files; memory storage + .none() parses that text field onto req.body.
-  private upload = multer({ storage: multer.memoryStorage() });
+  private upload = fieldsOnlyUpload();
 
   constructor(ctrl: LeadsController) {
     this.router = Router();

@@ -5,6 +5,7 @@ import { staff } from "../../db/schema/staff";
 import { getRequestContext } from "../../middleware/request-context";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { sendSuccess } from "../../utils/send-success";
+import { getTaskReviewEvents } from "../shared/task-review-events.service";
 import { logLeadView } from "./lead-events.service";
 import { LeadWorkflowService } from "./lead-workflow.service";
 import { LeadsService } from "./leads.service";
@@ -169,8 +170,6 @@ export class LeadsController {
         .limit(1);
       userRole = staffMember?.role ?? undefined;
     }
-
-    console.log({ userRole });
 
     const result = await this.svc.getLeadNotes(leadId, organizationId!, {
       context,
@@ -463,7 +462,6 @@ export class LeadsController {
   // Public booking flow (token-gated, no auth)
 
   getConsultationBooking = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     const result = await this.svc.getConsultationBooking(
       req.params.token as string,
@@ -472,7 +470,6 @@ export class LeadsController {
   };
 
   startConsultationPayment = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     const result = await this.svc.startConsultationPayment(
       req.params.token as string,
@@ -481,7 +478,6 @@ export class LeadsController {
   };
 
   selectConsultationSlot = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     const result = await this.svc.selectConsultationSlot(
       req.params.token as string,
@@ -594,7 +590,6 @@ export class LeadsController {
   // Embedded signing session (public, token-gated)
 
   getEmbeddedSignSession = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     const result = await this.svc.getEmbeddedSignSession(
       req.params.token as string,
@@ -605,7 +600,6 @@ export class LeadsController {
   // Dropbox Sign Webhook (public)
 
   handleDropboxSignWebhook = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     const raw = (req.body as { json?: string })?.json;
     if (!raw) {
@@ -849,6 +843,29 @@ export class LeadsController {
     sendSuccess(res, task, "Task rejected");
   };
 
+  reopenLeadTask = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
+    const task = await this.wfSvc.reopenTask(
+      req.params.taskId as string,
+      staffId!,
+      req.body.notes,
+      organizationId!,
+    );
+    sendSuccess(res, task, "Task reopened");
+  };
+
+  /** The task's full submit/approve/reject/reopen note thread. */
+  getLeadTaskReviewThread = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const events = await getTaskReviewEvents(
+      "lead_task",
+      req.params.taskId as string,
+      organizationId!,
+    );
+    sendSuccess(res, events, "Task review thread retrieved");
+  };
+
   getLeadReviewQueue = async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
 
@@ -927,21 +944,6 @@ export class LeadsController {
     sendSuccess(res, result.data, "Audit log retrieved successfully", 200, {
       pagination: result.pagination,
     });
-  };
-
-  createLeadTimelineEvent = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const event = await this.wfSvc.createTimelineEvent({
-      leadId: req.params.leadId as string,
-      organizationId: organizationId!,
-      eventType: req.body.eventType,
-      title: req.body.title,
-      description: req.body.description,
-      metadata: req.body.metadata,
-      createdById: staffId ?? undefined,
-    });
-    sendSuccess(res, event, "Timeline event created successfully", 201);
   };
 
   // Lead Documents

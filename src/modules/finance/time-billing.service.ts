@@ -4,7 +4,10 @@ import { cases } from "../../db/schema/cases";
 import { clients } from "../../db/schema/clients";
 import { staff } from "../../db/schema/staff";
 import { timeEntries } from "../../db/schema/time-entries";
+import { createModuleLogger } from "../../lib/logging/log";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+
+const log = createModuleLogger("time-billing.service");
 import {
   buildPaginatedResponse,
   getPaginationOffset,
@@ -285,12 +288,14 @@ export const create = async (
 ) => {
   const targetStaffId = input.staffId ?? actorStaffId;
   if (!targetStaffId) {
+    log.warn("time_entry.created", { reason: "no staff member" });
     throw new BadRequestError("No staff member to log this time against");
   }
 
   // Someone holding only `log_time` records their own hours. Logging on
   // another person's behalf is a supervisory act.
   if (targetStaffId !== actorStaffId && !canApprove) {
+    log.warn("time_entry.created", { reason: "not own time and no approve permission" });
     throw new BadRequestError("You can only log time for yourself");
   }
 
@@ -323,7 +328,7 @@ export const create = async (
 
   await logFinanceEvent({
     organizationId,
-    eventType: "time_entry_logged",
+    action: "finance.time_entry_logged",
     title: `${input.hoursWorked}h logged`,
     description: input.description ?? null,
     amount,
@@ -331,6 +336,8 @@ export const create = async (
     caseId: input.caseId ?? null,
     actorId: actorStaffId,
   });
+
+  log.action("time_entry.created", { entryId: entry!.id, staffId: targetStaffId });
 
   return entry!;
 };
@@ -351,11 +358,13 @@ export const approve = async (
     )
     .limit(1);
 
-  if (!entry) throw new NotFoundError("Time entry not found");
+  if (!entry) { log.warn("time_entry.updated", { reason: "not found" }); throw new NotFoundError("Time entry not found"); }
   if (entry.status === "approved") {
+    log.warn("time_entry.updated", { reason: "already approved", entryId });
     throw new BadRequestError("This entry is already approved");
   }
   if (actorStaffId && entry.staffId === actorStaffId) {
+    log.warn("time_entry.updated", { reason: "self-approval", entryId });
     throw new BadRequestError("A time entry cannot be approved by its author");
   }
 
@@ -392,13 +401,15 @@ export const approve = async (
 
   await logFinanceEvent({
     organizationId,
-    eventType: "time_entry_approved",
+    action: "finance.time_entry_approved",
     title: `${num(entry.hoursWorked)}h approved`,
     amount,
     timeEntryId: entryId,
     caseId: entry.caseId,
     actorId: actorStaffId,
   });
+
+  log.action("time_entry.updated", { entryId, action: "approved" });
 
   return updated!;
 };
@@ -420,8 +431,9 @@ export const reject = async (
     )
     .limit(1);
 
-  if (!entry) throw new NotFoundError("Time entry not found");
+  if (!entry) { log.warn("time_entry.updated", { reason: "not found" }); throw new NotFoundError("Time entry not found"); }
   if (entry.invoicedAt) {
+    log.warn("time_entry.updated", { reason: "already invoiced", entryId });
     throw new BadRequestError(
       "This entry has already been invoiced and cannot be rejected",
     );
@@ -446,13 +458,15 @@ export const reject = async (
 
   await logFinanceEvent({
     organizationId,
-    eventType: "time_entry_rejected",
+    action: "finance.time_entry_rejected",
     title: `${num(entry.hoursWorked)}h rejected`,
     description: reason,
     timeEntryId: entryId,
     caseId: entry.caseId,
     actorId: actorStaffId,
   });
+
+  log.action("time_entry.updated", { entryId, action: "rejected" });
 
   return updated!;
 };
@@ -481,8 +495,9 @@ export const update = async (
     )
     .limit(1);
 
-  if (!entry) throw new NotFoundError("Time entry not found");
+  if (!entry) { log.warn("time_entry.updated", { reason: "not found" }); throw new NotFoundError("Time entry not found"); }
   if (entry.invoicedAt) {
+    log.warn("time_entry.updated", { reason: "invoiced", entryId });
     throw new BadRequestError(
       "This entry has been invoiced; edit the invoice instead",
     );
@@ -520,6 +535,8 @@ export const update = async (
       ),
     )
     .returning();
+
+  log.action("time_entry.updated", { entryId });
 
   return updated!;
 };

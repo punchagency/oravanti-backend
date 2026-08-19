@@ -11,18 +11,15 @@ import { randomUUID } from "crypto";
 import { and, eq } from "drizzle-orm";
 import { systemDb } from "../../src/db/client";
 import { aiScanJobs } from "../../src/db/schema/ai-scan-jobs";
-import {
-  caseIssueDocuments,
-  caseIssueEvents,
-  caseIssues,
-} from "../../src/db/schema/case-issues";
+import { auditEvents } from "../../src/db/schema/audit-events";
+import { caseIssueDocuments, caseIssues } from "../../src/db/schema/case-issues";
 import { team, teamMember, user } from "../../src/db/schema/auth-schema";
 import { cases } from "../../src/db/schema/cases";
 import { scenarioDocumentRequirements } from "../../src/db/schema/document-requirements";
 import { calendarEvents } from "../../src/db/schema/calendar-events";
 import { leadTasks } from "../../src/db/schema/lead-tasks";
 import { staff } from "../../src/db/schema/staff";
-import { caseWorkflowSteps, workflowLog } from "../../src/db/schema/workflow";
+import { caseWorkflowSteps } from "../../src/db/schema/workflow";
 import type { DocumentRequestInput } from "../../src/modules/case-review/action-dispatch";
 import { CaseReviewService } from "../../src/modules/case-review/case-review.service";
 import { renderCsv, renderPdf } from "../../src/utils/report-export";
@@ -497,12 +494,19 @@ const main = async () => {
         resolvedAt,
         resolvedById: fx.staffId,
       });
-      await systemDb.insert(caseIssueEvents).values({
-        issueId: resolved.id,
-        fromStatus: "open",
-        toStatus: "resolved",
+      await systemDb.insert(auditEvents).values({
+        organizationId: fx.organizationId,
+        actorType: "staff",
         actorStaffId: fx.staffId,
-        actionKey: "request_reupload",
+        actorName: "check-fixture",
+        category: "business",
+        action: "case_review.issue_resolved",
+        actionType: "update",
+        entityType: "case_issue",
+        entityId: resolved.id,
+        summary: "Issue resolved",
+        metadata: { fromStatus: "open", toStatus: "resolved", actionKey: "request_reupload" },
+        source: "cli",
       });
 
       // Still open — must not appear in the log.
@@ -678,8 +682,8 @@ const main = async () => {
 
         const stubEvents = await systemDb
           .select()
-          .from(caseIssueEvents)
-          .where(eq(caseIssueEvents.issueId, filingIssue.id));
+          .from(auditEvents)
+          .where(eq(auditEvents.entityId, filingIssue.id));
         checkEqual(
           "no event is recorded for a refused stub",
           stubEvents.length,
@@ -742,14 +746,19 @@ const main = async () => {
           "under_review",
         );
 
+        // The action key used to be its own column on case_issue_events; on
+        // audit_events it is structured detail, so it lives in metadata.
         const emailEvents = await systemDb
-          .select()
-          .from(caseIssueEvents)
-          .where(eq(caseIssueEvents.issueId, leadIssue.id));
+          .select({ metadata: auditEvents.metadata })
+          .from(auditEvents)
+          .where(eq(auditEvents.entityId, leadIssue.id));
+        const actionKeys = emailEvents.map(
+          (e) => (e.metadata as { actionKey?: string } | null)?.actionKey ?? null,
+        );
         check(
           "an event recorded the action key",
-          emailEvents.some((e) => e.actionKey === "request_reupload"),
-          emailEvents.map((e) => e.actionKey),
+          actionKeys.includes("request_reupload"),
+          actionKeys,
         );
 
         section("actions — an attorney action with no attorney is refused");
@@ -1131,10 +1140,12 @@ const main = async () => {
       await systemDb
         .delete(caseIssues)
         .where(eq(caseIssues.organizationId, fx.organizationId));
-      // assignStep writes a workflow_log row referencing the step.
+      // assignStep used to write a workflow_log row referencing the step.
+      // That table is gone; its rows are audit_events, which carry no foreign
+      // key to the step and so need no cleanup ordering here.
       await systemDb
-        .delete(workflowLog)
-        .where(eq(workflowLog.organizationId, fx.organizationId));
+        .delete(auditEvents)
+        .where(eq(auditEvents.organizationId, fx.organizationId));
       await systemDb
         .delete(caseWorkflowSteps)
         .where(eq(caseWorkflowSteps.organizationId, fx.organizationId));
@@ -1172,7 +1183,7 @@ const main = async () => {
       ],
       columns,
     );
-    const stripped = csv.replace(/^﻿/, "");
+    const stripped = csv.replace(/^\uFEFF/, "");
     check("starts with a UTF-8 BOM for Excel", csv.charCodeAt(0) === 0xfeff);
     check("header row present", stripped.startsWith("Col A,Col B"), stripped.slice(0, 20));
     check("a comma forces quoting", stripped.includes('"has,comma"'), stripped);
@@ -1229,12 +1240,23 @@ const main = async () => {
         resolvedAt,
         resolvedById: fx.staffId,
       });
-      await systemDb.insert(caseIssueEvents).values({
-        issueId: resolved.id,
-        fromStatus: "open",
-        toStatus: "resolved",
+      await systemDb.insert(auditEvents).values({
+        organizationId: fx.organizationId,
+        actorType: "staff",
+        actorName: "check-fixture",
+        category: "business",
+        action: "case_review.issue_resolved",
+        actionType: "update",
+        entityType: "case_issue",
+        entityId: resolved.id,
+        summary: "Issue resolved",
+        source: "cli",
+        metadata: {
+          fromStatus: "open",
+          toStatus: "resolved",
+          actionKey: "send_client_reminder",
+        },
         actorStaffId: fx.staffId,
-        actionKey: "send_client_reminder",
       });
 
       await withOrgContext(fx.organizationId, fx.userId, async () => {
@@ -1244,7 +1266,7 @@ const main = async () => {
         checkEqual("filename is .csv", issuesCsv.filename, "ai-review-issues.csv");
         checkEqual("mime is text/csv", issuesCsv.mime, "text/csv; charset=utf-8");
         const issueLines = (issuesCsv.body as string)
-          .replace(/^﻿/, "")
+          .replace(/^\uFEFF/, "")
           .trim()
           .split("\n")
           .map((l) => l.replace(/\r$/, ""));
@@ -1284,7 +1306,7 @@ const main = async () => {
           "ai-review-resolution-log.csv",
         );
         const logLines = (logCsv.body as string)
-          .replace(/^﻿/, "")
+          .replace(/^\uFEFF/, "")
           .trim()
           .split("\n")
           .map((l) => l.replace(/\r$/, ""));

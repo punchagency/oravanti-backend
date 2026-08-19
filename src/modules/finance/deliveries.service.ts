@@ -9,6 +9,9 @@ import { staff } from "../../db/schema/staff";
 import { emailService } from "../../utils/email/email.service";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { storageService } from "../../utils/storage/storage.service";
+import { createModuleLogger } from "../../lib/logging/log";
+
+const log = createModuleLogger("finance.deliveries");
 import { logCaseEvent } from "../cases/case-events.service";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
@@ -338,10 +341,7 @@ const deliver = async (
       .set({ status: "failed", failureReason })
       .where(eq(invoiceDeliveries.id, delivery!.id));
 
-    console.error(
-      `[finance] invoice ${invoiceNumber} delivery failed:`,
-      failureReason,
-    );
+    log.failure("invoice.delivery_failed", failureReason, { invoiceNumber });
 
     // The invoice stays a draft. Reporting success here, or promoting it
     // anyway, is exactly the lie this whole flow exists to remove.
@@ -375,7 +375,7 @@ const deliver = async (
 
   await logFinanceEvent({
     organizationId,
-    eventType: "invoice_sent",
+    action: "finance.invoice_sent",
     title: `${invoiceNumber} — sent to ${meta.clientEmail}`,
     description: opts.isResend ? "Resent" : null,
     invoiceId,
@@ -388,8 +388,8 @@ const deliver = async (
     await logCaseEvent({
       organizationId,
       caseId: meta.caseId,
-      eventType: "case_invoice_created",
-      title: `Invoice ${invoiceNumber} sent to client`,
+      action: "case.invoice_created",
+      summary: `Invoice ${invoiceNumber} sent to client`,
       actorId: actorStaffId,
     });
   }
@@ -548,10 +548,7 @@ export const sendScheduleUpdate = async (
       .set({ status: "failed", failureReason })
       .where(eq(invoiceDeliveries.id, delivery!.id));
 
-    console.error(
-      `[finance] schedule update for ${invoiceNumber} failed:`,
-      failureReason,
-    );
+    log.failure("invoice.schedule_delivery_failed", failureReason, { invoiceNumber });
 
     // The schedule itself is already committed. Reporting the failure lets the
     // caller say "saved, but not delivered" rather than implying the client
@@ -572,9 +569,9 @@ export const sendScheduleUpdate = async (
 
   await logFinanceEvent({
     organizationId,
-    eventType: opts.revised
-      ? "invoice_schedule_revised"
-      : "invoice_schedule_set",
+    action: opts.revised
+      ? "finance.invoice_schedule_revised"
+      : "finance.invoice_schedule_set",
     title: `${invoiceNumber} — schedule sent to ${meta.clientEmail}`,
     invoiceId,
     caseId: meta.caseId,

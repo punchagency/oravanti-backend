@@ -17,6 +17,8 @@ import { team } from "../../db/schema/auth-schema";
 import { teamMembers } from "../../db/schema/team-members";
 import { timeEntries } from "../../db/schema/time-entries";
 import { withTransaction } from "../../db/transaction-context";
+import { recordAccessEvent } from "../shared/audit.service";
+import { createModuleLogger } from "../../lib/logging/log";
 import {
   AuthorizationError,
   BadRequestError,
@@ -63,6 +65,8 @@ import type {
   InvoiceStats,
   InvoiceStatusFilter,
 } from "./types";
+
+const log = createModuleLogger("invoices.service");
 
 export type ListInvoicesOptions = Partial<PaginationParams> & {
   status?: InvoiceStatusFilter;
@@ -384,7 +388,9 @@ export const getById = async (
     )
     .limit(1);
 
-  if (!row) throw new NotFoundError("Invoice not found");
+  if (!row) { log.warn("invoice.updated", { reason: "not found" }); throw new NotFoundError("Invoice not found"); }
+
+  await recordAccessEvent({ action: "invoice.viewed", entityId: invoiceId });
 
   const lineRows = await db
     .select()
@@ -566,26 +572,31 @@ const loadBillableEntries = async (
     );
 
   if (entries.length !== entryIds.length) {
+    log.warn("invoice.created", { reason: "time entries not found" });
     throw new BadRequestError("One or more time entries could not be found");
   }
 
   for (const e of entries) {
     if (e.status !== "approved") {
+      log.warn("invoice.created", { reason: "unapproved time entry", entryId: e.id });
       throw new BadRequestError(
         "Only approved time entries can be added to an invoice",
       );
     }
     if (e.invoicedAt && !alreadyHeld.has(e.id)) {
+      log.warn("invoice.created", { reason: "already invoiced", entryId: e.id });
       throw new BadRequestError(
         "One or more time entries have already been invoiced",
       );
     }
     if (!e.billable) {
+      log.warn("invoice.created", { reason: "non-billable time entry", entryId: e.id });
       throw new BadRequestError(
         "Non-billable time entries cannot be added to an invoice",
       );
     }
     if (e.hourlyRate == null) {
+      log.warn("invoice.created", { reason: "no billing rate", entryId: e.id });
       throw new BadRequestError(
         "One or more time entries have no billing rate — set a rate for the staff member first",
       );
@@ -707,6 +718,7 @@ export const create = async (
     );
 
     if (lineValues.length === 0) {
+      log.warn("invoice.created", { reason: "no line items" });
       throw new BadRequestError("An invoice needs at least one line item");
     }
 
@@ -736,7 +748,7 @@ export const create = async (
 
     await logFinanceEvent({
       organizationId,
-      eventType: "invoice_created",
+      action: "finance.invoice_created",
       title: `${invoiceNumber} — draft created`,
       description: null,
       amount: totals.totalAmount,
@@ -752,12 +764,14 @@ export const create = async (
       await logCaseEvent({
         organizationId,
         caseId: input.caseId,
-        eventType: "case_invoice_created",
-        title: `Invoice ${invoiceNumber} drafted`,
-        description: `Total ${totals.totalAmount.toFixed(2)}`,
+        action: "case.invoice_created",
+        
+        summary: `Total ${totals.totalAmount.toFixed(2)}`,
         actorId: actorStaffId,
       });
     }
+
+    log.action("invoice.created", { invoiceId: invoice!.id, invoiceNumber });
 
     return getById(organizationId, invoice!.id, access);
   });
@@ -829,19 +843,22 @@ export const extendDueDate = async (
     )
     .limit(1);
 
-  if (!existing) throw new NotFoundError("Invoice not found");
+  if (!existing) { log.warn("invoice.updated", { reason: "not found" }); throw new NotFoundError("Invoice not found"); }
 
   // Named per state rather than one "cannot extend" — each of these is a
   // different thing to do next.
   if (existing.status === "draft") {
+    log.warn("invoice.updated", { reason: "draft invoice", invoiceId });
     throw new BadRequestError(
       "This invoice is still a draft. Change its due date by editing it.",
     );
   }
   if (existing.status === "void") {
+    log.warn("invoice.updated", { reason: "voided invoice", invoiceId });
     throw new BadRequestError("A voided invoice has no due date to extend");
   }
   if (existing.status === "paid") {
+    log.warn("invoice.updated", { reason: "settled invoice", invoiceId });
     throw new BadRequestError("This invoice is settled — there is nothing owing");
   }
 
@@ -871,26 +888,21 @@ export const extendDueDate = async (
     // Every slice is covered but the invoice is not marked paid — a state the
     // payment path should have resolved. Refusing beats guessing which row to
     // move.
+    log.warn("invoice.updated", { reason: "all instalments covered", invoiceId });
     throw new BadRequestError(
       "Every instalment on this invoice is already covered",
     );
   }
 
   if (!currentDue || input.dueDate <= currentDue) {
+    log.warn("invoice.updated", { reason: "date not forward", invoiceId });
     throw new BadRequestError(
       `The new due date must be later than the current one (${currentDue})`,
     );
   }
 
-  // Strictly before the next instalment. Reordering the plan is a reschedule,
-  // not an extension: writeSchedule sorts by date and renumbers, so letting one
-  // past would silently renumber the instalments under the client.
-  //
-  // `>=`, not `>`. Landing exactly ON the next instalment's date leaves two
-  // slices due the same day with no ordering between them — the sort's
-  // tiebreak decides which becomes 1 and which becomes 2, and the client sees
-  // two rows on one date where they agreed to a sequence.
   if (plan.after && input.dueDate >= plan.after.dueDate) {
+    log.warn("invoice.updated", { reason: "would reorder instalments", invoiceId });
     throw new BadRequestError(
       `This instalment must fall before the next one (due ${plan.after.dueDate}). Revise the payment plan instead.`,
     );
@@ -934,7 +946,7 @@ export const extendDueDate = async (
 
     await logFinanceEvent({
       organizationId,
-      eventType: "invoice_updated",
+      action: "finance.invoice_updated",
       title:
         plan.kind === "scheduled"
           ? `${existing.invoiceNumber} — instalment ${plan.target!.sequence} extended to ${input.dueDate}`
@@ -953,6 +965,8 @@ export const extendDueDate = async (
       clientId: existing.clientId,
       actorId: actorStaffId,
     });
+
+    log.action("invoice.updated", { invoiceId, action: "due_date_extended" });
 
     return getById(organizationId, invoiceId, access);
   });
@@ -997,14 +1011,16 @@ export const voidInvoice = async (
     )
     .limit(1);
 
-  if (!existing) throw new NotFoundError("Invoice not found");
+  if (!existing) { log.warn("invoice.voided", { reason: "not found" }); throw new NotFoundError("Invoice not found"); }
   if (existing.status === "void") {
+    log.warn("invoice.voided", { reason: "already void", invoiceId });
     throw new BadRequestError("Invoice is already void");
   }
   // Checked on `amount_paid`, not on `status === 'paid'`: a partly paid invoice
   // carries the same problem for a smaller number, and status alone would let
   // it through.
   if (num(existing.amountPaid) > 0) {
+    log.warn("invoice.voided", { reason: "has payments", invoiceId });
     throw new BadRequestError(
       "This invoice has payments recorded against it and cannot be voided. Voiding it would remove money the firm has received from every report while the payments themselves remain on the ledger.",
     );
@@ -1064,13 +1080,15 @@ export const voidInvoice = async (
 
     await logFinanceEvent({
       organizationId,
-      eventType: "invoice_voided",
+      action: "finance.invoice_voided",
       title: `${existing.invoiceNumber} — invoice voided`,
       description: reason ?? null,
       amount: num(existing.totalAmount),
       invoiceId,
       actorId: actorStaffId,
     });
+
+    log.action("invoice.voided", { invoiceId, invoiceNumber: existing.invoiceNumber });
 
     return getById(organizationId, invoiceId, access);
   });
@@ -1135,8 +1153,9 @@ export const update = async (
     )
     .limit(1);
 
-  if (!existing) throw new NotFoundError("Invoice not found");
+  if (!existing) { log.warn("invoice.updated", { reason: "not found" }); throw new NotFoundError("Invoice not found"); }
   if (existing.status === "void") {
+    log.warn("invoice.updated", { reason: "voided invoice", invoiceId });
     throw new BadRequestError("A voided invoice cannot be edited");
   }
 
@@ -1152,6 +1171,7 @@ export const update = async (
     input.instalments === undefined &&
     (input.lineItems !== undefined || input.timeEntryIds !== undefined)
   ) {
+    log.warn("invoice.updated", { reason: "schedule exists without revision", invoiceId });
     throw new BadRequestError(
       "This invoice has a payment schedule. Send the updated schedule with the line changes, or remove the schedule first.",
     );
@@ -1161,6 +1181,7 @@ export const update = async (
   // pins it to the final instalment. Accepting a bare due-date change here would
   // let the invoice claim a date its own schedule contradicts.
   if (scheduled && input.dueDate !== undefined && input.instalments === undefined) {
+    log.warn("invoice.updated", { reason: "schedule controls due date", invoiceId });
     throw new BadRequestError(
       "This invoice's due date follows its payment schedule. Revise the schedule instead.",
     );
@@ -1179,6 +1200,7 @@ export const update = async (
       input.practiceAreaId === undefined;
 
     if (!scheduleOnly && existing.status !== "draft") {
+      log.warn("invoice.updated", { reason: "non-draft content edit", invoiceId });
       throw new BadRequestError(
         "Only a draft invoice can be edited. Void this one and issue a corrected invoice instead.",
       );
@@ -1191,6 +1213,7 @@ export const update = async (
       restrictionsFor(access).trust === "no_access" &&
       num(existing.subtotalTrust) > 0
     ) {
+      log.warn("invoice.updated", { reason: "trust lines inaccessible", invoiceId });
       throw new AuthorizationError(
         "This draft has trust (IOLTA) lines you do not have access to, so it cannot be edited here",
       );
@@ -1202,6 +1225,7 @@ export const update = async (
     const issueDate = input.issueDate ?? existing.issueDate;
     const dueDate = input.dueDate ?? existing.dueDate;
     if (dueDate < issueDate) {
+      log.warn("invoice.updated", { reason: "due before issue", invoiceId });
       throw new BadRequestError("Due date cannot precede the issue date");
     }
 
@@ -1213,6 +1237,7 @@ export const update = async (
         ? input.practiceAreaId
         : existing.practiceAreaId;
     if (caseId == null && practiceAreaId == null) {
+      log.warn("invoice.updated", { reason: "no practice area", invoiceId });
       throw new BadRequestError(
         "A practice area is required when the invoice has no matter",
       );
@@ -1267,12 +1292,12 @@ export const update = async (
 
     await logFinanceEvent({
       organizationId,
-      eventType:
+      action:
         input.instalments !== undefined
           ? scheduled
-            ? "invoice_schedule_revised"
-            : "invoice_schedule_set"
-          : "invoice_updated",
+            ? "finance.invoice_schedule_revised"
+            : "finance.invoice_schedule_set"
+          : "finance.invoice_updated",
       title: `${existing.invoiceNumber} — ${
         input.instalments !== undefined
           ? `payment schedule ${scheduled ? "revised" : "set"}`
@@ -1284,6 +1309,8 @@ export const update = async (
       invoiceId,
       actorId: actorStaffId,
     });
+
+    log.action("invoice.updated", { invoiceId });
 
     return getById(organizationId, invoiceId, access);
   });
@@ -1347,6 +1374,7 @@ const replaceInvoiceLines = async (
     entries,
   );
   if (lineValues.length === 0) {
+    log.warn("invoice.updated", { reason: "no line items" });
     throw new BadRequestError("An invoice needs at least one line item");
   }
 

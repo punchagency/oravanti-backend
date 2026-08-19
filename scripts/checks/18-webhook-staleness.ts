@@ -9,7 +9,7 @@
  * `processed_at IS NULL`, and this proves something reads it.
  */
 import { randomUUID } from "crypto";
-import { eq, inArray } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { systemDb } from "../../src/db/client";
 import { paymentWebhookEvents } from "../../src/db/schema/payment-webhook-events";
 import { findStaleWebhookEvents } from "../../src/modules/finance/confido/webhook-staleness";

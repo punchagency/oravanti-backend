@@ -1,7 +1,8 @@
 import { randomUUID } from "crypto";
-import { eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { closeDb, systemDb } from "../../src/db/client";
 import { organization, user } from "../../src/db/schema/auth-schema";
+import { auditEvents } from "../../src/db/schema/audit-events";
 import { caseIssues } from "../../src/db/schema/case-issues";
 import { cases } from "../../src/db/schema/cases";
 import { clients } from "../../src/db/schema/clients";
@@ -15,7 +16,7 @@ import { leads } from "../../src/db/schema/leads";
 import { staff } from "../../src/db/schema/staff";
 import {
   initializeTenantContext,
-  requestContextStore,
+  runWithRequestContext,
 } from "../../src/middleware/request-context";
 import {
   AI_MODEL_VERSION,
@@ -80,20 +81,57 @@ export const withOrgContext = async <T>(
   userId: string | null,
   fn: () => Promise<T>,
 ): Promise<T> =>
-  requestContextStore.run(
-    {
-      ipAddress: null,
-      userId,
-      organizationId,
-      staffId: null,
-      rawUserDEK: null,
-      tenantDb: null,
-    },
+  runWithRequestContext(
+    // Built through the exported helper rather than as an object literal:
+    // RequestContext has grown requestId, source, actorType and four more
+    // fields since this was written, and a literal silently rots each time
+    // another is added. The helper fills in the rest and stays correct.
+    { source: "cli", userId, organizationId },
     async () => {
       await initializeTenantContext();
       return fn();
     },
   );
+
+// ─── Issue audit trail ───────────────────────────────────────────────────────
+
+/**
+ * The audit rows one case issue has accumulated, oldest first.
+ *
+ * Replaces the direct `case_issue_events` reads these checks used to do. That
+ * table is gone — its trail lives in `audit_events` under the
+ * `case_review.issue_*` actions — and because scripts/ was outside the
+ * typecheck config, the dead import survived here as `undefined` and every
+ * check that touched it failed at runtime instead of at build time.
+ *
+ * Reads through `systemDb`: a check asserting that a trail was written must
+ * not also depend on the reader's RLS policy letting it back out.
+ */
+export const issueAuditEvents = (issueId: string) =>
+  systemDb
+    .select({
+      action: auditEvents.action,
+      summary: auditEvents.summary,
+      metadata: auditEvents.metadata,
+      actorStaffId: auditEvents.actorStaffId,
+      occurredAt: auditEvents.occurredAt,
+    })
+    .from(auditEvents)
+    .where(
+      and(
+        eq(auditEvents.entityType, "case_issue"),
+        eq(auditEvents.entityId, issueId),
+      ),
+    )
+    .orderBy(asc(auditEvents.occurredAt));
+
+/** The `toStatus` an issue audit row carries in its metadata, when it has one. */
+export const toStatusOf = (row: { metadata: unknown }): string | null =>
+  (row.metadata as { toStatus?: string } | null)?.toStatus ?? null;
+
+/** The `fromStatus` an issue audit row carries in its metadata, when it has one. */
+export const fromStatusOf = (row: { metadata: unknown }): string | null =>
+  (row.metadata as { fromStatus?: string } | null)?.fromStatus ?? null;
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -306,10 +344,11 @@ export const withTempFixture = async <T>(
         .set({ currentVersionId: version.id })
         .where(eq(documents.id, doc.id));
 
+      // No organizationId: lead_document_links is tenant-scoped through its
+      // lead, which is what the parentScoped() factory in rls-tenant.ts expects.
       await systemDb.insert(leadDocumentLinks).values({
         documentId: doc.id,
         leadId: lead.id,
-        organizationId,
       });
 
       if (docSpec.analysis) {

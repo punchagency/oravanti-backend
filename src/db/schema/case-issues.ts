@@ -158,42 +158,7 @@ export const caseIssueDocuments = pgTable(
   ],
 );
 
-/**
- * Append-only status transitions. This is the dashboard's "Resolution log" —
- * every resolve / dismiss / reopen / supersede writes a row here.
- */
-export const caseIssueEvents = pgTable(
-  "case_issue_events",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    issueId: uuid("issue_id")
-      .notNull()
-      .references(() => caseIssues.id, { onDelete: "cascade" }),
-    fromStatus: issueStatusEnum("from_status"),
-    toStatus: issueStatusEnum("to_status").notNull(),
-    /** Null for system transitions (e.g. a rerun superseding an issue). */
-    actorStaffId: uuid("actor_staff_id").references(() => staff.id),
-    /**
-     * Which contextual action produced this event ("request_reupload",
-     * "mark_as_filed", …), when one did.
-     *
-     * The resolution log renders this as its "Action taken" pill. Kept as a key
-     * rather than free text so the label is derived at read time in the firm's
-     * language, the same way issue prose is — `note` remains for anything a
-     * human typed.
-     */
-    actionKey: text("action_key"),
-    note: text("note"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-  },
-  (table) => [
-    index("case_issue_events_issue_idx").on(table.issueId, table.createdAt),
-  ],
-);
-
 export type CaseIssue = typeof caseIssues.$inferSelect;
 export type NewCaseIssue = typeof caseIssues.$inferInsert;
 export type CaseIssueDocument = typeof caseIssueDocuments.$inferSelect;
 export type NewCaseIssueDocument = typeof caseIssueDocuments.$inferInsert;
-export type CaseIssueEvent = typeof caseIssueEvents.$inferSelect;
-export type NewCaseIssueEvent = typeof caseIssueEvents.$inferInsert;

@@ -5,30 +5,11 @@
  *     description: Organization management (teams, staffs, invitations)
  */
 import { Router } from "express";
-import { z } from "zod";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { requirePermission } from "../../middleware/permission.middleware";
 import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { OrganizationController } from "./organization.controller";
 
-const updateOrganizationBody = z
-  .object({
-    data: z
-      .object({
-        name: z.string().trim().min(1, "name is required").optional(),
-        slug: z.string().trim().min(1, "slug is required").optional(),
-        emailAddress: z.string().trim().min(1).optional(),
-        phoneNumber: z.string().trim().min(1).optional(),
-        address: z.string().trim().min(1).optional(),
-        city: z.string().trim().min(1).optional(),
-        state: z.string().trim().min(1).optional(),
-        zipCode: z.string().trim().min(1).optional(),
-        website: z.string().trim().min(1).optional(),
-        taxId: z.string().trim().min(1).optional(),
-      })
-      .strict(),
-  })
-  .strict();
 
 export class OrganizationRouter {
   public router: Router;
@@ -115,6 +96,7 @@ export class OrganizationRouter {
     this.router.post(
       "/cancel-invitation",
       requireAuth,
+      requirePermission("invitations", "delete"),
       this.organizationController.cancelInvitation,
     );
     this.router.delete(
@@ -144,6 +126,7 @@ export class OrganizationRouter {
     this.router.post(
       "/resend-invitation",
       requireAuth,
+      requirePermission("invitations", "create"),
       this.organizationController.resendInvitation,
     );
     this.router.patch(

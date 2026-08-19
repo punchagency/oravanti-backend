@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "crypto";
+import { createHash } from "crypto";
 import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
 import PDFDocument from "pdfkit";
 import { db } from "../../db/client";
@@ -37,8 +37,11 @@ import {
   PaginationParams,
 } from "../../utils/pagination";
 import { storageService } from "../../utils/storage/storage.service";
+import { createModuleLogger } from "../../lib/logging/log";
 import { triggerScenarioScan } from "../ai-scan/scan-triggers";
 import { flagsByDocument } from "../case-review/document-flags";
+
+const log = createModuleLogger("questionnaires.service");
 import {
   addDocumentVersion,
   computeChecksum,
@@ -82,7 +85,6 @@ type SectionInput = {
 const tokenHash = (token: string) =>
   createHash("sha256").update(token).digest("hex");
 
-const generateAccessToken = () => randomBytes(32).toString("base64url");
 
 const isEmptyAnswer = (value: unknown) => {
   if (value === null || value === undefined) return true;
@@ -649,7 +651,7 @@ export class QuestionnairesService {
       await logLeadEvent({
         organizationId: send.organizationId,
         leadId: send.leadId,
-        type: "questionnaire_draft_saved",
+        action: "lead.questionnaire_draft_saved",
         metadata: { sendId: send.id },
       });
     }
@@ -674,7 +676,7 @@ export class QuestionnairesService {
     // Response is in — cancel the pending auto-reminder so it never fires.
     if (send.reminderJobId) {
       await cancelQuestionnaireReminder(send.reminderJobId).catch(
-        console.error,
+        (err) => log.failure("queue.job_cancel_failed", err, { questionnaireId: send.id }),
       );
     }
 
@@ -682,7 +684,7 @@ export class QuestionnairesService {
       await logLeadEvent({
         organizationId: send.organizationId,
         leadId: send.leadId,
-        type: "questionnaire_response_received",
+        action: "lead.questionnaire_response_received",
         metadata: { sendId: send.id, responseId: result!.id },
       });
     }
@@ -748,7 +750,7 @@ export class QuestionnairesService {
       await logLeadEvent({
         organizationId: send.organizationId,
         leadId: send.leadId,
-        type: "questionnaire_file_uploaded",
+        action: "lead.questionnaire_file_uploaded",
         metadata: {
           sendId: send.id,
           responseId: response.id,
@@ -1223,7 +1225,7 @@ export class QuestionnairesService {
       await logLeadEvent({
         organizationId,
         leadId: response.leadId,
-        type: "stage_changed",
+        action: "lead.stage_changed",
         metadata: { from: "questionnaire", to: "consultation" },
       });
     }
@@ -1352,7 +1354,7 @@ export class QuestionnairesService {
       await logLeadEvent({
         organizationId,
         leadId: send.leadId,
-        type: "reminder_sent",
+        action: "lead.reminder_sent",
         metadata: { sendId: send.id, channel: "questionnaire_reminder" },
       });
     }
@@ -1427,13 +1429,11 @@ export class QuestionnairesService {
               <p>Please upload them using your intake questionnaire link. If you have
               misplaced your link, please contact your attorney's office.</p>`,
           })
-          .catch(console.error);
+          .catch((err) => log.failure("email.send_failed", err, { leadId: send.leadId! }));
 
         const channels = (send.deliveryChannels as string[] | null) ?? [];
         if (channels.includes("sms") && lead.phone) {
-          console.log(
-            `[sms-stub] missing-documents request to ${lead.phone} for send ${sendId}`,
-          );
+          log.debug("sms.missing_docs_stub", { leadId: send.leadId!, phone: lead.phone, sendId });
         }
       }
     }
@@ -1442,7 +1442,7 @@ export class QuestionnairesService {
       await logLeadEvent({
         organizationId,
         leadId: send.leadId,
-        type: "missing_documents_requested",
+        action: "lead.missing_documents_requested",
         metadata: { sendId: send.id, missingCount: missing.length, missing },
       });
     }

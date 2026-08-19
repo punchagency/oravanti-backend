@@ -3,7 +3,7 @@ import { getRequestContext } from "../../middleware/request-context";
 import asyncWrap from "../../utils/asyncWrapper";
 import { BadRequestError } from "../../utils/error/app-error";
 import { sendSuccess } from "../../utils/send-success";
-import { getCaseActivityPaginated } from "../cases/case-events.service";
+import { getTaskReviewEvents } from "../shared/task-review-events.service";
 import { WorkflowService } from "./workflow.service";
 
 export class WorkflowController {
@@ -91,6 +91,33 @@ export class WorkflowController {
       feedback,
     );
     sendSuccess(res, result, "Step rejected");
+  });
+
+  reopenStep = asyncWrap(async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    const caseId = req.params.caseId as string;
+    const stepId = req.params.stepId as string;
+    const { notes } = req.body;
+    const result = await this.workflowService.reopenStep(
+      caseId,
+      stepId,
+      organizationId!,
+      staffId ?? undefined,
+      notes,
+    );
+    sendSuccess(res, result, "Step reopened");
+  });
+
+  /** The step's full submit/approve/reject/reopen note thread. */
+  getStepReviewThread = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const stepId = req.params.stepId as string;
+    const events = await getTaskReviewEvents(
+      "case_step",
+      stepId,
+      organizationId!,
+    );
+    sendSuccess(res, events, "Step review thread retrieved");
   });
 
   assignStep = asyncWrap(async (req: Request, res: Response) => {
@@ -212,7 +239,7 @@ export class WorkflowController {
   });
 
   getNotes = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { staffId } = getRequestContext();
     const caseId = req.params.caseId as string;
     const { pinnedOnly, authorId, context, page, limit } = req.query;
 
@@ -288,18 +315,5 @@ export class WorkflowController {
     const actorId = staffId ?? undefined;
     await this.workflowService.bulkPinNotes(noteIds, caseId, pinned, organizationId ?? undefined, actorId ?? undefined);
     sendSuccess(res, null, "Notes pinned successfully");
-  });
-
-  getAuditLog = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
-    const caseId = req.params.caseId as string;
-    const { page, limit } = req.query;
-    const result = await getCaseActivityPaginated({
-      caseId,
-      organizationId: organizationId!,
-      page: page ? parseInt(page as string, 10) : undefined,
-      limit: limit ? parseInt(limit as string, 10) : undefined,
-    });
-    sendSuccess(res, result.data, "Audit log retrieved successfully", 200, { pagination: result.pagination });
   });
 }

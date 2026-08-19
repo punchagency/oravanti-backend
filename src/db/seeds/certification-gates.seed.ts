@@ -1,5 +1,4 @@
 import { db } from "../client";
-import { eq } from "drizzle-orm";
 import { certifications } from "../schema/cases";
 import { organization } from "../schema/auth-schema";
 import { paralegalCertificationGates } from "../schema/paralegal-certification-gates";

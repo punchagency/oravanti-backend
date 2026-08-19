@@ -7,9 +7,11 @@ import { systemDb } from "../db/client";
 import { staff } from "../db/schema";
 import { member, session } from "../db/schema/auth-schema";
 import { connectedEmailAccount } from "../db/schema/email";
+import { createModuleLogger } from "../lib/logging/log";
 import { getActiveOrganization } from "./helpers";
 
 const secret = env.BETTER_AUTH_SECRET;
+const log = createModuleLogger("auth.database_hooks");
 
 function extractEmailFromIdToken(idToken: string): string | null {
   try {
@@ -111,7 +113,11 @@ export const databaseHooks = {
                   email = data.mail || data.userPrincipalName || "";
                 }
               }
-            } catch {}
+            } catch {
+              // Best effort. The email is resolved again from the ID token
+              // on the next sign-in, and failing the whole hook because a
+              // profile fetch timed out would block the login itself.
+            }
           }
 
           if (!email) return;
@@ -141,10 +147,12 @@ export const databaseHooks = {
               },
             });
         } catch (e) {
-          console.error(
-            `Failed to connect ${account.providerId} email account via Better Auth hook:`,
-            e,
-          );
+          // Swallowed so sign-in still succeeds — but the user's mailbox is
+          // silently not connected, so it has to be visible somewhere.
+          log.failure("email_account.link_failed", e, {
+            provider: account.providerId,
+            targetUserId: account.userId,
+          });
         }
       },
     },
@@ -163,13 +171,20 @@ export const databaseHooks = {
             const response = await fetch(`http://ip-api.com/json/${ipAddress}`);
             const data = await response.json();
 
-            console.log(data);
-
+            // The bare `console.log(data)` that was here dumped the whole
+            // third-party response — which carries the user's ISP, latitude,
+            // longitude, postcode and organisation — into the log on every
+            // single sign-in. Only the two fields actually used are recorded.
             if (!data.error && data.city && data.country) {
               locationStr = `${data.city}, ${data.country}`;
             }
           } catch (error) {
-            console.error("Failed to fetch IP location:", error);
+            // Best effort. The session is created either way, with the
+            // location left as "Unknown Location".
+            log.warn("auth.geo_lookup_failed", {
+              err: error,
+              targetUserId: session.userId,
+            });
           }
         }
 

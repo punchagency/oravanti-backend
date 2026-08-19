@@ -1,10 +1,13 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/client";
+import { createModuleLogger } from "../../lib/logging/log";
 import {
   caseTypeDocumentRequirements,
   scenarioDocumentRequirements,
 } from "../../db/schema/document-requirements";
 import { NotFoundError } from "../../utils/error/app-error";
+
+const log = createModuleLogger("document-requirements.service");
 
 type TemplateInsert = typeof caseTypeDocumentRequirements.$inferInsert;
 
@@ -78,6 +81,7 @@ export class DocumentRequirementsService {
       .insert(caseTypeDocumentRequirements)
       .values({ ...data, organizationId })
       .returning();
+    log.action("document_requirement.created", { requirementId: row.id });
     return row;
   };
 
@@ -97,6 +101,7 @@ export class DocumentRequirementsService {
       )
       .returning();
     if (!row) throw new NotFoundError("Requirement template not found");
+    log.action("document_requirement.updated", { requirementId: id });
     return row;
   };
 
@@ -114,6 +119,7 @@ export class DocumentRequirementsService {
       )
       .returning({ id: caseTypeDocumentRequirements.id });
     if (!row) throw new NotFoundError("Requirement template not found");
+    log.action("document_requirement.deleted", { requirementId: row.id });
     return { id: row.id };
   };
 }

@@ -1,14 +1,16 @@
 import { Router } from "express";
-import multer from "multer";
+import { imageUpload } from "../../middleware/upload";
 import { z } from "zod";
 
 import { requireAuth } from "../../middleware/auth.middleware";
+import { requireResource } from "../../middleware/permission.middleware";
 import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { preserveRequestContext } from "../../middleware/request-context";
 import { CommonValidation } from "../../validation/common.validation";
 
 import { validateRequest } from "../../middleware/validate.middleware";
 import { ClientsController } from "./clients.controller";
+import * as v from "./clients.validation";
 
 const updateClientProfileBody = z
   .object({
@@ -18,18 +20,7 @@ const updateClientProfileBody = z
   })
   .strict();
 
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
-  fileFilter: (_req, file, cb) => {
-    const allowed = ["image/jpeg", "image/png", "image/gif", "image/webp"];
-    if (allowed.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error("Only JPEG, PNG, GIF, and WebP images are allowed"));
-    }
-  },
-});
+const upload = imageUpload();
 
 export class ClientsRouter {
   public router: Router;
@@ -46,7 +37,6 @@ export class ClientsRouter {
   }
 
   private initializeRoutes() {
-    this.router.use(this.path, this.router);
     this.router.use(requireAuth);
     this.router.use(resolveActorContext);
 
@@ -66,6 +56,13 @@ export class ClientsRouter {
       preserveRequestContext(upload.single("avatar")),
       this.ctrl.uploadClientAvatar,
     );
+
+    // Self-service ends here. The routes above let a client read and edit
+    // their OWN record, so they are gated by authentication and RLS ownership
+    // rather than by the `clients` resource — a client holds `clients: read`
+    // only, and gating them on `update` would lock them out of their own
+    // profile. Everything below manages OTHER people's client records.
+    this.router.use(requireResource("clients"));
 
     // Converted clients (must be before /:id routes)
     this.router.get("/converted", this.ctrl.listConvertedClients);
@@ -109,7 +106,7 @@ export class ClientsRouter {
     this.router.get("/:id", validateRequest({ params: this.validation.idParams }), this.ctrl.getClientById);
     this.router.patch(
       "/:id",
-      validateRequest({ params: this.validation.idParams, body: this.validation.optionalBody() }),
+      validateRequest({ params: v.clientIdParams, body: v.updateClientBody }),
       this.ctrl.updateClient,
     );
     this.router.delete("/:id", validateRequest({ params: this.validation.idParams }), this.ctrl.deleteClient);
@@ -118,12 +115,12 @@ export class ClientsRouter {
     this.router.get("/:id/contacts", validateRequest({ params: this.validation.idParams }), this.ctrl.getClientContacts);
     this.router.post(
       "/:id/contacts",
-      validateRequest({ params: this.validation.idParams, body: this.validation.requiredBody("firstName", "lastName", "email", "role") }),
+      validateRequest({ params: v.clientIdParams, body: v.createContactBody }),
       this.ctrl.addClientContact,
     );
     this.router.patch(
       "/:id/contacts/:contactId",
-      validateRequest({ params: this.validation.params("id", "contactId"), body: this.validation.optionalBody() }),
+      validateRequest({ params: v.contactParams, body: v.updateContactBody }),
       this.ctrl.updateClientContact,
     );
     this.router.delete(
@@ -136,7 +133,7 @@ export class ClientsRouter {
     this.router.get("/:id/company", validateRequest({ params: this.validation.idParams }), this.ctrl.getClientCompany);
     this.router.patch(
       "/:id/company",
-      validateRequest({ params: this.validation.idParams, body: this.validation.optionalBody() }),
+      validateRequest({ params: v.clientIdParams, body: v.upsertCompanyBody }),
       this.ctrl.upsertClientCompany,
     );
 

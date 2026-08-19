@@ -6,18 +6,16 @@
  */
 import { and, eq } from "drizzle-orm";
 import { db, systemDb } from "../../src/db/client";
-import {
-  caseIssueDocuments,
-  caseIssueEvents,
-  caseIssues,
-} from "../../src/db/schema/case-issues";
+import { caseIssueDocuments, caseIssues } from "../../src/db/schema/case-issues";
 import type { AiScanResultJob } from "../../src/modules/ai-scan/contract";
 import { syncScenarioIssues } from "../../src/modules/case-review/issue-sync";
 import {
   check,
   checkEqual,
+  issueAuditEvents,
   report,
   section,
+  toStatusOf,
   withOrgContext,
   withTempFixture,
 } from "./_bootstrap";
@@ -123,12 +121,13 @@ const main = async () => {
           .where(eq(caseIssueDocuments.issueId, issue.id));
         checkEqual("case_issue_documents populated on NEW", links.length, 2);
 
-        const events1 = await db
-          .select()
-          .from(caseIssueEvents)
-          .where(eq(caseIssueEvents.issueId, issue.id));
+        const events1 = await issueAuditEvents(issue.id);
         checkEqual("one event recorded", events1.length, 1);
-        checkEqual("event opens the issue", events1[0].toStatus, "open");
+        checkEqual(
+          "event opens the issue",
+          events1[0].action,
+          "case_review.issue_detected",
+        );
 
         // ── UNCHANGED ──────────────────────────────────────────────────────
         section("UNCHANGED — same facts on rerun");
@@ -142,10 +141,7 @@ const main = async () => {
         checkEqual("id is stable (same issueKey)", after2[0].id, issue.id);
         checkEqual("contentHash unchanged", after2[0].contentHash, issue.contentHash);
 
-        const events2 = await db
-          .select()
-          .from(caseIssueEvents)
-          .where(eq(caseIssueEvents.issueId, issue.id));
+        const events2 = await issueAuditEvents(issue.id);
         checkEqual("no extra event for an unchanged issue", events2.length, 1);
 
         // ── CHANGED ────────────────────────────────────────────────────────
@@ -200,14 +196,11 @@ const main = async () => {
           after6[0].status,
         );
 
-        const events6 = await db
-          .select()
-          .from(caseIssueEvents)
-          .where(eq(caseIssueEvents.issueId, issue.id));
+        const events6 = await issueAuditEvents(issue.id);
         check(
           "event trail records every transition",
           events6.length >= 3,
-          events6.map((e) => `${e.fromStatus ?? "-"}->${e.toStatus}`),
+          events6.map((e) => `${e.action}${toStatusOf(e) ? ` -> ${toStatusOf(e)}` : ""}`),
         );
       });
 

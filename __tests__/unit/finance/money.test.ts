@@ -110,4 +110,3 @@ describe("trustFirstSplit", () => {
     expect(second).toEqual({ operating: 200, trust: 300 });
   });
 });
-});

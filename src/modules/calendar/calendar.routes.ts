@@ -12,6 +12,7 @@ import { CommonValidation } from "../../validation/common.validation";
 
 import { validateRequest } from "../../middleware/validate.middleware";
 import { CalendarController } from "./calendar.controller";
+import * as v from "./calendar.validation";
 
 export class CalendarRouter {
   public router: Router;
@@ -32,7 +33,6 @@ export class CalendarRouter {
   }
 
   private initializeRoutes() {
-    this.router.use(this.path, this.router);
     this.router.use(requireAuth);
     this.router.use(resolveActorContext);
 
@@ -140,7 +140,7 @@ export class CalendarRouter {
      */
     this.router.post(
       "/",
-      validateRequest({ body: this.validation.optionalBody() }),
+      validateRequest({ body: v.createCalendarEventBody }),
       this.calendarController.createCalendarEvent,
     );
 
@@ -174,8 +174,8 @@ export class CalendarRouter {
     this.router.patch(
       "/:id",
       validateRequest({
-        params: this.validation.idParams,
-        body: this.validation.optionalBody(),
+        params: v.calendarEventIdParams,
+        body: v.updateCalendarEventBody,
       }),
       this.calendarController.updateCalendarEvent,
     );

@@ -5,35 +5,13 @@ import { auth } from "../../../auth";
 import { db } from "../../../db/client";
 import { user } from "../../../db/schema/auth-schema";
 import {
-  AuthenticationError,
-  AuthorizationError,
-  BadRequestError,
-  ExternalServiceError,
   NotFoundError,
-  ValidationError,
 } from "../../../utils/error/app-error";
+import { recordAuditEvent } from "../../shared/audit.service";
+import { createModuleLogger } from "../../../lib/logging/log";
 
-type AuthServiceError = {
-  message: string;
-  status?: number;
-};
+const log = createModuleLogger("security.service");
 
-const mapAuthError = (error: AuthServiceError) => {
-  switch (error.status) {
-    case 400:
-      return new BadRequestError(error.message);
-    case 401:
-      return new AuthenticationError(error.message);
-    case 403:
-      return new AuthorizationError(error.message);
-    case 404:
-      return new NotFoundError(error.message);
-    case 422:
-      return new ValidationError(error.message);
-    default:
-      return new ExternalServiceError(error.message);
-  }
-};
 
 export class SecurityService {
   // ─── Change Password ─────────────────────────────────────────────────────────
@@ -47,6 +25,13 @@ export class SecurityService {
       headers: fromNodeHeaders(req.headers),
       body: { currentPassword, newPassword, revokeOtherSessions: true },
     });
+
+    await recordAuditEvent({
+      action: "auth.password_changed",
+      entityId: (req as any).userId ?? "unknown",
+      onWriteFailure: "log",
+    });
+    log.action("settings.security_updated", { userId: (req as any).userId ?? "unknown" });
   };
 
   // ─── Two-Factor Authentication ───────────────────────────────────────────────
@@ -64,10 +49,19 @@ export class SecurityService {
   };
 
   enroll2FA = async (req: Request, password: string) => {
-    return auth.api.enableTwoFactor({
+    const result = await auth.api.enableTwoFactor({
       headers: fromNodeHeaders(req.headers),
       body: { password, issuer: "Oravanti" },
     });
+
+    await recordAuditEvent({
+      action: "auth.two_factor_enabled",
+      entityId: (req as any).userId ?? "unknown",
+      onWriteFailure: "log",
+    });
+    log.action("settings.security_updated", { userId: (req as any).userId ?? "unknown" });
+
+    return result;
   };
 
   verify2FA = async (req: Request, code: string) => {
@@ -82,6 +76,13 @@ export class SecurityService {
       headers: fromNodeHeaders(req.headers),
       body: { password },
     });
+
+    await recordAuditEvent({
+      action: "auth.two_factor_disabled",
+      entityId: (req as any).userId ?? "unknown",
+      onWriteFailure: "log",
+    });
+    log.action("settings.security_updated", { userId: (req as any).userId ?? "unknown" });
   };
 
   // ─── Active Sessions ─────────────────────────────────────────────────────────
@@ -97,5 +98,12 @@ export class SecurityService {
       headers: fromNodeHeaders(req.headers),
       body: { token },
     });
+
+    await recordAuditEvent({
+      action: "auth.session_revoked",
+      entityId: (req as any).userId ?? "unknown",
+      onWriteFailure: "log",
+    });
+    log.action("settings.security_updated", { userId: (req as any).userId ?? "unknown" });
   };
 }

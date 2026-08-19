@@ -7,6 +7,7 @@ export * from "./ai-scan-jobs";
 export * from "./ai-system-config";
 export * from "./approval-workflows";
 export * from "./assignments";
+export * from "./audit-events";
 export * from "./billing-rates";
 export * from "./case-issues";
 export { team, teamMember } from "./auth-schema";
@@ -26,7 +27,6 @@ export * from "./document-analyses";
 export * from "./document-requirements";
 export * from "./documents";
 export * from "./fee-agreements";
-export * from "./finance-events";
 export * from "./financial-access-controls";
 export * from "./firm-practice-areas";
 export * from "./invoice-deliveries";
@@ -40,15 +40,14 @@ export * from "./confido-firms";
 export * from "./confido-statements";
 export * from "./invoices";
 export * from "./lead-document-links";
+export * from "./intake-pipeline-templates";
 export * from "./lead-tasks";
-export * from "./lead-timeline-events";
 export * from "./leads";
 export * from "./leave-requests";
 export * from "./module-permissions";
 export * from "./paralegal-activation-requirements";
 export * from "./paralegal-certification-gates";
 export * from "./paralegal-profiles";
-export * from "./permission-audit-log";
 export * from "./practice-area-case-types";
 export * from "./practice-area-subcategories";
 export * from "./practice-areas";
@@ -56,7 +55,6 @@ export * from "./profiles";
 export * from "./questionnaires";
 export * from "./staff-availability";
 export * from "./staff-certifications";
-export * from "./step-action-logs";
 export * from "./subscriptions";
 export * from "./tasks";
 export * from "./team-members";
@@ -65,3 +63,8 @@ export * from "./staff-practice-area-case-types";
 export * from "./relations";
 export * from "./time-entries";
 export * from "./workflow";
+
+// NOTE: rls.ts and rls-tenant.ts are deliberately NOT re-exported here.
+// drizzle-kit already scans this whole directory (drizzle.config.ts points at
+// ./src/db/schema), so re-exporting them registers every policy twice and
+// drizzle refuses the duplicate names. Import them by path where needed.

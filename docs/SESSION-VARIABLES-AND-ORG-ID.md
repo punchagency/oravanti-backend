@@ -33,12 +33,12 @@ Without the default, the INSERT fails because `organization_id` is `NOT NULL` an
 
 But there are tradeoffs:
 
-| Keep `organizationId` in code | Remove it, rely on RLS + default |
-|------|------|
-| Defense-in-depth — explicit even if RLS misconfigured | Cleaner code, less boilerplate |
-| Works even if session variable not set | BREAKS silently if session not set |
-| Clear audit trail in code | Harder to debug |
-| Safe during migration period | Requires all tables to have the default |
+| Keep `organizationId` in code                         | Remove it, rely on RLS + default        |
+| ----------------------------------------------------- | --------------------------------------- |
+| Defense-in-depth — explicit even if RLS misconfigured | Cleaner code, less boilerplate          |
+| Works even if session variable not set                | BREAKS silently if session not set      |
+| Clear audit trail in code                             | Harder to debug                         |
+| Safe during migration period                          | Requires all tables to have the default |
 
 ## Why keep `organizationId` in SELECT queries too?
 
@@ -64,6 +64,7 @@ ALTER TABLE cases
 ```
 
 This way:
+
 - Normal code: passes `organizationId` explicitly (defense-in-depth)
 - If someone forgets: the default kicks in from the session variable (safety net)
 - If RLS is off AND session is set: still works correctly

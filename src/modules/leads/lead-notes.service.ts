@@ -1,11 +1,14 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import { withTransaction } from "../../db/transaction-context";
+import { createModuleLogger } from "../../lib/logging/log";
 import { leadNotes, leads } from "../../db/schema/leads";
 import type { LeadNoteType, LeadNoteContext, LeadNoteVisibility } from "../../db/schema/leads";
 import { staff } from "../../db/schema/staff";
 import { AuthorizationError, NotFoundError } from "../../utils/error/app-error";
 import { logLeadEvent } from "./lead-events.service";
+
+const log = createModuleLogger("lead-notes.service");
 
 /**
  * Lead notes: records of what someone said at a point in time.
@@ -150,10 +153,12 @@ export const addLeadNote = async (
 
   if (!lead) throw new NotFoundError("Lead not found");
 
-  if (!authorId)
+  if (!authorId) {
+    log.warn("lead_note.creation_rejected", { leadId, reason: "no_author" });
     throw new AuthorizationError(
       "A valid staff profile is required to add a note",
     );
+  }
 
   const [author] = await db
     .select({ firstName: staff.firstName, lastName: staff.lastName })
@@ -181,13 +186,15 @@ export const addLeadNote = async (
     await logLeadEvent({
       organizationId,
       leadId,
-      type: "note_added",
+      action: "lead.note_added",
       actorId: authorId,
       metadata: { noteId: created.id, noteType: type, context, contentPreview },
     });
 
     return created;
   });
+
+  log.action("lead_note.created", { noteId: note.id, leadId });
 
   return {
     id: note.id,
@@ -230,6 +237,7 @@ export const updateLeadNote = async (
     throw new NotFoundError("Lead note not found");
   }
   if (existing.authorId !== actorId) {
+    log.warn("lead_note.update_rejected", { noteId, leadId, reason: "not_author" });
     throw new AuthorizationError("Only the note author may update a note");
   }
 
@@ -255,7 +263,7 @@ export const updateLeadNote = async (
   await logLeadEvent({
     organizationId,
     leadId,
-    type: "note_updated",
+    action: "lead.note_updated",
     actorId,
     metadata: {
       noteId: updated.id,
@@ -266,6 +274,8 @@ export const updateLeadNote = async (
       changes,
     },
   });
+
+  log.action("lead_note.updated", { noteId: updated.id, leadId });
 
   return {
     id: updated.id,
@@ -307,6 +317,7 @@ export const deleteLeadNote = async (
     throw new NotFoundError("Lead note not found");
   }
   if (existing.authorId !== actorId) {
+    log.warn("lead_note.delete_rejected", { noteId, leadId, reason: "not_author" });
     throw new AuthorizationError("Only the note author may delete a note");
   }
 
@@ -321,7 +332,7 @@ export const deleteLeadNote = async (
   await logLeadEvent({
     organizationId,
     leadId,
-    type: "note_deleted",
+    action: "lead.note_deleted",
     actorId,
     metadata: {
       noteId,
@@ -330,6 +341,8 @@ export const deleteLeadNote = async (
       deletedContent: deletedContent.slice(0, 200),
     },
   });
+
+  log.action("lead_note.deleted", { noteId, leadId });
 };
 
 export const bulkDeleteNotes = async (
@@ -361,10 +374,12 @@ export const bulkDeleteNotes = async (
   await logLeadEvent({
     organizationId,
     leadId,
-    type: "note_deleted",
+    action: "lead.note_deleted",
     actorId,
     metadata: { noteIds: toDelete, bulk: true, count: toDelete.length },
   });
+
+  log.action("lead_note.deleted", { noteIds: toDelete, leadId, bulk: true });
 
   return { deleted: toDelete.length };
 };
@@ -374,7 +389,7 @@ export const bulkPinNotes = async (
   noteIds: string[],
   pinned: boolean,
   organizationId: string,
-  actorId: string,
+  _actorId: string,
 ): Promise<{ updated: number }> => {
   const [lead] = await db
     .select({ id: leads.id })
@@ -425,7 +440,7 @@ export const toggleNotePin = async (
   await logLeadEvent({
     organizationId,
     leadId,
-    type: newPinned ? "note_pinned" : "note_unpinned",
+    action: newPinned ? "lead.note_pinned" : "lead.note_unpinned",
     actorId,
     metadata: { noteId, isPinned: newPinned },
   });

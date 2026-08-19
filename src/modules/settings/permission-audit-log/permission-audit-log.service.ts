@@ -1,15 +1,45 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "../../../db/client";
-import { admins, permissionAuditLog } from "../../../db/schema";
+import { auditEvents } from "../../../db/schema";
+import { recordAuditEvent } from "../../shared/audit.service";
+import { createModuleLogger } from "../../../lib/logging/log";
+
+const log = createModuleLogger("permission-audit-log.service");
+
+const PERMISSION_AUDIT_ACTIONS = [
+  "admin.permission_changed",
+  "admin.access_control_changed",
+  "admin.data_access_changed",
+  "admin.financial_access_changed",
+  "admin.approval_workflow_changed",
+  "admin.certification_gate_changed",
+] as const;
 
 export class PermissionAuditLogService {
   getPermissionAuditLog = async (organizationId: string, limit = 20) => {
-    return db
+    const rows = await db
       .select()
-      .from(permissionAuditLog)
-      .where(eq(permissionAuditLog.organizationId, organizationId))
-      .orderBy(desc(permissionAuditLog.createdAt))
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.organizationId, organizationId),
+          inArray(auditEvents.action, [...PERMISSION_AUDIT_ACTIONS]),
+        ),
+      )
+      .orderBy(desc(auditEvents.occurredAt))
       .limit(limit);
+
+    log.debug("permission_audit.queried", { organizationId, count: rows.length });
+
+    return rows.map((row) => ({
+      id: row.id,
+      organizationId: row.organizationId,
+      action: row.summary,
+      changedBy: row.actorStaffId ?? row.actorId,
+      changedByName: row.actorName,
+      changedByRole: "admin",
+      createdAt: row.occurredAt,
+    }));
   };
 
   logPermissionChange = async (
@@ -17,22 +47,12 @@ export class PermissionAuditLogService {
     userId: string,
     organizationId: string,
   ) => {
-    const adminRecord = await db
-      .select({ firstName: admins.firstName, lastName: admins.lastName })
-      .from(admins)
-      .where(and(eq(admins.userId, userId), eq(admins.organizationId, organizationId)))
-      .limit(1);
-
-    const changedByName = adminRecord.length
-      ? `${adminRecord[0].firstName} ${adminRecord[0].lastName}`
-      : "Unknown Admin";
-
-    await db.insert(permissionAuditLog).values({
+    await recordAuditEvent({
+      action: "admin.permission_changed",
       organizationId,
-      action,
-      changedBy: userId,
-      changedByName,
-      changedByRole: "admin",
+      summary: action,
+      actor: { id: userId },
+      onWriteFailure: "log",
     });
   };
 }

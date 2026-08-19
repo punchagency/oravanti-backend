@@ -1,0 +1,90 @@
+name: CI
+
+# Feature branches are pushed, then opened as PRs into dev. The PR is the
+# gate: every push to an open PR re-runs this. The push trigger covers the
+# merge commit on dev/main afterwards, so a bad merge can't land unnoticed.
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+
+# A newer push to the same PR makes the in-flight run irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: typecheck · test · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # src/config/env.ts validates 22 required keys at import time and throws
+    # on any that are missing, so anything that transitively imports it dies
+    # before a single test runs. These are throwaway values that exist only
+    # to get past that check — the unit suite is pure functions and reaches
+    # no database, queue, or third-party service. Nothing here is a secret,
+    # and nothing here works against a real service.
+    env:
+      NODE_ENV: test
+      PORT: "8080"
+      CORS_ORIGIN: http://localhost:5173
+      DATABASE_URL: postgres://ci:ci@localhost:5432/ci
+      REDIS_URL: redis://localhost:6379
+      FRONTEND_APP_URL: http://localhost:5173
+      BETTER_AUTH_SECRET: ci-not-a-real-secret
+      BETTER_AUTH_URL: http://localhost:8080
+      EMAIL_VERIFICATION_CALLBACK_URL: http://localhost:5173/email-verified
+      R2_ACCOUNT_ID: ci
+      R2_ACCESS_KEY_ID: ci
+      R2_SECRET_ACCESS_KEY: ci
+      R2_BUCKET: ci
+      SMTP_EMAIL_ADDRESS: ci@example.invalid
+      SMTP_PASSWORD: ci
+      GOOGLE_CLIENT_ID: ci
+      GOOGLE_CLIENT_SECRET: ci
+      MICROSOFT_CLIENT_ID: ci
+      MICROSOFT_CLIENT_SECRET: ci
+      # 32-byte hex. Shaped like the real thing so any length check at module
+      # load passes; these specific bytes protect nothing.
+      SERVER_MASTER_KEY_PRIMARY: "0000000000000000000000000000000000000000000000000000000000000000"
+      EMAIL_ENCRYPTION_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
+      PAYMENT_ENCRYPTION_KEY: "2222222222222222222222222222222222222222222222222222222222222222"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci
+
+      # tsconfig.check.json, not tsconfig.json. The build config is pinned to
+      # rootDir "./src" so it can emit dist/, which left scripts/, __tests__/
+      # and src/db/seeds/ unchecked — that is how three checks under
+      # scripts/checks went on importing a table deleted months earlier.
+      - name: Typecheck
+        run: npm run typecheck
+
+      # lint:ci pins --max-warnings to the agreed ceiling, same shape as the
+      # frontend gate. Warnings are tracked debt (no-explicit-any, mostly in
+      # drizzle builders and better-auth payloads); the count may fall, never
+      # rise. Errors are zero and stay zero.
+      - name: Lint
+        run: npm run lint:ci
+
+      # --passWithNoTests is load-bearing: jest.config.js declares an
+      # "integration" project whose testMatch resolves to nothing, because
+      # __tests__/integration does not exist yet. Without the flag jest exits
+      # non-zero on a repo that is otherwise fine.
+      #
+      # Transform is @swc/jest, which does not type-check — that is the
+      # Typecheck step above, and it runs first for exactly this reason.
+      - name: Test
+        run: npm test -- --ci --passWithNoTests
+
+      - name: Build
+        run: npm run build

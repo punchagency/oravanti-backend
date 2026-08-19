@@ -12,6 +12,10 @@ import {
   UpdateConsultationLocationBody,
   UpsertConsultationSettingsBody,
 } from "./consultation-settings.validation";
+import { recordAuditEvent } from "../../shared/audit.service";
+import { createModuleLogger } from "../../../lib/logging/log";
+
+const log = createModuleLogger("consultation-settings.service");
 
 const toSettingsDTO = (row: ConsultationSettings) => ({
   organizationId: row.organizationId,
@@ -128,6 +132,17 @@ export class ConsultationSettingsService {
         .set(values)
         .where(eq(consultationSettings.organizationId, organizationId))
         .returning();
+
+      await recordAuditEvent({
+        action: "system.settings_changed",
+        entityId: organizationId,
+        organizationId,
+        before: { settingType: "consultation" },
+        after: { settingType: "consultation", ...values, updatedAt: undefined },
+        onWriteFailure: "log",
+      });
+      log.action("settings.consultation_updated", { organizationId });
+
       return toSettingsDTO(updated);
     }
 
@@ -135,6 +150,16 @@ export class ConsultationSettingsService {
       .insert(consultationSettings)
       .values({ organizationId, ...values })
       .returning();
+
+    await recordAuditEvent({
+      action: "system.settings_changed",
+      entityId: organizationId,
+      organizationId,
+      after: { settingType: "consultation", ...values, updatedAt: undefined },
+      onWriteFailure: "log",
+    });
+    log.action("settings.consultation_updated", { organizationId });
+
     return toSettingsDTO(created);
   };
 
@@ -161,6 +186,18 @@ export class ConsultationSettingsService {
       .insert(consultationLocations)
       .values({ organizationId, ...body })
       .returning();
+
+    if (created) {
+      await recordAuditEvent({
+        action: "system.settings_changed",
+        entityId: organizationId,
+        organizationId,
+        after: { settingType: "consultation_location", locationId: created.id, label: created.label },
+        onWriteFailure: "log",
+      });
+      log.action("settings.consultation_updated", { organizationId, locationId: created.id });
+    }
+
     return created;
   };
 
@@ -181,6 +218,16 @@ export class ConsultationSettingsService {
       .returning();
 
     if (!updated) throw new NotFoundError("Consultation location not found");
+
+    await recordAuditEvent({
+      action: "system.settings_changed",
+      entityId: organizationId,
+      organizationId,
+      after: { settingType: "consultation_location", locationId, ...body },
+      onWriteFailure: "log",
+    });
+    log.action("settings.consultation_updated", { organizationId, locationId });
+
     return updated;
   };
 
@@ -196,6 +243,16 @@ export class ConsultationSettingsService {
       .returning();
 
     if (!deleted) throw new NotFoundError("Consultation location not found");
+
+    await recordAuditEvent({
+      action: "system.settings_changed",
+      entityId: organizationId,
+      organizationId,
+      before: { settingType: "consultation_location", locationId, label: deleted.label },
+      onWriteFailure: "log",
+    });
+    log.action("settings.consultation_updated", { organizationId, locationId });
+
     return deleted;
   };
 }

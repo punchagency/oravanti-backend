@@ -9,6 +9,9 @@ import { invoices, type PaymentMethod } from "../../db/schema/invoices";
 import { withTransaction } from "../../db/transaction-context";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { emailService } from "../../utils/email/email.service";
+import { createModuleLogger } from "../../lib/logging/log";
+
+const log = createModuleLogger("finance.payments");
 import { logCaseEvent } from "../cases/case-events.service";
 import { requireTrustWrite } from "./account-access";
 import { canChaseInvoice } from "./deliveries.service";
@@ -190,7 +193,7 @@ export const recordPayment = async (
 
     await logFinanceEvent({
       organizationId,
-      eventType: fullySettled ? "invoice_paid" : "invoice_partially_paid",
+      action: fullySettled ? "finance.invoice_paid" : "finance.invoice_partially_paid",
       title: fullySettled
         ? `${invoice.invoiceNumber} — paid`
         : `${invoice.invoiceNumber} — partial payment`,
@@ -216,9 +219,9 @@ export const recordPayment = async (
       await logCaseEvent({
         organizationId,
         caseId: invoice.caseId,
-        eventType: "case_payment_received",
-        title: `Payment of ${input.amount.toFixed(2)} received`,
-        description: `Invoice ${invoice.invoiceNumber}`,
+        action: "case.payment_received",
+        
+        summary: `Invoice ${invoice.invoiceNumber}`,
         actorId: actorStaffId,
       });
     }
@@ -345,10 +348,7 @@ export const sendFollowUp = async (
       });
       emailDelivered = true;
     } catch (err) {
-      console.error(
-        `[finance] follow-up email failed for invoice ${row.invoiceNumber}:`,
-        err,
-      );
+      log.failure("payment.followup_email_failed", err, { invoiceNumber: row.invoiceNumber });
     }
   }
 
@@ -356,9 +356,7 @@ export const sendFollowUp = async (
     // No SMS provider is wired anywhere in this repo yet; every other flow logs
     // the intent the same way. `smsDelivered` stays false rather than claiming
     // a delivery that did not happen.
-    console.log(
-      `[sms-stub] payment follow-up to ${row.clientPhone} for invoice ${row.invoiceNumber}`,
-    );
+    log.debug("sms.followup_stub", { phone: row.clientPhone, invoiceNumber: row.invoiceNumber });
   }
 
   const [followup] = await db
@@ -398,7 +396,7 @@ export const sendFollowUp = async (
 
   await logFinanceEvent({
     organizationId,
-    eventType: "payment_followup_sent",
+    action: "finance.payment_followup_sent",
     title: `${row.invoiceNumber} — follow-up sent`,
     description:
       daysOverdue > 0

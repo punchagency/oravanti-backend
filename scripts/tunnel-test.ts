@@ -34,7 +34,6 @@ import { invoicePayments } from "../src/db/schema/invoice-payments";
 import { practiceAreas } from "../src/db/schema/practice-areas";
 import { leads } from "../src/db/schema/leads";
 import { encryptPaymentValue } from "../src/utils/payment-crypto";
-import { getConfidoClient } from "../src/modules/finance/confido/confido.client";
 import { mintPaymentLink, startCheckout } from "../src/modules/finance/payment-links.service";
 
 const TAG = "tunnel-test";

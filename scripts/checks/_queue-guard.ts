@@ -15,7 +15,12 @@ import { aiScanQueue } from "../../src/queue/queues";
  */
 export const externalAiScanConsumerPresent = async (): Promise<boolean> => {
   try {
-    const client = await aiScanQueue.client;
+    // `call` is ioredis's escape hatch for commands bullmq does not wrap.
+    // bullmq's RedisClient type omits it, so reach it structurally rather
+    // than widening the whole client to `any`.
+    const client = (await aiScanQueue.client) as unknown as {
+      call(command: string, ...args: string[]): Promise<unknown>;
+    };
     const list = (await client.call("CLIENT", "LIST")) as string;
     return list.split("\n").some((line) => line.includes("name=redis-py"));
   } catch {

@@ -1,6 +1,10 @@
 import { and, isNull, lt, sql } from "drizzle-orm";
 import { systemDb } from "../../../db/client";
 import { paymentWebhookEvents } from "../../../db/schema/payment-webhook-events";
+import { LogEvent } from "../../../lib/logging/events";
+import { createModuleLogger } from "../../../lib/logging/log";
+
+const log = createModuleLogger("confido-staleness");
 
 /**
  * Watches for webhook events that were accepted but never handled.
@@ -85,8 +89,14 @@ export const reportStaleWebhookEvents = async (): Promise<WebhookStaleness> => {
   const result = await findStaleWebhookEvents();
 
   if (result.stale > 0) {
-    console.error(
-      `[confido] ${result.stale} webhook event(s) accepted but never handled, ` +
+    // "error" spelled out rather than log.failure(): there is no exception here
+    // to attach, only a detected condition. The level is still error because
+    // the condition is a ledger diverging from a bank account.
+    log.at(
+      "error",
+      LogEvent.PAYMENT_WEBHOOK_STALE_EVENTS_FOUND,
+      { stale: result.stale, oldestMinutes: result.oldestMinutes },
+      `${result.stale} webhook event(s) accepted but never handled, ` +
         `oldest ${result.oldestMinutes} minute(s) ago. Payments may not be ` +
         `reaching the ledger — check the worker is consuming ` +
         `(npx tsx scripts/q-inspect.ts).`,

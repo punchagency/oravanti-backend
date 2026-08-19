@@ -1,6 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../../../db/client";
 import { dataAccessControls } from "../../../db/schema";
+import { recordAuditEvent } from "../../shared/audit.service";
+import { createModuleLogger } from "../../../lib/logging/log";
+
+const log = createModuleLogger("data-access.service");
 
 export class DataAccessService {
   getDataAccessControls = async (organizationId: string) => {
@@ -37,5 +41,12 @@ export class DataAccessService {
           ),
       ),
     );
+    await recordAuditEvent({
+      action: "admin.data_access_changed",
+      entityId: organizationId,
+      entityType: "permission",
+      onWriteFailure: "log",
+    });
+    log.action("settings.data_access_updated", { organizationId });
   };
 }

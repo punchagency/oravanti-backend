@@ -4,6 +4,7 @@ import type { ExportFormat } from "../../utils/report-export";
 import { sendSuccess } from "../../utils/send-success";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { accessForRequest, restrictionsFor } from "./account-access";
+import { recordAccessEvent } from "../shared/audit.service";
 import {
   buildInvoicePdf,
   listDeliveries,
@@ -245,11 +246,13 @@ export class InvoicesController {
   pdf = async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     const access = await accessForRequest();
+    const invoiceId = req.params.id as string;
     const { buffer, invoiceNumber } = await buildInvoicePdf(
       organizationId!,
-      req.params.id as string,
+      invoiceId,
       access,
     );
+    await recordAccessEvent({ action: "invoice.downloaded", entityId: invoiceId, dedupeWindowMs: 0 });
     sendDownload(res, {
       filename: `${invoiceNumber}.pdf`,
       mime: "application/pdf",
