@@ -769,11 +769,24 @@ const getLeadById = async (id: string, organizationId: string) => {
       .orderBy(desc(consultations.createdAt))
   ).filter((c) => c.id !== lead.consultationId);
 
+  // The consultation carries its fee here for the same reason `getConsultation`
+  // gives it one: the invoice is authoritative once it exists, and the cancel
+  // dialog has to be able to say what cancelling does to the money. `netPaid`
+  // is what makes "cancelling refunds $400" possible to render, and — once the
+  // consultation is cancelled — what makes "a refund is still owed" derivable
+  // without storing a flag.
+  const consultationWithFee = consultation
+    ? {
+        ...consultation,
+        fee: await consultationFee(organizationId, consultation),
+      }
+    : null;
+
   return {
     ...lead,
     conflictCheck,
     questionnaireSend,
-    consultation,
+    consultation: consultationWithFee,
     consultationHistory,
     feeAgreement,
   };
