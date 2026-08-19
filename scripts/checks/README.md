@@ -164,10 +164,26 @@ The AI service's own Tier 3 checks (live Document AI, Gemini, and the full
 pipeline) live in the `oravanti-ai-detection-server` repo under
 `scripts/checks/`.
 
+## Email
+
+Checks run against the real service layer, so anything reaching
+`emailService.sendEmail` — invoice delivery, payment follow-ups — hits a live
+SMTP transport. `silenceEmail()` from `_bootstrap` intercepts it, and any check
+that touches a send path must call it first.
+
+It is deliberately not a blanket no-op. A malformed recipient still throws, with
+the wording nodemailer uses, because the delivery-failure path is itself under
+test: an invoice whose send fails must stay a draft with the reason recorded.
+Swallowing that would turn real assertions into ones that cannot fail.
+`capturedEmails()` returns what was intercepted, if a check wants to assert on
+it.
+
 ## Writing a check
 
 Import from `_bootstrap`:
 
+- `silenceEmail()` — intercept outbound mail. **Required** for anything that
+  reaches a send path.
 - `withTempFixture(spec, fn)` — seeds org/user/lead/documents/analyses, tears down after.
 - `withOrgContext(orgId, userId, fn)` — runs `fn` inside the AsyncLocalStorage
   request context bound to a tenant connection. **Required for anything that

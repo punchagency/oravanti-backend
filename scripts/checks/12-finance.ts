@@ -63,7 +63,14 @@ import * as reportsService from "../../src/modules/finance/reports.service";
 import * as timeBilling from "../../src/modules/finance/time-billing.service";
 import { deriveStoredStatus } from "../../src/modules/finance/totals";
 import type { AccountAccess } from "../../src/modules/finance/types";
-import { check, checkEqual, report, section, withOrgContext } from "./_bootstrap";
+import {
+  check,
+  checkEqual,
+  report,
+  section,
+  silenceEmail,
+  withOrgContext,
+} from "./_bootstrap";
 
 const FULL: AccountAccess = { operating: "full_access", trust: "full_access" };
 const NO_TRUST: AccountAccess = { operating: "full_access", trust: "no_access" };
@@ -75,6 +82,12 @@ const daysFromNow = (n: number) =>
   iso(new Date(Date.now() + n * 86_400_000));
 
 const main = async () => {
+  // Checks run against the real service layer, so an invoice send would reach a
+  // live SMTP transport. Intercepted here rather than mocked per call site: the
+  // point of this file is the ledger, and posting mail to whoever owns the
+  // fixture addresses is not a side effect it should have.
+  silenceEmail();
+
   const orgId = `fin-check-${randomUUID()}`;
   const userId = `user-${randomUUID()}`;
   let leadId = "";
