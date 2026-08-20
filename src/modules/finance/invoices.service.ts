@@ -200,11 +200,18 @@ export const list = async (
   const showDrafts =
     options.status === "draft" || (isAllStatus && options.includeDrafts === true);
 
+  // A bucket that names a status the general list hides has to bypass the
+  // listable predicate entirely, or the two contradict and the filter returns
+  // nothing at all. Drafts already worked this way; `void` did not, which is
+  // why a voided invoice could not be found from anywhere in the UI.
+  const namesHiddenStatus =
+    options.status === "draft" || options.status === "void";
+
   const where = and(
     // RLS enforces this too; the explicit predicate is defence in depth and
     // universal in this codebase.
     eq(invoices.organizationId, organizationId),
-    options.status === "draft" ? undefined : listableInvoices(showDrafts),
+    namesHiddenStatus ? undefined : listableInvoices(showDrafts),
     statusFilter(options.status, today),
     accountPredicate,
     options.clientId ? eq(invoices.clientId, options.clientId) : undefined,
