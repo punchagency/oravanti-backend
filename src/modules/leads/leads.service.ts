@@ -3333,6 +3333,92 @@ const startConsultationPayment = async (token: string) => {
  * transition below is downstream of money that actually arrived. Idempotent on
  * `feeStatus`: a redelivered webhook finds it already settled and does nothing.
  */
+
+/**
+ * Tell the lead their payment landed, on the paths that used to say nothing.
+ *
+ * `settleConsultationForInvoice` has three exits and only the last one emailed.
+ * Urgent and instant consultations returned before reaching it, so a lead paid
+ * and heard nothing at all — no confirmation, no time, no way to join.
+ *
+ * Deliberately NOT a booking link: on both these paths the time is already
+ * fixed, by `nextAsapSlot()` for urgent and by the payment itself for instant.
+ * What the lead needs is when it is and how to join.
+ *
+ * Dual-zone throughout. A lead in another timezone told a bare time is how
+ * somebody misses their own consultation.
+ *
+ * Non-fatal by design, matching the slot-selection branch: the money is
+ * recorded and the consultation has already moved on, so losing that to a mail
+ * failure would be the wrong trade.
+ */
+const sendConsultationPaymentConfirmation = async (
+  consultation: typeof consultations.$inferSelect,
+  opts: { startingNow: boolean },
+): Promise<void> => {
+  const [lead] = await db
+    .select({
+      firstName: leads.firstName,
+      lastName: leads.lastName,
+      email: leads.email,
+    })
+    .from(leads)
+    .where(eq(leads.id, consultation.leadId))
+    .limit(1);
+
+  if (!lead) return;
+
+  const firmTz = await getFirmTimezone(consultation.organizationId);
+  const leadTz = await getLeadTimezone(
+    consultation.leadId,
+    consultation.organizationId,
+  );
+
+  const joinLine =
+    consultation.mode === "video" && consultation.videoLink
+      ? `<p>Join here when it starts: <a href="${consultation.videoLink}">${consultation.videoLink}</a></p>`
+      : "";
+
+  // An instant consultation whose fee was settled AFTER the call has nothing to
+  // announce and nothing to join — it is a receipt, and saying "your
+  // consultation is starting" would be wrong.
+  const alreadyHappened = consultation.isInstant && !opts.startingNow;
+
+  const whenLine =
+    consultation.scheduledAt && !alreadyHappened
+      ? `<p>Your consultation is scheduled for <strong>${formatDualZone(
+          consultation.scheduledAt,
+          leadTz,
+          firmTz,
+        )}</strong>.</p>`
+      : "";
+
+  const subject = alreadyHappened
+    ? "Payment received — thank you"
+    : opts.startingNow
+      ? "Payment received — your consultation is starting"
+      : "Payment received — your consultation is confirmed";
+
+  const body = alreadyHappened
+    ? "<p>Thanks, your payment was received. Nothing further is needed.</p>"
+    : opts.startingNow
+      ? "<p>Thanks, your payment was received. Your consultation is starting now.</p>"
+      : "<p>Thanks, your payment was received and your consultation is confirmed.</p>";
+
+  emailService
+    .sendEmail({
+      to: lead.email,
+      subject,
+      html: `<p>Dear ${lead.firstName} ${lead.lastName},</p>
+        ${body}
+        ${whenLine}
+        ${joinLine}`,
+    })
+    .catch((err) =>
+      log.failure("email.send_failed", err, { leadId: consultation.leadId }),
+    );
+};
+
 export const settleConsultationForInvoice = async (
   organizationId: string,
   invoiceId: string,
@@ -3366,6 +3452,18 @@ export const settleConsultationForInvoice = async (
       .where(eq(consultations.id, consultation.id))
       .returning();
     if (begins) await finalizeConsultation(paid!, { begin: true });
+
+    // Re-read: `finalizeConsultation` is what creates the Meet link, so the row
+    // captured before it ran has `videoLink` null and the email would carry no
+    // way to join.
+    const [ready] = await db
+      .select()
+      .from(consultations)
+      .where(eq(consultations.id, consultation.id))
+      .limit(1);
+    await sendConsultationPaymentConfirmation(ready ?? paid!, {
+      startingNow: begins,
+    });
 
     await logLeadEvent({
       organizationId: consultation.organizationId,
@@ -3401,6 +3499,17 @@ export const settleConsultationForInvoice = async (
 
   if (consultation.isUrgent) {
     await finalizeConsultation(paid!);
+
+    // Same re-read as the instant path, and for the same reason.
+    const [ready] = await db
+      .select()
+      .from(consultations)
+      .where(eq(consultations.id, consultation.id))
+      .limit(1);
+    await sendConsultationPaymentConfirmation(ready ?? paid!, {
+      startingNow: false,
+    });
+
     await logLeadEvent({
       organizationId: consultation.organizationId,
       leadId: consultation.leadId,
@@ -3868,9 +3977,12 @@ const cancelConsultation = async (
       cancellation.awaitingAdmin = true;
     } else {
       // Nothing was ever paid, so the invoice is asking for money against a
-      // consultation that will not happen. Void it. A paid one is left standing
-      // — the payment and reversal rows are the record of what happened, and
-      // hiding that behind a void would lose it.
+      // consultation that will not happen. Void it — the firm never charged.
+      //
+      // A paid one needs nothing here: refunding it recalculates the totals,
+      // and `deriveStoredStatus` moves it to `refunded` on its own. That is the
+      // point of deriving rather than setting — void would say the firm never
+      // charged, which is a different and untrue thing.
       await voidInvoiceForCancelledConsultation(
         organizationId,
         consultation.invoiceId,
