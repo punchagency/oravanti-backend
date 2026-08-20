@@ -10,7 +10,7 @@ export const invoiceParamsSchema = z.object({
 
 export const listInvoicesQuerySchema = z.object({
   status: z
-    .enum(["all", "draft", "paid", "unpaid", "partial", "overdue", "refunded", "voided"])
+    .enum(["all", "draft", "paid", "unpaid", "partial", "overdue", "refunded", "void"])
     .optional(),
   account: z.enum(["all", "operating", "trust"]).optional(),
   search: z.string().trim().max(200).optional(),
