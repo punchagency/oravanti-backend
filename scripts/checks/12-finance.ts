@@ -3008,6 +3008,32 @@ const main = async () => {
       }
       check("and cannot be chased", chaseRefundedRejected);
 
+      // The assertions above all tested what the invoice IS. None of them
+      // tested whether anyone can find it, and that is exactly where this went
+      // wrong: `listableInvoices` was built on `countableInvoices()`, so
+      // excluding refunded money from the tiles silently excluded refunded
+      // invoices from the list — under "all" AND under the Refunded filter the
+      // UI now offers.
+      const allList = await invoicesService.list(orgId, FULL, { status: "all" });
+      check(
+        "a refunded invoice appears under All",
+        allList.data.some((i) => i.id === fullyRefunded.id),
+        "listable and countable are different questions",
+      );
+
+      const refundedList = await invoicesService.list(orgId, FULL, {
+        status: "refunded",
+      });
+      check(
+        "and under the Refunded filter",
+        refundedList.data.some((i) => i.id === fullyRefunded.id),
+      );
+      check(
+        "which shows only refunded invoices",
+        refundedList.data.every((i) => i.status === "refunded"),
+        refundedList.data.map((i) => i.status),
+      );
+
       section("clearing policy");
 
       // A card payment reported but not deposited. Which policy the firm is on
