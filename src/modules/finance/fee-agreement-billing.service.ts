@@ -276,6 +276,11 @@ export const feeInvoiceSatisfied = async (
   // A link pointing at nothing must not block a case indefinitely.
   if (!invoice) return true;
   if (invoice.status === "void") return true;
+  // `refunded` is deliberately NOT here. Void means the firm decided not to
+  // charge, so nothing is owed and nothing should block. Refunded means the
+  // client paid and got the money back — they have not paid, so the case should
+  // stay shut. Falling through to the counted-money test below gets that right
+  // on its own: the reversal nets the payment out and `counted` is zero.
   // Still a draft: it was never sent, so the client has not been asked. Do not
   // hold the case hostage to a billing step the firm has not completed.
   if (invoice.status === "draft") return true;

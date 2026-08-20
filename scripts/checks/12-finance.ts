@@ -53,6 +53,9 @@ import { formatInvoiceNumber } from "../../src/modules/finance/invoice-number";
 import { num, trustFirstSplit, toMoney } from "../../src/modules/finance/money";
 import { firmToday } from "../../src/modules/finance/status";
 import * as paymentsService from "../../src/modules/finance/payments.service";
+import * as status from "../../src/modules/finance/status";
+import { effectiveStatusSql } from "../../src/modules/finance/status";
+import * as refundsService from "../../src/modules/finance/refunds.service";
 import * as deliveriesService from "../../src/modules/finance/deliveries.service";
 import { invoiceDeliveries } from "../../src/db/schema/invoice-deliveries";
 import * as feeAgreementBilling from "../../src/modules/finance/fee-agreement-billing.service";
@@ -2760,7 +2763,9 @@ const main = async () => {
       const afterRefund = await paidRow(refundable.id);
       checkEqual("a refund reduces what was paid", Number(afterRefund.amountPaid), 1100);
       checkEqual("the balance reopens", Number(afterRefund.balanceDue), 400);
-      checkEqual("and the invoice is no longer paid", afterRefund.status, "partial");
+      // A PART refund leaves money with the firm, so this is still `partial` —
+      // the client is not owed the difference and the invoice is not settled.
+      checkEqual("a part refund is still partial", afterRefund.status, "partial");
 
       // The trust figure Reports shows must net too — it sums amount_trust, and
       // client money that went back is not money the firm still holds.
@@ -2825,6 +2830,183 @@ const main = async () => {
         unlinkedReversalRejected = true;
       }
       check("a reversal pointing at nothing is rejected too", unlinkedReversalRejected);
+
+      section("refunding a whole invoice");
+
+      // What cancelling a paid consultation does. The invoice is the unit here,
+      // not one payment: the caller is undoing a transaction rather than
+      // choosing a leg to reverse.
+      const cancelled = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(-2),
+        dueDate: daysFromNow(28),
+        status: "draft",
+        lineItems: [
+          { description: "Consultation fee", quantity: 1, rate: 400, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, cancelled.id));
+
+      await paymentsService.recordPayment(orgId, cancelled.id, staffBId, FULL, {
+        amount: 400,
+        paymentDate: daysFromNow(-1),
+        method: "credit_card",
+        provider: "confido",
+        legs: [{ account: "operating", amount: 400, providerReference: "txn_consult_fee" }],
+      });
+
+      checkEqual(
+        "the firm is holding the fee",
+        await refundsService.netPaidOnInvoice(orgId, cancelled.id),
+        400,
+      );
+
+      // A hand-recorded payment on the same invoice. Confido has nothing to
+      // refund for this one, so it must be reported rather than dropped.
+      await paymentsService.recordPayment(orgId, cancelled.id, staffBId, FULL, {
+        amount: 60,
+        paymentDate: daysFromNow(-1),
+        method: "check",
+        reference: "cheque 1191",
+      });
+
+      const summary = await refundsService.refundInvoiceInFull(
+        orgId,
+        cancelled.id,
+        staffBId,
+        FULL,
+        "Consultation cancelled",
+      );
+
+      checkEqual(
+        "money taken outside the processor is reported, not silently kept",
+        summary.manualOutstanding,
+        60,
+      );
+
+      // This fixture has no Confido credential, so the card leg cannot reach the
+      // processor — which is the more valuable thing to assert. A cancellation
+      // must not be blocked because a refund failed, so the failure is COLLECTED
+      // rather than thrown, and the money stays visibly held. The successful
+      // refund path needs a sandbox and is covered by 19-confido-reversals.
+      checkEqual(
+        "a leg that cannot reach the processor is collected, not thrown",
+        summary.failures.length,
+        1,
+      );
+      checkEqual("and nothing is claimed as refunded", summary.refunded, 0);
+      checkEqual(
+        "so the full amount still reads as held",
+        await refundsService.netPaidOnInvoice(orgId, cancelled.id),
+        460,
+      );
+
+      // What makes "refund owed" safe to derive: the figure is a fold over the
+      // ledger, so a second attempt cannot double-refund — it re-reads the same
+      // outstanding amounts and fails the same way.
+      const rerun = await refundsService.refundInvoiceInFull(
+        orgId,
+        cancelled.id,
+        staffBId,
+        FULL,
+      );
+      checkEqual("a second attempt sends nothing more", rerun.refunded, 0);
+      checkEqual(
+        "and the held figure is unchanged",
+        await refundsService.netPaidOnInvoice(orgId, cancelled.id),
+        460,
+      );
+
+      section("a fully refunded invoice says so");
+
+      // The regression this status exists for. Refunding everything nets
+      // `amount_paid` to zero, and before `refunded` existed the invoice fell
+      // through to `sent` — reappearing as money the client owes, and then as
+      // OVERDUE once the due date passed. A firm chasing someone for money it
+      // has already given back.
+      const fullyRefunded = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        // Deliberately already past due, because that is the case the old code
+        // got wrong: any refunded invoice is eventually past its due date.
+        issueDate: daysFromNow(-40),
+        dueDate: daysFromNow(-10),
+        status: "draft",
+        lineItems: [
+          { description: "Consultation fee", quantity: 1, rate: 300, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, fullyRefunded.id));
+
+      await paymentsService.recordPayment(orgId, fullyRefunded.id, staffBId, FULL, {
+        amount: 300,
+        paymentDate: daysFromNow(-20),
+        method: "credit_card",
+        provider: "confido",
+        legs: [{ account: "operating", amount: 300, providerReference: "txn_full_refund" }],
+      });
+
+      const paidLeg = await systemDb
+        .select({ id: invoicePayments.id })
+        .from(invoicePayments)
+        .where(eq(invoicePayments.providerReference, "txn_full_refund"));
+
+      await paymentsService.recordReversal(orgId, fullyRefunded.id, staffBId, FULL, {
+        kind: "refund",
+        reversesPaymentId: paidLeg[0]!.id,
+        amount: 300,
+        account: "operating",
+        paymentDate: daysFromNow(0),
+        method: "credit_card",
+        provider: "confido",
+        providerReference: "txn_full_refund_rev",
+      });
+
+      const settled = await paidRow(fullyRefunded.id);
+      checkEqual("the stored status is refunded", settled.status, "refunded");
+      checkEqual("with nothing left paid", Number(settled.amountPaid), 0);
+
+      // The one that actually matters. `effectiveStatusSql` tests the due date
+      // before falling through, so a `refunded` branch below that line would be
+      // unreachable for precisely the invoices that need it.
+      const [effective] = await systemDb
+        .select({ effective: effectiveStatusSql(await status.firmToday(orgId)) })
+        .from(invoices)
+        .where(eq(invoices.id, fullyRefunded.id));
+      checkEqual(
+        "and it does NOT read as overdue despite being past due",
+        effective!.effective,
+        "refunded",
+      );
+
+      // Not revenue. The firm collected nothing net, so every money tile and
+      // report figure has to leave it out, the same as a void.
+      const [counted] = await systemDb
+        .select({ n: sql<number>`count(*)::int` })
+        .from(invoices)
+        .where(and(eq(invoices.id, fullyRefunded.id), status.countableInvoices()));
+      checkEqual("and is not counted as revenue", counted!.n, 0);
+
+      // Chasing it is the worst version of the bug, so it is refused outright.
+      let chaseRefundedRejected = false;
+      try {
+        await paymentsService.sendFollowUp(orgId, fullyRefunded.id, staffBId, {
+          message: "x",
+          channel: "email",
+        });
+      } catch {
+        chaseRefundedRejected = true;
+      }
+      check("and cannot be chased", chaseRefundedRejected);
 
       section("clearing policy");
 

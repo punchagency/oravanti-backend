@@ -38,6 +38,11 @@ export const invoiceStatusEnum = pgEnum("invoice_status", [
   "sent",
   "partial",
   "paid",
+  // Charged, paid, and given back. Distinct from `void`, which says the firm
+  // never charged at all — the ledger already tells those apart through the
+  // reversal rows, and an invoice that read `sent` after a full refund would
+  // reappear as money the client owes and, past its due date, as overdue.
+  "refunded",
   "void",
 ]);
 
@@ -330,5 +335,6 @@ export type EffectiveInvoiceStatus =
   | "unpaid"
   | "partial"
   | "paid"
+  | "refunded"
   | "overdue"
   | "void";

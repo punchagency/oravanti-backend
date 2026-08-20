@@ -265,6 +265,18 @@ export const LogEvent = {
   LEAD_FEE_AGREEMENT_ARCHIVE_FAILED: "lead.fee_agreement_archive_failed",
   LEAD_PIPELINE_TEMPLATE_MISSING: "lead.pipeline_template_missing",
   LEADS_CONSULTATION_INVOICE_FAILED: "leads.consultation_invoice_failed",
+  /**
+   * A cancelled consultation left money with the firm that it did not return.
+   *
+   * Either the person cancelling lacks `finance:refund`, or part of the fee
+   * arrived outside the processor and has to go back by hand. Logged at warn
+   * because somebody still owes a client, and nothing else raises its voice
+   * about it — the derived "refund owed" state is visible in the UI, but only
+   * to whoever thinks to look.
+   */
+  LEADS_CONSULTATION_REFUND_OWED: "leads.consultation_refund_owed",
+  LEADS_CONSULTATION_INVOICE_VOID_FAILED:
+    "leads.consultation_invoice_void_failed",
   LEADS_FEE_AGREEMENT_INVOICE_FAILED: "leads.fee_agreement_invoice_failed",
 
   // ── Lead workflow ─────────────────────────────────────────────────────────

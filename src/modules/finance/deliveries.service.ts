@@ -244,6 +244,11 @@ const deliver = async (
   if (meta.status === "void") {
     throw new BadRequestError("A voided invoice cannot be sent");
   }
+  // Same reasoning, different fact: the money already went back, so sending it
+  // would ask the client to pay an invoice the firm has settled with them.
+  if (meta.status === "refunded") {
+    throw new BadRequestError("A refunded invoice cannot be sent");
+  }
   if (!opts.isResend && meta.status !== "draft") {
     throw new BadRequestError(
       "This invoice has already been sent — use resend to deliver it again",
@@ -475,7 +480,13 @@ export const sendScheduleUpdate = async (
 ): Promise<SendResult | null> => {
   const meta = await loadForDelivery(organizationId, invoiceId);
 
-  if (meta.status === "draft" || meta.status === "void") return null;
+  if (
+    meta.status === "draft" ||
+    meta.status === "void" ||
+    meta.status === "refunded"
+  ) {
+    return null;
+  }
   if (!meta.clientEmail) return null;
 
   const [{ attempts }] = await db

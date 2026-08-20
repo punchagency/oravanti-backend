@@ -148,6 +148,10 @@ export const invoiceByPaymentToken = async (
     log.warn("payment_link.expired", { reason: "invoice voided" });
     throw new BadRequestError("This invoice has been cancelled");
   }
+  if (row.status === "refunded") {
+    log.warn("payment_link.expired", { reason: "invoice refunded" });
+    throw new BadRequestError("This invoice has been refunded");
+  }
   if (row.status === "draft") {
     log.warn("payment_link.expired", { reason: "invoice draft" });
     throw new BadRequestError("This invoice is not ready for payment");

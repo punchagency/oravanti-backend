@@ -22,6 +22,7 @@ export type InvoiceStatusFilter =
   | "all"
   | "draft"
   | "paid"
+  | "refunded"
   | "unpaid"
   | "partial"
   | "overdue";
