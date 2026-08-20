@@ -1238,6 +1238,34 @@ const main = async () => {
         statsAfterVoid.totalInvoiced,
         statsBeforeVoid.totalInvoiced,
       );
+
+      // Leaving the revenue figures is right. Leaving the UI entirely was not:
+      // a voided invoice was reachable from no filter at all, so voiding one
+      // deleted it as far as anyone using the app could tell. The Void bucket
+      // is the only way back to it, exactly as the Drafts bucket is for drafts.
+      const voidList = await invoicesService.list(orgId, FULL, {
+        status: "void",
+      });
+      check(
+        "but is still findable under the Void filter",
+        voidList.data.some((i) => i.id === toVoid.id),
+        "voiding an invoice must not remove it from the application",
+      );
+      check(
+        "which shows only voided invoices",
+        voidList.data.every((i) => i.status === "void"),
+        voidList.data.map((i) => i.status),
+      );
+
+      // And stays out of the general list, which is the behaviour that was
+      // already correct: "all" means the invoices still in play.
+      const allAfterVoid = await invoicesService.list(orgId, FULL, {
+        status: "all",
+      });
+      check(
+        "and stays out of All, which is for live invoices",
+        !allAfterVoid.data.some((i) => i.id === toVoid.id),
+      );
       checkEqual(
         "and the paid one it could not void is still counted",
         statsAfterVoid.collected > 0,

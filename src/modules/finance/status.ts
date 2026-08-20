@@ -88,6 +88,11 @@ export const statusFilter = (
     // them sendable rather than invisible.
     case "draft":
       return eq(invoices.status, "draft");
+    // Same shape as drafts: voided invoices are hidden from the general list
+    // because they are not money, and this bucket is the only way to see them.
+    // Without it, voiding an invoice removed it from the UI permanently.
+    case "void":
+      return eq(invoices.status, "void");
     case "paid":
       return eq(invoices.status, "paid");
     case "refunded":
