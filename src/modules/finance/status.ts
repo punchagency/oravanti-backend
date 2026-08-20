@@ -59,11 +59,16 @@ export const dueBy = sql`coalesce(${invoices.nextDueDate}, ${invoices.dueDate})`
  */
 export const effectiveStatusSql = (today: string) => sql<string>`
   CASE
-    WHEN ${invoices.status} = 'void'    THEN 'void'
-    WHEN ${invoices.status} = 'draft'   THEN 'draft'
-    WHEN ${invoices.status} = 'paid'    THEN 'paid'
-    WHEN ${dueBy} < ${today}            THEN 'overdue'
-    WHEN ${invoices.status} = 'partial' THEN 'partial'
+    WHEN ${invoices.status} = 'void'     THEN 'void'
+    WHEN ${invoices.status} = 'draft'    THEN 'draft'
+    WHEN ${invoices.status} = 'paid'     THEN 'paid'
+    -- ABOVE the due-date test on purpose. A refunded invoice has no balance to
+    -- be late with, and every one of them is past its due date eventually, so a
+    -- branch below this line would be unreachable exactly when it matters and
+    -- the invoice would surface in collections.
+    WHEN ${invoices.status} = 'refunded' THEN 'refunded'
+    WHEN ${dueBy} < ${today}             THEN 'overdue'
+    WHEN ${invoices.status} = 'partial'  THEN 'partial'
     ELSE 'unpaid'
   END`;
 
@@ -85,6 +90,8 @@ export const statusFilter = (
       return eq(invoices.status, "draft");
     case "paid":
       return eq(invoices.status, "paid");
+    case "refunded":
+      return eq(invoices.status, "refunded");
     case "overdue":
       return and(
         inArray(invoices.status, ["sent", "partial"]),
@@ -108,7 +115,9 @@ export const statusFilter = (
  *
  * Drafts are not invoiced revenue and voided invoices are not revenue at all,
  * so both are excluded from every tile, every report figure and the collection
- * rate's denominator. Stated once here so the numbers cannot disagree.
+ * rate's denominator. Refunded invoices are out for the same reason as void:
+ * the money came back, so counting it would report revenue the firm does not
+ * have. Stated once here so the numbers cannot disagree.
  */
 export const countableInvoices = () =>
   inArray(invoices.status, ["sent", "partial", "paid"]);

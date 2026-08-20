@@ -591,6 +591,11 @@ export const sendFollowUp = async (
   if (row.status === "void") {
     throw new BadRequestError("A voided invoice cannot be followed up");
   }
+  // The worst version of the bug this status exists to prevent: chasing a
+  // client for money the firm has already sent back.
+  if (row.status === "refunded") {
+    throw new BadRequestError("This invoice has been refunded");
+  }
   if (row.status === "paid") {
     throw new BadRequestError("This invoice is already paid");
   }
