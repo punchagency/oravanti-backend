@@ -266,6 +266,12 @@ export const LogEvent = {
   LEAD_PIPELINE_TEMPLATE_MISSING: "lead.pipeline_template_missing",
   LEADS_CONSULTATION_INVOICE_FAILED: "leads.consultation_invoice_failed",
   /**
+   * The consultation completed but its `invoice_after` fee could not be
+   * emailed. The invoice stands and the money is still owed — it just has
+   * not been asked for, so this is the signal to ask by hand.
+   */
+  LEADS_CONSULTATION_INVOICE_SEND_FAILED: "leads.consultation_invoice_send_failed",
+  /**
    * A cancelled consultation left money with the firm that it did not return.
    *
    * Either the person cancelling lacks `finance:refund`, or part of the fee
@@ -371,6 +377,12 @@ export const LogEvent = {
   INVOICE_DUPLICATED: "invoice.duplicated",
   INVOICE_PAID: "invoice.paid",
   INVOICE_VOIDED: "invoice.voided",
+  /**
+   * Moved out of draft onto the books without being emailed — a fee the
+   * firm collects face to face. Distinct from INVOICE_SENT, which implies
+   * a delivery that in this case never happened.
+   */
+  INVOICE_ISSUED_WITHOUT_DELIVERY: "invoice.issued_without_delivery",
   INVOICE_DELIVERY_FAILED: "invoice.delivery_failed",
   INVOICE_SCHEDULE_DELIVERY_FAILED: "invoice.schedule_delivery_failed",
   INSTALMENT_CREATED: "instalment.created",

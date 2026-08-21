@@ -56,6 +56,11 @@ export type ConsultationFeeInput = {
  * `invoice_after` when the call is completed, `pay_in_person` never — staff
  * record the payment directly.
  *
+ * The two that are not emailed are still ISSUED (`issueInvoice`) rather than
+ * left in draft. A draft is excluded from `countableInvoices`, so a fee
+ * collected in cash would otherwise be missing from every revenue report while
+ * sitting in the till.
+ *
  * Returns null when there is no practice area on the lead. The invoice would be
  * refused by validation (a practice area is required when there is no matter,
  * or revenue-by-practice-area silently undercounts it), and failing the whole

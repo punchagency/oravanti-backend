@@ -37,7 +37,7 @@ import {
   raiseConsultationInvoice,
 } from "../finance/consultation-billing.service";
 import { sendInvoice } from "../finance/deliveries.service";
-import { voidInvoice } from "../finance/invoices.service";
+import { issueInvoice, voidInvoice } from "../finance/invoices.service";
 import {
   netPaidOnInvoice,
   refundInvoiceInFull,
@@ -2356,6 +2356,33 @@ const getLeadQuestionnaire = async (leadId: string, organizationId: string) => {
 
 // ─── Consultation ──────────────────────────────────────────────────────────────
 
+/**
+ * How this consultation's fee is collected.
+ *
+ * `payment_timing` used to be written only for instant consultations, so every
+ * ordinary booking had none and the three behaviours below were unreachable
+ * outside "start now". The firm's `fee_schedule` now supplies one for the rest,
+ * which is what lets a normal booking be invoiced after the call.
+ *
+ * An instant consultation's dialog asks the question outright, and that answer
+ * wins over the firm default — it is a per-consultation decision made with the
+ * client in the room.
+ *
+ * `partial_upfront` maps to `pay_now` because the deposit genuinely is due now;
+ * what differs is how much, which is the instalment schedule's business, not
+ * this function's.
+ */
+type PaymentTiming = "pay_now" | "invoice_after" | "pay_in_person";
+
+const effectivePaymentTiming = (
+  startNow: boolean,
+  chosen: PaymentTiming | undefined,
+  schedule: "full_upfront" | "partial_upfront" | "after_consultation",
+): PaymentTiming => {
+  if (startNow && chosen) return chosen;
+  return schedule === "after_consultation" ? "invoice_after" : "pay_now";
+};
+
 const initiateConsultation = async (
   leadId: string,
   organizationId: string,
@@ -2514,11 +2541,19 @@ const initiateConsultation = async (
     }
   }
 
+  // Resolved once and used for the due date, the send decision, and the stored
+  // column, so those three can never disagree about how this fee is collected.
+  const timing = effectivePaymentTiming(
+    startNow,
+    data.paymentTiming,
+    settings?.feeSchedule ?? "full_upfront",
+  );
+
   // Instant consultations begin immediately, except pay_now with a fee, which
   // begins at payment time. A pay_now choice with no fee configured degrades
   // gracefully to begin-immediately.
   const beginsNow =
-    startNow && !(feeStatus === "unpaid" && data.paymentTiming === "pay_now");
+    startNow && !(feeStatus === "unpaid" && timing === "pay_now");
 
   // Urgent bookings are auto-scheduled ASAP: immediately when no fee applies,
   // otherwise at payment time. Lead-driven bookings leave scheduledAt null
@@ -2553,7 +2588,10 @@ const initiateConsultation = async (
       scheduledAt,
       isUrgent: urgent,
       isInstant: startNow,
-      paymentTiming: startNow ? (data.paymentTiming ?? null) : null,
+      // Stored for every consultation now, not just instant ones: the
+      // completion and settlement paths both branch on it, and leaving it null
+      // is what made `invoice_after` unreachable for ordinary bookings.
+      paymentTiming: feeAmount != null ? timing : null,
       isEmergency: Boolean(startNow && data.isEmergency),
       emergencyMultiplier:
         startNow && data.isEmergency && data.emergencyMultiplier != null
@@ -2620,23 +2658,41 @@ const initiateConsultation = async (
         mode: data.mode,
         scheduledAt,
         // pay_now holds the consultation until the fee is settled, so it is
-        // due the moment it is raised.
-        dueImmediately: data.paymentTiming === "pay_now" || !startNow,
+        // due the moment it is raised. The other two are settled after the
+        // call and get the standard terms.
+        dueImmediately: timing === "pay_now",
       });
 
-      // Sent, not left as a draft.
+      // Never left as a draft, but only emailed when the fee is actually due
+      // now. A draft is a dead end for this invoice in particular: it bills a
+      // LEAD, the invoice edit dialog is built around clients, so nobody can
+      // open it, finish it and send it by hand — and a draft is excluded from
+      // `countableInvoices`, so it would be missing from revenue too.
       //
-      // A draft is a dead end for this invoice in particular: it bills a LEAD,
-      // and the invoice edit dialog is built around clients, so nobody can open
-      // it, finish it and send it by hand. Leaving it a draft means the lead is
-      // never actually asked for the money.
-      //
-      // Delivering also mints the payment token, which is what puts a working
-      // pay link in the email — the whole point of raising it. A lead always
-      // has an address (`leads.email` is NOT NULL), so the missing-recipient
-      // guard in `deliver()` cannot fire here.
+      // The three timings diverge here, which they previously did not: this
+      // send was unconditional, so `pay_in_person` emailed a pay link the firm
+      // never meant to send and `invoice_after` billed twice — once here and
+      // again at completion.
       if (invoiceId) {
-        await sendInvoice(organizationId, invoiceId, scheduledById ?? null, systemAccess());
+        if (timing === "pay_now") {
+          // Delivering mints the payment token, which is what puts a working
+          // pay link in the email — the whole point of raising it now. A lead
+          // always has an address (`leads.email` is NOT NULL), so the
+          // missing-recipient guard in `deliver()` cannot fire here.
+          await sendInvoice(organizationId, invoiceId, scheduledById ?? null, systemAccess());
+        } else {
+          // On the books, not in the client's inbox. `invoice_after` is
+          // emailed when the consultation completes; `pay_in_person` never is,
+          // because the client settles it at the desk.
+          await issueInvoice(
+            organizationId,
+            invoiceId,
+            timing === "invoice_after"
+              ? "Consultation fee — invoiced after the consultation"
+              : "Consultation fee — payable in person",
+            scheduledById ?? null,
+          );
+        }
       }
     } catch (err) {
       log.failure("leads.consultation_invoice_failed", err, { leadId, consultationId: consultation!.id });
@@ -3016,33 +3072,34 @@ const updateConsultation = async (
 
   // Completion side effects (once — re-PATCHing a completed row is a no-op).
   if (data.status === "completed" && existing.status !== "completed") {
-    // Invoice-after: email the payment link now that the call has ended. The
-    // booking token is re-minted since only its hash is stored (this also
-    // gives the client a fresh 14-day window).
+    // Invoice-after: the call has ended, so now the fee is asked for.
+    //
+    // This sends the INVOICE rather than a hand-rolled email around a re-minted
+    // booking token. The old version rotated `bookingTokenHash`, which silently
+    // invalidated the link the lead already held, and pointed at the booking
+    // page rather than at the invoice actually recording the debt. Delivering
+    // the invoice mints a payment token as part of the same act and reuses the
+    // one email template the rest of finance sends.
+    //
+    // Non-fatal: the consultation is complete and that must stand even if the
+    // mail fails. The invoice is already on the books either way, so the money
+    // is not lost — it just has not been asked for yet.
     if (
       updated.paymentTiming === "invoice_after" &&
-      updated.feeStatus === "unpaid"
+      updated.feeStatus === "unpaid" &&
+      updated.invoiceId
     ) {
-      const payToken = generateAccessToken();
-      await db
-        .update(consultations)
-        .set({
-          bookingTokenHash: tokenHash(payToken),
-          bookingExpiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
-          bookingStatus: "sent",
-          updatedAt: new Date(),
-        })
-        .where(eq(consultations.id, updated.id));
-      const payLink = `${env.FRONTEND_APP_URL}/consultation-booking/${payToken}`;
-      emailService
-        .sendEmail({
-          to: lead.email,
-          subject: "Your consultation is complete — payment link inside",
-          html: `<p>Dear ${lead.firstName} ${lead.lastName},</p>
-            <p>Thank you for your consultation. Please pay your consultation fee of <strong>$${updated.feeAmount}</strong>:</p>
-            <p><a href="${payLink}">${payLink}</a></p>`,
-        })
-        .catch((err) => log.failure("email.send_failed", err, { leadId }));
+      await sendInvoice(
+        organizationId,
+        updated.invoiceId,
+        actorId ?? null,
+        systemAccess(),
+      ).catch((err) =>
+        log.failure("leads.consultation_invoice_send_failed", err, {
+          leadId,
+          invoiceId: updated.invoiceId,
+        }),
+      );
     }
 
     // Auto-send the intake questionnaire when requested and the lead has never

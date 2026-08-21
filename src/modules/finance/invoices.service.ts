@@ -1009,6 +1009,62 @@ export const extendDueDate = async (
  * answer: the firm settles it out of band rather than through a number that
  * silently stops adding up.
  */
+/**
+ * Put an invoice on the books without emailing it.
+ *
+ * For money the firm collects face to face. `deliver()` flips `draft -> sent`
+ * only as a side effect of a successful send, so a fee that is deliberately
+ * never emailed would otherwise sit as a draft forever — excluded from
+ * `countableInvoices`, and therefore from every revenue report, despite the
+ * cash being in the till.
+ *
+ * Deliberately not a delivery: it writes no `invoice_deliveries` row and mints
+ * no payment token, because nothing was sent anywhere and claiming otherwise
+ * would put a delivery in the audit trail that never happened.
+ *
+ * A no-op on anything already past draft, so calling it twice is safe.
+ */
+export const issueInvoice = async (
+  organizationId: string,
+  invoiceId: string,
+  reason: string,
+  actorStaffId: string | null,
+): Promise<void> => {
+  const [existing] = await db
+    .select({ status: invoices.status, invoiceNumber: invoices.invoiceNumber })
+    .from(invoices)
+    .where(
+      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+    )
+    .limit(1);
+
+  if (!existing) throw new NotFoundError("Invoice not found");
+  if (existing.status !== "draft") return;
+
+  const now = new Date();
+  await db
+    .update(invoices)
+    .set({ status: "sent", sentAt: now, updatedAt: now })
+    .where(
+      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+    );
+
+  await logFinanceEvent({
+    organizationId,
+    action: "finance.invoice_sent",
+    title: `${existing.invoiceNumber} — issued without emailing`,
+    description: reason,
+    invoiceId,
+    actorId: actorStaffId,
+  });
+
+  log.action("invoice.issued_without_delivery", {
+    invoiceId,
+    invoiceNumber: existing.invoiceNumber,
+    reason,
+  });
+};
+
 export const voidInvoice = async (
   organizationId: string,
   invoiceId: string,
