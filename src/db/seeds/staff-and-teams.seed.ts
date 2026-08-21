@@ -425,7 +425,9 @@ export const seedStaffAndTeams = async (organizationId?: string) => {
   interface StaffEntry {
     id: string;
     userId: string | null;
-    role: StaffRole | null;
+    // `staff.role` is free text (a best-effort "primary role" projection,
+    // not authoritative) — see `src/db/schema/staff.ts`.
+    role: string | null;
     status: StaffStatus;
     email: string;
   }
