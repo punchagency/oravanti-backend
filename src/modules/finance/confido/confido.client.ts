@@ -440,6 +440,34 @@ export class ConfidoClient {
     return data.addPaymentLink;
   }
 
+  /**
+   * Re-point an existing link at what is owed NOW.
+   *
+   * Needed because a link is created once per invoice — `externalId` is our
+   * invoice id and Confido has no delete endpoint, so the create is permanent —
+   * while the amount due can change. An invoice paid by instalments asks for the
+   * deposit first and the balance later, and without this the link would be
+   * stuck asking for the deposit forever.
+   */
+  async updatePaymentLink(
+    firmToken: string,
+    input: {
+      id: string;
+      trust?: number;
+      operating?: number;
+      partialPaymentAllowed?: boolean;
+    },
+  ): Promise<ConfidoPaymentLink> {
+    const data = await this.gql<{ updatePaymentLink: ConfidoPaymentLink }>(
+      firmToken,
+      `mutation UpdateLink($input: UpdatePaymentLinkInput!) {
+        updatePaymentLink(input: $input) { ${LINK_FIELDS} }
+      }`,
+      { input },
+    );
+    return data.updatePaymentLink;
+  }
+
   /** One transaction, for turning a thin webhook into a ledger row. */
   async getTransaction(
     firmToken: string,

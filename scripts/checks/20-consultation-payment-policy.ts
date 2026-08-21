@@ -13,8 +13,8 @@
  * Runs against the TEST database (npm run check 20-consultation-payment-policy)
  * and cleans up the org it creates.
  */
-import { randomUUID } from "crypto";
-import { eq } from "drizzle-orm";
+import { createHash, randomUUID } from "crypto";
+import { eq, sql } from "drizzle-orm";
 import { closeDb, systemDb } from "../../src/db/client";
 import { organization, user } from "../../src/db/schema/auth-schema";
 import { consultationSettings } from "../../src/db/schema/consultation-settings";
@@ -25,7 +25,8 @@ import { invoices } from "../../src/db/schema/invoices";
 import { leads } from "../../src/db/schema/leads";
 import { staff } from "../../src/db/schema/staff";
 import { consultationPaymentOutstanding } from "../../src/modules/finance/consultation-billing.service";
-import { check, report, section } from "./_bootstrap";
+import { invoiceByPaymentToken } from "../../src/modules/finance/payment-links.service";
+import { check, checkEqual, report, section } from "./_bootstrap";
 
 const main = async () => {
   const suffix = randomUUID().slice(0, 8);
@@ -128,6 +129,14 @@ const main = async () => {
         method: "other",
         kind: "payment",
       });
+      // What `recalculateInvoiceTotals` does in production. `amount_paid` is the
+      // only STORED paid figure and `allocate` folds over it, so a fixture that
+      // writes only the ledger row leaves the schedule looking untouched.
+      // `balance_due` is generated and follows.
+      await systemDb
+        .update(invoices)
+        .set({ amountPaid: sql`${invoices.amountPaid} + ${String(amount)}` })
+        .where(eq(invoices.id, invoiceId));
     };
 
     const reverse = async (invoiceId: string, amount: number, paymentId: string) => {
@@ -143,6 +152,12 @@ const main = async () => {
         kind: "refund",
         reversesPaymentId: paymentId,
       });
+      await systemDb
+        .update(invoices)
+        .set({
+          amountPaid: sql`${invoices.amountPaid} - ${String(Math.abs(amount))}`,
+        })
+        .where(eq(invoices.id, invoiceId));
     };
 
     const outstanding = (c: { invoiceId: string | null; feeStatus: string }) =>
@@ -212,6 +227,51 @@ const main = async () => {
       "still open with the balance outstanding",
       !(await outstanding(consC)),
     );
+
+    // ── 3b. The payment page asks for the instalment, not the balance ────────
+    section("The payment link quotes the instalment, not the whole balance");
+
+    // `payment_token_hash` is sha256 of the token, same as the service.
+    const linkFor = async (invoiceId: string) => {
+      const token = randomUUID();
+      await systemDb
+        .update(invoices)
+        .set({
+          paymentTokenHash: createHash("sha256").update(token).digest("hex"),
+        })
+        .where(eq(invoices.id, invoiceId));
+      return invoiceByPaymentToken(token);
+    };
+
+    {
+      // A fresh deposit invoice, nothing paid: the page must quote the deposit,
+      // not the whole fee. This is the bug — the invoice showed two instalments
+      // and the payment page asked for the lot.
+      const invE = await makeInvoice(400);
+      await makeConsultation(invE);
+      await systemDb.insert(invoiceInstalments).values([
+        { organizationId: orgId, invoiceId: invE, sequence: 1, dueDate: "2026-01-01", amount: "100" },
+        { organizationId: orgId, invoiceId: invE, sequence: 2, dueDate: "2026-02-01", amount: "300" },
+      ]);
+
+      const payable = await linkFor(invE);
+      checkEqual("the whole fee is owed", payable.balanceDue, 400);
+      checkEqual("but the page asks only for the deposit", payable.amountDueNow, 100);
+
+      // Once the deposit lands, the balance is what falls due next — otherwise
+      // the second instalment would be unpayable.
+      await pay(invE, 100);
+      const after = await linkFor(invE);
+      checkEqual("after the deposit, it asks for the balance", after.amountDueNow, 300);
+      checkEqual("and the balance owed has dropped", after.balanceDue, 300);
+    }
+
+    {
+      // No schedule: the page asks for the whole balance, as it always did.
+      const invF = await makeInvoice(250);
+      const payable = await linkFor(invF);
+      checkEqual("unscheduled invoice asks for the balance", payable.amountDueNow, 250);
+    }
 
     // ── 4. A refund re-closes the gate ───────────────────────────────────────
     section("A refund re-closes the gate");

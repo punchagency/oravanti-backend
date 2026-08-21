@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { env } from "../../config/env";
 import { db, systemDb } from "../../db/client";
+import { invoiceInstalments } from "../../db/schema/invoice-instalments";
 import { invoicePayments } from "../../db/schema/invoice-payments";
 import { invoices } from "../../db/schema/invoices";
 import { createModuleLogger } from "../../lib/logging/log";
@@ -9,7 +10,8 @@ import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { onClient, onLead, partyEmail, partyName } from "./party";
 import { clients } from "../../db/schema/clients";
 import { leads } from "../../db/schema/leads";
-import { num } from "./money";
+import { allocate } from "./instalments";
+import { num, trustFirstSplit } from "./money";
 import { paymentsEnabledFor } from "./confido/payments-enabled";
 import { getConfidoClient } from "./confido/confido.client";
 import { confidoCredentialFor } from "../settings/payments/payment-settings.service";
@@ -79,6 +81,17 @@ export type PayableInvoice = {
   total: number;
   amountPaid: number;
   balanceDue: number;
+  /**
+   * What this payment is FOR — the next unpaid instalment when the invoice is
+   * on a schedule, the whole balance otherwise.
+   *
+   * Distinct from `balanceDue`, and the distinction is the point. A
+   * consultation billed as a deposit plus a balance owes the whole fee, but is
+   * only being ASKED for the deposit right now. Quoting the balance would ask
+   * for money that is not due yet and contradict the invoice the client is
+   * looking at.
+   */
+  amountDueNow: number;
   dueDate: string;
   status: string;
   /** False while this firm cannot take money — the page says so rather than lying. */
@@ -114,6 +127,56 @@ export type PayableInvoice = {
  * `startCheckout` carries the refusal, which is where it belongs — that is the
  * call that would take money against nothing owed.
  */
+/**
+ * What the client is being asked for right now.
+ *
+ * An invoice on a schedule is owed in slices: the next unpaid one is what a
+ * payment link should ask for, not the whole balance. Without this a
+ * consultation billed as "deposit now, balance after" quoted the full fee on
+ * the payment page while the invoice beside it showed two instalments — the
+ * page and the invoice disagreeing about the same debt.
+ *
+ * Falls back to the whole balance when there is no schedule, which is every
+ * ordinary invoice.
+ *
+ * Reuses `allocate` rather than re-deriving: instalment payment state is a fold
+ * over `amount_paid` in due-date order, and that arithmetic already exists in
+ * two places that must agree (`instalments.ts` and the SQL in `dues.ts`). A
+ * third copy here would be a third thing to keep in step.
+ */
+const amountDueNow = async (
+  organizationId: string,
+  invoiceId: string,
+  amountPaid: number,
+  balanceDue: number,
+): Promise<number> => {
+  const schedule = await systemDb
+    .select({
+      sequence: invoiceInstalments.sequence,
+      dueDate: invoiceInstalments.dueDate,
+      amount: invoiceInstalments.amount,
+    })
+    .from(invoiceInstalments)
+    .where(
+      and(
+        eq(invoiceInstalments.organizationId, organizationId),
+        eq(invoiceInstalments.invoiceId, invoiceId),
+      ),
+    );
+
+  if (!schedule.length) return Math.max(balanceDue, 0);
+
+  const next = allocate(
+    schedule.map((row) => ({ ...row, amount: num(row.amount) })),
+    amountPaid,
+  ).find((row) => row.outstanding > 0);
+
+  // Every slice covered but a balance somehow remaining: trust the balance.
+  // `assertScheduleBalances` makes this unreachable, but guessing zero here
+  // would silently refuse to collect real money.
+  return next ? next.outstanding : Math.max(balanceDue, 0);
+};
+
 export const invoiceByPaymentToken = async (
   token: string,
 ): Promise<PayableInvoice> => {
@@ -166,6 +229,12 @@ export const invoiceByPaymentToken = async (
     total: num(row.totalAmount),
     amountPaid: num(row.amountPaid),
     balanceDue: num(row.balanceDue),
+    amountDueNow: await amountDueNow(
+      row.organizationId,
+      row.id,
+      num(row.amountPaid),
+      num(row.balanceDue),
+    ),
     dueDate: row.dueDate,
     status: row.status,
     settled: num(row.balanceDue) <= 0,
@@ -220,29 +289,68 @@ const ensurePaymentLink = async (invoice: PayableInvoice) => {
   );
   const client = getConfidoClient();
 
-  const existing = await client.findPaymentLinkByExternalId(
-    credential,
-    invoice.invoiceId,
-  );
-  if (existing) return existing;
-
-  const payer = await ensurePayer(credential, firmId, invoice);
+  // What to ask for: the next unpaid instalment, or the whole balance. Split
+  // trust-first, the same rule `recordPayment` uses when the money lands, so
+  // the link asks for the legs the payment will be allocated to.
   const outstanding = await outstandingBySide(
     invoice.organizationId,
     invoice.invoiceId,
   );
+  const legs = trustFirstSplit(
+    invoice.amountDueNow,
+    outstanding.operating,
+    outstanding.trust,
+  );
+
+  const amounts = {
+    // Cents, and only the sides actually owed — a zero leg would ask Confido to
+    // route money to an account this invoice has no claim on.
+    ...(legs.trust > 0 ? { trust: Math.round(legs.trust * 100) } : {}),
+    ...(legs.operating > 0
+      ? { operating: Math.round(legs.operating * 100) }
+      : {}),
+    // The payer settles what they were invoiced, not an amount they choose.
+    // Confido's default lets them edit the figure, which on a consultation fee
+    // means underpaying a booking gate that then never opens. A firm-level
+    // "accept partial payments" setting can revisit this later; until one
+    // exists, the invoiced amount is the amount.
+    partialPaymentAllowed: false,
+  };
+
+  const existing = await client.findPaymentLinkByExternalId(
+    credential,
+    invoice.invoiceId,
+  );
+
+  if (existing) {
+    // The link is created once and the amount due moves — an invoice on a
+    // schedule asks for the deposit first and the balance later. Without this
+    // the link would be stuck asking for the deposit forever, and the second
+    // instalment would be unpayable through it.
+    const asked = existing.amounts.reduce((sum, leg) => sum + leg.amount, 0);
+    const wanted =
+      (amounts.trust ?? 0) + (amounts.operating ?? 0);
+
+    if (asked === wanted) return existing;
+
+    log.action("payment_link.created", {
+      invoiceId: invoice.invoiceId,
+      reason: "amount_due_changed",
+      from: asked,
+      to: wanted,
+    });
+    return client.updatePaymentLink(credential, {
+      id: existing.id,
+      ...amounts,
+    });
+  }
+
+  const payer = await ensurePayer(credential, firmId, invoice);
 
   return client.addPaymentLink(credential, {
     clientId: payer.id,
     externalId: invoice.invoiceId,
-    // Cents, and only the sides that are actually owed — a zero leg would ask
-    // Confido to route money to an account this invoice has no claim on.
-    ...(outstanding.trust > 0
-      ? { trust: Math.round(outstanding.trust * 100) }
-      : {}),
-    ...(outstanding.operating > 0
-      ? { operating: Math.round(outstanding.operating * 100) }
-      : {}),
+    ...amounts,
     memo: `Invoice ${invoice.invoiceNumber}`,
     // Confido emails the receipt. Ours would be a second one saying the same
     // thing, and theirs carries the card details we do not hold.
