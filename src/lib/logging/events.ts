@@ -272,6 +272,11 @@ export const LogEvent = {
    */
   LEADS_CONSULTATION_INVOICE_SEND_FAILED: "leads.consultation_invoice_send_failed",
   /**
+   * A payment was recorded but the consultation it pays for did not advance.
+   * The money is on the ledger; the booking gate may still be closed.
+   */
+  LEADS_CONSULTATION_SETTLE_FAILED: "leads.consultation_settle_failed",
+  /**
    * A cancelled consultation left money with the firm that it did not return.
    *
    * Either the person cancelling lacks `finance:refund`, or part of the fee

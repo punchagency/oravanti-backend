@@ -17,7 +17,11 @@ import { listPresets, saveFirmPreset } from "./line-presets.service";
 import * as invoicesService from "./invoices.service";
 import * as paymentsService from "./payments.service";
 import * as refundsService from "./refunds.service";
+import { settleConsultationForInvoice } from "../leads/leads.service";
+import { createModuleLogger } from "../../lib/logging/log";
 import type { AccountFilter, InvoiceStatusFilter } from "./types";
+
+const log = createModuleLogger("invoices.controller");
 
 export class InvoicesController {
   getStats = async (req: Request, res: Response) => {
@@ -297,6 +301,26 @@ export class InvoicesController {
       access,
       req.body,
     );
+
+    // A consultation fee settled by hand moves the consultation on, exactly as
+    // a Confido payment does. Until now `settleConsultationForInvoice` had a
+    // single caller — the webhook — so `pay_in_person`, the one timing that is
+    // ALWAYS recorded manually, was the one flow with no automation behind it:
+    // staff had to record the payment and then separately PATCH the fee status.
+    //
+    // Called here rather than inside `recordPayment` so the webhook, which
+    // already calls it, does not fire it twice and race its own confirmation
+    // email. Non-fatal for the same reason as the webhook's call: the money is
+    // recorded, and a consultation that fails to advance is recoverable.
+    await settleConsultationForInvoice(
+      organizationId!,
+      req.params.id as string,
+    ).catch((err) =>
+      log.failure("leads.consultation_settle_failed", err, {
+        invoiceId: req.params.id,
+      }),
+    );
+
     sendSuccess(res, invoice, "Payment recorded successfully", 201);
   };
 

@@ -34,6 +34,7 @@ import { invoices } from "../../db/schema/invoices";
 import { systemAccess } from "../finance/account-access";
 import {
   consultationFee,
+  consultationPaymentOutstanding,
   raiseConsultationInvoice,
 } from "../finance/consultation-billing.service";
 import { sendInvoice } from "../finance/deliveries.service";
@@ -2661,6 +2662,9 @@ const initiateConsultation = async (
         // due the moment it is raised. The other two are settled after the
         // call and get the standard terms.
         dueImmediately: timing === "pay_now",
+        // Only `partial_upfront` carries one; the column is null otherwise, so
+        // this is the setting speaking for itself rather than a second test.
+        upfrontPercent: settings?.upfrontPercent ?? null,
       });
 
       // Never left as a draft, but only emailed when the fee is actually due
@@ -3262,7 +3266,14 @@ const getConsultationBooking = async (token: string) => {
 
   const firmTimezone = await getFirmTimezone(consultation.organizationId);
 
-  const requiresPayment = consultation.feeStatus === "unpaid";
+  // Read from the ledger, not from `fee_status`. The stored enum could not tell
+  // "never paid" from "paid then refunded", and nothing cleared it when an
+  // invoice was voided — which left the lead on a slotless booking page with no
+  // way out. See `consultationPaymentOutstanding`.
+  const requiresPayment = await consultationPaymentOutstanding(
+    consultation.organizationId,
+    consultation,
+  );
 
   // Slots are only offered once any fee is settled and a time isn't yet chosen.
   // Gating on awaiting_slot_selection keeps instant consultations (paid after
@@ -3492,6 +3503,12 @@ export const settleConsultationForInvoice = async (
     .limit(1);
 
   if (!consultation || consultation.feeStatus !== "unpaid") return;
+
+  // The same threshold the booking gate uses, so a deposit that unlocks slot
+  // selection also settles the consultation. Testing `amount_paid >= total`
+  // here instead would leave a `partial_upfront` lead able to pick a time while
+  // the consultation still counted as unpaid.
+  if (await consultationPaymentOutstanding(organizationId, consultation)) return;
 
   // Instant consultations: pay_now begins the consultation at payment time;
   // invoice_after / pay_in_person fees paid after the call just get marked
