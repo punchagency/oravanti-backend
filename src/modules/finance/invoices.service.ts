@@ -49,7 +49,7 @@ import {
   writeSchedule,
 } from "./instalments.service";
 import { allocateInvoiceNumber, currentInvoiceYear } from "./invoice-number";
-import { money, num } from "./money";
+import { money, num, toMoney } from "./money";
 import {
   countableInvoices,
   effectiveStatusSql,
@@ -439,6 +439,22 @@ export const getById = async (
     )
     .orderBy(desc(invoicePayments.paymentDate));
 
+  /**
+   * How much has already been sent back against each payment.
+   *
+   * A fold over rows already in hand — every entry for this invoice is here,
+   * reversals included — so this costs no extra query. Reversal amounts are
+   * negative; the caller wants magnitudes.
+   */
+  const reversedAgainst = new Map<string, number>();
+  for (const p of paymentRows) {
+    if (!p.reversesPaymentId) continue;
+    reversedAgainst.set(
+      p.reversesPaymentId,
+      toMoney((reversedAgainst.get(p.reversesPaymentId) ?? 0) + Math.abs(num(p.amount))),
+    );
+  }
+
   const attorneyName = row.attorneyFirstName
     ? `${row.attorneyFirstName} ${row.attorneyLastName ?? ""}`.trim()
     : null;
@@ -525,8 +541,22 @@ export const getById = async (
       settledAt: p.settledAt,
       /** Confido's word for it, so HELD reads as HELD rather than "pending". */
       providerStatus: p.providerStatus,
-      /** Only a processor payment can be refunded through us. */
-      refundable: p.kind === "payment" && p.provider != null,
+      /**
+       * What is left to send back on this payment.
+       *
+       * Net of everything already reversed against it. Without that subtraction
+       * a fully refunded payment still offered a Refund button, and the server
+       * guard measured against the GROSS amount — so the same money could be
+       * sent back twice.
+       */
+      refundableAmount: toMoney(
+        Math.max(num(p.amount) - (reversedAgainst.get(p.id) ?? 0), 0),
+      ),
+      /** Only a processor payment with something left on it can be refunded. */
+      refundable:
+        p.kind === "payment" &&
+        p.provider != null &&
+        num(p.amount) - (reversedAgainst.get(p.id) ?? 0) > 0.005,
       paymentDate: p.paymentDate,
       method: p.method,
       reference: p.reference,
