@@ -23,6 +23,18 @@ export const enabledConsultationFeeStructures = [
   "custom_per_case_type",
 ] as const;
 
+export const consultationFeeSchedules = [
+  "full_upfront",
+  "partial_upfront",
+  "after_consultation",
+] as const;
+
+export const consultationNoShowPolicies = [
+  "forfeit",
+  "refund",
+  "decide",
+] as const;
+
 /** Reusable IANA timezone validator (e.g. "America/New_York"). */
 export const timezoneSchema = z
   .string()
@@ -49,6 +61,9 @@ export const upsertConsultationSettingsSchema = z
     // outright would 400 a save that changes something else entirely. The
     // service writes null regardless.
     waiverWindowDays: z.number().int().positive().nullish(),
+    feeSchedule: z.enum(consultationFeeSchedules).optional(),
+    upfrontPercent: z.number().int().min(1).max(99).nullish(),
+    noShowPolicy: z.enum(consultationNoShowPolicies).optional(),
     timezone: timezoneSchema.optional(),
     language: languageSchema.optional(),
     smsEnabled: z.boolean().optional(),
@@ -72,6 +87,16 @@ export const upsertConsultationSettingsSchema = z
       });
     }
 
+    // Mirrors the CHECK constraint on the table, so a caller gets a field error
+    // rather than a 500 from a constraint violation.
+    if (val.feeSchedule === "partial_upfront" && val.upfrontPercent == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "A deposit percentage is required when the balance is paid after the consultation",
+        path: ["upfrontPercent"],
+      });
+    }
   });
 
 export type UpsertConsultationSettingsBody = z.infer<
