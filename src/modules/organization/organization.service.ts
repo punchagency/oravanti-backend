@@ -4,6 +4,7 @@ import { aliasedTable, and, desc, eq, inArray, sql } from "drizzle-orm";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Request } from "express";
 import { auth } from "../../auth";
+import { ROLE_METADATA } from "../../auth/permissions";
 import { env } from "../../config/env";
 import { emailService } from "../../utils/email/email.service";
 import { db } from "../../db/client";
@@ -23,6 +24,7 @@ import {
   staffPracticeAreaCaseTypes,
   teamPracticeAreaCaseTypes,
 } from "../../db/schema";
+import { roleGroup, roleGroupMember } from "../../db/schema/role-groups";
 import {
   invitation,
   member,
@@ -41,6 +43,7 @@ export interface GetStaffsFilters {
   search?: string;
   role?: string;
   team?: string;
+  group?: string;
   status?: string;
   page?: number;
   limit?: number;
@@ -113,7 +116,7 @@ const assertStartDateNotInPast = (startDate?: string) => {
 
 export class OrganizationService {
   async listStaffs(organizationId: string, filters: GetStaffsFilters = {}) {
-    const { search, role, team, status, page = 1, limit = 10 } = filters;
+    const { search, role, team, group, status, page = 1, limit = 10 } = filters;
     const offset = (page - 1) * limit;
 
     // Build dynamic WHERE conditions from filter params
@@ -162,6 +165,21 @@ export class OrganizationService {
     if (team) {
       conditions.push(
         sql`(${staff.userId}) IN (SELECT ${teamMember.userId} FROM ${teamMember} INNER JOIN ${teamTable} ON ${teamMember.teamId} = ${teamTable.id} WHERE ${teamTable.name} = ${team})`,
+      );
+    }
+
+    // Role-group filter: staff whose better-auth member row belongs to the
+    // named group of this org. Staff without a member row can't be in a
+    // group, and the NULL comparison naturally excludes them.
+    if (group) {
+      conditions.push(
+        sql`(${member.id}) IN (
+          SELECT ${roleGroupMember.memberId}
+          FROM ${roleGroupMember}
+          INNER JOIN ${roleGroup} ON ${roleGroup.id} = ${roleGroupMember.groupId}
+          WHERE ${roleGroup.organizationId} = ${organizationId}
+            AND LOWER(${roleGroup.name}) = LOWER(${group})
+        )`,
       );
     }
 
@@ -840,9 +858,10 @@ export class OrganizationService {
   async updateStaffMemberRole(
     staffId: string,
     organizationId: string,
-    role: string,
+    roles: string | string[],
     headers: Record<string, string | string[] | undefined>,
   ) {
+    const role = Array.isArray(roles) ? roles.join(",") : roles;
     const [staffRecord] = await db
       .select({ userId: staff.userId })
       .from(staff)
@@ -870,13 +889,47 @@ export class OrganizationService {
       throw new Error("Member record not found");
     }
 
+    // Prevent removing the last owner from the organization.
+    const newRoles = role.split(",").map((r) => r.trim()).filter(Boolean);
+    const currentMember = await db
+      .select({ id: member.id, role: member.role })
+      .from(member)
+      .where(
+        and(
+          eq(member.userId, staffRecord.userId),
+          eq(member.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    const currentRoles = (currentMember[0]?.role ?? "").split(",").map((r) => r.trim()).filter(Boolean);
+    const currentlyOwner = currentRoles.includes("owner");
+    const newRoleIncludesOwner = newRoles.includes("owner");
+
+    if (currentlyOwner && !newRoleIncludesOwner) {
+      // Count members who hold "owner" in their comma-separated role string.
+      const [{ count: ownerCount }] = await db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(member)
+        .where(
+          and(
+            eq(member.organizationId, organizationId),
+            sql`${member.role} = 'owner' OR ${member.role} LIKE 'owner,%' OR ${member.role} LIKE '%,owner' OR ${member.role} LIKE '%,owner,%'`,
+          ),
+        );
+      if (ownerCount <= 1) {
+        throw new BadRequestError(
+          "Cannot remove the Super admin role — this person is the only Super admin of the firm. Promote another staff member to Super admin first.",
+        );
+      }
+    }
+
     await auth.api.updateMemberRole({
       body: { memberId: memberRecord.id, role },
       headers: fromNodeHeaders(headers as Record<string, string>),
     });
 
     await recordAuditEvent({
-      action: "admin.role_changed",
+      action: "admin.staff_role_changed",
       entityId: staffId,
       after: { role },
     });
@@ -1252,6 +1305,25 @@ export class OrganizationService {
 
     assertStartDateNotInPast(startDate);
 
+    if (!role) {
+      throw new BadRequestError("role is required");
+    }
+
+    {
+      const isDefaultRole = role in ROLE_METADATA;
+      const isCustomRole = isDefaultRole
+        ? true
+        : (
+            await auth.api.listOrgRoles({
+              query: { organizationId },
+              headers: fromNodeHeaders(headers as Record<string, string>),
+            })
+          ).some((r) => r.role === role);
+      if (!isDefaultRole && !isCustomRole) {
+        throw new BadRequestError(`Unknown role: ${role}`);
+      }
+    }
+
     const formattedEmail = email.toLowerCase().trim();
     const tempPassword = generateTempPassword();
 
@@ -1294,7 +1366,7 @@ export class OrganizationService {
           phone: phone ?? "",
           startDate: startDate ? new Date(startDate) : undefined,
           email: formattedEmail,
-          role: role as "admin" | "attorney" | "paralegal",
+          role,
           status: "pending_invitation",
           orgEmail: orgEmail?.toLowerCase().trim() ?? formattedEmail,
           maxCaseload: maxCaseload ?? 7,
@@ -1337,14 +1409,14 @@ export class OrganizationService {
         body: {
           organizationId,
           email: formattedEmail,
-          role: role as "admin" | "attorney" | "paralegal",
+          role,
           resend: true,
         },
         headers: fromNodeHeaders(headers as Record<string, string>),
       });
 
       await recordAuditEvent({
-        action: "admin.invite_member",
+        action: "admin.staff_invited",
         entityId: staffId,
         after: {
           email: formattedEmail,
