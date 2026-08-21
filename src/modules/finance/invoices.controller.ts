@@ -17,52 +17,11 @@ import { listPresets, saveFirmPreset } from "./line-presets.service";
 import * as invoicesService from "./invoices.service";
 import * as paymentsService from "./payments.service";
 import * as refundsService from "./refunds.service";
-import { and, eq } from "drizzle-orm";
-import { db } from "../../db/client";
-import { consultations } from "../../db/schema/consultations";
-import { BadRequestError } from "../../utils/error/app-error";
 import { settleConsultationForInvoice } from "../leads/leads.service";
 import { createModuleLogger } from "../../lib/logging/log";
 import type { AccountFilter, InvoiceStatusFilter } from "./types";
 
 const log = createModuleLogger("invoices.controller");
-
-/**
- * Refuse to reverse or withdraw a consultation fee from the Finance screen.
- *
- * Cancelling the consultation already does this properly: it refunds what was
- * paid, releases the calendar slot, revokes the booking link and tells the
- * client. Refunding the invoice on its own does none of that, so the
- * consultation stays scheduled, the Meet link keeps working, and the client
- * arrives for a call the firm believes it refunded.
- *
- * Guarded HERE and not in the service on purpose: `cancelConsultation` reaches
- * `refundInvoiceInFull` -> `refundPayment` internally and must keep working.
- * The controller is the only layer where "a human clicked this in Finance" is
- * actually true.
- */
-const refuseIfConsultationFee = async (
-  organizationId: string,
-  invoiceId: string,
-  verb: string,
-): Promise<void> => {
-  const [consultation] = await db
-    .select({ id: consultations.id })
-    .from(consultations)
-    .where(
-      and(
-        eq(consultations.organizationId, organizationId),
-        eq(consultations.invoiceId, invoiceId),
-      ),
-    )
-    .limit(1);
-
-  if (consultation) {
-    throw new BadRequestError(
-      `This invoice is for a consultation, so it cannot be ${verb} from here. Cancel the consultation instead — that refunds the client, releases the calendar slot and notifies them in one step.`,
-    );
-  }
-};
 
 export class InvoicesController {
   getStats = async (req: Request, res: Response) => {
@@ -309,15 +268,6 @@ export class InvoicesController {
   void = async (req: Request, res: Response) => {
     const { organizationId, staffId } = getRequestContext();
     const access = await accessForRequest();
-    // Closed for the same reason as the refund above. Leaving void open while
-    // closing refund would keep the stranded-consultation bug alive through the
-    // other door: voiding the fee invoice used to leave the lead on a booking
-    // page that would never offer a slot.
-    await refuseIfConsultationFee(
-      organizationId!,
-      req.params.id as string,
-      "voided",
-    );
     const invoice = await invoicesService.voidInvoice(
       organizationId!,
       req.params.id as string,
@@ -377,11 +327,6 @@ export class InvoicesController {
   refundPayment = async (req: Request, res: Response) => {
     const { organizationId, staffId } = getRequestContext();
     const access = await accessForRequest();
-    await refuseIfConsultationFee(
-      organizationId!,
-      req.params.id as string,
-      "refunded",
-    );
     const result = await refundsService.refundPayment(
       organizationId!,
       req.params.id as string,
