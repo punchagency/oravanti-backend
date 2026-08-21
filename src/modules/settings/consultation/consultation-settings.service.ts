@@ -17,12 +17,30 @@ import { createModuleLogger } from "../../../lib/logging/log";
 
 const log = createModuleLogger("consultation-settings.service");
 
+/**
+ * Present a disabled fee structure as the one it behaves like.
+ *
+ * `waived_if_retainer` never waived anything — no code path anywhere acted on
+ * it, so a firm carrying it has been billing exactly as `flat` all along. This
+ * makes the read agree with what the money did, without a migration that would
+ * erase which firms had asked for the feature.
+ *
+ * Deliberately a read-time coercion and not an `UPDATE`: when the waiver is
+ * built for real, deleting this function restores every firm's original choice.
+ */
+const enabledFeeStructure = (
+  raw: ConsultationSettings["feeStructure"],
+): "flat" | "custom_per_case_type" | null =>
+  raw == null ? null : raw === "custom_per_case_type" ? raw : "flat";
+
 const toSettingsDTO = (row: ConsultationSettings) => ({
   organizationId: row.organizationId,
   chargesFee: row.chargesFee,
   defaultAmount: row.defaultAmount != null ? Number(row.defaultAmount) : null,
-  feeStructure: row.feeStructure,
-  waiverWindowDays: row.waiverWindowDays,
+  feeStructure: enabledFeeStructure(row.feeStructure),
+  // Only ever meaningful for the disabled waiver structure, so nothing can
+  // legitimately hold one any more.
+  waiverWindowDays: null,
   timezone: row.timezone,
   language: row.language,
   smsEnabled: row.smsEnabled,
@@ -110,10 +128,9 @@ export class ConsultationSettingsService {
           ? String(body.defaultAmount)
           : null,
       feeStructure,
-      waiverWindowDays:
-        chargesFee && feeStructure === "waived_if_retainer"
-          ? body.waiverWindowDays ?? null
-          : null,
+      // The waiver structure is disabled, so nothing can set a window. Written
+      // rather than left alone so a firm that had one is cleared on next save.
+      waiverWindowDays: null,
       ...(body.timezone !== undefined ? { timezone: body.timezone } : {}),
       ...(body.language !== undefined ? { language: body.language } : {}),
       smsEnabled: body.smsEnabled ?? false,

@@ -2,10 +2,25 @@ import { z } from "zod";
 import { MINIMUM_CONSULTATION_FEE } from "../../../config/constants";
 import { isValidTimezone } from "../../../utils/date";
 
-export const consultationFeeStructures = [
+/**
+ * The fee structures a firm may choose — a subset of the
+ * `consultation_fee_structure` pgEnum, which is the full list and stays so.
+ *
+ * `waived_if_retainer` is disabled and absent here: it renders a promise to the
+ * client — "your fee is waived if you sign within N days" — that no code
+ * anywhere keeps. The value stays in the database enum because the feature is
+ * deferred rather than abandoned (and Postgres cannot drop an enum value), and
+ * `toSettingsDTO` normalises it to `flat` on read, so a firm that had chosen it
+ * keeps that on record for whenever it is built.
+ *
+ * `custom_per_case_type` stays enabled. Unlike the waiver it is live behaviour
+ * — it is what lets staff set a per-consultation amount (`leads.service.ts`,
+ * fee resolution) — despite the name promising a case-type lookup that does not
+ * exist.
+ */
+export const enabledConsultationFeeStructures = [
   "flat",
   "custom_per_case_type",
-  "waived_if_retainer",
 ] as const;
 
 /** Reusable IANA timezone validator (e.g. "America/New_York"). */
@@ -28,7 +43,11 @@ export const upsertConsultationSettingsSchema = z
   .object({
     chargesFee: z.boolean(),
     defaultAmount: z.number().min(MINIMUM_CONSULTATION_FEE, `Minimum consultation fee amount is $${MINIMUM_CONSULTATION_FEE}.00`).nullish(),
-    feeStructure: z.enum(consultationFeeStructures).nullish(),
+    feeStructure: z.enum(enabledConsultationFeeStructures).nullish(),
+    // Accepted and ignored. The field is still sent by clients that PATCH the
+    // whole settings object back (the timezone card does), so rejecting it
+    // outright would 400 a save that changes something else entirely. The
+    // service writes null regardless.
     waiverWindowDays: z.number().int().positive().nullish(),
     timezone: timezoneSchema.optional(),
     language: languageSchema.optional(),
@@ -53,13 +72,6 @@ export const upsertConsultationSettingsSchema = z
       });
     }
 
-    if (val.feeStructure === "waived_if_retainer" && val.waiverWindowDays == null) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "A waiver window (in days) is required for the waived-if-retainer structure",
-        path: ["waiverWindowDays"],
-      });
-    }
   });
 
 export type UpsertConsultationSettingsBody = z.infer<
