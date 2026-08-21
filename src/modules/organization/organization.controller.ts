@@ -49,8 +49,8 @@ export class OrganizationController {
   getStaffs = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     if (!organizationId) return res.status(400).json({ error: "No active organization" });
-    const { search, role, team, status, page, limit } = req.query as Record<string, string | undefined>;
-    const result = await this.organizationService.listStaffs(organizationId, { search, role, team, status, page: page ? parseInt(page, 10) : undefined, limit: limit ? parseInt(limit, 10) : undefined });
+    const { search, role, team, group, status, page, limit } = req.query as Record<string, string | undefined>;
+    const result = await this.organizationService.listStaffs(organizationId, { search, role, team, group, status, page: page ? parseInt(page, 10) : undefined, limit: limit ? parseInt(limit, 10) : undefined });
     sendSuccess(res, result.data, "Staff retrieved successfully", 200, { pagination: result.pagination, counts: result.counts });
   });
 
@@ -88,12 +88,17 @@ export class OrganizationController {
     sendSuccess(res, result, "Staff updated successfully");
   });
 
+  // `role` accepts either a single role name or an array — a staff member
+  // may hold more than one role at once (better-auth stores it comma-
+  // separated on `member.role`; `updateStaffMemberRole` joins the array).
   updateStaffMemberRole = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     if (!organizationId) return res.status(400).json({ error: "No active organization" });
     const targetStaffId = req.params.staffId as string;
-    const { role } = req.body;
-    if (!role) return res.status(400).json({ error: "role is required" });
+    const { role } = req.body as { role?: string | string[] };
+    if (!role || (Array.isArray(role) && role.length === 0)) {
+      return res.status(400).json({ error: "role is required" });
+    }
     await this.organizationService.updateStaffMemberRole(targetStaffId, organizationId, role, req.headers as any);
     sendSuccess(res, null, "Role updated successfully");
   });

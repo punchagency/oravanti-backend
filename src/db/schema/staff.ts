@@ -10,10 +10,18 @@ import {
 import { organization, user } from "./auth-schema";
 import { portalStatusEnum } from "./enums";
 
+// The set of *default* roles a firm's billing-rate table
+// (`src/db/schema/billing-rates.ts`) can configure a rate for. Not used by
+// `staff.role` itself (see below) — a firm-defined custom role has no
+// billing-rate row today, which is a known gap, not something this enum
+// should paper over by accepting arbitrary strings.
 export const staffRoleEnum = pgEnum("staff_role", [
+  "owner",
   "admin",
   "attorney",
   "paralegal",
+  "legal_assistant",
+  "receptionist",
 ]);
 
 export const staffStatusEnum = pgEnum("staff_status", [
@@ -47,7 +55,15 @@ export const staff = pgTable("staff", {
   jobTitle: text("job_title").default("Staff Member"),
   status: staffStatusEnum("status").notNull().default("active"),
 
-  role: staffRoleEnum("role"),
+  // Not the source of truth for authorization — that's better-auth's
+  // `member.role` (see `src/auth/permissions.ts`), which supports multiple
+  // comma-separated roles per member. This is only a best-effort, single-
+  // value "primary role" projection of that (see `organizationHooks` in
+  // `src/auth/index.ts`) for the read sites that display/group by "a" role
+  // rather than checking a real permission. Free text, not `staffRoleEnum`,
+  // because the primary role can be a firm-defined custom role name that
+  // enum was never meant to enumerate.
+  role: text("role"),
   startDate: timestamp("start_date"),
   avatarUrl: text("avatar_url"),
   monthlySalary: numeric("monthly_salary", { precision: 10, scale: 2 }).default(
@@ -67,32 +83,3 @@ export const staff = pgTable("staff", {
 
 export type Staff = typeof staff.$inferSelect;
 export type NewStaff = typeof staff.$inferInsert;
-
-// export const staff = pgTable("staff", {
-//   id: uuid("id").primaryKey().defaultRandom(),
-//   organizationId: text("organization_id")
-//     .notNull()
-//     .references(() => organization.id),
-//   userId: text("user_id"),
-//   firstName: text("first_name").notNull(),
-//   lastName: text("last_name").notNull(),
-//   email: text("email").notNull().unique(),
-//   phone: text("phone").notNull(),
-//   role: staffRoleEnum("role").notNull(),
-//   status: staffStatusEnum("status").notNull().default("active"),
-//   maxCaseload: integer("max_caseload").notNull().default(7),
-//   startDate: date("start_date").notNull(),
-//   performanceScore: integer("performance_score").default(0),
-//   certificationsCount: integer("certifications_count").default(0),
-//   activeCases: integer("active_cases").default(0),
-//   totalCases: integer("total_cases").default(0),
-//   monthlySalary: numeric("monthly_salary", { precision: 10, scale: 2 }).default(
-//     "0",
-//   ),
-//   hourlyRate: numeric("hourly_rate", { precision: 8, scale: 2 }).default("0"),
-//   avatarUrl: text("avatar_url"),
-//   createdAt: timestamp("created_at").notNull().defaultNow(),
-//   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-//   isActive: boolean("is_active").default(true).notNull(),
-//   joinedAt: timestamp("joined_at").defaultNow().notNull(),
-// });

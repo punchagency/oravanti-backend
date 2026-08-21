@@ -70,7 +70,11 @@ export const resolveBillingRate = async (
               eq(billingRates.staffId, staffId),
               and(
                 isNull(billingRates.staffId),
-                eq(billingRates.role, member.role),
+                // `staff.role` is free text and can hold a firm-defined
+                // custom role name `billingRates.role`'s enum doesn't know —
+                // in that case this comparison simply matches no row, which
+                // is the correct "no role default for this role" outcome.
+                eq(billingRates.role, member.role as any),
               ),
             )
           : eq(billingRates.staffId, staffId),

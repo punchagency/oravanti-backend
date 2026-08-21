@@ -8,11 +8,12 @@ const log = createModuleLogger("permission-audit-log.service");
 
 const PERMISSION_AUDIT_ACTIONS = [
   "admin.permission_changed",
-  "admin.access_control_changed",
-  "admin.data_access_changed",
   "admin.financial_access_changed",
-  "admin.approval_workflow_changed",
-  "admin.certification_gate_changed",
+  "admin.staff_role_changed",
+  "role.created",
+  "role.updated",
+  "role.deleted",
+  "role.permissions_changed",
 ] as const;
 
 export class PermissionAuditLogService {

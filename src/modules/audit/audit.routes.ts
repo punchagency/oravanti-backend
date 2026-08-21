@@ -51,12 +51,10 @@ export class AuditRouter {
      * /audit-events:
      *   get:
      *     tags: [Audit]
-     *     summary: List audit events, newest first, keyset-paginated
+     *     summary: List audit events, newest first, page/limit-paginated
      *     description: >
      *       Access events (views, downloads) are excluded unless `category=access`
      *       is passed — they outnumber state changes by orders of magnitude.
-     *       Page by handing back the `nextCursor` from the previous response;
-     *       `cursor` is opaque and must not be constructed by the caller.
      *     security: [{ bearerAuth: [] }]
      *     parameters:
      *       - in: query
@@ -93,14 +91,14 @@ export class AuditRouter {
      *         schema: { type: string }
      *         description: Free text over the stored summary
      *       - in: query
+     *         name: page
+     *         schema: { type: integer, minimum: 1, default: 1 }
+     *       - in: query
      *         name: limit
      *         schema: { type: integer, maximum: 100, default: 50 }
-     *       - in: query
-     *         name: cursor
-     *         schema: { type: string }
      *     responses:
      *       200:
-     *         description: A page of audit events, with `nextCursor` and `hasMore`
+     *         description: A page of audit events, with `pagination`
      */
     this.router.get(
       "/",

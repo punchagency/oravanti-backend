@@ -310,20 +310,32 @@ export const AUDIT_ACTIONS = {
   // Replaces `permission_audit_log`, which records only a free-text action and
   // who changed it — no before, no after, so it cannot answer what changed.
   "admin.permission_changed": { category: "admin", actionType: "update", entityType: "permission", label: "Permissions changed" },
-  "admin.access_control_changed": { category: "admin", actionType: "update", entityType: "permission", label: "Access control changed" },
-  "admin.data_access_changed": { category: "admin", actionType: "update", entityType: "permission", label: "Data access rules changed" },
+  // `financial_access_controls` is a real, enforced table (see
+  // `modules/finance/account-access.ts`) — not superseded by dynamic RBAC,
+  // since it answers a firm-specific trust/IOLTA question `ac` doesn't model.
   "admin.financial_access_changed": { category: "admin", actionType: "update", entityType: "permission", label: "Financial access changed" },
-  "admin.approval_workflow_changed": { category: "admin", actionType: "update", entityType: "permission", label: "Approval workflow changed" },
-  "admin.certification_gate_changed": { category: "admin", actionType: "update", entityType: "permission", label: "Certification gate changed" },
+
+  // Dynamic role management (custom roles created/edited/deleted per firm via
+  // better-auth's dynamicAccessControl). `admin.staff_role_changed` above
+  // covers assigning an existing role to a staff member; these cover the
+  // role definitions themselves.
+  "role.created": { category: "admin", actionType: "create", entityType: "permission", label: "Role created" },
+  "role.updated": { category: "admin", actionType: "update", entityType: "permission", label: "Role updated" },
+  "role.deleted": { category: "admin", actionType: "delete", entityType: "permission", label: "Role deleted" },
+  "role.permissions_changed": { category: "admin", actionType: "update", entityType: "permission", label: "Role permissions changed" },
+
+  "role_group.created": { category: "admin", actionType: "create", entityType: "permission", label: "Role group created" },
+  "role_group.updated": { category: "admin", actionType: "update", entityType: "permission", label: "Role group updated" },
+  "role_group.deleted": { category: "admin", actionType: "delete", entityType: "permission", label: "Role group deleted" },
+  "role_group.member_added": { category: "admin", actionType: "update", entityType: "permission", label: "Member added to role group" },
+  "role_group.member_removed": { category: "admin", actionType: "update", entityType: "permission", label: "Member removed from role group" },
 
   "admin.client_portal_granted": { category: "admin", actionType: "update", entityType: "client", label: "Portal access granted" },
   "admin.client_portal_revoked": { category: "admin", actionType: "update", entityType: "client", label: "Portal access revoked" },
   "admin.contractor_registered": { category: "admin", actionType: "create", entityType: "contractor", label: "Contractor registered" },
   "admin.firm_profile_updated": { category: "admin", actionType: "update", entityType: "organization", label: "Firm profile updated" },
-  "admin.invite_member": { category: "admin", actionType: "create", entityType: "staff", label: "Staff invited" },
   "admin.staff_invite_failed": { category: "admin", actionType: "create", entityType: "staff", label: "Staff invitation failed" },
   "admin.password_changed": { category: "admin", actionType: "update", entityType: "user", label: "Password changed" },
-  "admin.role_changed": { category: "admin", actionType: "update", entityType: "staff", label: "Role changed" },
   "admin.assigned_to_team": { category: "admin", actionType: "update", entityType: "team", label: "Staff assigned to team" },
   "admin.practice_areas_changed": { category: "admin", actionType: "update", entityType: "organization", label: "Practice areas changed" },
 

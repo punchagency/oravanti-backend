@@ -182,6 +182,16 @@ export const LogEvent = {
   STAFF_AVATAR_UPLOADED: "staff.avatar_uploaded",
   USER_PROFILE_UPDATED: "user.profile_updated",
 
+  // ── Dynamic roles (firm-defined, via better-auth dynamicAccessControl) ─────
+  ROLE_CREATED: "role.created",
+  ROLE_UPDATED: "role.updated",
+  ROLE_DELETED: "role.deleted",
+
+  // ── Role groups (named bundles of roles assigned to sets of staff) ──────────
+  ROLE_GROUP_CREATED: "role_group.created",
+  ROLE_GROUP_UPDATED: "role_group.updated",
+  ROLE_GROUP_DELETED: "role_group.deleted",
+
   // ── Staff availability ────────────────────────────────────────────────────
   STAFF_AVAILABILITY_UPDATED: "staff_availability.updated",
   STAFF_AVAILABILITY_BLOCKED: "staff_availability.blocked",

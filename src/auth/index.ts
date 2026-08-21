@@ -8,7 +8,7 @@ import {
   organization,
   twoFactor,
 } from "better-auth/plugins";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { env } from "../config/env";
 import { EMAIL_VERIFICATION_EXEMPT_ACCOUNT_TYPES } from "../config/constants";
 import { systemDb } from "../db/client";
@@ -18,6 +18,7 @@ import {
   invitation,
   member,
   organization as organizationSchema,
+  organizationRole,
   session,
   team,
   teamMember,
@@ -26,9 +27,18 @@ import {
   verification,
 } from "../db/schema/auth-schema";
 import { consultationSettings } from "../db/schema/consultation-settings";
+import { roleGroup, roleGroupMember } from "../db/schema/role-groups";
 import { emailService } from "../utils/email/email.service";
 import { databaseHooks } from "./database-hooks";
-import { ac, admin, attorney, client, owner, paralegal } from "./permissions";
+import {
+  ac,
+  admin,
+  client,
+  clientPermissions,
+  contractorPermissions,
+  owner,
+  resolveStaticGrants,
+} from "./permissions";
 import { cryptoKeyPlugin } from "./plugins/cryptoKeyPlugin";
 
 const { isProduction } = env;
@@ -70,6 +80,7 @@ export const auth = betterAuth({
       twoFactor: twoFactorSchema,
       team,
       teamMember,
+      organizationRole,
     },
   }),
   emailAndPassword: {
@@ -181,14 +192,24 @@ export const auth = betterAuth({
         });
       },
       organizationHooks: {
-        // Both hooks run on `systemDb`, which bypasses RLS, so the
-        // organization predicate is the only thing scoping the write. Without
-        // it a user who belongs to two firms has their role at BOTH firms
-        // overwritten when their membership changes at one of them.
+        // `member.role` (via better-auth, now possibly comma-separated for a
+        // multi-role member) is the sole source of truth for *authorization*.
+        // `staff.role` remains only as a best-effort, single-value "primary
+        // role" projection — the first role in the list — for the many
+        // read-only call sites (billing rate lookup, case-review assignee
+        // matching, task/lead routing) that display or group by "a" role and
+        // were never rewritten to read `member.role` directly. Both hooks run
+        // on `systemDb` (bypasses RLS), so the organization predicate is the
+        // only thing scoping the write — without it a user who belongs to
+        // two firms has their projection at BOTH firms overwritten when
+        // their membership changes at one of them.
         afterAcceptInvitation: async ({ member, user }) => {
           await systemDb
             .update(staff)
-            .set({ role: member.role as any, status: "active" })
+            .set({
+              role: member.role.split(",")[0] as any,
+              status: "active",
+            })
             .where(
               and(
                 eq(staff.userId, user.id),
@@ -199,7 +220,7 @@ export const auth = betterAuth({
         afterUpdateMemberRole: async ({ member }) => {
           await systemDb
             .update(staff)
-            .set({ role: member.role as any })
+            .set({ role: member.role.split(",")[0] as any })
             .where(
               and(
                 eq(staff.userId, member.userId),
@@ -209,12 +230,22 @@ export const auth = betterAuth({
         },
       },
       ac,
+      // Only owner/admin/client are still statically defined here — see the
+      // comment on `DEFAULT_ROLE_NAMES` in `permissions.ts` for why the four
+      // default staff roles (attorney, paralegal, legal_assistant,
+      // receptionist) are deliberately NOT in this map: a name in this map
+      // can never get a real, editable `organizationRole` DB row of its
+      // own, which is what "edit this role" and "reset to default" need.
       roles: {
         owner,
         admin,
-        attorney,
-        paralegal,
-        client
+        client,
+      },
+      dynamicAccessControl: {
+        enabled: true,
+        // No firm-tier/subscription-plan concept exists yet to hang a
+        // variable ceiling off — flat and generous until one does.
+        maximumRolesPerOrganization: 30,
       },
       schema: {
         organization: {
@@ -249,19 +280,24 @@ export const auth = betterAuth({
       },
     }),
     cryptoKeyPlugin(),
-    // Surface the active organization member role (owner/admin/attorney/
-    // paralegal) on the session so the frontend can gate conflict review
-    // without an extra request. The backend permission remains the real gate.
+    // Surface the active organization member role(s) and the caller's
+    // resolved permission grants on the session, so the frontend can gate UI
+    // without an extra request. The backend permission remains the real gate
+    // — this is a display/UX convenience, not itself an enforcement point.
     customSession(async ({ user, session }) => {
       const activeOrganizationId = (
         session as { activeOrganizationId?: string }
       ).activeOrganizationId;
 
+      // Comma-separated when the member holds more than one role — kept as
+      // the raw string on the session (unchanged shape), split only where
+      // grants are resolved.
       let memberRole: string | null = null;
       let firmTimezone = "UTC";
+      let grants: string[] = [];
       if (activeOrganizationId) {
         const [membership] = await systemDb
-          .select({ role: member.role })
+          .select({ id: member.id, role: member.role })
           .from(member)
           .where(
             and(
@@ -272,6 +308,81 @@ export const auth = betterAuth({
           .limit(1);
         memberRole = membership?.role ?? null;
 
+        // Direct roles from member.role
+        const directRoles = (membership?.role ?? "")
+          .split(",")
+          .map((r) => r.trim())
+          .filter(Boolean);
+
+        // ── Group-inherited roles ────────────────────────────────────────
+        let groupRoleNames: string[] = [];
+        if (membership) {
+          const memberships = await systemDb
+            .select({ groupId: roleGroupMember.groupId })
+            .from(roleGroupMember)
+            .where(eq(roleGroupMember.memberId, membership.id));
+
+          if (memberships.length > 0) {
+            const groupIds = memberships.map((m) => m.groupId);
+            const groups = await systemDb
+              .select({ roles: roleGroup.roles })
+              .from(roleGroup)
+              .where(inArray(roleGroup.id, groupIds));
+
+            const groupRoles = new Set<string>();
+            for (const g of groups) {
+              if (g.roles) {
+                for (const r of g.roles.split(",").map((r) => r.trim()).filter(Boolean)) {
+                  groupRoles.add(r);
+                }
+              }
+            }
+            groupRoleNames = Array.from(groupRoles);
+          }
+        }
+
+        // Union of direct + group roles (additive — groups only widen access)
+        const roleNames = Array.from(new Set([...directRoles, ...groupRoleNames]));
+
+        // Expose the full effective role set on the session so the frontend
+        // can display it (memberRole) and the panel shows group-inherited roles.
+        if (groupRoleNames.length > 0) {
+          memberRole = roleNames.join(",");
+        }
+
+        grants = resolveStaticGrants(roleNames);
+
+        // Layer in every DB-backed role — the four seeded defaults
+        // (attorney, paralegal, legal_assistant, receptionist) plus any
+        // firm-created custom role. Queried directly — no
+        // `auth.api.getOrgRole` here, since this callback has no request
+        // headers to authenticate that call with, and it already has the
+        // org/role context it needs.
+        const dbRoleNames = roleNames.filter((name) => name !== "owner" && name !== "admin" && name !== "client");
+        if (dbRoleNames.length > 0) {
+          const dbRoles = await systemDb
+            .select({ role: organizationRole.role, permission: organizationRole.permission })
+            .from(organizationRole)
+            .where(
+              and(
+                eq(organizationRole.organizationId, activeOrganizationId),
+                inArray(organizationRole.role, dbRoleNames),
+              ),
+            );
+          const grantSet = new Set(grants);
+          for (const row of dbRoles) {
+            try {
+              const permission = JSON.parse(row.permission) as Record<string, string[]>;
+              for (const [resource, actions] of Object.entries(permission)) {
+                for (const action of actions) grantSet.add(`${resource}:${action}`);
+              }
+            } catch {
+              // Malformed permission JSON — skip rather than fail the whole session.
+            }
+          }
+          grants = Array.from(grantSet);
+        }
+
         // Firm timezone drives business-logic and coordination (firm) display.
         const [settings] = await systemDb
           .select({ timezone: consultationSettings.timezone })
@@ -279,6 +390,14 @@ export const auth = betterAuth({
           .where(eq(consultationSettings.organizationId, activeOrganizationId))
           .limit(1);
         firmTimezone = settings?.timezone ?? "UTC";
+      } else if ((user as any).accountType === "client") {
+        grants = Object.entries(clientPermissions).flatMap(([resource, actions]) =>
+          actions.map((action) => `${resource}:${action}`),
+        );
+      } else if ((user as any).accountType === "contractor") {
+        grants = Object.entries(contractorPermissions).flatMap(([resource, actions]) =>
+          actions.map((action) => `${resource}:${action}`),
+        );
       }
 
       // User's own timezone preference (null → client falls back to browser).
@@ -316,6 +435,7 @@ export const auth = betterAuth({
         memberRole,
         firmTimezone,
         portalStatus,
+        grants,
       };
     }),
   ],
