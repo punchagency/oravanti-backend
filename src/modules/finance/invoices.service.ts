@@ -9,6 +9,7 @@ import {
   type EffectiveInvoiceStatus,
   type NewInvoiceLineItem,
 } from "../../db/schema/invoices";
+import { consultations } from "../../db/schema/consultations";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { leads } from "../../db/schema/leads";
 import { practiceAreas } from "../../db/schema/practice-areas";
@@ -238,6 +239,7 @@ export const list = async (
       amountPaid: invoices.amountPaid,
       balanceDue: invoices.balanceDue,
       status: effectiveStatusSql(today),
+      isConsultationFee: isConsultationFeeSql,
     })
     .from(invoices)
     .leftJoin(clients, onClient)
@@ -340,6 +342,21 @@ const listTotals = async (
 
 // ── Detail ───────────────────────────────────────────────────────────────────
 
+/**
+ * Is this invoice a consultation fee?
+ *
+ * Consultation fees cannot be refunded or voided from Finance — cancelling the
+ * consultation is the one path that also releases the calendar slot and tells
+ * the client — so the UI needs to know before offering a button the API will
+ * refuse. A correlated EXISTS rather than a join, so an invoice can never be
+ * duplicated by it.
+ */
+const isConsultationFeeSql = sql<boolean>`exists (
+  select 1 from ${consultations}
+  where ${consultations.invoiceId} = ${invoices.id}
+    and ${consultations.organizationId} = ${invoices.organizationId}
+)`;
+
 export const getById = async (
   organizationId: string,
   invoiceId: string,
@@ -352,6 +369,7 @@ export const getById = async (
       id: invoices.id,
       invoiceNumber: invoices.invoiceNumber,
       status: effectiveStatusSql(today),
+      isConsultationFee: isConsultationFeeSql,
       storedStatus: invoices.status,
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
