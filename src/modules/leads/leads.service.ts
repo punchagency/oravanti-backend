@@ -13,6 +13,7 @@ import {
   isNotNull,
   isNull,
   ne,
+  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -3921,6 +3922,113 @@ export type ConsultationCancellation = {
   manualOutstanding: number;
 };
 
+/**
+ * Turn an owed refund into something a person will actually see.
+ *
+ * The cancellation response already carries `refundOwed` and `awaitingAdmin`,
+ * and the controller builds a good sentence out of them — but that sentence is
+ * a toast shown to whoever cancelled, who by definition lacks `finance:refund`
+ * and cannot act on it. The only durable trace was a `log.warn`, and a log line
+ * is not a work item. Money sat owed to a client with nothing tracking it.
+ *
+ * `lead_tasks` is the mechanism that exists on this branch: assignable,
+ * statused, and already rendered in the pipeline UI. (The `notify()` ledger is
+ * still unmerged on `feat/notifications-and-sms`.)
+ *
+ * Idempotent per consultation, so cancelling twice — or a no-show following a
+ * cancellation — cannot stack duplicate tasks demanding the same refund.
+ * Non-fatal: failing to raise the reminder must not fail the cancellation that
+ * prompted it.
+ */
+const refundOwedTask = async (opts: {
+  organizationId: string;
+  leadId: string;
+  consultationId: string;
+  amount: number;
+  reason: string;
+}): Promise<void> => {
+  try {
+    // The marker the idempotency check matches on. `lead_tasks` has no metadata
+    // column, so the consultation id rides in the description.
+    const marker = `[consultation:${opts.consultationId}]`;
+
+    const [existing] = await db
+      .select({ id: leadTasks.id })
+      .from(leadTasks)
+      .where(
+        and(
+          eq(leadTasks.organizationId, opts.organizationId),
+          eq(leadTasks.leadId, opts.leadId),
+          ilike(leadTasks.description, `%${marker}%`),
+          // A completed one means somebody already refunded it; re-raising
+          // would ask them to do it twice.
+          notInArray(leadTasks.status, ["completed", "skipped"]),
+        ),
+      )
+      .limit(1);
+
+    if (existing) return;
+
+    const [lead] = await db
+      .select({ firstName: leads.firstName, lastName: leads.lastName })
+      .from(leads)
+      .where(eq(leads.id, opts.leadId))
+      .limit(1);
+
+    // Best effort at somebody who can act. `finance:refund` belongs to the
+    // owner and admin org roles; `staff.role` is the closest thing a plain
+    // query can see, so an unresolved assignee leaves the task unassigned
+    // rather than parked on someone powerless to close it.
+    const [assignee] = await db
+      .select({ id: staff.id })
+      .from(staff)
+      .where(
+        and(
+          eq(staff.organizationId, opts.organizationId),
+          eq(staff.role, "admin"),
+          eq(staff.status, "active"),
+        ),
+      )
+      .limit(1);
+
+    // orderIndex is a per-stage ordinal, not a global one.
+    const [{ n }] = await db
+      .select({ n: count() })
+      .from(leadTasks)
+      .where(
+        and(
+          eq(leadTasks.leadId, opts.leadId),
+          eq(leadTasks.pipelineStage, "consultation"),
+        ),
+      );
+
+    const who = lead ? `${lead.firstName} ${lead.lastName}` : "the client";
+
+    await db.insert(leadTasks).values({
+      organizationId: opts.organizationId,
+      leadId: opts.leadId,
+      title: `Refund $${opts.amount.toFixed(2)} to ${who}`,
+      description: `${opts.reason} Requires the finance:refund permission. ${marker}`,
+      orderIndex: Number(n),
+      pipelineStage: "consultation",
+      assignedToId: assignee?.id ?? null,
+      assignedAt: assignee ? new Date() : null,
+    });
+
+    log.action("leads.consultation_refund_task_created", {
+      leadId: opts.leadId,
+      consultationId: opts.consultationId,
+      amount: opts.amount,
+      assigned: Boolean(assignee),
+    });
+  } catch (err) {
+    log.failure("leads.consultation_refund_task_failed", err, {
+      leadId: opts.leadId,
+      consultationId: opts.consultationId,
+    });
+  }
+};
+
 const cancelConsultation = async (
   leadId: string,
   organizationId: string,
@@ -4073,6 +4181,21 @@ const cancelConsultation = async (
       amount: cancellation.refundOwed,
       awaitingAdmin: cancellation.awaitingAdmin,
       manualOutstanding: cancellation.manualOutstanding,
+    });
+
+    // The toast that reports this goes to whoever cancelled, who is precisely
+    // the person without the permission to act on it. This is the part that
+    // survives them closing the tab.
+    await refundOwedTask({
+      organizationId,
+      leadId,
+      consultationId: consultation.id,
+      amount: cancellation.refundOwed,
+      reason: cancellation.awaitingAdmin
+        ? "Consultation cancelled by someone without refund permission, so the client's money was not returned."
+        : cancellation.manualOutstanding > 0
+          ? "Consultation cancelled. This much was paid outside the processor, so it has to be returned to the client directly."
+          : "Consultation cancelled, but the refund could not be completed automatically.",
     });
   }
 

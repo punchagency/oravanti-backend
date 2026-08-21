@@ -276,6 +276,10 @@ export const LogEvent = {
    * The money is on the ledger; the booking gate may still be closed.
    */
   LEADS_CONSULTATION_SETTLE_FAILED: "leads.consultation_settle_failed",
+  /** An owed refund was turned into an assignable task for someone who can act. */
+  LEADS_CONSULTATION_REFUND_TASK_CREATED: "leads.consultation_refund_task_created",
+  /** The reminder failed to raise. The refund is still owed and now untracked. */
+  LEADS_CONSULTATION_REFUND_TASK_FAILED: "leads.consultation_refund_task_failed",
   /**
    * A cancelled consultation left money with the firm that it did not return.
    *
