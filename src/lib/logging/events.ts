@@ -280,6 +280,8 @@ export const LogEvent = {
   LEADS_CONSULTATION_REFUND_TASK_CREATED: "leads.consultation_refund_task_created",
   /** The reminder failed to raise. The refund is still owed and now untracked. */
   LEADS_CONSULTATION_REFUND_TASK_FAILED: "leads.consultation_refund_task_failed",
+  /** A no-show was resolved against the firm's policy (refund / void / task). */
+  LEADS_CONSULTATION_NO_SHOW_SETTLED: "leads.consultation_no_show_settled",
   /**
    * A cancelled consultation left money with the firm that it did not return.
    *

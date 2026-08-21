@@ -462,11 +462,18 @@ export class LeadsController {
     const staffId = _staffId ?? undefined;
     const body = { ...req.body };
     if (body.scheduledAt) body.scheduledAt = new Date(body.scheduledAt);
+    // Needed only by the `refund` no-show policy, and asked here for the same
+    // reason cancellation asks here: this is the only layer holding the request
+    // headers Better Auth needs. Marking a no-show is an intake action and
+    // refunding is a finance one, so the two come apart — anyone may mark it,
+    // and the money waits visibly for someone who can move it.
+    const canRefund = await hasPermission(req, { finance: ["refund"] });
     const result = await this.svc.updateConsultation(
       req.params.id as string,
       organizationId!,
       body,
       staffId,
+      canRefund,
     );
     sendSuccess(res, result, "Consultation updated successfully");
   };

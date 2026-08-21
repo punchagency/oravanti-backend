@@ -2945,6 +2945,122 @@ const getConsultation = async (leadId: string, organizationId: string) => {
   return { ...consultation, fee, participants, consultationHistory };
 };
 
+/**
+ * What happens to the fee when the lead does not turn up.
+ *
+ * Firms disagree about this and both positions are defensible — the attorney's
+ * time was reserved and is gone either way; the client received nothing — so it
+ * is configuration rather than a decision made here. `forfeit` is the default
+ * because it is what the code already did before anybody chose.
+ *
+ * Every branch is non-fatal. The consultation is already marked as a no-show
+ * and that must stand: losing the status change because a refund failed would
+ * leave the calendar wrong as well as the money.
+ */
+const applyNoShowPolicy = async (
+  organizationId: string,
+  leadId: string,
+  consultation: typeof consultations.$inferSelect,
+  actorId: string | undefined,
+  canRefund: boolean,
+): Promise<void> => {
+  if (!consultation.invoiceId) return;
+
+  const [settings] = await db
+    .select({ noShowPolicy: consultationSettings.noShowPolicy })
+    .from(consultationSettings)
+    .where(eq(consultationSettings.organizationId, organizationId))
+    .limit(1);
+
+  const policy = settings?.noShowPolicy ?? "forfeit";
+
+  // The firm keeps what it holds and is still owed what it does not. Explicitly
+  // nothing, so the behaviour is now a decision somebody can revisit rather
+  // than an oversight nobody noticed.
+  if (policy === "forfeit") return;
+
+  const held = await netPaidOnInvoice(organizationId, consultation.invoiceId);
+
+  if (policy === "decide") {
+    // Only worth a human's attention when there is money on the table. An
+    // unpaid no-show under "decide" is a normal receivable.
+    if (held > 0) {
+      await refundOwedTask({
+        organizationId,
+        leadId,
+        consultationId: consultation.id,
+        amount: held,
+        reason:
+          "The lead did not attend. The firm's no-show policy is to decide case by case, so someone needs to choose whether to refund this.",
+      });
+    }
+    return;
+  }
+
+  // policy === "refund"
+  if (held <= 0) {
+    // Nothing was paid, so there is nothing to send back — but the invoice is
+    // still asking for money for a consultation that did not happen. Void it,
+    // which also stops it going overdue and entering dunning.
+    await voidInvoiceForCancelledConsultation(
+      organizationId,
+      consultation.invoiceId,
+      actorId ?? null,
+    );
+    return;
+  }
+
+  if (!canRefund) {
+    // Same split as cancellation: marking a no-show is an intake action,
+    // refunding is a finance one. Anyone may do the first; the money waits for
+    // someone who can do the second, visibly rather than silently.
+    await refundOwedTask({
+      organizationId,
+      leadId,
+      consultationId: consultation.id,
+      amount: held,
+      reason:
+        "The lead did not attend and the firm refunds no-shows, but this was marked by someone without refund permission.",
+    });
+    return;
+  }
+
+  const summary = await refundInvoiceInFull(
+    organizationId,
+    consultation.invoiceId,
+    actorId ?? null,
+    systemAccess(),
+    "Consultation no-show",
+  );
+
+  // Whatever the refund could not reach — a failed leg, or money that never
+  // went through the processor and has to go back at the bank.
+  const stillOwed = await netPaidOnInvoice(
+    organizationId,
+    consultation.invoiceId,
+  );
+  if (stillOwed > 0) {
+    await refundOwedTask({
+      organizationId,
+      leadId,
+      consultationId: consultation.id,
+      amount: stillOwed,
+      reason:
+        summary.manualOutstanding > 0
+          ? "The lead did not attend. This much was paid outside the processor, so it has to be returned to the client directly."
+          : "The lead did not attend, but the refund could not be completed automatically.",
+    });
+  }
+
+  log.action("leads.consultation_no_show_settled", {
+    leadId,
+    consultationId: consultation.id,
+    policy,
+    refunded: summary.refunded,
+    stillOwed,
+  });
+};
+
 const updateConsultation = async (
   leadId: string,
   organizationId: string,
@@ -2960,6 +3076,12 @@ const updateConsultation = async (
     feeStatus: "paid";
   }>,
   actorId?: string,
+  /**
+   * Whether the actor may send money back, for the `refund` no-show policy.
+   * Resolved in the controller for the same reason `cancelConsultation` does
+   * it there: that is the only layer holding the headers Better Auth needs.
+   */
+  canRefund = false,
 ) => {
   const [lead] = await db
     .select()
@@ -3074,6 +3196,17 @@ const updateConsultation = async (
     previous: existing.attorneyNotes,
     actorId,
   });
+
+  // No-show side effects (once, on the transition in).
+  //
+  // This branch did not exist. Every side effect in this function gated on
+  // `completed`, so marking a no-show set the status and stopped: a paid fee
+  // was silently kept, and an unpaid one stayed on the books, went overdue and
+  // entered dunning — the firm chasing a lead for a consultation that never
+  // happened.
+  if (data.status === "no_show" && existing.status !== "no_show") {
+    await applyNoShowPolicy(organizationId, leadId, updated, actorId, canRefund);
+  }
 
   // Completion side effects (once — re-PATCHing a completed row is a no-op).
   if (data.status === "completed" && existing.status !== "completed") {
