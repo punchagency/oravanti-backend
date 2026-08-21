@@ -5,6 +5,7 @@ import { auth } from "../auth";
 import { ac, clientPermissions, contractorPermissions } from "../auth/permissions";
 import { systemDb } from "../db/client";
 import { user } from "../db/schema/auth-schema";
+import { resolveMemberGrants } from "../modules/shared/member-grants.service";
 import { AuthorizationError } from "../utils/error/app-error";
 import { getRequestContext } from "./request-context";
 
@@ -96,6 +97,24 @@ export function requirePermission<Resource extends Resources>(
       });
 
       if (!result.success) {
+        // better-auth's own `hasPermission` resolves only `member.role` —
+        // it has no notion of this app's role groups. A member who only has
+        // access via a group they were added to would otherwise 403 on
+        // every request despite the UI (which reads `getMyGrants`, and does
+        // know about groups) showing them as permitted. Re-check against
+        // the group-aware grant resolution before actually denying.
+        if (userId) {
+          const grants = await resolveMemberGrants(
+            userId,
+            organizationId,
+            req.headers as Record<string, string | string[] | undefined>,
+          );
+          const covered = Object.entries(permissions).every(([resource, actions]) =>
+            (actions as string[]).every((action) => grants.has(`${resource}:${action}`)),
+          );
+          if (covered) return next();
+        }
+
         const entries = Object.entries(permissions);
         const parts: string[] = [];
         for (const [resource, actions] of entries) {

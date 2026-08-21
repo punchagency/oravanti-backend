@@ -6,12 +6,18 @@
  * the gap widening). One implementation, so the number the report prints and
  * the number the test enforces can never disagree.
  *
- * ─── The three ways a route can be gated ────────────────────────────────────
+ * ─── The four ways a route can be gated ─────────────────────────────────────
  *
  *   `requireResource("cases")` on the router
  *       Gates everything mounted under it, deriving create/read/update/delete
  *       from the HTTP method. Preferred: a route added next month inherits the
  *       gate instead of needing someone to remember.
+ *
+ *   `requireOwnerOrAdmin()` on the router
+ *       Gates everything mounted under it on the member's actual role
+ *       (owner/admin) rather than a grantable permission — for pages like
+ *       RBAC management where the ability to grant `ac:*` must not be able
+ *       to grant itself.
  *
  *   `requirePermission({ audit: ["read"] })` on one route
  *       For actions the method does not imply — an export is a GET, but it
@@ -62,6 +68,7 @@ const ROUTE_DECL = /\.(get|post|put|patch|delete)\s*\(/g;
 */
 const MOUNTS_AUTH = /\.use\([^)]*requireAuth/s;
 const MOUNTS_RESOURCE = /\.use\([^)]*requireResource\(/s;
+const MOUNTS_OWNER_OR_ADMIN = /\.use\([^)]*requireOwnerOrAdmin\(/s;
 
 const modulesDir = (root: string) => join(root, "src", "modules");
 
@@ -87,7 +94,7 @@ export function auditRoutes(repoRoot: string): RouteModuleReport[] {
         file,
         routes: (src.match(ROUTE_DECL) ?? []).length,
         authenticated: MOUNTS_AUTH.test(src),
-        resourceGated: MOUNTS_RESOURCE.test(src),
+        resourceGated: MOUNTS_RESOURCE.test(src) || MOUNTS_OWNER_OR_ADMIN.test(src),
         permissionChecks: (src.match(/requirePermission\s*\(/g) ?? []).length,
       };
     })
