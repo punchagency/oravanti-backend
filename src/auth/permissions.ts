@@ -71,6 +71,11 @@ const statement = {
     "create",
     "update",
     "record_payment",
+    // Sending money back to a client. Deliberately NOT covered by
+    // `record_payment`: recording a payment wrongly is correctable from the
+    // same screen, whereas a refund moves money out of the firm's account and
+    // cannot be taken back. Granted to owner and admin only.
+    "refund",
     "approve_time",
     "log_time",
     "trust",
@@ -269,6 +274,7 @@ export const owner = ac.newRole({
     "create",
     "update",
     "record_payment",
+    "refund",
     "approve_time",
     "log_time",
     "trust",
@@ -303,6 +309,7 @@ export const admin = ac.newRole({
     "create",
     "update",
     "record_payment",
+    "refund",
     "approve_time",
     "log_time",
     "trust",

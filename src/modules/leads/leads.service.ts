@@ -31,10 +31,17 @@ import { clientContacts } from "../../db/schema/client-contacts";
 import { clients } from "../../db/schema/clients";
 import { conflictChecks } from "../../db/schema/conflict-checks";
 import { invoices } from "../../db/schema/invoices";
+import { systemAccess } from "../finance/account-access";
 import {
   consultationFee,
   raiseConsultationInvoice,
 } from "../finance/consultation-billing.service";
+import { sendInvoice } from "../finance/deliveries.service";
+import { voidInvoice } from "../finance/invoices.service";
+import {
+  netPaidOnInvoice,
+  refundInvoiceInFull,
+} from "../finance/refunds.service";
 import {
   feeInvoiceSatisfied,
   raiseFeeAgreementInvoice,
@@ -76,6 +83,10 @@ import {
   scheduleQuestionnaireReminder,
 } from "../../queue/queues";
 import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
+import {
+  mintPaymentLink,
+  startCheckout,
+} from "../finance/payment-links.service";
 import { emailService } from "../../utils/email/email.service";
 import {
   AuthorizationError,
@@ -758,11 +769,24 @@ const getLeadById = async (id: string, organizationId: string) => {
       .orderBy(desc(consultations.createdAt))
   ).filter((c) => c.id !== lead.consultationId);
 
+  // The consultation carries its fee here for the same reason `getConsultation`
+  // gives it one: the invoice is authoritative once it exists, and the cancel
+  // dialog has to be able to say what cancelling does to the money. `netPaid`
+  // is what makes "cancelling refunds $400" possible to render, and — once the
+  // consultation is cancelled — what makes "a refund is still owed" derivable
+  // without storing a flag.
+  const consultationWithFee = consultation
+    ? {
+        ...consultation,
+        fee: await consultationFee(organizationId, consultation),
+      }
+    : null;
+
   return {
     ...lead,
     conflictCheck,
     questionnaireSend,
-    consultation,
+    consultation: consultationWithFee,
     consultationHistory,
     feeAgreement,
   };
@@ -2587,7 +2611,7 @@ const initiateConsultation = async (
   // this existed.
   if (feeAmount != null && feeStatus === "unpaid") {
     try {
-      await raiseConsultationInvoice(organizationId, scheduledById ?? null, {
+      const invoiceId = await raiseConsultationInvoice(organizationId, scheduledById ?? null, {
         consultationId: consultation!.id,
         leadId,
         amount: Number(feeAmount),
@@ -2599,6 +2623,21 @@ const initiateConsultation = async (
         // due the moment it is raised.
         dueImmediately: data.paymentTiming === "pay_now" || !startNow,
       });
+
+      // Sent, not left as a draft.
+      //
+      // A draft is a dead end for this invoice in particular: it bills a LEAD,
+      // and the invoice edit dialog is built around clients, so nobody can open
+      // it, finish it and send it by hand. Leaving it a draft means the lead is
+      // never actually asked for the money.
+      //
+      // Delivering also mints the payment token, which is what puts a working
+      // pay link in the email — the whole point of raising it. A lead always
+      // has an address (`leads.email` is NOT NULL), so the missing-recipient
+      // guard in `deliver()` cannot fire here.
+      if (invoiceId) {
+        await sendInvoice(organizationId, invoiceId, scheduledById ?? null, systemAccess());
+      }
     } catch (err) {
       log.failure("leads.consultation_invoice_failed", err, { leadId, consultationId: consultation!.id });
     }
@@ -3149,7 +3188,11 @@ const getConsultationBooking = async (token: string) => {
   const consultation = await getConsultationByBookingToken(token, true);
 
   const [lead] = await db
-    .select({ firstName: leads.firstName, lastName: leads.lastName })
+    .select({
+      firstName: leads.firstName,
+      lastName: leads.lastName,
+      timezone: leads.timezone,
+    })
     .from(leads)
     .where(eq(leads.id, consultation.leadId))
     .limit(1);
@@ -3192,7 +3235,7 @@ const getConsultationBooking = async (token: string) => {
     firmName: firm?.name ?? null,
     leadName,
     firmTimezone,
-    leadTimezone: null,
+    leadTimezone: lead?.timezone ?? null,
     mode: consultation.mode,
     durationMinutes: consultation.duration,
     requiresPayment,
@@ -3222,30 +3265,176 @@ const getLeadTimezone = async (
 };
 
 /**
- * The lead-facing "pay" action on the booking page.
+ * Record the timezone the lead is viewing their booking page in.
  *
- * **This does not take money and must not write to the ledger.** There is no
- * payment provider wired anywhere in this repo; the button has always been a
- * dummy that flips flags. What changed is that consultation fees are now real
- * invoices, so pretending here would put payments in `invoice_payments` that
- * never happened — turning a UI that overstates itself into accounts that do.
- *
- * So the split is deliberate:
- *
- *   - `consultations.feeStatus` is flipped, because it gates the consultation
- *     LIFECYCLE — whether the call starts, whether a slot can be picked. That
- *     is a product decision already made and this keeps the demo flow working.
- *   - The invoice is left alone. It stays outstanding and keeps appearing in
- *     receivables, which is the truth: nobody has paid. Staff record the real
- *     payment through the finance module when it arrives.
- *
- * Phase 3 replaces this with a provider, at which point the webhook records the
- * payment and the two stop disagreeing.
+ * Stored on the lead so every later rendering — confirmation emails, reminders,
+ * the staff view of "their time" — agrees with what they saw when they picked a
+ * slot. The controller previously answered success without calling anything, so
+ * this has been silently discarded since the page shipped.
  */
-const payConsultationFee = async (token: string) => {
+const updateBookingTimezone = async (
+  token: string,
+  timezone: string,
+): Promise<void> => {
   const consultation = await getConsultationByBookingToken(token);
-  if (consultation.feeStatus !== "unpaid")
+  await db
+    .update(leads)
+    .set({ timezone, updatedAt: new Date() })
+    .where(
+      and(
+        eq(leads.organizationId, consultation.organizationId),
+        eq(leads.id, consultation.leadId),
+      ),
+    );
+};
+
+/**
+ * Start a real payment for a consultation fee.
+ *
+ * Replaces a button that flipped `feeStatus` and moved no money. That was
+ * deliberate while no provider existed — the alternative was writing payments to
+ * `invoice_payments` that never happened — but it left the booking page saying
+ * "paid" while the invoice stayed outstanding, and the two have been disagreeing
+ * ever since.
+ *
+ * Now it returns a Confido payment link for the consultation's own invoice. The
+ * lifecycle no longer moves here: it moves when the money is actually recorded,
+ * in `settleConsultationForInvoice` below, which the transaction webhook calls.
+ * Clicking pay and having paid are different events and are finally modelled as
+ * such.
+ */
+const startConsultationPayment = async (token: string) => {
+  const consultation = await getConsultationByBookingToken(token);
+  if (consultation.feeStatus !== "unpaid") {
     throw new ConflictError("No payment is required for this consultation");
+  }
+
+  // A consultation can be unpaid with no invoice: the lead had no practice area,
+  // or the raise threw and was swallowed at booking time. Nothing to pay
+  // against, and inventing one here would bill money nobody agreed to.
+  if (!consultation.invoiceId) {
+    throw new BadRequestError(
+      "No invoice has been raised for this consultation yet. Please contact the firm.",
+    );
+  }
+
+  const paymentToken = await mintPaymentLink(
+    consultation.organizationId,
+    consultation.invoiceId,
+  );
+  const session = await startCheckout(paymentToken);
+  return { url: session.url };
+};
+
+/**
+ * Move the consultation on, now that its fee is genuinely paid.
+ *
+ * Called from the payment webhook rather than from the pay button, so every
+ * transition below is downstream of money that actually arrived. Idempotent on
+ * `feeStatus`: a redelivered webhook finds it already settled and does nothing.
+ */
+
+/**
+ * Tell the lead their payment landed, on the paths that used to say nothing.
+ *
+ * `settleConsultationForInvoice` has three exits and only the last one emailed.
+ * Urgent and instant consultations returned before reaching it, so a lead paid
+ * and heard nothing at all — no confirmation, no time, no way to join.
+ *
+ * Deliberately NOT a booking link: on both these paths the time is already
+ * fixed, by `nextAsapSlot()` for urgent and by the payment itself for instant.
+ * What the lead needs is when it is and how to join.
+ *
+ * Dual-zone throughout. A lead in another timezone told a bare time is how
+ * somebody misses their own consultation.
+ *
+ * Non-fatal by design, matching the slot-selection branch: the money is
+ * recorded and the consultation has already moved on, so losing that to a mail
+ * failure would be the wrong trade.
+ */
+const sendConsultationPaymentConfirmation = async (
+  consultation: typeof consultations.$inferSelect,
+  opts: { startingNow: boolean },
+): Promise<void> => {
+  const [lead] = await db
+    .select({
+      firstName: leads.firstName,
+      lastName: leads.lastName,
+      email: leads.email,
+    })
+    .from(leads)
+    .where(eq(leads.id, consultation.leadId))
+    .limit(1);
+
+  if (!lead) return;
+
+  const firmTz = await getFirmTimezone(consultation.organizationId);
+  const leadTz = await getLeadTimezone(
+    consultation.leadId,
+    consultation.organizationId,
+  );
+
+  const joinLine =
+    consultation.mode === "video" && consultation.videoLink
+      ? `<p>Join here when it starts: <a href="${consultation.videoLink}">${consultation.videoLink}</a></p>`
+      : "";
+
+  // An instant consultation whose fee was settled AFTER the call has nothing to
+  // announce and nothing to join — it is a receipt, and saying "your
+  // consultation is starting" would be wrong.
+  const alreadyHappened = consultation.isInstant && !opts.startingNow;
+
+  const whenLine =
+    consultation.scheduledAt && !alreadyHappened
+      ? `<p>Your consultation is scheduled for <strong>${formatDualZone(
+          consultation.scheduledAt,
+          leadTz,
+          firmTz,
+        )}</strong>.</p>`
+      : "";
+
+  const subject = alreadyHappened
+    ? "Payment received — thank you"
+    : opts.startingNow
+      ? "Payment received — your consultation is starting"
+      : "Payment received — your consultation is confirmed";
+
+  const body = alreadyHappened
+    ? "<p>Thanks, your payment was received. Nothing further is needed.</p>"
+    : opts.startingNow
+      ? "<p>Thanks, your payment was received. Your consultation is starting now.</p>"
+      : "<p>Thanks, your payment was received and your consultation is confirmed.</p>";
+
+  emailService
+    .sendEmail({
+      to: lead.email,
+      subject,
+      html: `<p>Dear ${lead.firstName} ${lead.lastName},</p>
+        ${body}
+        ${whenLine}
+        ${joinLine}`,
+    })
+    .catch((err) =>
+      log.failure("email.send_failed", err, { leadId: consultation.leadId }),
+    );
+};
+
+export const settleConsultationForInvoice = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<void> => {
+  const [consultation] = await db
+    .select()
+    .from(consultations)
+    .where(
+      and(
+        eq(consultations.organizationId, organizationId),
+        eq(consultations.invoiceId, invoiceId),
+      ),
+    )
+    .limit(1);
+
+  if (!consultation || consultation.feeStatus !== "unpaid") return;
 
   // Instant consultations: pay_now begins the consultation at payment time;
   // invoice_after / pay_in_person fees paid after the call just get marked
@@ -3262,7 +3451,19 @@ const payConsultationFee = async (token: string) => {
       })
       .where(eq(consultations.id, consultation.id))
       .returning();
-    if (begins) await finalizeConsultation(paid, { begin: true });
+    if (begins) await finalizeConsultation(paid!, { begin: true });
+
+    // Re-read: `finalizeConsultation` is what creates the Meet link, so the row
+    // captured before it ran has `videoLink` null and the email would carry no
+    // way to join.
+    const [ready] = await db
+      .select()
+      .from(consultations)
+      .where(eq(consultations.id, consultation.id))
+      .limit(1);
+    await sendConsultationPaymentConfirmation(ready ?? paid!, {
+      startingNow: begins,
+    });
 
     await logLeadEvent({
       organizationId: consultation.organizationId,
@@ -3272,20 +3473,14 @@ const payConsultationFee = async (token: string) => {
         consultationId: consultation.id,
         amount: Number(consultation.feeAmount),
         instant: true,
-        // No provider is wired, so no money actually moved and the invoice is
-        // deliberately untouched. Recorded so the trail does not read as a
-        // settled payment.
-        demo: true,
       },
     });
-
-    return { success: true };
+    return;
   }
 
-  // Dummy payment: flip the fee flags. Urgent consultations are auto-scheduled
-  // ASAP at payment time and finalized immediately (connect ASAP) rather than
-  // sending the lead back to pick a slot. Legacy urgent rows created with an
-  // admin-chosen time keep it (the !scheduledAt guard).
+  // Urgent consultations are scheduled ASAP at payment time and finalized
+  // immediately rather than sending the lead back to pick a slot. Legacy urgent
+  // rows created with an admin-chosen time keep it (the !scheduledAt guard).
   const asapAt =
     consultation.isUrgent && !consultation.scheduledAt ? nextAsapSlot() : null;
   const [paid] = await db
@@ -3303,7 +3498,17 @@ const payConsultationFee = async (token: string) => {
     .returning();
 
   if (consultation.isUrgent) {
-    await finalizeConsultation(paid);
+    await finalizeConsultation(paid!);
+
+    // Same re-read as the instant path, and for the same reason.
+    const [ready] = await db
+      .select()
+      .from(consultations)
+      .where(eq(consultations.id, consultation.id))
+      .limit(1);
+    await sendConsultationPaymentConfirmation(ready ?? paid!, {
+      startingNow: false,
+    });
 
     await logLeadEvent({
       organizationId: consultation.organizationId,
@@ -3315,8 +3520,7 @@ const payConsultationFee = async (token: string) => {
         urgent: true,
       },
     });
-
-    return { success: true };
+    return;
   }
 
   const [lead] = await db
@@ -3331,14 +3535,15 @@ const payConsultationFee = async (token: string) => {
 
   if (lead) {
     const leadName = `${lead.firstName} ${lead.lastName}`;
-    const bookingLink = `${env.FRONTEND_APP_URL}/consultation-booking/${token}`;
+    // The booking token is hash-only, so it cannot be recovered here. The lead
+    // already has the link from the original invitation; this tells them it is
+    // now theirs to use.
     emailService
       .sendEmail({
         to: lead.email,
         subject: "Payment received — pick a time for your consultation",
         html: `<p>Dear ${leadName},</p>
-          <p>Thanks, your payment was received. Please choose a time that works for you:</p>
-          <p><a href="${bookingLink}">${bookingLink}</a></p>`,
+          <p>Thanks, your payment was received. Please return to your booking link to choose a time that works for you.</p>`,
       })
       .catch((err) => log.failure("email.send_failed", err, { leadId: consultation.leadId }));
   }
@@ -3352,8 +3557,6 @@ const payConsultationFee = async (token: string) => {
       amount: Number(consultation.feeAmount),
     },
   });
-
-  return { success: true };
 };
 
 // Gathers the people to notify about a consultation: the lead, the lead
@@ -3629,11 +3832,36 @@ const selectConsultationSlot = async (token: string, startIso: string) => {
 // link, remove the Google Meet event, and notify the lead + attorney +
 // participants. The active-consultation guard in initiateConsultation then lets
 // the lead be re-scheduled. `leadId` is the lead id (route :id).
+export type ConsultationCancellation = {
+  /** Sent back through Confido as part of this cancellation. */
+  refunded: number;
+  /**
+   * Money still held that this cancellation did NOT return — either because the
+   * actor lacks `finance:refund`, or because it arrived outside the processor.
+   * Non-zero means somebody still owes the client.
+   */
+  refundOwed: number;
+  /** True when the money is only waiting on someone with the permission. */
+  awaitingAdmin: boolean;
+  /** Paid by cheque or cash, so it has to go back the same way. */
+  manualOutstanding: number;
+};
+
 const cancelConsultation = async (
   leadId: string,
   organizationId: string,
   data: { reason?: string } = {},
   actorId?: string,
+  /**
+   * Whether the actor may send money back. Resolved in the controller, which is
+   * the only layer holding the request headers Better Auth needs.
+   *
+   * Cancelling is an intake action and refunding is a finance one, so the two
+   * come apart: anyone may cancel, and a cancellation by someone without the
+   * permission leaves the refund owed rather than blocking the cancellation or
+   * quietly moving money on their authority.
+   */
+  canRefund = false,
 ) => {
   const [lead] = await db
     .select({ consultationId: leads.consultationId })
@@ -3710,7 +3938,69 @@ const cancelConsultation = async (
   // Remove the calendar/Meet event (no-op for placeholder/unconfigured).
   await googleMeetService.deleteMeetEvent(consultation.meetExternalId);
 
-  // Dummy fee: no real refund is processed this phase; feeStatus is left as-is.
+  // Money the client has already handed over for a consultation that is no
+  // longer happening.
+  //
+  // Derived from the ledger rather than from `feeStatus`, and deliberately so:
+  // a reversal is a negative row, so this figure clears itself the moment a
+  // refund lands and cannot drift the way a stored "refunded" flag would. It is
+  // also the same expression `consultationFee()` reads, which is what lets the
+  // UI show "refund owed" without a second source of truth.
+  const cancellation: ConsultationCancellation = {
+    refunded: 0,
+    refundOwed: 0,
+    awaitingAdmin: false,
+    manualOutstanding: 0,
+  };
+
+  if (consultation.invoiceId) {
+    const held = await netPaidOnInvoice(organizationId, consultation.invoiceId);
+
+    if (held > 0 && canRefund) {
+      const summary = await refundInvoiceInFull(
+        organizationId,
+        consultation.invoiceId,
+        actorId ?? null,
+        systemAccess(),
+        `Consultation cancelled${data.reason ? `: ${data.reason}` : ""}`,
+      );
+      cancellation.refunded = summary.refunded;
+      cancellation.manualOutstanding = summary.manualOutstanding;
+      // Whatever the refund could not reach — a failed leg, or money that never
+      // went through Confido — is still the client's.
+      cancellation.refundOwed = await netPaidOnInvoice(
+        organizationId,
+        consultation.invoiceId,
+      );
+    } else if (held > 0) {
+      cancellation.refundOwed = held;
+      cancellation.awaitingAdmin = true;
+    } else {
+      // Nothing was ever paid, so the invoice is asking for money against a
+      // consultation that will not happen. Void it — the firm never charged.
+      //
+      // A paid one needs nothing here: refunding it recalculates the totals,
+      // and `deriveStoredStatus` moves it to `refunded` on its own. That is the
+      // point of deriving rather than setting — void would say the firm never
+      // charged, which is a different and untrue thing.
+      await voidInvoiceForCancelledConsultation(
+        organizationId,
+        consultation.invoiceId,
+        actorId ?? null,
+      );
+    }
+  }
+
+  if (cancellation.refundOwed > 0) {
+    log.warn("leads.consultation_refund_owed", {
+      leadId,
+      consultationId: consultation.id,
+      invoiceId: consultation.invoiceId,
+      amount: cancellation.refundOwed,
+      awaitingAdmin: cancellation.awaitingAdmin,
+      manualOutstanding: cancellation.manualOutstanding,
+    });
+  }
 
   const { lead: leadRow, staffEmails } =
     await getConsultationRecipients(updated);
@@ -3754,7 +4044,37 @@ const cancelConsultation = async (
       .catch((err) => log.failure("email.send_failed", err, { leadId }));
   }
 
-  return updated;
+  // The refund outcome rides back with the consultation so the UI can say what
+  // actually happened to the money, rather than the caller having to guess from
+  // a 200.
+  return { ...updated, cancellation };
+};
+
+/**
+ * Void an invoice for a consultation that will not happen.
+ *
+ * Only ever called when nothing was paid. Uses `systemAccess` because the
+ * decision was already authorised — the actor was permitted to cancel, and this
+ * is bookkeeping that follows from it, not a separate act of invoice editing.
+ * Non-fatal: an invoice left standing is untidy, a cancellation that fails
+ * because of it is worse.
+ */
+const voidInvoiceForCancelledConsultation = async (
+  organizationId: string,
+  invoiceId: string,
+  actorStaffId: string | null,
+): Promise<void> => {
+  try {
+    await voidInvoice(
+      organizationId,
+      invoiceId,
+      "Consultation cancelled",
+      actorStaffId,
+      systemAccess(),
+    );
+  } catch (err) {
+    log.failure("leads.consultation_invoice_void_failed", err, { invoiceId });
+  }
 };
 
 // ─── Fee Agreement ─────────────────────────────────────────────────────────────
@@ -5267,7 +5587,8 @@ export class LeadsService {
   cancelConsultation = cancelConsultation;
   getConsultationBooking = getConsultationBooking;
   getLeadTimezone = getLeadTimezone;
-  payConsultationFee = payConsultationFee;
+  startConsultationPayment = startConsultationPayment;
+  updateBookingTimezone = updateBookingTimezone;
   selectConsultationSlot = selectConsultationSlot;
   generateFeeAgreement = generateFeeAgreement;
   discardDraftFeeAgreement = discardDraftFeeAgreement;

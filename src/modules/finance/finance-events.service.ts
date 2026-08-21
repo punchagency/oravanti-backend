@@ -45,6 +45,12 @@ export const logFinanceEvent = async (
   const entityId = data.timeEntryId ?? data.invoiceId ?? null;
 
   const metadata: Record<string, unknown> = { ...(data.metadata ?? {}) };
+  // The detail that says WHAT changed — the due date an invoice moved from, the
+  // reason given, a payment's reference. `summary` is one rendered sentence and
+  // does not carry it, so without this the trail records that something
+  // happened and nothing about it. Kept structured rather than appended to the
+  // sentence, because the feed has a field for it.
+  if (data.description) metadata.description = data.description;
   if (data.amount != null) metadata.amount = money(data.amount);
   if (data.paymentMethod != null) metadata.paymentMethod = data.paymentMethod;
   if (data.caseId != null) metadata.caseId = data.caseId;
@@ -87,6 +93,7 @@ export const getRecentActivity = async (
         summary: auditEvents.summary,
         entityType: auditEvents.entityType,
         entityId: auditEvents.entityId,
+        description: sql<string | null>`(${auditEvents.metadata}->>'description')`,
         amount: sql<string | null>`(${auditEvents.metadata}->>'amount')`,
         paymentMethod: sql<string | null>`(${auditEvents.metadata}->>'paymentMethod')`,
         invoiceNumber: invoices.invoiceNumber,
@@ -94,13 +101,25 @@ export const getRecentActivity = async (
         occurredAt: auditEvents.occurredAt,
       })
       .from(auditEvents)
+      // Both joins compare as TEXT, and neither casts the other way round.
+      //
+      // `audit_events.entity_id` is deliberately `text` with no foreign key —
+      // it identifies rows in any table, so it cannot be a uuid column. Joining
+      // it to `invoices.id` directly is `uuid = text`, which Postgres refuses
+      // outright (42883): there is no implicit cast between them, so this query
+      // failed every time it ran rather than only on odd data.
+      //
+      // Casting the other way — `entity_id::uuid` — would compile and then
+      // throw on any non-uuid identifier the audit table ever holds. Widening
+      // the uuid to text cannot fail, and a uuid renders identically either
+      // side, so nothing stops matching.
       .leftJoin(
         invoices,
-        eq(invoices.id, auditEvents.entityId),
+        sql`${invoices.id}::text = ${auditEvents.entityId}`,
       )
       .leftJoin(
         clients,
-        sql`${clients.id} = (${auditEvents.metadata}->>'clientId')::uuid`,
+        sql`${clients.id}::text = (${auditEvents.metadata}->>'clientId')`,
       )
       .where(
         and(
@@ -119,7 +138,7 @@ export const getRecentActivity = async (
     id: r.id,
     eventType: r.action,
     title: r.summary,
-    description: null,
+    description: r.description,
     amount: numOrNull(r.amount),
     paymentMethod: r.paymentMethod as PaymentMethod | null,
     invoiceId:

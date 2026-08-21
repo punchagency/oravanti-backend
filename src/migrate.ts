@@ -10,6 +10,7 @@ async function main() {
   console.log('Running migrations...');
   await migrate(db, { migrationsFolder: './drizzle/migrations' });
   console.log('Migrations applied successfully!');
+
   await client.end();
 }
 

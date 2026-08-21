@@ -173,6 +173,10 @@ export const setSchedule = async (
     log.warn("instalment.created", { reason: "voided invoice", invoiceId });
     throw new BadRequestError("A voided invoice cannot be scheduled");
   }
+  if (existing.status === "refunded") {
+    log.warn("instalment.created", { reason: "refunded invoice", invoiceId });
+    throw new BadRequestError("A refunded invoice cannot be scheduled");
+  }
   if (existing.status === "paid") {
     log.warn("instalment.created", { reason: "paid invoice", invoiceId });
     throw new BadRequestError(
@@ -247,6 +251,10 @@ export const removeSchedule = async (
     .limit(1);
 
   if (!existing) { log.warn("instalment.created", { reason: "not found" }); throw new NotFoundError("Invoice not found"); }
+  if (existing.status === "refunded") {
+    log.warn("instalment.created", { reason: "refunded invoice", invoiceId });
+    throw new BadRequestError("A refunded invoice cannot be edited");
+  }
   if (existing.status === "void") {
     log.warn("instalment.created", { reason: "voided invoice", invoiceId });
     throw new BadRequestError("A voided invoice cannot be edited");

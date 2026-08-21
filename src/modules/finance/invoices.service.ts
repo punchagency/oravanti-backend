@@ -200,11 +200,18 @@ export const list = async (
   const showDrafts =
     options.status === "draft" || (isAllStatus && options.includeDrafts === true);
 
+  // A bucket that names a status the general list hides has to bypass the
+  // listable predicate entirely, or the two contradict and the filter returns
+  // nothing at all. Drafts already worked this way; `void` did not, which is
+  // why a voided invoice could not be found from anywhere in the UI.
+  const namesHiddenStatus =
+    options.status === "draft" || options.status === "void";
+
   const where = and(
     // RLS enforces this too; the explicit predicate is defence in depth and
     // universal in this codebase.
     eq(invoices.organizationId, organizationId),
-    options.status === "draft" ? undefined : listableInvoices(showDrafts),
+    namesHiddenStatus ? undefined : listableInvoices(showDrafts),
     statusFilter(options.status, today),
     accountPredicate,
     options.clientId ? eq(invoices.clientId, options.clientId) : undefined,
@@ -488,9 +495,20 @@ export const getById = async (
       })),
     payments: paymentRows.map((p) => ({
       id: p.id,
+      // Negative on a reversal. The sign IS the information — a UI that showed
+      // the magnitude alone would render a refund identically to the payment it
+      // undoes.
       amount: num(p.amount),
       amountOperating: num(p.amountOperating),
       amountTrust: maskTrust(access, num(p.amountTrust)),
+      kind: p.kind,
+      reversesPaymentId: p.reversesPaymentId,
+      /** Null while the money is still in flight. */
+      settledAt: p.settledAt,
+      /** Confido's word for it, so HELD reads as HELD rather than "pending". */
+      providerStatus: p.providerStatus,
+      /** Only a processor payment can be refunded through us. */
+      refundable: p.kind === "payment" && p.provider != null,
       paymentDate: p.paymentDate,
       method: p.method,
       reference: p.reference,

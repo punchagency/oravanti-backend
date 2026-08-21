@@ -35,6 +35,7 @@ export * from "./invoice-instalments";
 export * from "./invoice-payments";
 export * from "./payment-webhook-events";
 export * from "./confido-firms";
+export * from "./confido-statements";
 export * from "./invoices";
 export * from "./lead-document-links";
 export * from "./intake-pipeline-templates";

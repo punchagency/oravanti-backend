@@ -275,6 +275,18 @@ export const LogEvent = {
   LEAD_FEE_AGREEMENT_ARCHIVE_FAILED: "lead.fee_agreement_archive_failed",
   LEAD_PIPELINE_TEMPLATE_MISSING: "lead.pipeline_template_missing",
   LEADS_CONSULTATION_INVOICE_FAILED: "leads.consultation_invoice_failed",
+  /**
+   * A cancelled consultation left money with the firm that it did not return.
+   *
+   * Either the person cancelling lacks `finance:refund`, or part of the fee
+   * arrived outside the processor and has to go back by hand. Logged at warn
+   * because somebody still owes a client, and nothing else raises its voice
+   * about it — the derived "refund owed" state is visible in the UI, but only
+   * to whoever thinks to look.
+   */
+  LEADS_CONSULTATION_REFUND_OWED: "leads.consultation_refund_owed",
+  LEADS_CONSULTATION_INVOICE_VOID_FAILED:
+    "leads.consultation_invoice_void_failed",
   LEADS_FEE_AGREEMENT_INVOICE_FAILED: "leads.fee_agreement_invoice_failed",
 
   // ── Lead workflow ─────────────────────────────────────────────────────────
@@ -393,6 +405,26 @@ export const LogEvent = {
    * Every one of them means money moved that this system did not record.
    */
   PAYMENT_WEBHOOK_TRANSACTION_SKIPPED: "payment_webhook.transaction_skipped",
+  /**
+   * Webhook events accepted but never handled.
+   *
+   * The failure this exists for is a worker that is running and consuming
+   * nothing: the endpoint answers 200, the event row is claimed, and the money
+   * is never recorded. Nothing else in the system notices, because every
+   * surface reports success.
+   */
+  /**
+   * The payment recorded, but the consultation it pays for did not advance.
+   *
+   * Deliberately not fatal to the webhook: a consultation that fails to move on
+   * is recoverable by hand, a payment that fails to record is not. Logged so
+   * the recoverable half is visible rather than silent.
+   */
+  PAYMENT_WEBHOOK_CONSULTATION_SETTLEMENT_FAILED:
+    "payment_webhook.consultation_settlement_failed",
+  PAYMENT_WEBHOOK_STALE_EVENTS_FOUND: "payment_webhook.stale_events_found",
+  PAYMENT_WEBHOOK_STALENESS_SWEEP_FAILED:
+    "payment_webhook.staleness_sweep_failed",
   PAYMENT_LINK_CREATED: "payment_link.created",
   PAYMENT_LINK_SENT: "payment_link.sent",
   PAYMENT_LINK_EXPIRED: "payment_link.expired",
@@ -416,6 +448,8 @@ export const LogEvent = {
   PAYMENT_SETTINGS_FEE_ACCOUNT_REPOINTED: "payment_settings.fee_account_repointed",
   PAYMENT_SETTINGS_FEE_ACCOUNT_UPDATE_FAILED:
     "payment_settings.fee_account_update_failed",
+  /** The firm changed how settled a payment must be before it opens a case. */
+  PAYMENT_SETTINGS_CLEARING_POLICY_SET: "payment_settings.clearing_policy_set",
   PAYMENT_SETTINGS_BANK_ACCOUNTS_UNAVAILABLE:
     "payment_settings.bank_accounts_unavailable",
   CONSULTATION_BILLING_SENT: "consultation_billing.sent",

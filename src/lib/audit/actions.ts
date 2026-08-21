@@ -240,6 +240,10 @@ export const AUDIT_ACTIONS = {
   "finance.invoice_schedule_revised": { category: "business", actionType: "update", entityType: "invoice", label: "Payment schedule revised" },
   "finance.invoice_schedule_removed": { category: "business", actionType: "delete", entityType: "invoice", label: "Payment schedule removed" },
   "finance.payment_recorded": { category: "business", actionType: "create", entityType: "invoice_payment", label: "Payment recorded" },
+  // One action for all four ways money goes back out — refund, ACH return, void
+  // and chargeback. Which one it was is in the summary and the metadata; four
+  // near-identical actions would buy nothing a reader of the trail can use.
+  "finance.payment_reversed": { category: "business", actionType: "create", entityType: "invoice_payment", label: "Payment reversed" },
   "finance.payment_followup_sent": { category: "business", actionType: "create", entityType: "invoice", label: "Payment follow-up sent" },
   "finance.time_entry_logged": { category: "business", actionType: "create", entityType: "time_entry", label: "Time logged" },
   "finance.time_entry_approved": { category: "business", actionType: "update", entityType: "time_entry", label: "Time approved" },

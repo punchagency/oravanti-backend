@@ -2,13 +2,37 @@
 import { Request, Response } from "express";
 import { db } from "../../db/client";
 import { staff } from "../../db/schema/staff";
+import { hasPermission } from "../../middleware/permission.middleware";
 import { getRequestContext } from "../../middleware/request-context";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { sendSuccess } from "../../utils/send-success";
 import { getTaskReviewEvents } from "../shared/task-review-events.service";
 import { logLeadView } from "./lead-events.service";
 import { LeadWorkflowService } from "./lead-workflow.service";
+import type { ConsultationCancellation } from "./leads.service";
 import { LeadsService } from "./leads.service";
+
+/**
+ * Say what happened to the money, not just that the cancellation worked.
+ *
+ * A refund that did not happen is the thing the user most needs to know, and a
+ * bare "Consultation cancelled successfully" actively hides it.
+ */
+const cancellationMessage = (c: ConsultationCancellation): string => {
+  if (c.refundOwed > 0 && c.awaitingAdmin) {
+    return `Consultation cancelled. ${c.refundOwed.toFixed(2)} is still owed to the client — an administrator needs to issue the refund.`;
+  }
+  if (c.manualOutstanding > 0) {
+    return `Consultation cancelled and ${c.refunded.toFixed(2)} refunded. ${c.manualOutstanding.toFixed(2)} was paid outside the processor and has to be returned to the client directly.`;
+  }
+  if (c.refundOwed > 0) {
+    return `Consultation cancelled, but ${c.refundOwed.toFixed(2)} could not be refunded automatically. Check the invoice.`;
+  }
+  if (c.refunded > 0) {
+    return `Consultation cancelled and ${c.refunded.toFixed(2)} refunded to the client.`;
+  }
+  return "Consultation cancelled successfully";
+};
 
 export class LeadsController {
   private svc: LeadsService;
@@ -450,13 +474,19 @@ export class LeadsController {
   cancelConsultation = async (req: Request, res: Response) => {
     const { staffId: _staffId, organizationId } = getRequestContext();
     const staffId = _staffId ?? undefined;
+    // Anyone in intake may cancel; only an owner or admin may send the money
+    // back. Resolved here because this is the only layer holding the request
+    // headers Better Auth needs, and asked rather than enforced so the
+    // cancellation still goes through either way.
+    const canRefund = await hasPermission(req, { finance: ["refund"] });
     const result = await this.svc.cancelConsultation(
       req.params.id as string,
       organizationId!,
       { reason: req.body?.reason },
       staffId,
+      canRefund,
     );
-    sendSuccess(res, result, "Consultation cancelled successfully");
+    sendSuccess(res, result, cancellationMessage(result.cancellation));
   };
 
   // Public booking flow (token-gated, no auth)
@@ -469,12 +499,12 @@ export class LeadsController {
     sendSuccess(res, result, "Booking data retrieved successfully");
   };
 
-  payConsultationFee = async (req: Request, res: Response) => {
+  startConsultationPayment = async (req: Request, res: Response) => {
 
-    const result = await this.svc.payConsultationFee(
+    const result = await this.svc.startConsultationPayment(
       req.params.token as string,
     );
-    sendSuccess(res, result, "Payment processed successfully");
+    sendSuccess(res, result, "Payment session started");
   };
 
   selectConsultationSlot = async (req: Request, res: Response) => {
@@ -487,7 +517,10 @@ export class LeadsController {
   };
 
   updateBookingTimezone = async (req: Request, res: Response) => {
-
+    await this.svc.updateBookingTimezone(
+      req.params.token as string,
+      req.body.timezone as string,
+    );
     sendSuccess(res, null, "Timezone updated successfully");
   };
 

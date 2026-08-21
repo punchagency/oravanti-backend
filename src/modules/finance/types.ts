@@ -21,7 +21,9 @@ export type FinanceRestrictions = {
 export type InvoiceStatusFilter =
   | "all"
   | "draft"
+  | "void"
   | "paid"
+  | "refunded"
   | "unpaid"
   | "partial"
   | "overdue";

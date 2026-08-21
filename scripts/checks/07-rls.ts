@@ -60,6 +60,8 @@ const TENANT_TABLES = [
   "billing_rates",
   "time_entries",
   "confido_firms",
+  "confido_statements",
+  "confido_statement_debits",
 ] as const;
 
 const main = async () => {

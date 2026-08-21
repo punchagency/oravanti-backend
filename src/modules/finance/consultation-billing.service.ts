@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import { netPaidOnInvoice } from "./refunds.service";
 import { db } from "../../db/client";
 import { consultations } from "../../db/schema/consultations";
 import { invoices } from "../../db/schema/invoices";
@@ -116,9 +117,19 @@ export const raiseConsultationInvoice = async (
 
 export type ConsultationFee = {
   amount: number | null;
-  status: "none" | "unpaid" | "paid" | "waived";
+  status: "none" | "unpaid" | "paid" | "waived" | "refunded";
   invoiceId: string | null;
   invoiceNumber: string | null;
+  /**
+   * What the firm is still holding of this fee.
+   *
+   * Net of reversals by construction — a refund is a negative ledger row — so
+   * it answers two questions at once: how much a cancellation would send back,
+   * and, once the consultation IS cancelled, how much is still owed. The
+   * caller decides which of those it is; nothing is stored either way, so it
+   * cannot fall out of step with the ledger.
+   */
+  netPaid: number;
 };
 
 /**
@@ -147,6 +158,9 @@ export const consultationFee = async (
       status: row.feeStatus,
       invoiceId: null,
       invoiceNumber: null,
+      // No invoice means no ledger rows. The legacy `feeStatus` flag was never
+      // backed by money moving, so claiming an amount is held would be a guess.
+      netPaid: 0,
     };
   }
 
@@ -174,18 +188,26 @@ export const consultationFee = async (
       status: row.feeStatus,
       invoiceId: row.invoiceId,
       invoiceNumber: null,
+      netPaid: 0,
     };
   }
 
   return {
     amount: num(invoice.totalAmount),
+    // Order matters. A refunded invoice has its full balance outstanding again
+    // — the reversal nets `amount_paid` to zero — so testing the balance first
+    // would report it as "unpaid" and invite someone to chase it. And it is not
+    // "waived": the firm charged and was paid, then gave the money back.
     status:
       invoice.status === "void"
         ? "waived"
-        : num(invoice.balanceDue) <= 0
-          ? "paid"
-          : "unpaid",
+        : invoice.status === "refunded"
+          ? "refunded"
+          : num(invoice.balanceDue) <= 0
+            ? "paid"
+            : "unpaid",
     invoiceId: row.invoiceId,
     invoiceNumber: invoice.invoiceNumber,
+    netPaid: await netPaidOnInvoice(organizationId, row.invoiceId),
   };
 };

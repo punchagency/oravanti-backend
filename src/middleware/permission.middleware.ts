@@ -171,3 +171,36 @@ export function requirePermission<Resource extends Resources>(
     throw new AuthorizationError("Access denied");
   };
 }
+
+/**
+ * Does the caller hold these permissions? Answers rather than refuses.
+ *
+ * `requirePermission` is a gate: it throws and the request ends. Some actions
+ * instead need to *branch* on a permission the caller may reasonably not have —
+ * cancelling a paid consultation is one, where anybody in intake may cancel but
+ * only an owner or admin may send the money back, and the cancellation must
+ * still go through either way.
+ *
+ * Returns false rather than throwing on an auth failure, so a caller written to
+ * degrade cannot be turned into a 500 by an expected "no".
+ */
+export async function hasPermission(
+  req: Request,
+  permissions: PermissionsInput,
+): Promise<boolean> {
+  const { organizationId } = getRequestContext();
+  if (!organizationId) return false;
+
+  try {
+    const result = await auth.api.hasPermission({
+      body: {
+        organizationId,
+        permissions: permissions as Record<string, string[]>,
+      },
+      headers: fromNodeHeaders(req.headers as Record<string, string>),
+    });
+    return Boolean(result.success);
+  } catch {
+    return false;
+  }
+}

@@ -6,9 +6,14 @@ import { PaymentDecryptionError } from "../../../utils/payment-crypto";
 import { sendSuccess } from "../../../utils/send-success";
 import {
   getPaymentAccount,
+  getClearingPolicy,
+  getSurchargeSettings,
   refreshStatus,
+  setClearingPolicy,
+  setSurchargeEnabled,
   startOnboardingSession,
 } from "./payment-settings.service";
+import { listStatementsForOrg } from "../../finance/confido/statements.service";
 
 export class PaymentSettingsController {
   private orgId(): string {
@@ -63,6 +68,34 @@ export class PaymentSettingsController {
     const { staffId } = getRequestContext();
     const session = await startOnboardingSession(this.orgId(), staffId ?? null);
     sendSuccess(res, session, "Onboarding session started");
+  });
+
+  getSurcharge = asyncWrap(async (_req: Request, res: Response) => {
+    const settings = await getSurchargeSettings(this.orgId());
+    sendSuccess(res, settings, "Surcharge settings retrieved");
+  });
+
+  setSurcharge = asyncWrap(async (req: Request, res: Response) => {
+    const settings = await setSurchargeEnabled(
+      this.orgId(),
+      req.body.enabled === true,
+    );
+    sendSuccess(res, settings, "Surcharge settings saved");
+  });
+
+  getClearingPolicy = asyncWrap(async (_req: Request, res: Response) => {
+    const settings = await getClearingPolicy(this.orgId());
+    sendSuccess(res, settings, "Clearing policy retrieved successfully");
+  });
+
+  setClearingPolicy = asyncWrap(async (req: Request, res: Response) => {
+    const settings = await setClearingPolicy(this.orgId(), req.body.policy);
+    sendSuccess(res, settings, "Clearing policy updated successfully");
+  });
+
+  listStatements = asyncWrap(async (_req: Request, res: Response) => {
+    const statements = await listStatementsForOrg(this.orgId());
+    sendSuccess(res, statements, "Statements retrieved");
   });
 
   refresh = asyncWrap(async (_req: Request, res: Response) => {

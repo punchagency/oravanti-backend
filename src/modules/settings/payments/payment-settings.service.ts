@@ -30,6 +30,11 @@ import {
   type PaymentAccountState,
 } from "../../finance/confido/firm-status";
 import { createModuleLogger } from "../../../lib/logging/log";
+import { LogEvent } from "../../../lib/logging/events";
+import {
+  clearingPolicyFor,
+  type ClearingPolicy,
+} from "../../finance/clearing-policy";
 
 const log = createModuleLogger("payment-settings.service");
 
@@ -627,6 +632,118 @@ export const markWebhookSeen = async (
     .update(confidoFirms)
     .set({ lastWebhookEventAt: new Date() })
     .where(eq(confidoFirms.organizationId, organizationId));
+};
+
+// ─── Surcharging ─────────────────────────────────────────────────────────────
+
+export interface SurchargeSettings {
+  /** Confido's to grant. False means the firm cannot turn it on at all. */
+  allowed: boolean;
+  enabled: boolean;
+  /** Fixed by Confido and not firm-editable; shown, never offered for edit. */
+  rate: number | null;
+}
+
+/**
+ * Read surcharging live from Confido rather than from a copy of our own.
+ *
+ * Two gates, both theirs: Confido approves the firm, then the firm chooses. A
+ * cached copy could disagree with either — a firm approved yesterday would look
+ * blocked, or one revoked would look permitted — so this asks every time.
+ */
+export const getSurchargeSettings = async (
+  organizationId: string,
+): Promise<SurchargeSettings> => {
+  const row = await readAccount(organizationId);
+  if (!row?.confidoFirmId) return { allowed: false, enabled: false, rate: null };
+
+  const { credential } = await confidoCredentialFor(organizationId);
+  const settings = await getConfidoClient().getPaymentSettings(credential);
+
+  return {
+    allowed: Boolean(settings.surchargeAllowed),
+    enabled: Boolean(settings.surchargeEnabled),
+    rate: settings.surchargeRate ?? null,
+  };
+};
+
+/**
+ * Turn surcharging on or off.
+ *
+ * Re-reads `surchargeAllowed` first and refuses if Confido has not approved the
+ * firm. The UI hides the toggle in that case, but hiding a control is not a
+ * gate — this is, so the API cannot be talked into a state the UI would not
+ * offer.
+ */
+export const setSurchargeEnabled = async (
+  organizationId: string,
+  enabled: boolean,
+): Promise<SurchargeSettings> => {
+  const row = await readAccount(organizationId);
+  if (!row?.confidoFirmId) {
+    throw new BadRequestError("This firm has no payment account yet");
+  }
+
+  const { credential, firmId } = await confidoCredentialFor(organizationId);
+  const client = getConfidoClient();
+  const current = await client.getPaymentSettings(credential);
+
+  if (!current.surchargeAllowed) {
+    throw new ConflictError(
+      "Confido has not enabled surcharging for this firm. Contact support@confidolegal.com to request it.",
+    );
+  }
+
+  if (Boolean(current.surchargeEnabled) !== enabled) {
+    await client.updateSurcharge(credential, firmId, enabled);
+  }
+
+  return getSurchargeSettings(organizationId);
+};
+
+// ─── Case-opening clearing policy ────────────────────────────────────────────
+
+/**
+ * How settled a payment must be before it opens a case.
+ *
+ * Ours, not Confido's — unlike surcharging, which is read live from them
+ * because they own both gates. This is a firm's answer to a trade-off in OUR
+ * pipeline, so it is stored, and `confido_firms` is where it lives because it
+ * only has meaning once a processor is connected: without one every payment is
+ * hand-recorded and settles at insert under any policy.
+ */
+export const getClearingPolicy = async (
+  organizationId: string,
+): Promise<{ policy: ClearingPolicy; configurable: boolean }> => {
+  const row = await readAccount(organizationId);
+  return {
+    policy: await clearingPolicyFor(organizationId),
+    // Nothing to configure until the firm can take a processor payment; before
+    // that the setting would be a control with no observable effect.
+    configurable: Boolean(row?.confidoFirmId),
+  };
+};
+
+export const setClearingPolicy = async (
+  organizationId: string,
+  policy: ClearingPolicy,
+): Promise<{ policy: ClearingPolicy; configurable: boolean }> => {
+  const row = await readAccount(organizationId);
+  if (!row?.confidoFirmId) {
+    throw new BadRequestError("This firm has no payment account yet");
+  }
+
+  await db
+    .update(confidoFirms)
+    .set({ paymentClearingPolicy: policy, updatedAt: new Date() })
+    .where(eq(confidoFirms.organizationId, organizationId));
+
+  log.action(LogEvent.PAYMENT_SETTINGS_CLEARING_POLICY_SET, {
+    organizationId,
+    policy,
+  });
+
+  return getClearingPolicy(organizationId);
 };
 
 // ─── Connect ─────────────────────────────────────────────────────────────────

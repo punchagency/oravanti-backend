@@ -30,15 +30,29 @@ import { money, num } from "./money";
  * sticking at `partial` forever. `draft` and `void` are lifecycle facts that
  * payments must never overwrite — a voided invoice stays voided even if a
  * stray payment lands against it.
+ *
+ * `hasReversals` is what distinguishes "never paid" from "paid and refunded".
+ * Both leave `amountPaid` at zero, because a reversal is a negative row that
+ * nets the payment out — so without it a fully refunded invoice reads as `sent`
+ * and reappears as money the client owes, then as OVERDUE once its due date
+ * passes. That is a firm chasing someone for money it already gave back.
+ *
+ * `refunded` is deliberately NOT sticky the way `void` and `draft` are. Those
+ * two are decisions someone made; this is a fold over the ledger, so if money
+ * later arrives against the invoice it correctly becomes `partial` again.
  */
 export const deriveStoredStatus = (
   current: InvoiceStatus,
   totalAmount: number,
   amountPaid: number,
+  hasReversals = false,
 ): InvoiceStatus => {
   if (current === "void" || current === "draft") return current;
   if (totalAmount > 0 && amountPaid >= totalAmount) return "paid";
+  // A part-refund still leaves money with the firm, so it is `partial` — the
+  // client is not owed the difference and the invoice is not settled.
   if (amountPaid > 0) return "partial";
+  if (hasReversals) return "refunded";
   return "sent";
 };
 
@@ -73,6 +87,9 @@ export const recalculateInvoiceTotals = async (
   const [paymentFold] = await db
     .select({
       paid: sql<string>`coalesce(sum(${invoicePayments.amount}), 0)`,
+      // Counted, not summed: the question is whether money went back at all,
+      // and a part-refund answers it just as much as a full one.
+      reversals: sql<number>`count(*) FILTER (WHERE ${invoicePayments.kind} <> 'payment')::int`,
       lastDate: sql<
         string | null
       >`max(${invoicePayments.paymentDate})`,
@@ -102,6 +119,7 @@ export const recalculateInvoiceTotals = async (
     (current?.status ?? "draft") as InvoiceStatus,
     totalAmount,
     amountPaid,
+    (paymentFold?.reversals ?? 0) > 0,
   );
 
   // The earliest instalment the payments have not reached. Recomputed here

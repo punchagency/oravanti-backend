@@ -18,9 +18,11 @@
  * org it creates.
  */
 import { randomUUID } from "crypto";
-import { and, eq, inArray, isNull, like } from "drizzle-orm";
+import { and, eq, inArray, isNull, like, sql } from "drizzle-orm";
 import { closeDb, systemDb } from "../../src/db/client";
 import { organization, team, user } from "../../src/db/schema/auth-schema";
+import * as financeEvents from "../../src/modules/finance/finance-events.service";
+import { confidoFirms } from "../../src/db/schema/confido-firms";
 import { billingRates } from "../../src/db/schema/billing-rates";
 import { cases } from "../../src/db/schema/cases";
 import { clients } from "../../src/db/schema/clients";
@@ -51,6 +53,9 @@ import { formatInvoiceNumber } from "../../src/modules/finance/invoice-number";
 import { num, trustFirstSplit, toMoney } from "../../src/modules/finance/money";
 import { firmToday } from "../../src/modules/finance/status";
 import * as paymentsService from "../../src/modules/finance/payments.service";
+import * as status from "../../src/modules/finance/status";
+import { effectiveStatusSql } from "../../src/modules/finance/status";
+import * as refundsService from "../../src/modules/finance/refunds.service";
 import * as deliveriesService from "../../src/modules/finance/deliveries.service";
 import { invoiceDeliveries } from "../../src/db/schema/invoice-deliveries";
 import * as feeAgreementBilling from "../../src/modules/finance/fee-agreement-billing.service";
@@ -61,7 +66,14 @@ import * as reportsService from "../../src/modules/finance/reports.service";
 import * as timeBilling from "../../src/modules/finance/time-billing.service";
 import { deriveStoredStatus } from "../../src/modules/finance/totals";
 import type { AccountAccess } from "../../src/modules/finance/types";
-import { check, checkEqual, report, section, withOrgContext } from "./_bootstrap";
+import {
+  check,
+  checkEqual,
+  report,
+  section,
+  silenceEmail,
+  withOrgContext,
+} from "./_bootstrap";
 
 const FULL: AccountAccess = { operating: "full_access", trust: "full_access" };
 const NO_TRUST: AccountAccess = { operating: "full_access", trust: "no_access" };
@@ -73,6 +85,12 @@ const daysFromNow = (n: number) =>
   iso(new Date(Date.now() + n * 86_400_000));
 
 const main = async () => {
+  // Checks run against the real service layer, so an invoice send would reach a
+  // live SMTP transport. Intercepted here rather than mocked per call site: the
+  // point of this file is the ledger, and posting mail to whoever owns the
+  // fixture addresses is not a side effect it should have.
+  silenceEmail();
+
   const orgId = `fin-check-${randomUUID()}`;
   const userId = `user-${randomUUID()}`;
   let leadId = "";
@@ -919,11 +937,17 @@ const main = async () => {
 
       // The column now holds the new date, so the trail is the only place the
       // old one survives. An audit that cannot say what changed is not one.
-      // finance_events had title + description; audit_events renders one
-      // sentence at write time and keeps the structured detail in metadata,
-      // so both halves of the old assertion read off `summary`.
+      //
+      // finance_events had title + description as two columns; audit_events
+      // renders the sentence into `summary` and keeps the structured detail in
+      // `metadata`. Both halves are still asserted, they just live in different
+      // places now — and they read from metadata rather than summary because
+      // that is where `description` actually goes.
       const [extendEvent] = await systemDb
-        .select({ summary: auditEvents.summary })
+        .select({
+          summary: auditEvents.summary,
+          description: sql<string | null>`(${auditEvents.metadata}->>'description')`,
+        })
         .from(auditEvents)
         .where(
           and(
@@ -934,12 +958,13 @@ const main = async () => {
       check("the extension is recorded", extendEvent != null);
       check(
         "with the date it moved from",
-        extendEvent?.summary?.includes(beforeExtend!.dueDate) ?? false,
-        extendEvent?.summary,
+        extendEvent?.description?.includes(beforeExtend!.dueDate) ?? false,
+        extendEvent?.description ?? "(no description recorded)",
       );
       check(
         "and the reason given",
-        extendEvent?.summary?.includes("another fortnight") ?? false,
+        extendEvent?.description?.includes("another fortnight") ?? false,
+        extendEvent?.description ?? "(no description recorded)",
       );
 
       // Forward only. This is the whole reason it is not just a PATCH.
@@ -1212,6 +1237,34 @@ const main = async () => {
         "a voided invoice leaves the revenue figures",
         statsAfterVoid.totalInvoiced,
         statsBeforeVoid.totalInvoiced,
+      );
+
+      // Leaving the revenue figures is right. Leaving the UI entirely was not:
+      // a voided invoice was reachable from no filter at all, so voiding one
+      // deleted it as far as anyone using the app could tell. The Void bucket
+      // is the only way back to it, exactly as the Drafts bucket is for drafts.
+      const voidList = await invoicesService.list(orgId, FULL, {
+        status: "void",
+      });
+      check(
+        "but is still findable under the Void filter",
+        voidList.data.some((i) => i.id === toVoid.id),
+        "voiding an invoice must not remove it from the application",
+      );
+      check(
+        "which shows only voided invoices",
+        voidList.data.every((i) => i.status === "void"),
+        voidList.data.map((i) => i.status),
+      );
+
+      // And stays out of the general list, which is the behaviour that was
+      // already correct: "all" means the invoices still in play.
+      const allAfterVoid = await invoicesService.list(orgId, FULL, {
+        status: "all",
+      });
+      check(
+        "and stays out of All, which is for live invoices",
+        !allAfterVoid.data.some((i) => i.id === toVoid.id),
       );
       checkEqual(
         "and the paid one it could not void is still counted",
@@ -2271,16 +2324,21 @@ const main = async () => {
       }
       check("an unknown token is refused", unknownTokenRejected);
 
-      // Paying a settled invoice must not be possible — `invoice` was paid in
-      // full earlier, then voided, so it is refused twice over.
+      // A settled invoice still RESOLVES — the page polls this while a card is
+      // processing, and throwing the moment the balance clears would flip it
+      // into an error at the instant of success. Taking money against one is
+      // what must be refused.
+      //
+      // `invoice` here was paid in full earlier and then voided, so it is
+      // refused on both counts; the void check fires first.
       const paidToken = await paymentLinks.mintPaymentLink(orgId, invoice.id);
-      let settledRejected = false;
+      let settledCheckoutRejected = false;
       try {
-        await paymentLinks.invoiceByPaymentToken(paidToken);
+        await paymentLinks.startCheckout(paidToken);
       } catch {
-        settledRejected = true;
+        settledCheckoutRejected = true;
       }
-      check("a settled invoice cannot be paid again", settledRejected);
+      check("a settled invoice cannot be paid again", settledCheckoutRejected);
 
       // ── Ledger idempotency ────────────────────────────────────────────────
       section("ledger idempotency");
@@ -2660,6 +2718,439 @@ const main = async () => {
       );
 
       // ── Activity trail ────────────────────────────────────────────────────
+      section("reversals");
+
+      // Raised here, after every absolute money assertion above, for the same
+      // reason the preset section is: this invoice's payments must not move
+      // the running totals those depend on.
+      const refundable = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(-3),
+        dueDate: daysFromNow(30),
+        status: "draft",
+        lineItems: [
+          { description: "USCIS filing fee", quantity: 1, rate: 1000, account: "trust_iolta" },
+          { description: "Attorney time", quantity: 1, rate: 500, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, refundable.id));
+
+      // Paid in full as a provider would report it: one single-sided row per
+      // credited account, each with its own transaction id.
+      await paymentsService.recordPayment(orgId, refundable.id, staffBId, FULL, {
+        amount: 1500,
+        paymentDate: daysFromNow(-1),
+        method: "credit_card",
+        provider: "confido",
+        legs: [
+          { account: "trust_iolta", amount: 1000, providerReference: "txn_rev_trust" },
+          { account: "operating", amount: 500, providerReference: "txn_rev_op" },
+        ],
+      });
+
+      const paidRow = async (id: string) => {
+        const [row] = await systemDb
+          .select({
+            amountPaid: invoices.amountPaid,
+            balanceDue: invoices.balanceDue,
+            status: invoices.status,
+          })
+          .from(invoices)
+          .where(eq(invoices.id, id));
+        return row!;
+      };
+
+      const afterPaid = await paidRow(refundable.id);
+      checkEqual("both legs land", Number(afterPaid.amountPaid), 1500);
+      checkEqual("and settle the invoice", afterPaid.status, "paid");
+
+      const trustLeg = await systemDb
+        .select({ id: invoicePayments.id })
+        .from(invoicePayments)
+        .where(eq(invoicePayments.providerReference, "txn_rev_trust"));
+
+      // A partial refund of the trust leg. THE invariant of the whole design:
+      // a reversal must SUBTRACT, not add. Under a positive-rows-plus-kind
+      // ledger a forgotten filter would read 1500 + 400 here.
+      await paymentsService.recordReversal(orgId, refundable.id, staffBId, FULL, {
+        kind: "refund",
+        reversesPaymentId: trustLeg[0]!.id,
+        amount: 400,
+        account: "trust_iolta",
+        paymentDate: daysFromNow(0),
+        method: "credit_card",
+        provider: "confido",
+        providerReference: "txn_rev_refund_1",
+      });
+
+      const afterRefund = await paidRow(refundable.id);
+      checkEqual("a refund reduces what was paid", Number(afterRefund.amountPaid), 1100);
+      checkEqual("the balance reopens", Number(afterRefund.balanceDue), 400);
+      // A PART refund leaves money with the firm, so this is still `partial` —
+      // the client is not owed the difference and the invoice is not settled.
+      checkEqual("a part refund is still partial", afterRefund.status, "partial");
+
+      // The trust figure Reports shows must net too — it sums amount_trust, and
+      // client money that went back is not money the firm still holds.
+      const [trustFold] = await systemDb
+        .select({ trust: sql<string>`coalesce(sum(${invoicePayments.amountTrust}), 0)` })
+        .from(invoicePayments)
+        .where(eq(invoicePayments.invoiceId, refundable.id));
+      checkEqual("the trust side nets the refund", Number(trustFold!.trust), 600);
+
+      // Giving back more than came in. The unique index catches a replay of the
+      // same reversal; this catches two distinct events describing one refund.
+      let overReversed = false;
+      try {
+        await paymentsService.recordReversal(orgId, refundable.id, staffBId, FULL, {
+          kind: "refund",
+          reversesPaymentId: trustLeg[0]!.id,
+          amount: 900,
+          account: "trust_iolta",
+          paymentDate: daysFromNow(0),
+          method: "credit_card",
+          provider: "confido",
+          providerReference: "txn_rev_refund_2",
+        });
+      } catch {
+        overReversed = true;
+      }
+      check("refunding past what remains is refused", overReversed);
+
+      // Sign follows kind, enforced by the database rather than by the service
+      // that happens to call it.
+      let positiveReversalRejected = false;
+      try {
+        await systemDb.insert(invoicePayments).values({
+          organizationId: orgId,
+          invoiceId: refundable.id,
+          kind: "refund",
+          reversesPaymentId: trustLeg[0]!.id,
+          amount: "50.00",
+          amountOperating: "50.00",
+          amountTrust: "0.00",
+          paymentDate: daysFromNow(0),
+          method: "other",
+        });
+      } catch {
+        positiveReversalRejected = true;
+      }
+      check("a positive reversal row is rejected by the constraint", positiveReversalRejected);
+
+      let unlinkedReversalRejected = false;
+      try {
+        await systemDb.insert(invoicePayments).values({
+          organizationId: orgId,
+          invoiceId: refundable.id,
+          kind: "refund",
+          amount: "-50.00",
+          amountOperating: "-50.00",
+          amountTrust: "0.00",
+          paymentDate: daysFromNow(0),
+          method: "other",
+        });
+      } catch {
+        unlinkedReversalRejected = true;
+      }
+      check("a reversal pointing at nothing is rejected too", unlinkedReversalRejected);
+
+      section("refunding a whole invoice");
+
+      // What cancelling a paid consultation does. The invoice is the unit here,
+      // not one payment: the caller is undoing a transaction rather than
+      // choosing a leg to reverse.
+      const cancelled = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(-2),
+        dueDate: daysFromNow(28),
+        status: "draft",
+        lineItems: [
+          { description: "Consultation fee", quantity: 1, rate: 400, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, cancelled.id));
+
+      await paymentsService.recordPayment(orgId, cancelled.id, staffBId, FULL, {
+        amount: 400,
+        paymentDate: daysFromNow(-1),
+        method: "credit_card",
+        provider: "confido",
+        legs: [{ account: "operating", amount: 400, providerReference: "txn_consult_fee" }],
+      });
+
+      checkEqual(
+        "the firm is holding the fee",
+        await refundsService.netPaidOnInvoice(orgId, cancelled.id),
+        400,
+      );
+
+      // A hand-recorded payment on the same invoice. Confido has nothing to
+      // refund for this one, so it must be reported rather than dropped.
+      await paymentsService.recordPayment(orgId, cancelled.id, staffBId, FULL, {
+        amount: 60,
+        paymentDate: daysFromNow(-1),
+        method: "check",
+        reference: "cheque 1191",
+      });
+
+      const summary = await refundsService.refundInvoiceInFull(
+        orgId,
+        cancelled.id,
+        staffBId,
+        FULL,
+        "Consultation cancelled",
+      );
+
+      checkEqual(
+        "money taken outside the processor is reported, not silently kept",
+        summary.manualOutstanding,
+        60,
+      );
+
+      // This fixture has no Confido credential, so the card leg cannot reach the
+      // processor — which is the more valuable thing to assert. A cancellation
+      // must not be blocked because a refund failed, so the failure is COLLECTED
+      // rather than thrown, and the money stays visibly held. The successful
+      // refund path needs a sandbox and is covered by 19-confido-reversals.
+      checkEqual(
+        "a leg that cannot reach the processor is collected, not thrown",
+        summary.failures.length,
+        1,
+      );
+      checkEqual("and nothing is claimed as refunded", summary.refunded, 0);
+      checkEqual(
+        "so the full amount still reads as held",
+        await refundsService.netPaidOnInvoice(orgId, cancelled.id),
+        460,
+      );
+
+      // What makes "refund owed" safe to derive: the figure is a fold over the
+      // ledger, so a second attempt cannot double-refund — it re-reads the same
+      // outstanding amounts and fails the same way.
+      const rerun = await refundsService.refundInvoiceInFull(
+        orgId,
+        cancelled.id,
+        staffBId,
+        FULL,
+      );
+      checkEqual("a second attempt sends nothing more", rerun.refunded, 0);
+      checkEqual(
+        "and the held figure is unchanged",
+        await refundsService.netPaidOnInvoice(orgId, cancelled.id),
+        460,
+      );
+
+      section("a fully refunded invoice says so");
+
+      // The regression this status exists for. Refunding everything nets
+      // `amount_paid` to zero, and before `refunded` existed the invoice fell
+      // through to `sent` — reappearing as money the client owes, and then as
+      // OVERDUE once the due date passed. A firm chasing someone for money it
+      // has already given back.
+      const fullyRefunded = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        // Deliberately already past due, because that is the case the old code
+        // got wrong: any refunded invoice is eventually past its due date.
+        issueDate: daysFromNow(-40),
+        dueDate: daysFromNow(-10),
+        status: "draft",
+        lineItems: [
+          { description: "Consultation fee", quantity: 1, rate: 300, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, fullyRefunded.id));
+
+      await paymentsService.recordPayment(orgId, fullyRefunded.id, staffBId, FULL, {
+        amount: 300,
+        paymentDate: daysFromNow(-20),
+        method: "credit_card",
+        provider: "confido",
+        legs: [{ account: "operating", amount: 300, providerReference: "txn_full_refund" }],
+      });
+
+      const paidLeg = await systemDb
+        .select({ id: invoicePayments.id })
+        .from(invoicePayments)
+        .where(eq(invoicePayments.providerReference, "txn_full_refund"));
+
+      await paymentsService.recordReversal(orgId, fullyRefunded.id, staffBId, FULL, {
+        kind: "refund",
+        reversesPaymentId: paidLeg[0]!.id,
+        amount: 300,
+        account: "operating",
+        paymentDate: daysFromNow(0),
+        method: "credit_card",
+        provider: "confido",
+        providerReference: "txn_full_refund_rev",
+      });
+
+      const settled = await paidRow(fullyRefunded.id);
+      checkEqual("the stored status is refunded", settled.status, "refunded");
+      checkEqual("with nothing left paid", Number(settled.amountPaid), 0);
+
+      // The one that actually matters. `effectiveStatusSql` tests the due date
+      // before falling through, so a `refunded` branch below that line would be
+      // unreachable for precisely the invoices that need it.
+      const [effective] = await systemDb
+        .select({ effective: effectiveStatusSql(await status.firmToday(orgId)) })
+        .from(invoices)
+        .where(eq(invoices.id, fullyRefunded.id));
+      checkEqual(
+        "and it does NOT read as overdue despite being past due",
+        effective!.effective,
+        "refunded",
+      );
+
+      // Not revenue. The firm collected nothing net, so every money tile and
+      // report figure has to leave it out, the same as a void.
+      const [counted] = await systemDb
+        .select({ n: sql<number>`count(*)::int` })
+        .from(invoices)
+        .where(and(eq(invoices.id, fullyRefunded.id), status.countableInvoices()));
+      checkEqual("and is not counted as revenue", counted!.n, 0);
+
+      // Chasing it is the worst version of the bug, so it is refused outright.
+      let chaseRefundedRejected = false;
+      try {
+        await paymentsService.sendFollowUp(orgId, fullyRefunded.id, staffBId, {
+          message: "x",
+          channel: "email",
+        });
+      } catch {
+        chaseRefundedRejected = true;
+      }
+      check("and cannot be chased", chaseRefundedRejected);
+
+      // The assertions above all tested what the invoice IS. None of them
+      // tested whether anyone can find it, and that is exactly where this went
+      // wrong: `listableInvoices` was built on `countableInvoices()`, so
+      // excluding refunded money from the tiles silently excluded refunded
+      // invoices from the list — under "all" AND under the Refunded filter the
+      // UI now offers.
+      const allList = await invoicesService.list(orgId, FULL, { status: "all" });
+      check(
+        "a refunded invoice appears under All",
+        allList.data.some((i) => i.id === fullyRefunded.id),
+        "listable and countable are different questions",
+      );
+
+      const refundedList = await invoicesService.list(orgId, FULL, {
+        status: "refunded",
+      });
+      check(
+        "and under the Refunded filter",
+        refundedList.data.some((i) => i.id === fullyRefunded.id),
+      );
+      check(
+        "which shows only refunded invoices",
+        refundedList.data.every((i) => i.status === "refunded"),
+        refundedList.data.map((i) => i.status),
+      );
+
+      section("clearing policy");
+
+      // A card payment reported but not deposited. Which policy the firm is on
+      // decides whether it can open a case.
+      const clearing = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(-3),
+        dueDate: daysFromNow(30),
+        status: "draft",
+        lineItems: [
+          { description: "Deposit", quantity: 1, rate: 800, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, clearing.id));
+
+      await paymentsService.recordPayment(orgId, clearing.id, staffBId, FULL, {
+        amount: 800,
+        paymentDate: daysFromNow(0),
+        method: "credit_card",
+        provider: "confido",
+        settledAt: null,
+        providerStatus: "PENDING",
+        legs: [{ account: "operating", amount: 800, providerReference: "txn_pending_card" }],
+      });
+
+      const gateUnder = async (policy: "on_report" | "ach_only" | "all_payments") => {
+        await systemDb
+          .insert(confidoFirms)
+          .values({
+            organizationId: orgId,
+            confidoFirmId: `firm-${orgId}`,
+            status: "ACTIVE",
+            isAcceptingPayments: true,
+            provisioningState: "ready",
+            paymentClearingPolicy: policy,
+          })
+          .onConflictDoUpdate({
+            target: confidoFirms.organizationId,
+            set: { paymentClearingPolicy: policy },
+          });
+        return feeAgreementBilling.feeInvoiceSatisfied(orgId, clearing.id);
+      };
+
+      checkEqual(
+        "on_report opens a case on money merely reported",
+        await gateUnder("on_report"),
+        true,
+      );
+      checkEqual(
+        "ach_only lets an unsettled CARD through",
+        await gateUnder("ach_only"),
+        true,
+      );
+      checkEqual(
+        "all_payments holds it until the money clears",
+        await gateUnder("all_payments"),
+        false,
+      );
+
+      // HELD is Confido's risk review — "we are not sure this money is good" —
+      // and must not pass even the permissive card rule.
+      await systemDb
+        .update(invoicePayments)
+        .set({ providerStatus: "HELD" })
+        .where(eq(invoicePayments.providerReference, "txn_pending_card"));
+      checkEqual(
+        "but a HELD card never counts, even under ach_only",
+        await gateUnder("ach_only"),
+        false,
+      );
+
+      await paymentsService.markPaymentSettled(
+        orgId,
+        "confido",
+        "txn_pending_card",
+        "DEPOSITED",
+        true,
+      );
+      checkEqual(
+        "once deposited it counts under every policy",
+        await gateUnder("all_payments"),
+        true,
+      );
+
       section("activity trail");
 
       const events = await systemDb
@@ -2673,12 +3164,38 @@ const main = async () => {
       check("follow-up is recorded", types.has("finance.payment_followup_sent"));
       check("void is recorded", types.has("finance.invoice_voided"));
       check("time approval is recorded", types.has("finance.time_entry_approved"));
-      check("a schedule being set is recorded", types.has("invoice_schedule_set"));
-      check("a revision is recorded", types.has("invoice_schedule_revised"));
-      check("a removal is recorded", types.has("invoice_schedule_removed"));
+      check("a schedule being set is recorded", types.has("finance.invoice_schedule_set"));
+      check("a revision is recorded", types.has("finance.invoice_schedule_revised"));
+      check("a removal is recorded", types.has("finance.invoice_schedule_removed"));
+
+      // Everything above reads `audit_events` DIRECTLY, which is why a broken
+      // read path shipped: `getRecentActivity` joins invoices on
+      // `invoices.id = audit_events.entity_id`, and that is `uuid = text` —
+      // refused by Postgres every single time. The endpoint 500'd from the day
+      // the audit tables landed and no assertion here noticed, because none of
+      // them called the function the route calls.
+      const feed = await financeEvents.getRecentActivity(orgId, 8);
+      check("the activity feed loads at all", feed.length > 0);
+      check(
+        "and resolves the invoice each entry belongs to",
+        feed.some((e) => e.invoiceNumber != null),
+        "every entry has invoiceNumber null — the invoices join matched nothing",
+      );
+      check(
+        "and carries the detail saying what changed",
+        feed.some((e) => e.description != null),
+        "description is null throughout — logFinanceEvent is dropping it again",
+      );
     });
   } finally {
     // ── Cleanup ──────────────────────────────────────────────────────────────
+    // The clearing-policy section attaches a Confido firm to this org, and the
+    // FK to `organization` is not cascading — deliberately, since a firm's
+    // merchant account should outlive a careless delete.
+    await systemDb
+      .delete(confidoFirms)
+      .where(eq(confidoFirms.organizationId, orgId));
+
     const orgInvoices = await systemDb
       .select({ id: invoices.id })
       .from(invoices)
