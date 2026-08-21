@@ -14,7 +14,7 @@
  * and cleans up the org it creates.
  */
 import { createHash, randomUUID } from "crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { closeDb, systemDb } from "../../src/db/client";
 import { organization, user } from "../../src/db/schema/auth-schema";
 import { consultationSettings } from "../../src/db/schema/consultation-settings";
@@ -25,6 +25,10 @@ import { invoices } from "../../src/db/schema/invoices";
 import { leads } from "../../src/db/schema/leads";
 import { staff } from "../../src/db/schema/staff";
 import { consultationPaymentOutstanding } from "../../src/modules/finance/consultation-billing.service";
+import { systemAccess } from "../../src/modules/finance/account-access";
+import * as invoicesService from "../../src/modules/finance/invoices.service";
+import { isWholeTransaction } from "../../src/modules/finance/refunds.service";
+import { CONFIDO_PROVIDER } from "../../src/modules/finance/confido/confido-webhooks.service";
 import { invoiceByPaymentToken } from "../../src/modules/finance/payment-links.service";
 import { check, checkEqual, report, section } from "./_bootstrap";
 
@@ -117,7 +121,15 @@ const main = async () => {
       return row!;
     };
 
-    const pay = async (invoiceId: string, amount: number) => {
+    const pay = async (
+      invoiceId: string,
+      amount: number,
+      // Processor-backed when given. `refundable` requires a provider — a
+      // cheque cannot be sent back through Confido — so any assertion about
+      // refundability has to use a payment that actually has one, or it passes
+      // for the wrong reason.
+      provider?: string,
+    ) => {
       // `invoice_payments_split_balances` requires amount = operating + trust.
       await systemDb.insert(invoicePayments).values({
         organizationId: orgId,
@@ -128,6 +140,9 @@ const main = async () => {
         paymentDate: "2026-01-01",
         method: "other",
         kind: "payment",
+        ...(provider
+          ? { provider, providerReference: `txn-${randomUUID().slice(0, 8)}` }
+          : {}),
       });
       // What `recalculateInvoiceTotals` does in production. `amount_paid` is the
       // only STORED paid figure and `allocate` folds over it, so a fixture that
@@ -290,6 +305,87 @@ const main = async () => {
     check(
       "refunded -> gate CLOSED again (a stored flag could not do this)",
       await outstanding(consD),
+    );
+
+    // ── 4b. Refundability is net of what has already gone back ───────────────
+    section("A refunded payment stops being refundable");
+
+    // Fully reversed: nothing left, so no Refund button.
+    {
+      const invG = await makeInvoice(200);
+      await pay(invG, 200, CONFIDO_PROVIDER);
+      const [pg] = await systemDb
+        .select({ id: invoicePayments.id })
+        .from(invoicePayments)
+        .where(
+          and(
+            eq(invoicePayments.invoiceId, invG),
+            eq(invoicePayments.kind, "payment"),
+          ),
+        );
+      await reverse(invG, 200, pg!.id);
+
+      const detail = await invoicesService.getById(orgId, invG, systemAccess());
+      const original = detail.payments.find((p) => p.kind === "payment")!;
+      const reversal = detail.payments.find((p) => p.kind !== "payment");
+
+      check("both ledger rows are still shown", Boolean(original && reversal));
+      check("the reversal is negative", (reversal?.amount ?? 0) < 0);
+      check("the fully refunded payment is NOT refundable", !original.refundable);
+      checkEqual("nothing left to refund", original.refundableAmount, 0);
+    }
+
+    // Partly reversed: a remainder survives, so the button stays.
+    {
+      const invH = await makeInvoice(200);
+      await pay(invH, 200, CONFIDO_PROVIDER);
+      const [ph] = await systemDb
+        .select({ id: invoicePayments.id })
+        .from(invoicePayments)
+        .where(
+          and(
+            eq(invoicePayments.invoiceId, invH),
+            eq(invoicePayments.kind, "payment"),
+          ),
+        );
+      await reverse(invH, 50, ph!.id);
+
+      const detail = await invoicesService.getById(orgId, invH, systemAccess());
+      const original = detail.payments.find((p) => p.kind === "payment")!;
+      check("a partly refunded payment stays refundable", original.refundable);
+      checkEqual("and reports the remainder", original.refundableAmount, 150);
+    }
+
+    // A hand-recorded payment has no processor to refund through, whatever is
+    // left on it.
+    {
+      const invI = await makeInvoice(100);
+      await pay(invI, 100);
+      const detail = await invoicesService.getById(orgId, invI, systemAccess());
+      const original = detail.payments.find((p) => p.kind === "payment")!;
+      check("a manual payment is not processor-refundable", !original.refundable);
+      checkEqual("but still reports its full amount", original.refundableAmount, 100);
+    }
+
+    // ── 4c. Void vs refund: chosen by the figure, not by the caller ───────────
+    section("The reversal path follows the amount, not the caller's phrasing");
+
+    check(
+      "reversing the whole payment is a void-capable whole transaction",
+      isWholeTransaction(200, 200),
+    );
+    check(
+      "an explicit full amount is ALSO whole (the pre-settlement bug)",
+      isWholeTransaction(200, 200),
+    );
+    check(
+      "a remainder after a partial reversal is not whole",
+      !isWholeTransaction(150, 200),
+    );
+    check("a part payment is not whole", !isWholeTransaction(50, 200));
+    check(
+      "a half-cent difference still counts as whole",
+      isWholeTransaction(199.998, 200),
     );
 
     // ── 5. No invoice: the legacy flag still governs ──────────────────────────
