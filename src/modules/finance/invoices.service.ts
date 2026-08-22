@@ -9,7 +9,10 @@ import {
   type EffectiveInvoiceStatus,
   type NewInvoiceLineItem,
 } from "../../db/schema/invoices";
-import { consultations } from "../../db/schema/consultations";
+import {
+  LIVE_CONSULTATION_STATUSES,
+  consultations,
+} from "../../db/schema/consultations";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { leads } from "../../db/schema/leads";
 import { practiceAreas } from "../../db/schema/practice-areas";
@@ -239,7 +242,7 @@ export const list = async (
       amountPaid: invoices.amountPaid,
       balanceDue: invoices.balanceDue,
       status: effectiveStatusSql(today),
-      isConsultationFee: isConsultationFeeSql,
+      consultationRefundBlocked: consultationRefundBlockedSql,
     })
     .from(invoices)
     .leftJoin(clients, onClient)
@@ -282,6 +285,7 @@ export const list = async (
     amountPaid: num(r.amountPaid),
     balanceDue: num(r.balanceDue),
     status: r.status as EffectiveInvoiceStatus,
+    consultationRefundBlocked: Boolean(r.consultationRefundBlocked),
     schedule: schedules.get(r.id) ?? null,
   }));
 
@@ -343,18 +347,25 @@ const listTotals = async (
 // ── Detail ───────────────────────────────────────────────────────────────────
 
 /**
- * Is this invoice a consultation fee?
+ * Will Finance refuse to refund or void this invoice?
  *
- * Consultation fees cannot be refunded or voided from Finance — cancelling the
- * consultation is the one path that also releases the calendar slot and tells
- * the client — so the UI needs to know before offering a button the API will
- * refuse. A correlated EXISTS rather than a join, so an invoice can never be
- * duplicated by it.
+ * True while a LIVE consultation is billed by it. Cancelling that consultation
+ * is the one path that also releases the calendar slot and tells the client, so
+ * the UI needs to know before offering a button the API will refuse.
+ *
+ * Narrowed to live statuses deliberately, and it must stay in step with
+ * `hasLiveConsultation` — the server-side guard is the same rule, and a UI that
+ * hid the button for a CANCELLED consultation would leave a failed refund with
+ * a route the API allows and no human can reach.
+ *
+ * A correlated EXISTS rather than a join, so an invoice can never be duplicated
+ * by it.
  */
-const isConsultationFeeSql = sql<boolean>`exists (
+const consultationRefundBlockedSql = sql<boolean>`exists (
   select 1 from ${consultations}
   where ${consultations.invoiceId} = ${invoices.id}
     and ${consultations.organizationId} = ${invoices.organizationId}
+    and ${inArray(consultations.status, [...LIVE_CONSULTATION_STATUSES])}
 )`;
 
 export const getById = async (
@@ -369,7 +380,7 @@ export const getById = async (
       id: invoices.id,
       invoiceNumber: invoices.invoiceNumber,
       status: effectiveStatusSql(today),
-      isConsultationFee: isConsultationFeeSql,
+      consultationRefundBlocked: consultationRefundBlockedSql,
       storedStatus: invoices.status,
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
@@ -486,6 +497,7 @@ export const getById = async (
     id: row.id,
     invoiceNumber: row.invoiceNumber,
     status: row.status as EffectiveInvoiceStatus,
+    consultationRefundBlocked: Boolean(row.consultationRefundBlocked),
     storedStatus: row.storedStatus,
     issueDate: row.issueDate,
     dueDate: row.dueDate,
