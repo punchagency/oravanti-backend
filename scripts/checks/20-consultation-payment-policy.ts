@@ -30,6 +30,12 @@ import * as invoicesService from "../../src/modules/finance/invoices.service";
 import { isWholeTransaction } from "../../src/modules/finance/refunds.service";
 import { hasLiveConsultation } from "../../src/modules/finance/consultation-billing.service";
 import { CONFIDO_PROVIDER } from "../../src/modules/finance/confido/confido-webhooks.service";
+import {
+  resetConfidoClient,
+  setConfidoClient,
+} from "../../src/modules/finance/confido/confido.client";
+import { encryptPaymentValue } from "../../src/utils/payment-crypto";
+import { confidoFirms } from "../../src/db/schema/confido-firms";
 import { invoiceByPaymentToken } from "../../src/modules/finance/payment-links.service";
 import { check, checkEqual, report, section } from "./_bootstrap";
 
@@ -436,6 +442,94 @@ const main = async () => {
       );
     }
 
+    // ── 4e. Voiding withdraws the hosted payment link ────────────────────────
+    section("Voiding an invoice retires its payment link");
+
+    {
+      // No confido_firms row yet, so `confidoCredentialFor` throws. Voiding
+      // must survive that: a firm without a processor still voids invoices, and
+      // an unreachable Confido must never block a withdrawal.
+      const invJ = await makeInvoice(120);
+      let threw = false;
+      try {
+        await invoicesService.voidInvoice(orgId, invJ, "check", null, systemAccess());
+      } catch {
+        threw = true;
+      }
+      check("voiding survives an unavailable processor", !threw);
+
+      const [row] = await systemDb
+        .select({ status: invoices.status })
+        .from(invoices)
+        .where(eq(invoices.id, invJ));
+      checkEqual("and the invoice is still voided", row!.status, "void");
+    }
+
+    {
+      // With a credential and a stubbed client, the link is actually withdrawn.
+      await systemDb.insert(confidoFirms).values({
+        organizationId: orgId,
+        confidoFirmId: `firm-${suffix}`,
+        encryptedApiToken: encryptPaymentValue("sandbox-check-token"),
+      });
+
+      const removed: string[] = [];
+      const stub = {
+        findPaymentLinkByExternalId: async (_t: string, externalId: string) => ({
+          id: `link-for-${externalId}`,
+          url: "https://example.test/pay",
+          status: "ACTIVE",
+          externalId,
+          amounts: [],
+        }),
+        removePaymentLink: async (_t: string, input: { id: string }) => {
+          removed.push(input.id);
+          return { id: input.id, url: "", status: "REMOVED", externalId: null, amounts: [] };
+        },
+      } as unknown as Parameters<typeof setConfidoClient>[0];
+
+      setConfidoClient(stub);
+      try {
+        const invK = await makeInvoice(150);
+        await invoicesService.voidInvoice(orgId, invK, "check", null, systemAccess());
+        checkEqual("the link is withdrawn exactly once", removed.length, 1);
+        checkEqual("and it is the invoice's own link", removed[0], `link-for-${invK}`);
+      } finally {
+        resetConfidoClient();
+      }
+    }
+
+    {
+      // A refunded invoice must KEEP its link: `refunded` is derived and
+      // reverts to `partial` if money later arrives, and Confido has no
+      // un-remove — retiring it would permanently break a legitimate payment.
+      const removed: string[] = [];
+      const stub = {
+        findPaymentLinkByExternalId: async () => ({
+          id: "link-x", url: "", status: "ACTIVE", externalId: "x", amounts: [],
+        }),
+        removePaymentLink: async (_t: string, input: { id: string }) => {
+          removed.push(input.id);
+          return { id: input.id, url: "", status: "REMOVED", externalId: null, amounts: [] };
+        },
+      } as unknown as Parameters<typeof setConfidoClient>[0];
+
+      setConfidoClient(stub);
+      try {
+        const invL = await makeInvoice(100);
+        await pay(invL, 100, CONFIDO_PROVIDER);
+        const [pl] = await systemDb
+          .select({ id: invoicePayments.id })
+          .from(invoicePayments)
+          .where(and(eq(invoicePayments.invoiceId, invL), eq(invoicePayments.kind, "payment")));
+        await reverse(invL, 100, pl!.id);
+
+        check("a refunded invoice keeps its link", removed.length === 0);
+      } finally {
+        resetConfidoClient();
+      }
+    }
+
     // ── 5. No invoice: the legacy flag still governs ──────────────────────────
     section("Consultations that predate invoicing");
 
@@ -480,6 +574,8 @@ const main = async () => {
     }
     check("a 100% deposit is refused (that is full_upfront)", outOfRange);
   } finally {
+    // Before the organization delete: confido_firms references it with no cascade.
+    await systemDb.delete(confidoFirms).where(eq(confidoFirms.organizationId, orgId));
     await systemDb.delete(consultationSettings).where(eq(consultationSettings.organizationId, orgId));
     await systemDb.delete(invoicePayments).where(eq(invoicePayments.organizationId, orgId));
     await systemDb.delete(invoiceInstalments).where(eq(invoiceInstalments.organizationId, orgId));
