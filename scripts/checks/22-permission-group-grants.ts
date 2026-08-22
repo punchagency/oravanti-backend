@@ -30,9 +30,19 @@ const main = async () => {
   const orgId = `check-org-${suffix}`;
   const now = new Date();
 
-  // No session, so better-auth cannot answer; the fallback is what responds.
-  // That is the path under test, and it is why the fallback must not sit inside
-  // the try that swallows a better-auth failure.
+  // No session headers, so better-auth cannot answer ANY of these — every
+  // assertion below is resolved by the group-aware fallback.
+  //
+  // Worth being precise about what that does and does not prove. It does not
+  // exercise better-auth's own path; in production a real session answers the
+  // direct-role case before the fallback is reached. What it proves is that the
+  // fallback resolves both direct and group-inherited roles, and — from the
+  // before/after pair on the same member — that joining a group is what changes
+  // the answer.
+  //
+  // It also pins the fallback OUTSIDE the try: were it inside, a better-auth
+  // failure would return false here instead of consulting the grants, and all
+  // four assertions would go red.
   const req = { headers: {} } as unknown as Request;
 
   const ask = (userId: string) =>
@@ -76,7 +86,7 @@ const main = async () => {
     const direct = await mk("direct", "admin");
     const viaGroup = await mk("group", "attorney");
 
-    section("Direct roles still resolve");
+    section("The fallback resolves direct roles");
     check("a member with no refund grant is refused", !(await ask(plain.userId)));
     check("a member whose own role grants it is allowed", await ask(direct.userId));
 
