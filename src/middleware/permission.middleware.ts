@@ -188,7 +188,7 @@ export async function hasPermission(
   req: Request,
   permissions: PermissionsInput,
 ): Promise<boolean> {
-  const { organizationId } = getRequestContext();
+  const { userId, organizationId } = getRequestContext();
   if (!organizationId) return false;
 
   try {
@@ -199,7 +199,34 @@ export async function hasPermission(
       },
       headers: fromNodeHeaders(req.headers as Record<string, string>),
     });
-    return Boolean(result.success);
+    if (result.success) return true;
+  } catch {
+    // Deliberately falls through rather than returning false. better-auth
+    // failing to answer is not the same as the member lacking the permission,
+    // and the group-aware check below can still answer it.
+  }
+
+  // The same fallback `requirePermission` performs, for the same reason:
+  // better-auth resolves `member.role` alone and knows nothing of this app's
+  // role groups, so a member who holds the permission only through a group they
+  // were added to reads as not having it.
+  //
+  // Without this the two siblings disagree, which is worse than either being
+  // wrong alone — a group-granted member passes the `requirePermission` gate on
+  // a route and is then told "no" by the `hasPermission` check inside the
+  // handler that route just admitted them to. `resolveMemberGrants` exists to
+  // be the single place this is decided; it simply was not called from here.
+  if (!userId) return false;
+
+  try {
+    const grants = await resolveMemberGrants(
+      userId,
+      organizationId,
+      req.headers as Record<string, string | string[] | undefined>,
+    );
+    return Object.entries(permissions).every(([resource, actions]) =>
+      (actions as string[]).every((action) => grants.has(`${resource}:${action}`)),
+    );
   } catch {
     return false;
   }
