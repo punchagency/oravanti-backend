@@ -44,7 +44,6 @@ import { adminSessions } from "./admin-sessions";
 import { admins } from "./admins";
 import { adverseParties } from "./adverse-parties";
 import { aiSystemConfig } from "./ai-system-config";
-import { approvalWorkflows } from "./approval-workflows";
 import { assignments } from "./assignments";
 import { calendarEvents } from "./calendar-events";
 import { caseAssignments, casesToCertifications, certifications } from "./cases";
@@ -57,7 +56,6 @@ import { conflictChecks } from "./conflict-checks";
 import { consultationLocations } from "./consultation-locations";
 import { consultationSettings } from "./consultation-settings";
 import { consultationParticipants, consultations } from "./consultations";
-import { dataAccessControls } from "./data-access-controls";
 import {
   caseTypeDocumentRequirements,
   scenarioDocumentRequirements,
@@ -81,11 +79,10 @@ import {
 import { leadDocumentLinks } from "./lead-document-links";
 import { leadTasks } from "./lead-tasks";
 import { leaveRequests } from "./leave-requests";
-import { modulePermissions } from "./module-permissions";
-import { paralegalActivationRequirements } from "./paralegal-activation-requirements";
-import { paralegalCertificationGates } from "./paralegal-certification-gates";
 import { paralegalProfiles } from "./paralegal-profiles";
 import { profiles } from "./profiles";
+import { roleAppearance } from "./role-appearance";
+import { roleGroup, roleGroupMember } from "./role-groups";
 import {
   firmQuestionnaireLogicRules,
   firmQuestionnaireQuestions,
@@ -180,7 +177,6 @@ export const [rlsAdminSessionsOrg, rlsAdminSessionsStaff] = orgScoped("admin_ses
 export const [rlsAdminsOrg, rlsAdminsStaff] = orgScoped("admins", admins);
 export const [rlsAdversePartiesOrg, rlsAdversePartiesStaff] = orgScoped("adverse_parties", adverseParties);
 export const [rlsAiSystemConfigOrg, rlsAiSystemConfigStaff] = orgScoped("ai_system_config", aiSystemConfig);
-export const [rlsApprovalWorkflowsOrg, rlsApprovalWorkflowsStaff] = orgScoped("approval_workflows", approvalWorkflows);
 export const [rlsAssignmentsOrg, rlsAssignmentsStaff] = orgScoped("assignments", assignments);
 export const [rlsCalendarEventsOrg, rlsCalendarEventsStaff] = orgScoped("calendar_events", calendarEvents);
 export const [rlsCertificationsOrg, rlsCertificationsStaff] = orgScoped("certifications", certifications);
@@ -193,7 +189,6 @@ export const [rlsConsultationLocationsOrg, rlsConsultationLocationsStaff] = orgS
 export const [rlsConsultationSettingsOrg, rlsConsultationSettingsStaff] = orgScoped("consultation_settings", consultationSettings);
 export const [rlsConsultationsOrg, rlsConsultationsStaff] = orgScoped("consultations", consultations);
 export const [rlsConsultationParticipantsOrg, rlsConsultationParticipantsStaff] = orgScoped("consultation_participants", consultationParticipants);
-export const [rlsDataAccessControlsOrg, rlsDataAccessControlsStaff] = orgScoped("data_access_controls", dataAccessControls);
 export const [rlsCaseTypeDocumentRequirementsOrg, rlsCaseTypeDocumentRequirementsStaff] = orgScoped("case_type_document_requirements", caseTypeDocumentRequirements);
 export const [rlsScenarioDocumentRequirementsOrg, rlsScenarioDocumentRequirementsStaff] = orgScoped("scenario_document_requirements", scenarioDocumentRequirements);
 export const [rlsDocumentRequestsOrg, rlsDocumentRequestsStaff] = orgScoped("document_requests", documentRequests);
@@ -204,10 +199,9 @@ export const [rlsFirmPracticeAreasOrg, rlsFirmPracticeAreasStaff] = orgScoped("f
 export const [rlsIntakePipelineTemplatesOrg, rlsIntakePipelineTemplatesStaff] = orgScoped("intake_pipeline_templates", intakePipelineTemplates);
 export const [rlsLeadTasksOrg, rlsLeadTasksStaff] = orgScoped("lead_tasks", leadTasks);
 export const [rlsLeaveRequestsOrg, rlsLeaveRequestsStaff] = orgScoped("leave_requests", leaveRequests);
-export const [rlsModulePermissionsOrg, rlsModulePermissionsStaff] = orgScoped("module_permissions", modulePermissions);
-export const [rlsParalegalActivationRequirementsOrg, rlsParalegalActivationRequirementsStaff] = orgScoped("paralegal_activation_requirements", paralegalActivationRequirements);
-export const [rlsParalegalCertificationGatesOrg, rlsParalegalCertificationGatesStaff] = orgScoped("paralegal_certification_gates", paralegalCertificationGates);
 export const [rlsParalegalProfilesOrg, rlsParalegalProfilesStaff] = orgScoped("paralegal_profiles", paralegalProfiles);
+export const [rlsRoleAppearanceOrg, rlsRoleAppearanceStaff] = orgScoped("role_appearance", roleAppearance);
+export const [rlsRoleGroupOrg, rlsRoleGroupStaff] = orgScoped("role_group", roleGroup);
 export const [rlsFirmQuestionnaireSectionsOrg, rlsFirmQuestionnaireSectionsStaff] = orgScoped("firm_questionnaire_sections", firmQuestionnaireSections);
 export const [rlsFirmQuestionnaireQuestionsOrg, rlsFirmQuestionnaireQuestionsStaff] = orgScoped("firm_questionnaire_questions", firmQuestionnaireQuestions);
 export const [rlsFirmQuestionnaireLogicRulesOrg, rlsFirmQuestionnaireLogicRulesStaff] = orgScoped("firm_questionnaire_logic_rules", firmQuestionnaireLogicRules);
@@ -237,6 +231,7 @@ export const [rlsLeadDocumentLinksOrg, rlsLeadDocumentLinksStaff] = parentScoped
 export const [rlsStaffCertificationsOrg, rlsStaffCertificationsStaff] = parentScoped("staff_certifications", staffCertifications, "staff_id", "staff");
 export const [rlsStaffPracticeAreaCaseTypesOrg, rlsStaffPracticeAreaCaseTypesStaff] = parentScoped("staff_practice_area_case_types", staffPracticeAreaCaseTypes, "staff_id", "staff");
 export const [rlsExternalSubmissionsOrg, rlsExternalSubmissionsStaff] = parentScoped("external_submissions", externalSubmissions, "request_id", "document_requests");
+export const [rlsRoleGroupMemberOrg, rlsRoleGroupMemberStaff] = parentScoped("role_group_member", roleGroupMember, "group_id", "role_group");
 
 // `team` and `team_member` are better-auth tables (see the exemptions below),
 // but `team` does carry `organization_id`, so these two join through it.
@@ -383,6 +378,7 @@ export const RLS_EXEMPTIONS: Record<string, string> = {
   invitation: "better-auth invitations; accepted before the invitee has an org",
   team: "better-auth teams; scoped through member, and joined by team_members",
   team_member: "better-auth team membership; the app uses team_members instead",
+  organization_role: "better-auth dynamicAccessControl custom-role storage; scoped by organizationId inside better-auth's own adapter queries, read by role-CRUD endpoints before app-level tenant context is established",
 
   // ── Global reference data, shared by every firm ──────────────────────────
   practice_areas: "global taxonomy, identical for every firm",

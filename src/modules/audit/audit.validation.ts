@@ -39,9 +39,8 @@ const auditFilterShape = z.object({
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
   search: z.string().min(1).max(200).optional(),
+  page: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().positive().max(100).optional(),
-  /** Opaque to the caller: hand back whatever `nextCursor` was. */
-  cursor: z.string().min(1).max(200).optional(),
 });
 
 /** An inverted range returns nothing, so say so rather than answering emptily. */
@@ -57,11 +56,11 @@ export const listAuditEventsQuerySchema = auditFilterShape.refine(
 );
 
 /**
- * An export has no cursor — it is the whole filtered set in one file — and no
- * limit, because the service caps it at 10,000 rows.
+ * An export has no paging — it is the whole filtered set in one file —
+ * because the service caps it at 10,000 rows.
  */
 export const exportAuditEventsQuerySchema = auditFilterShape
-  .omit({ cursor: true, limit: true })
+  .omit({ page: true, limit: true })
   .extend({ format: z.enum(["csv", "pdf"]).default("csv") })
   .refine(orderedDateRange.check, {
     message: orderedDateRange.message,

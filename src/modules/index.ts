@@ -20,12 +20,11 @@ import {
   TimeBillingModule,
 } from "./finance/finance.module";
 import { RevenueAnalyticsModule } from "./revenue-analytics/revenue-analytics.module";
-import { AccessControlModule } from "./settings/access-control/access-control.module";
-import { ApprovalWorkflowsModule } from "./settings/approval-workflows/approval-workflows.module";
+import { RolesPermissionsModule } from "./settings/roles-permissions/roles-permissions.module";
+import { RoleGroupsModule } from "./settings/role-groups/role-groups.module";
 import { ConsultationSettingsModule } from "./settings/consultation/consultation-settings.module";
 import { ConfidoWebhookModule } from "./finance/confido/confido-webhooks.routes";
 import { PaymentSettingsModule } from "./settings/payments/payment-settings.module";
-import { DataAccessModule } from "./settings/data-access/data-access.module";
 import { FinancialAccessModule } from "./settings/financial-access/financial-access.module";
 import { FirmInfoModule } from "./settings/firm-info/firm-info.module";
 import { FirmProfileModule } from "./settings/firm-profile/firm-profile.module";
@@ -75,10 +74,9 @@ export const modules: Module[] = [
   new FirmProfileModule(),
   new ConsultationSettingsModule(),
   new PaymentSettingsModule(),
-  new AccessControlModule(),
+  new RolesPermissionsModule(),
+  new RoleGroupsModule(),
   new FinancialAccessModule(),
-  new ApprovalWorkflowsModule(),
-  new DataAccessModule(),
   new SecurityModule(),
   new OrganizationModule(),
   new OnboardingModule(),

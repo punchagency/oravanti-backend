@@ -158,6 +158,41 @@ export const organization = pgTable(
   (table) => [uniqueIndex("organization_slug_uidx").on(table.slug)],
 );
 
+// dynamicAccessControl's own table, added by hand rather than via
+// `auth:generate` — that command regenerates this whole file from the
+// plugin config, and the firm-profile fields on `organization` above
+// (`displayName`, `barNumber`, `jurisdiction`, `domain`, etc.) were never
+// declared in the plugin's `additionalFields`, so a full regeneration
+// silently drops them. Shape confirmed against better-auth's own generator
+// output for this table; do not hand-regenerate the rest of the file.
+export const organizationRole = pgTable(
+  "organization_role",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    role: text("role").notNull(),
+    permission: text("permission").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").$onUpdate(
+      () => /* @__PURE__ */ new Date(),
+    ),
+  },
+  (table) => [
+    index("organizationRole_organizationId_idx").on(table.organizationId),
+    index("organizationRole_role_idx").on(table.role),
+    // A role name is unique per org — every lookup (getOrgRole,
+    // updateOrgRole, our own seedDefaultRoleRows) assumes at most one row
+    // matches (organizationId, role) and would silently pick an arbitrary
+    // one otherwise.
+    uniqueIndex("organizationRole_organizationId_role_uidx").on(
+      table.organizationId,
+      table.role,
+    ),
+  ],
+);
+
 export const team = pgTable(
   "team",
   {

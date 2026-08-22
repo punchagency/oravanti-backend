@@ -40,7 +40,7 @@ export class AuditController {
     to: query.to ? new Date(query.to as string) : undefined,
     search: query.search as string | undefined,
     limit: query.limit ? Number(query.limit) : undefined,
-    cursor: query.cursor as string | undefined,
+    page: query.page ? Number(query.page) : undefined,
   });
 
   listEvents = async (req: Request, res: Response) => {
@@ -53,12 +53,11 @@ export class AuditController {
     await recordAccessEvent({
       action: "audit_log.viewed",
       entityId: organizationId,
-      metadata: { filters: { ...filters, cursor: undefined } },
+      metadata: { filters },
     });
 
     sendSuccess(res, result.data, "Audit events retrieved", 200, {
-      nextCursor: result.nextCursor,
-      hasMore: result.hasMore,
+      pagination: result.pagination,
     });
   };
 

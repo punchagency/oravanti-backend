@@ -15,7 +15,7 @@
     "test:unit": "jest --selectProjects unit",
     "test:integration": "jest --selectProjects integration",
     "lint": "eslint .",
-    "lint:ci": "eslint . --max-warnings 122",
+    "lint:ci": "eslint .",
     "typecheck": "tsc -p tsconfig.check.json",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "ts-node src/migrate.ts",

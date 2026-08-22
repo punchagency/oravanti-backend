@@ -10,7 +10,6 @@ import {
   adverseParties,
   aiScanJobs,
   aiSystemConfig,
-  approvalWorkflows,
   assignments,
   calendarEvents,
   caseIssues,
@@ -27,7 +26,6 @@ import {
   consultationParticipants,
   consultationSettings,
   consultations,
-  dataAccessControls,
   documentAccess,
   documentCaseLinks,
   documentRequests,
@@ -45,9 +43,6 @@ import {
   leadTasks,
   leads,
   leaveRequests,
-  modulePermissions,
-  paralegalActivationRequirements,
-  paralegalCertificationGates,
   paralegalProfiles,
   questionnaireAnswers,
   questionnaireResponseFiles,
@@ -497,12 +492,7 @@ export class FirmProfileService {
       await del(caseWorkflowSteps, eq(caseWorkflowSteps.organizationId, organizationId));
       await del(caseNotes, eq(caseNotes.organizationId, organizationId));
       await del(tasks, eq(tasks.organizationId, organizationId));
-      await del(approvalWorkflows, eq(approvalWorkflows.organizationId, organizationId));
-      await del(modulePermissions, eq(modulePermissions.organizationId, organizationId));
-      await del(dataAccessControls, eq(dataAccessControls.organizationId, organizationId));
       await del(financialAccessControls, eq(financialAccessControls.organizationId, organizationId));
-      await del(paralegalCertificationGates, eq(paralegalCertificationGates.organizationId, organizationId));
-      await del(paralegalActivationRequirements, eq(paralegalActivationRequirements.organizationId, organizationId));
       await del(paralegalProfiles, eq(paralegalProfiles.organizationId, organizationId));
       await del(staffAvailabilityOverrides, eq(staffAvailabilityOverrides.organizationId, organizationId));
       await del(staffAvailabilityBreaks, eq(staffAvailabilityBreaks.organizationId, organizationId));

@@ -7,6 +7,12 @@ import {
   type AuditCategoryName,
 } from "../../lib/audit/actions";
 import { createModuleLogger } from "../../lib/logging/log";
+import {
+  buildPaginatedResponse,
+  getPaginationOffset,
+  parsePaginationQuery,
+  type PaginatedResponse,
+} from "../../utils/pagination";
 
 const log = createModuleLogger("audit.service");
 
@@ -21,14 +27,18 @@ const log = createModuleLogger("audit.service");
  */
 
 /**
- * Keyset, not offset.
+ * Keyset cursor infrastructure — still used by `listForEntity` below (a
+ * per-entity feed, not the firm-wide trail).
  *
- * The trail only grows, and it grows fastest at the end a reader starts from.
- * An `OFFSET 40000` makes Postgres walk and discard 40,000 index entries to
- * return 50; worse, a row inserted mid-scroll shifts every subsequent page by
- * one and the reader silently skips an event. A cursor of
- * `(occurred_at, id)` is a range scan on the index the table already has, and
- * it cannot skip or repeat.
+ * The firm-wide list (`listEvents`) uses page/limit instead, via
+ * `buildPaginatedResponse`, to match the numbered-page pagination every
+ * other list in the app uses (`PaginationControls`) rather than a bespoke
+ * "Load more" UI for this one page. The tradeoff of doing that on a table
+ * this size — an `OFFSET 40000` makes Postgres walk and discard 40,000
+ * index entries to return 50, and a row inserted mid-scroll can shift a
+ * later page by one — is accepted for that consistency; a keyset cursor of
+ * `(occurred_at, id)` avoids both, which is why it remains here for
+ * `listForEntity`, whose feed has no such consistency requirement.
  */
 export interface AuditCursor {
   occurredAt: Date;
@@ -80,6 +90,9 @@ export interface ListAuditEventsFilters {
   /** Free text over the stored summary. */
   search?: string;
   limit?: number;
+  /** Page/limit, for `listEvents`. */
+  page?: number;
+  /** Keyset cursor, for `listForEntity`. */
   cursor?: string;
 }
 
@@ -199,33 +212,32 @@ export class AuditService {
   listEvents = async (
     organizationId: string,
     filters: ListAuditEventsFilters = {},
-  ): Promise<ListAuditEventsResult> => {
-    const limit = Math.min(filters.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
+  ): Promise<PaginatedResponse<AuditEventDTO>> => {
+    const { page, limit } = parsePaginationQuery(
+      { page: filters.page, limit: filters.limit },
+      { page: 1, limit: DEFAULT_LIMIT },
+    );
+    const cappedLimit = Math.min(limit, MAX_LIMIT);
+    const offset = getPaginationOffset({ page, limit: cappedLimit });
+    const where = buildWhere(organizationId, filters);
 
-    // One extra row is the cheapest way to answer "is there a next page"
-    // without a second COUNT over the same predicate.
+    const [countRow] = await db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(auditEvents)
+      .where(where);
+
     const rows = await db
       .select()
       .from(auditEvents)
-      .where(buildWhere(organizationId, filters))
+      .where(where)
       .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
-      .limit(limit + 1);
+      .limit(cappedLimit)
+      .offset(offset);
 
-    const hasMore = rows.length > limit;
-    const page = hasMore ? rows.slice(0, limit) : rows;
-    const last = page[page.length - 1];
+    const total = countRow?.total ?? 0;
+    log.debug("audit.queried", { organizationId, page, limit: cappedLimit, returned: rows.length, total });
 
-    log.debug("audit.queried", {
-      organizationId,
-      returned: page.length,
-      hasMore,
-    });
-
-    return {
-      data: page.map(toDTO),
-      nextCursor: hasMore && last ? encodeCursor(last) : null,
-      hasMore,
-    };
+    return buildPaginatedResponse(rows.map(toDTO), { page, limit: cappedLimit, total });
   };
 
   /**

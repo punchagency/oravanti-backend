@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { eq } from "drizzle-orm";
 import { auth } from "../../auth";
+import { seedDefaultRoleRows } from "../../auth/seed-default-roles";
 import { db } from "../../db/client";
 import { createModuleLogger } from "../../lib/logging/log";
 import { organization, user } from "../../db/schema/auth-schema";
@@ -80,6 +81,11 @@ export class OnboardingService {
     if (!newOrg) {
       throw new Error("Failed to create organization.");
     }
+
+    // Every new org needs its own DB rows for the four default roles before
+    // anyone can be assigned one — see the comment on `DEFAULT_ROLE_NAMES`
+    // in `auth/permissions.ts` for why they're seeded rather than static.
+    await seedDefaultRoleRows(newOrg.id);
 
     await db.transaction(async (tx) => {
       // 1. Create staff profile

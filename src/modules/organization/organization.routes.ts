@@ -120,7 +120,10 @@ export class OrganizationRouter {
     this.router.patch(
       "/staffs/:staffId/portal-status",
       requireAuth,
-      requirePermission("staffs", "update"),
+      // Its own `portal:update` grant — not `staffs:update` — so editing a
+      // staff profile and granting/revoking portal sign-in are separately
+      // controllable. Default roles: owner/admin only.
+      requirePermission("portal", "update"),
       this.organizationController.updateStaffPortalStatus,
     );
     this.router.post(
