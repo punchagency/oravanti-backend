@@ -5,8 +5,11 @@ import { calendarEvents } from "../../db/schema/calendar-events";
 import { caseIssues } from "../../db/schema/case-issues";
 import { cases } from "../../db/schema/cases";
 import { scenarioDocumentRequirements } from "../../db/schema/document-requirements";
+import { createModuleLogger } from "../../lib/logging/log";
 import { syncScenarioIssues } from "./issue-sync";
 import type { ScenarioType } from "./types";
+
+const log = createModuleLogger("case-review.deterministic-sweep");
 
 /** Empty result — the sweep runs only rules that read persisted state. */
 const EMPTY_RESULT: AiScanResultJob = {
@@ -44,7 +47,8 @@ const collectScenarios = async (): Promise<Scenario[]> => {
     .from(caseIssues)
     .where(inArray(caseIssues.status, ["open", "under_review"]));
   for (const r of withIssues) {
-    r.leadId ? add("lead", r.leadId, r.org) : add("case", r.caseId, r.org);
+    if (r.leadId) add("lead", r.leadId, r.org);
+    else add("case", r.caseId, r.org);
   }
 
   // Scenarios with an unmet required document (missing-doc severity escalates).
@@ -63,7 +67,8 @@ const collectScenarios = async (): Promise<Scenario[]> => {
       ),
     );
   for (const r of withUnmet) {
-    r.leadId ? add("lead", r.leadId, r.org) : add("case", r.caseId, r.org);
+    if (r.leadId) add("lead", r.leadId, r.org);
+    else add("case", r.caseId, r.org);
   }
 
   // Cases with an upcoming scheduled deadline/interview (deadline rules fire).
@@ -99,10 +104,7 @@ export const sweepDeterministicIssues = async (): Promise<{
       await syncScenarioIssues(scenario, EMPTY_RESULT, { includeScanRules: false });
     } catch (err) {
       errors += 1;
-      console.error(
-        `[case-review] sweep failed for ${scenario.type} ${scenario.id}:`,
-        err,
-      );
+      log.failure("case_review.sweep_failed", err, { scenarioType: scenario.type, scenarioId: scenario.id });
     }
   }
   return { scenarios: scenarios.length, errors };

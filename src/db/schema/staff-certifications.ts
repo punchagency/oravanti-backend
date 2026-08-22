@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, date, primaryKey } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, date, primaryKey } from 'drizzle-orm/pg-core';
 import { staff } from './staff';
 import { certifications } from './cases';
 

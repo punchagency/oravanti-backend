@@ -2,14 +2,17 @@ import {
   and,
   asc,
   count,
-  countDistinct,
   desc,
   eq,
   ilike,
-  inArray,
   or,
   sql,
 } from "drizzle-orm";
+import type {
+  CreateContactInput,
+  UpdateClientInput,
+  UpdateContactInput,
+} from "./clients.validation";
 import { db, systemDb } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { certifications } from "../../db/schema/cases";
@@ -21,9 +24,10 @@ import { practiceAreas } from "../../db/schema/practice-areas";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { staff } from "../../db/schema/staff";
 import { teamMembers } from "../../db/schema/team-members";
-import { user, session } from "../../db/schema/auth-schema";
+import { organization, user, session } from "../../db/schema/auth-schema";
 import { auth } from "../../auth";
 import { env } from "../../config/env";
+import { symmetricEncrypt } from "better-auth/crypto";
 import { emailService } from "../../utils/email/email.service";
 import { ConflictError, NotFoundError, BadRequestError } from "../../utils/error/app-error";
 import { resolveAvatarUrl } from "../../utils/storage/avatar-url";
@@ -33,9 +37,10 @@ import {
   getPaginationOffset,
   PaginationParams,
 } from "../../utils/pagination";
-import { db as _db } from "../../db/client";
-import { generateCaseNumber } from "../cases/cases.service";
-import { ensureCaseTypeBelongsToPracticeArea } from "../practice-areas/practice-areas.utils";
+import { recordAuditEvent } from "../shared/audit.service";
+import { createModuleLogger } from "../../lib/logging/log";
+
+const log = createModuleLogger("clients.service");
 
 // ─── Clients (Legal Entities) ─────────────────────────────────────────────────
 
@@ -83,7 +88,7 @@ export type PortalStatusDTO = {
   emailVerified: boolean;
   lastLoginAt: Date | null;
   activeSessionCount: number;
-  accountStatus: "invited" | "active" | "never_invited";
+  accountStatus: "invited" | "active" | "disabled";
 };
 
 // ─── Standalone Functions ────────────────────────────────────────────────────
@@ -176,20 +181,56 @@ export const getClientById = async (id: string, organizationId: string) => {
 export const updateClient = async (
   id: string,
   organizationId: string,
-  data: { displayName?: string; status?: string; entityType?: string },
+  data: UpdateClientInput,
 ) => {
+  const [existing] = await db
+    .select()
+    .from(clients)
+    .where(and(eq(clients.id, id), eq(clients.organizationId, organizationId)));
+
   const [updated] = await db
     .update(clients)
-    .set({ ...data as any, updatedAt: new Date() })
+    // No `as any`. The previous cast defeated the narrow parameter type above
+    // it, so whatever the route passed through reached the column list.
+    .set({ ...data, updatedAt: new Date() })
     .where(and(eq(clients.id, id), eq(clients.organizationId, organizationId)))
     .returning();
+
+  if (updated && existing) {
+    await recordAuditEvent({
+      action: "client.updated",
+      entityId: id,
+      organizationId,
+      before: { displayName: existing.displayName, email: existing.email, phone: existing.phone, status: existing.status },
+      after: { displayName: updated.displayName, email: updated.email, phone: updated.phone, status: updated.status },
+    });
+  }
+
+  log.action("client.updated", { clientId: id });
+
   return updated ?? null;
 };
 
 export const deleteClient = async (id: string, organizationId: string) => {
+  const [existing] = await db
+    .select({ id: clients.id, displayName: clients.displayName, email: clients.email })
+    .from(clients)
+    .where(and(eq(clients.id, id), eq(clients.organizationId, organizationId)));
+
   await db
     .delete(clients)
     .where(and(eq(clients.id, id), eq(clients.organizationId, organizationId)));
+
+  if (existing) {
+    await recordAuditEvent({
+      action: "client.deleted",
+      entityId: id,
+      organizationId,
+      before: { displayName: existing.displayName, email: existing.email },
+    });
+  }
+
+  log.action("client.deleted", { clientId: id });
 };
 
 // ─── Client Contacts ──────────────────────────────────────────────────────────
@@ -210,7 +251,7 @@ export const getClientContacts = async (clientId: string, organizationId: string
 export const addClientContact = async (
   clientId: string,
   organizationId: string,
-  data: typeof clientContacts.$inferInsert,
+  data: CreateContactInput,
 ) => {
   await checkContactDuplicate(organizationId, data.email);
 
@@ -218,6 +259,18 @@ export const addClientContact = async (
     .insert(clientContacts)
     .values({ ...data, clientId, organizationId })
     .returning();
+
+  if (contact) {
+    await recordAuditEvent({
+      action: "client.contact_added",
+      entityId: clientId,
+      organizationId,
+      after: { contactId: contact.id, email: contact.email, type: contact.type },
+    });
+  }
+
+  log.action("client.contact_added", { clientId });
+
   return contact;
 };
 
@@ -225,9 +278,20 @@ export const updateClientContact = async (
   contactId: string,
   clientId: string,
   organizationId: string,
-  data: Partial<typeof clientContacts.$inferInsert>,
+  data: UpdateContactInput,
 ) => {
   if (data.email) await checkContactDuplicate(organizationId, data.email, contactId);
+
+  const [before] = await db
+    .select()
+    .from(clientContacts)
+    .where(
+      and(
+        eq(clientContacts.id, contactId),
+        eq(clientContacts.clientId, clientId),
+        eq(clientContacts.organizationId, organizationId),
+      ),
+    );
 
   const [updated] = await db
     .update(clientContacts)
@@ -240,6 +304,19 @@ export const updateClientContact = async (
       ),
     )
     .returning();
+
+  if (updated && before) {
+    await recordAuditEvent({
+      action: "client.contact_updated",
+      entityId: clientId,
+      organizationId,
+      before: { contactId: before.id, email: before.email, firstName: before.firstName, lastName: before.lastName },
+      after: { contactId: updated.id, email: updated.email, firstName: updated.firstName, lastName: updated.lastName },
+    });
+  }
+
+  log.action("client.contact_updated", { clientId });
+
   return updated ?? null;
 };
 
@@ -263,6 +340,16 @@ export const deleteClientContact = async (
         eq(clientContacts.organizationId, organizationId),
       ),
     );
+
+  await recordAuditEvent({
+    action: "client.contact_removed",
+    entityId: clientId,
+    organizationId,
+    before: { contactId: target.id, email: target.email, type: target.type },
+    onWriteFailure: "log",
+  });
+
+  log.action("client.contact_deleted", { clientId });
 };
 
 // ─── Client Companies ─────────────────────────────────────────────────────────
@@ -292,12 +379,33 @@ export const upsertClientCompany = async (
       .set({ ...data, updatedAt: new Date() })
       .where(eq(clientCompanies.clientId, clientId))
       .returning();
+    if (updated) {
+      await recordAuditEvent({
+        action: "client.updated",
+        entityId: clientId,
+        organizationId,
+        before: { companyName: existing.companyName, ein: existing.ein },
+        after: { companyName: updated.companyName, ein: updated.ein },
+        onWriteFailure: "log",
+      });
+    }
+    log.action("client.company_set", { clientId });
     return updated;
   }
   const [created] = await db
     .insert(clientCompanies)
     .values({ ...data, clientId, organizationId })
     .returning();
+  if (created) {
+    await recordAuditEvent({
+      action: "client.created",
+      entityId: clientId,
+      organizationId,
+      after: { companyName: created.companyName, ein: created.ein },
+      onWriteFailure: "log",
+    });
+  }
+  log.action("client.company_set", { clientId });
   return created;
 };
 
@@ -435,6 +543,7 @@ export class ClientsService {
         id: clients.id,
         firstName: clients.firstName,
         lastName: clients.lastName,
+        phone: clients.phone,
         displayName: clients.displayName,
         entityType: clients.entityType,
       })
@@ -462,6 +571,18 @@ export class ClientsService {
       })
       .where(eq(clients.id, existing.id))
       .returning();
+
+    log.action("client.updated", { clientId: existing.id });
+
+    await recordAuditEvent({
+      action: "client.profile_updated",
+      entityId: existing.id,
+      entityType: "client",
+      summary: "Client updated their profile",
+      before: { firstName: existing.firstName, lastName: existing.lastName, phone: existing.phone },
+      after: { firstName, lastName, phone: data.phone !== undefined ? (data.phone || null) : existing.phone },
+      onWriteFailure: "log",
+    });
 
     return updated ?? null;
   }
@@ -495,6 +616,16 @@ export class ClientsService {
       .update(clients)
       .set({ avatarUrl: key, updatedAt: new Date() })
       .where(eq(clients.id, clientRecord.id));
+
+    log.action("client.updated", { clientId: clientRecord.id });
+
+    await recordAuditEvent({
+      action: "client.avatar_updated",
+      entityId: clientRecord.id,
+      entityType: "client",
+      summary: "Client uploaded a new avatar",
+      onWriteFailure: "log",
+    });
 
     return { avatarUrl };
   }
@@ -656,11 +787,9 @@ export class ClientsService {
 
     if (!client) throw new NotFoundError("Client not found");
 
-    const portalUrl = process.env.CLIENT_PORTAL_URL || "http://clients.localhost:5173";
-    const loginUrl = `${portalUrl}/login`;
     const fullName = client.displayName;
 
-    // If user already exists, send them a password reset email
+    // If user already exists, send magic link
     if (client.userId) {
       const [existingUser] = await systemDb
         .select({ id: user.id, email: user.email })
@@ -669,16 +798,18 @@ export class ClientsService {
         .limit(1);
 
       if (existingUser) {
-        const portalUrl = process.env.CLIENT_PORTAL_URL || "http://clients.localhost:5173";
-        const resetUrl = `${portalUrl}/forgot-password`;
+        // Ensure portal status is active
+        await db
+          .update(clients)
+          .set({ portalStatus: "active", updatedAt: new Date() })
+          .where(eq(clients.id, clientId));
 
-        await emailService.sendEmail({
-          to: client.email,
-          subject: "Reset Your Oravanti Password",
-          html: this.generatePasswordResetTemplate({
-            clientName: fullName,
-            resetUrl,
-          }),
+        await recordAuditEvent({
+          action: "client.portal_invited",
+          entityId: clientId,
+          entityType: "client",
+          summary: `Portal invitation resent to ${client.email}`,
+          onWriteFailure: "log",
         });
 
         return {
@@ -700,7 +831,7 @@ export class ClientsService {
           email: client.email,
           password: tempPassword,
           accountType: "client",
-          onboardingState: "email_unverified",
+          onboardingState: "completed",
           callbackURL: env.EMAIL_VERIFICATION_CALLBACK_URL,
         },
         headers: headers as any,
@@ -726,23 +857,47 @@ export class ClientsService {
           });
         }
 
-        // Link user to the client record
+        // Link user to the client record + store temp password + set portal active
+        const encryptedPassword = await symmetricEncrypt({
+          key: env.BETTER_AUTH_SECRET,
+          data: tempPassword,
+        });
         await db
           .update(clients)
-          .set({ userId: result.user.id, updatedAt: new Date() })
+          .set({
+            userId: result.user.id,
+            tempPassword: encryptedPassword,
+            portalStatus: "active",
+            updatedAt: new Date(),
+          })
           .where(eq(clients.id, clientId));
 
-        // Send invitation email with credentials
-        await emailService.sendEmail({
-          to: client.email,
-          subject: `Welcome to Oravanti — Your client portal is ready`,
-          html: this.generateClientInvitationTemplate({
-            clientName: fullName,
-            email: client.email,
-            tempPassword,
-            loginUrl,
-          }),
+        // Send invitation email with login credentials
+        const [orgRecord] = await db
+          .select({ name: organization.name })
+          .from(organization)
+          .where(eq(organization.id, client.organizationId))
+          .limit(1);
+
+        const loginUrl = `${env.FRONTEND_APP_URL || "http://localhost:5173"}/login?email=${encodeURIComponent(client.email)}&password=${encodeURIComponent(tempPassword)}`;
+
+        await emailService.sendInvitationWithCredentials({
+          email: client.email,
+          tempPassword,
+          inviteLink: loginUrl,
+          invitedByUsername: "Your team",
+          invitedByEmail: "",
+          orgName: orgRecord?.name ?? "your organization",
         });
+
+        await recordAuditEvent({
+          action: "client.portal_invited",
+          entityId: clientId,
+          organizationId,
+          after: { email: client.email },
+        });
+
+        log.action("client.portal_invited", { clientId });
 
         return {
           invited: true,
@@ -765,16 +920,12 @@ export class ClientsService {
             .set({ userId: existingUser.id, updatedAt: new Date() })
             .where(eq(clients.id, clientId));
 
-          const portalUrl = process.env.CLIENT_PORTAL_URL || "http://clients.localhost:5173";
-          const resetUrl = `${portalUrl}/forgot-password`;
-
-          await emailService.sendEmail({
-            to: client.email,
-            subject: "Reset Your Oravanti Password",
-            html: this.generatePasswordResetTemplate({
-              clientName: fullName,
-              resetUrl,
-            }),
+          await recordAuditEvent({
+            action: "client.portal_invited",
+            entityId: clientId,
+            entityType: "client",
+            summary: `Portal access linked to existing user for ${client.email}`,
+            onWriteFailure: "log",
           });
 
           return {
@@ -785,38 +936,11 @@ export class ClientsService {
           };
         }
       }
+      log.failure("client.portal_invite_failed", error, { clientId });
       throw error;
     }
 
     throw new BadRequestError("Failed to send invitation");
-  }
-
-  async resetClientPassword(
-    clientId: string,
-    organizationId: string,
-  ) {
-    const [client] = await db
-      .select()
-      .from(clients)
-      .where(
-        and(
-          eq(clients.id, clientId),
-          eq(clients.organizationId, organizationId),
-        ),
-      );
-
-    if (!client) throw new NotFoundError("Client not found");
-    if (!client.userId) throw new BadRequestError("Client does not have a portal account");
-
-    // Send a verification OTP that the client can use to reset their password
-    await auth.api.sendVerificationOTP({
-      body: {
-        email: client.email,
-        type: "forget-password",
-      },
-    });
-
-    return { resetSent: true, sentAt: new Date().toISOString() };
   }
 
   async getClientSessions(
@@ -882,6 +1006,15 @@ export class ClientsService {
 
     if (!deleted) throw new NotFoundError("Session not found");
 
+    await recordAuditEvent({
+      action: "client.portal_session_revoked",
+      entityId: clientId,
+      organizationId,
+      after: { sessionToken: token.slice(0, 8) + "..." },
+    });
+
+    log.action("client.portal_session_revoked", { clientId });
+
     return { revoked: true };
   }
 
@@ -907,7 +1040,7 @@ export class ClientsService {
         emailVerified: false,
         lastLoginAt: null,
         activeSessionCount: 0,
-        accountStatus: "never_invited",
+        accountStatus: "invited" as const,
       };
     }
 
@@ -929,14 +1062,14 @@ export class ClientsService {
         ),
       );
 
-    let accountStatus: "invited" | "active" | "never_invited" = "never_invited";
-    if (userRecord) {
-      if (Number(activeCount) > 0) {
+    let accountStatus: "invited" | "active" | "disabled" = "invited";
+
+    // Check portalStatus column first
+    if (client.portalStatus === "disabled") {
+      accountStatus = "disabled";
+    } else if (userRecord) {
+      if (Number(activeCount) > 0 || userRecord.emailVerified) {
         accountStatus = "active";
-      } else if (userRecord.emailVerified) {
-        accountStatus = "active";
-      } else {
-        accountStatus = "invited";
       }
     }
 
@@ -954,6 +1087,41 @@ export class ClientsService {
       activeSessionCount: Number(activeCount),
       accountStatus,
     };
+  }
+
+  async updatePortalStatus(
+    clientId: string,
+    organizationId: string,
+    status: "none" | "pending" | "active" | "disabled",
+  ) {
+    const [client] = await db
+      .select()
+      .from(clients)
+      .where(
+        and(
+          eq(clients.id, clientId),
+          eq(clients.organizationId, organizationId),
+        ),
+      );
+
+    if (!client) throw new NotFoundError("Client not found");
+
+    await db
+      .update(clients)
+      .set({ portalStatus: status, updatedAt: new Date() })
+      .where(eq(clients.id, clientId));
+
+    await recordAuditEvent({
+      action: "client.portal_status_changed",
+      entityId: clientId,
+      organizationId,
+      before: { portalStatus: client.portalStatus },
+      after: { portalStatus: status },
+    });
+
+    log.action("client.portal_status_changed", { clientId });
+
+    return { clientId, portalStatus: status };
   }
 
   // ─── Private Helpers ───────────────────────────────────────────────────────

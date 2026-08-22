@@ -1,3 +1,4 @@
+import { AuditModule } from "./audit/audit.module";
 import { AuthModule } from "./auth/auth.module";
 import { CalendarModule } from "./calendar/calendar.module";
 import { CasesModule } from "./cases/cases.module";
@@ -16,7 +17,6 @@ import {
   FinanceReportsModule,
   InvoicesModule,
   PaymentPublicModule,
-  PaymentWebhookModule,
   TimeBillingModule,
 } from "./finance/finance.module";
 import {
@@ -25,11 +25,12 @@ import {
   TwilioWebhookModule,
 } from "./notifications/notifications.module";
 import { RevenueAnalyticsModule } from "./revenue-analytics/revenue-analytics.module";
-import { AccessControlModule } from "./settings/access-control/access-control.module";
-import { ApprovalWorkflowsModule } from "./settings/approval-workflows/approval-workflows.module";
+import { RolesPermissionsModule } from "./settings/roles-permissions/roles-permissions.module";
+import { RoleGroupsModule } from "./settings/role-groups/role-groups.module";
 import { ConsultationSettingsModule } from "./settings/consultation/consultation-settings.module";
 import { NotificationSettingsModule } from "./settings/notifications/notification-settings.module";
-import { DataAccessModule } from "./settings/data-access/data-access.module";
+import { ConfidoWebhookModule } from "./finance/confido/confido-webhooks.routes";
+import { PaymentSettingsModule } from "./settings/payments/payment-settings.module";
 import { FinancialAccessModule } from "./settings/financial-access/financial-access.module";
 import { FirmInfoModule } from "./settings/firm-info/firm-info.module";
 import { FirmProfileModule } from "./settings/firm-profile/firm-profile.module";
@@ -50,6 +51,7 @@ import type { Module } from "../app";
 
 export const modules: Module[] = [
   new AuthModule(),
+  new AuditModule(),
   new StaffsModule(),
   new StaffAvailabilityModule(),
   new DocumentsModule(),
@@ -71,19 +73,20 @@ export const modules: Module[] = [
   new FinanceReportsModule(),
   // Public: the token is the credential, no requireAuth.
   new PaymentPublicModule(),
-  new PaymentWebhookModule(),
   new TwilioWebhookModule(),
   new ResendWebhookModule(),
   new NotificationsModule(),
+  // Public: the HMAC signature is the credential, no requireAuth.
+  new ConfidoWebhookModule(),
   new PermissionAuditLogModule(),
   new FirmInfoModule(),
   new FirmProfileModule(),
   new ConsultationSettingsModule(),
   new NotificationSettingsModule(),
-  new AccessControlModule(),
+  new PaymentSettingsModule(),
+  new RolesPermissionsModule(),
+  new RoleGroupsModule(),
   new FinancialAccessModule(),
-  new ApprovalWorkflowsModule(),
-  new DataAccessModule(),
   new SecurityModule(),
   new OrganizationModule(),
   new OnboardingModule(),

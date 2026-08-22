@@ -1,14 +1,19 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import { feeAgreements } from "../../db/schema/fee-agreements";
+import { invoicePayments } from "../../db/schema/invoice-payments";
 import { invoices } from "../../db/schema/invoices";
 import { leads } from "../../db/schema/leads";
+import { createModuleLogger } from "../../lib/logging/log";
 import { systemAccess } from "./account-access";
+import { clearingPolicyFor, countsTowardCaseOpening } from "./clearing-policy";
 import { agingOverDues } from "./dues";
 import type { ScheduleRow } from "./instalments";
 import { create, type CreateInvoiceLine } from "./invoices.service";
 import { num, toMoney } from "./money";
 import { firmToday } from "./status";
+
+const log = createModuleLogger("fee-agreement-billing.service");
 
 /**
  * Fee agreements, as invoices.
@@ -215,16 +220,37 @@ export const raiseFeeAgreementInvoice = async (
     .set({ invoiceId: invoice.id, updatedAt: new Date() })
     .where(eq(feeAgreements.id, input.agreementId));
 
+  log.action("fee_agreement.generated", { agreementId: input.agreementId, invoiceId: invoice.id });
+
   return invoice.id;
 };
 
 /**
  * Is the fee-agreement invoice paid up enough to open the case?
  *
- * "Nothing overdue, and something received." A firm that agrees a deposit plus
- * three monthly payments opens the case on the deposit — waiting for the whole
- * plan would make offering one pointless. A missed instalment later does not
- * close the case again; this is only consulted at open time.
+ * "Nothing overdue, and enough money that counts." A firm that agrees a deposit
+ * plus three monthly payments opens the case on the deposit — waiting for the
+ * whole plan would make offering one pointless. A missed instalment later does
+ * not close the case again; this is only consulted at open time.
+ *
+ * ## What counts
+ *
+ * It used to be `amount_paid > 0`, which asked only whether money had been
+ * *reported*. The spike measured a real card payment sitting at `PENDING` with
+ * `canVoid: true, settledOn: null`, so a case opened on money that could still
+ * be pulled from the batch — and on ACH that window is days long and ends in a
+ * possible return.
+ *
+ * It now sums only the rows the firm's `payment_clearing_policy` says count.
+ * The default, `ach_only`, opens on a card at once and waits for ACH to clear,
+ * because the risks are not symmetric: an ACH return is routine and arrives
+ * within days, whereas a card is more likely to be disputed months later as a
+ * chargeback, which no gate can prevent.
+ *
+ * Note the deliberate split from `invoices.amount_paid`, which stays gross of
+ * settlement. A client who has paid is paid; whether the funds have cleared is
+ * the firm's cashflow question, not the client's obligation. This is the one
+ * place that asks, and it asks explicitly.
  *
  * Returns true when there is no invoice at all: an agreement that bills nothing
  * upfront has nothing to satisfy.
@@ -250,12 +276,26 @@ export const feeInvoiceSatisfied = async (
   // A link pointing at nothing must not block a case indefinitely.
   if (!invoice) return true;
   if (invoice.status === "void") return true;
-  if (invoice.status === "paid") return true;
+  // `refunded` is deliberately NOT here. Void means the firm decided not to
+  // charge, so nothing is owed and nothing should block. Refunded means the
+  // client paid and got the money back — they have not paid, so the case should
+  // stay shut. Falling through to the counted-money test below gets that right
+  // on its own: the reversal nets the payment out and `counted` is zero.
   // Still a draft: it was never sent, so the client has not been asked. Do not
   // hold the case hostage to a billing step the firm has not completed.
   if (invoice.status === "draft") return true;
 
-  if (num(invoice.amountPaid) <= 0) return false;
+  // Deliberately BEFORE the `paid` short-circuit that used to sit above.
+  // `status` is derived from `amount_paid`, which is gross of settlement, so an
+  // invoice paid in full by a card that has not deposited reads as "paid" — and
+  // returning true on that would wave through exactly the money this gate
+  // exists to wait for, under every policy including all_payments.
+  const counted = await countedPaid(organizationId, invoiceId);
+  if (counted <= 0) return false;
+
+  // Covered outright by money that counts. Equivalent to the old `paid`
+  // short-circuit, but measured against cleared money rather than reported.
+  if (counted - num(invoice.totalAmount) >= -0.005) return true;
 
   const today = await firmToday(organizationId);
   const overdue = await agingOverDues(
@@ -264,4 +304,33 @@ export const feeInvoiceSatisfied = async (
     eq(invoices.id, invoiceId),
   );
   return num(overdue.pastDue) <= 0;
+};
+
+/**
+ * Money on this invoice that counts toward opening a case.
+ *
+ * Net of reversals, because reversal rows are negative and always settled — a
+ * returned payment reduces this the moment we hear about it, under every
+ * policy.
+ */
+const countedPaid = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<number> => {
+  const policy = await clearingPolicyFor(organizationId);
+
+  const [row] = await db
+    .select({
+      total: sql<string>`coalesce(sum(${invoicePayments.amount}), 0)`,
+    })
+    .from(invoicePayments)
+    .where(
+      and(
+        eq(invoicePayments.organizationId, organizationId),
+        eq(invoicePayments.invoiceId, invoiceId),
+        countsTowardCaseOpening(policy),
+      ),
+    );
+
+  return num(row?.total);
 };

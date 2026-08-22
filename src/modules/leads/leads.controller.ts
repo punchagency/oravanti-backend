@@ -2,12 +2,37 @@
 import { Request, Response } from "express";
 import { db } from "../../db/client";
 import { staff } from "../../db/schema/staff";
+import { hasPermission } from "../../middleware/permission.middleware";
 import { getRequestContext } from "../../middleware/request-context";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { sendSuccess } from "../../utils/send-success";
+import { getTaskReviewEvents } from "../shared/task-review-events.service";
 import { logLeadView } from "./lead-events.service";
 import { LeadWorkflowService } from "./lead-workflow.service";
+import type { ConsultationCancellation } from "./leads.service";
 import { LeadsService } from "./leads.service";
+
+/**
+ * Say what happened to the money, not just that the cancellation worked.
+ *
+ * A refund that did not happen is the thing the user most needs to know, and a
+ * bare "Consultation cancelled successfully" actively hides it.
+ */
+const cancellationMessage = (c: ConsultationCancellation): string => {
+  if (c.refundOwed > 0 && c.awaitingAdmin) {
+    return `Consultation cancelled. ${c.refundOwed.toFixed(2)} is still owed to the client — an administrator needs to issue the refund.`;
+  }
+  if (c.manualOutstanding > 0) {
+    return `Consultation cancelled and ${c.refunded.toFixed(2)} refunded. ${c.manualOutstanding.toFixed(2)} was paid outside the processor and has to be returned to the client directly.`;
+  }
+  if (c.refundOwed > 0) {
+    return `Consultation cancelled, but ${c.refundOwed.toFixed(2)} could not be refunded automatically. Check the invoice.`;
+  }
+  if (c.refunded > 0) {
+    return `Consultation cancelled and ${c.refunded.toFixed(2)} refunded to the client.`;
+  }
+  return "Consultation cancelled successfully";
+};
 
 export class LeadsController {
   private svc: LeadsService;
@@ -169,8 +194,6 @@ export class LeadsController {
         .limit(1);
       userRole = staffMember?.role ?? undefined;
     }
-
-    console.log({ userRole });
 
     const result = await this.svc.getLeadNotes(leadId, organizationId!, {
       context,
@@ -439,11 +462,18 @@ export class LeadsController {
     const staffId = _staffId ?? undefined;
     const body = { ...req.body };
     if (body.scheduledAt) body.scheduledAt = new Date(body.scheduledAt);
+    // Needed only by the `refund` no-show policy, and asked here for the same
+    // reason cancellation asks here: this is the only layer holding the request
+    // headers Better Auth needs. Marking a no-show is an intake action and
+    // refunding is a finance one, so the two come apart — anyone may mark it,
+    // and the money waits visibly for someone who can move it.
+    const canRefund = await hasPermission(req, { finance: ["refund"] });
     const result = await this.svc.updateConsultation(
       req.params.id as string,
       organizationId!,
       body,
       staffId,
+      canRefund,
     );
     sendSuccess(res, result, "Consultation updated successfully");
   };
@@ -451,19 +481,24 @@ export class LeadsController {
   cancelConsultation = async (req: Request, res: Response) => {
     const { staffId: _staffId, organizationId } = getRequestContext();
     const staffId = _staffId ?? undefined;
+    // Anyone in intake may cancel; only an owner or admin may send the money
+    // back. Resolved here because this is the only layer holding the request
+    // headers Better Auth needs, and asked rather than enforced so the
+    // cancellation still goes through either way.
+    const canRefund = await hasPermission(req, { finance: ["refund"] });
     const result = await this.svc.cancelConsultation(
       req.params.id as string,
       organizationId!,
       { reason: req.body?.reason },
       staffId,
+      canRefund,
     );
-    sendSuccess(res, result, "Consultation cancelled successfully");
+    sendSuccess(res, result, cancellationMessage(result.cancellation));
   };
 
   // Public booking flow (token-gated, no auth)
 
   getConsultationBooking = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     const result = await this.svc.getConsultationBooking(
       req.params.token as string,
@@ -471,17 +506,15 @@ export class LeadsController {
     sendSuccess(res, result, "Booking data retrieved successfully");
   };
 
-  payConsultationFee = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
+  startConsultationPayment = async (req: Request, res: Response) => {
 
-    const result = await this.svc.payConsultationFee(
+    const result = await this.svc.startConsultationPayment(
       req.params.token as string,
     );
-    sendSuccess(res, result, "Payment processed successfully");
+    sendSuccess(res, result, "Payment session started");
   };
 
   selectConsultationSlot = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     const result = await this.svc.selectConsultationSlot(
       req.params.token as string,
@@ -491,8 +524,10 @@ export class LeadsController {
   };
 
   updateBookingTimezone = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
-
+    await this.svc.updateBookingTimezone(
+      req.params.token as string,
+      req.body.timezone as string,
+    );
     sendSuccess(res, null, "Timezone updated successfully");
   };
 
@@ -592,7 +627,6 @@ export class LeadsController {
   // Embedded signing session (public, token-gated)
 
   getEmbeddedSignSession = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     const result = await this.svc.getEmbeddedSignSession(
       req.params.token as string,
@@ -603,7 +637,6 @@ export class LeadsController {
   // Dropbox Sign Webhook (public)
 
   handleDropboxSignWebhook = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
 
     const raw = (req.body as { json?: string })?.json;
     if (!raw) {
@@ -847,6 +880,29 @@ export class LeadsController {
     sendSuccess(res, task, "Task rejected");
   };
 
+  reopenLeadTask = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
+    const task = await this.wfSvc.reopenTask(
+      req.params.taskId as string,
+      staffId!,
+      req.body.notes,
+      organizationId!,
+    );
+    sendSuccess(res, task, "Task reopened");
+  };
+
+  /** The task's full submit/approve/reject/reopen note thread. */
+  getLeadTaskReviewThread = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const events = await getTaskReviewEvents(
+      "lead_task",
+      req.params.taskId as string,
+      organizationId!,
+    );
+    sendSuccess(res, events, "Task review thread retrieved");
+  };
+
   getLeadReviewQueue = async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
 
@@ -925,21 +981,6 @@ export class LeadsController {
     sendSuccess(res, result.data, "Audit log retrieved successfully", 200, {
       pagination: result.pagination,
     });
-  };
-
-  createLeadTimelineEvent = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const event = await this.wfSvc.createTimelineEvent({
-      leadId: req.params.leadId as string,
-      organizationId: organizationId!,
-      eventType: req.body.eventType,
-      title: req.body.title,
-      description: req.body.description,
-      metadata: req.body.metadata,
-      createdById: staffId ?? undefined,
-    });
-    sendSuccess(res, event, "Timeline event created successfully", 201);
   };
 
   // Lead Documents

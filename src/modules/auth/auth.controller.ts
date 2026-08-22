@@ -1,6 +1,5 @@
 ﻿import { Request, Response } from "express";
 import { ContractorSignUpBody, SignInBody } from "../../types/auth.types";
-import { getRequestContext } from "../../middleware/request-context";
 import { applyAuthHeaders } from "../../utils/applyAuthHeaders";
 import asyncWrap from "../../utils/asyncWrapper";
 import { sendSuccess } from "../../utils/send-success";
@@ -76,7 +75,6 @@ export class AuthController {
   );
 
   verifyTOTP = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const { code } = req.body;
 
     const authResponse = await this.authService.verifyTOTP(code, req);
@@ -88,7 +86,6 @@ export class AuthController {
   });
 
   signOut = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const authResponse = await this.authService.signOut(req);
 
     applyAuthHeaders(authResponse.headers, res);
@@ -123,7 +120,6 @@ export class AuthController {
   );
 
   resetPasswordWithOTP = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const { email, otp, password } = req.body;
 
     const authResponse = await this.authService.resetPasswordWithOTP({ email, otp, password });
@@ -133,7 +129,6 @@ export class AuthController {
   });
 
   changePassword = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const { currentPassword, newPassword } = req.body;
 
     const authResponse = await this.authService.changePassword({ currentPassword, newPassword }, req);
@@ -143,7 +138,6 @@ export class AuthController {
   });
 
   revokeSession = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const { token } = req.body;
 
     const authResponse = await this.authService.revokeSession(token, req);

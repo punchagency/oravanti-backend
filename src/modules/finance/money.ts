@@ -56,29 +56,43 @@ export const money = (value: number): string => toMoney(value).toFixed(2);
 export const rate = (value: number): string => toRate(value).toFixed(4);
 
 /**
- * Split `amount` across operating/trust in proportion to what the invoice
- * still owes on each side.
+ * Split `amount` across trust/operating, filling TRUST FIRST.
  *
- * Used as the DEFAULT when a payment is recorded without an explicit split, so
- * the simple Record-payment form keeps working. The result is then stored, not
+ * Used as the default when a payment is recorded without an explicit split, so
+ * the simple Record-payment form keeps working. The result is stored, not
  * recomputed at read time — IOLTA money must be tracked, not estimated.
  *
- * The remainder is assigned to operating so the two parts always sum exactly to
- * `amount`; the `invoice_payments_split_balances` check constraint enforces it.
+ * Trust-first rather than pro-rata, for two reasons:
+ *
+ *   1. **It is what the processor does.** Confido allocates partial payments
+ *      trust-first, cumulatively, and it was verified against their sandbox
+ *      rather than assumed. Apportioning differently on our side would make our
+ *      ledger disagree with theirs on every partial payment.
+ *   2. **It is the safer order.** Government and filing fees are the client's
+ *      money passing through the firm; funding those before the firm's own fee
+ *      means a part-paid matter is never short on the money that is not the
+ *      firm's to be short of.
+ *
+ * Unlike pro-rata there is no remainder to place — one side is filled and the
+ * rest goes to the other — so the parts sum exactly to `amount` by
+ * construction, which is what `invoice_payments_split_balances` requires.
+ *
+ * `operatingOutstanding` is unused by this rule but stays in the signature:
+ * callers pass both sides, and the day an allocation policy needs the operating
+ * figure again (a "costs first" agreement, say) the call sites should not have
+ * to change.
  */
-export const proRateSplit = (
+export const trustFirstSplit = (
   amount: number,
   operatingOutstanding: number,
   trustOutstanding: number,
 ): { operating: number; trust: number } => {
-  const total = toMoney(operatingOutstanding + trustOutstanding);
   const paid = toMoney(amount);
 
-  // Nothing outstanding to apportion against (an overpayment on a settled
-  // invoice, say) — attribute to operating, the firm's own revenue.
-  if (total <= 0) return { operating: paid, trust: 0 };
+  // Nothing owed to trust — an overpayment on a settled invoice, or an
+  // operating-only one. It is the firm's revenue, not client money.
+  if (toMoney(trustOutstanding) <= 0) return { operating: paid, trust: 0 };
 
-  const trust = toMoney((paid * trustOutstanding) / total);
-  const clampedTrust = Math.min(Math.max(trust, 0), paid);
-  return { operating: toMoney(paid - clampedTrust), trust: clampedTrust };
+  const trust = Math.min(paid, toMoney(trustOutstanding));
+  return { operating: toMoney(paid - trust), trust };
 };

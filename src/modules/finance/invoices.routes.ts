@@ -14,11 +14,16 @@ import {
   activityQuerySchema,
   caseDefaultsQuerySchema,
   createInvoiceBodySchema,
+  createLinePresetBodySchema,
   exportInvoicesQuerySchema,
+  extendDueDateBodySchema,
   followUpBodySchema,
   invoiceParamsSchema,
+  paymentParamsSchema,
   listInvoicesQuerySchema,
+  listLinePresetsQuerySchema,
   recordPaymentBodySchema,
+  refundPaymentBodySchema,
   setScheduleBodySchema,
   unbilledTimeQuerySchema,
   updateInvoiceBodySchema,
@@ -47,6 +52,10 @@ export class InvoicesRouter {
     const create = requirePermission({ finance: ["create"] });
     const update = requirePermission({ finance: ["update"] });
     const recordPayment = requirePermission({ finance: ["record_payment"] });
+    // Deliberately not `record_payment`. Owner and admin only — recording a
+    // payment wrongly is corrected from the same screen, whereas a refund moves
+    // money out of the firm's account and cannot be taken back.
+    const refund = requirePermission({ finance: ["refund"] });
 
     // ── Static paths FIRST ───────────────────────────────────────────────────
     // Express 5 matches in declaration order, so any of these declared after
@@ -124,6 +133,48 @@ export class InvoicesRouter {
       create,
       validateRequest({ query: caseDefaultsQuerySchema }),
       controller.getCaseDefaults,
+    );
+
+    /**
+     * @openapi
+     * /finance/invoices/line-presets:
+     *   get:
+     *     tags: [Finance — Invoicing]
+     *     summary: The catalog manual invoice lines are composed from
+     *     description: >
+     *       Returns the shipped catalog plus this firm's own entries, narrowed
+     *       to the matter's case type and practice area and widened outward:
+     *       case-type presets, then practice-area, then unscoped. `rank` says
+     *       which matched. Trust presets are omitted for callers who cannot
+     *       write trust lines.
+     *     responses:
+     *       200: { description: Line presets retrieved }
+     */
+    this.router.get(
+      "/line-presets",
+      create,
+      validateRequest({ query: listLinePresetsQuerySchema }),
+      controller.getLinePresets,
+    );
+
+    /**
+     * @openapi
+     * /finance/invoices/line-presets:
+     *   post:
+     *     tags: [Finance — Invoicing]
+     *     summary: Save a custom line to the firm's own list
+     *     description: >
+     *       Creates a firm-owned preset. Re-saving the same name in the same
+     *       scope updates its amount rather than failing. Cannot create or
+     *       modify a shipped preset — RLS refuses the write.
+     *     responses:
+     *       201: { description: Line preset saved }
+     */
+    this.router.post(
+      "/line-presets",
+      create,
+      validateRequest({ body: createLinePresetBodySchema }),
+      controller.createLinePreset,
     );
 
     /**
@@ -309,6 +360,34 @@ export class InvoicesRouter {
 
     /**
      * @openapi
+     * /finance/invoices/{id}/extend-due-date:
+     *   post:
+     *     tags: [Finance — Invoicing]
+     *     summary: Give the client longer to pay
+     *     description: >
+     *       Moves the due date forward on a live, unsettled invoice — stored
+     *       `sent` or `partial`, which includes anything currently overdue.
+     *       Forward only: a date on or before the current one is refused, since
+     *       an extension that can shorten is not an extension. Refused on a
+     *       draft (edit it instead), on a settled invoice, on a void, and on an
+     *       invoice with a payment schedule, whose header date is pinned to the
+     *       final instalment and must be changed by revising the schedule.
+     *     responses:
+     *       200: { description: Due date extended }
+     *       400: { description: Not extendable, scheduled, or not a later date }
+     */
+    this.router.post(
+      "/:id/extend-due-date",
+      update,
+      validateRequest({
+        params: invoiceParamsSchema,
+        body: extendDueDateBodySchema,
+      }),
+      controller.extendDueDate,
+    );
+
+    /**
+     * @openapi
      * /finance/invoices/{id}/payments:
      *   post:
      *     tags: [Finance — Invoicing]
@@ -324,6 +403,25 @@ export class InvoicesRouter {
         body: recordPaymentBodySchema,
       }),
       controller.recordPayment,
+    );
+
+    /**
+     * @openapi
+     * /finance/invoices/{id}/payments/{paymentId}/refund:
+     *   post:
+     *     tags: [Finance — Invoicing]
+     *     summary: Send a payment back; voids it if it has not settled yet
+     *     responses:
+     *       201: { description: Refund issued or payment voided }
+     */
+    this.router.post(
+      "/:id/payments/:paymentId/refund",
+      refund,
+      validateRequest({
+        params: paymentParamsSchema,
+        body: refundPaymentBodySchema,
+      }),
+      controller.refundPayment,
     );
 
     /**

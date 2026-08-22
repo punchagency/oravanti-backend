@@ -1,12 +1,21 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
+import { netPaidOnInvoice } from "./refunds.service";
 import { db } from "../../db/client";
-import { consultations } from "../../db/schema/consultations";
+import {
+  LIVE_CONSULTATION_STATUSES,
+  consultations,
+} from "../../db/schema/consultations";
+import { invoiceInstalments } from "../../db/schema/invoice-instalments";
 import { invoices } from "../../db/schema/invoices";
 import { leads } from "../../db/schema/leads";
+import { createModuleLogger } from "../../lib/logging/log";
 import { systemAccess } from "./account-access";
 import { create } from "./invoices.service";
-import { num } from "./money";
+import { setSchedule } from "./instalments.service";
+import { num, toMoney } from "./money";
 import { firmToday } from "./status";
+
+const log = createModuleLogger("consultation-billing.service");
 
 /**
  * Consultation fees, as invoices.
@@ -42,6 +51,11 @@ export type ConsultationFeeInput = {
   scheduledAt: Date | null;
   /** `pay_now` is due immediately; the consultation does not start until paid. */
   dueImmediately: boolean;
+  /**
+   * The deposit as a percentage of the fee, when the firm collects one. The
+   * balance falls due after the consultation.
+   */
+  upfrontPercent?: number | null;
 };
 
 /**
@@ -51,6 +65,11 @@ export type ConsultationFeeInput = {
  * the consultation flow has its own moment for it: `pay_now` sends at once,
  * `invoice_after` when the call is completed, `pay_in_person` never — staff
  * record the payment directly.
+ *
+ * The two that are not emailed are still ISSUED (`issueInvoice`) rather than
+ * left in draft. A draft is excluded from `countableInvoices`, so a fee
+ * collected in cash would otherwise be missing from every revenue report while
+ * sitting in the till.
  *
  * Returns null when there is no practice area on the lead. The invoice would be
  * refused by validation (a practice area is required when there is no matter,
@@ -101,19 +120,74 @@ export const raiseConsultationInvoice = async (
     timeEntryIds: [],
   });
 
+  // A deposit is two dated slices of ONE invoice, not two invoices. Two would
+  // mean two numbers, two dunning tracks and a reconciliation problem;
+  // `invoice_instalments` exists precisely to avoid that, and
+  // `assertScheduleBalances` guarantees the slices sum to the total inside the
+  // same transaction as the write.
+  if (input.upfrontPercent != null && input.amount > 0) {
+    // Rounding lands on the deposit and the balance is the remainder, so the
+    // two always sum to the total exactly — never round(a) + round(b), which
+    // can miss by a cent and trip the balance assertion.
+    const deposit = toMoney((input.amount * input.upfrontPercent) / 100);
+    const balance = toMoney(input.amount - deposit);
+
+    // A deposit that rounds to nothing, or to the whole fee, is not a deposit.
+    // Falling back to a single-payment invoice is better than writing a
+    // schedule with a zero slice, which `assertScheduleBalances` would reject
+    // and which would take the whole booking down with it.
+    if (deposit > 0 && balance > 0) {
+      // The balance is due when the consultation happens; an unscheduled one
+      // falls back to the standard terms.
+      const balanceDue = input.scheduledAt
+        ? input.scheduledAt.toISOString().slice(0, 10)
+        : addDays(today, TERMS_DAYS);
+
+      // Strictly after the deposit, always. `setSchedule` renumbers sequence
+      // into due-date order, so two slices sharing a date have no deterministic
+      // tiebreaker — and the booking gate reads sequence 1 as the deposit. An
+      // instant consultation is scheduled for today, which is exactly when that
+      // collision happens, and it would silently gate on the balance instead.
+      const dueDate = balanceDue > today ? balanceDue : addDays(today, 1);
+
+      await setSchedule(
+        organizationId,
+        invoice.id,
+        [
+          { dueDate: today, amount: deposit },
+          { dueDate, amount: balance },
+        ],
+        actorStaffId,
+        systemAccess(),
+      );
+    }
+  }
+
   await db
     .update(consultations)
     .set({ invoiceId: invoice.id, updatedAt: new Date() })
     .where(eq(consultations.id, input.consultationId));
+
+  log.action("consultation_billing.generated", { consultationId: input.consultationId, invoiceId: invoice.id });
 
   return invoice.id;
 };
 
 export type ConsultationFee = {
   amount: number | null;
-  status: "none" | "unpaid" | "paid" | "waived";
+  status: "none" | "unpaid" | "paid" | "waived" | "refunded";
   invoiceId: string | null;
   invoiceNumber: string | null;
+  /**
+   * What the firm is still holding of this fee.
+   *
+   * Net of reversals by construction — a refund is a negative ledger row — so
+   * it answers two questions at once: how much a cancellation would send back,
+   * and, once the consultation IS cancelled, how much is still owed. The
+   * caller decides which of those it is; nothing is stored either way, so it
+   * cannot fall out of step with the ledger.
+   */
+  netPaid: number;
 };
 
 /**
@@ -142,6 +216,9 @@ export const consultationFee = async (
       status: row.feeStatus,
       invoiceId: null,
       invoiceNumber: null,
+      // No invoice means no ledger rows. The legacy `feeStatus` flag was never
+      // backed by money moving, so claiming an amount is held would be a guess.
+      netPaid: 0,
     };
   }
 
@@ -169,18 +246,129 @@ export const consultationFee = async (
       status: row.feeStatus,
       invoiceId: row.invoiceId,
       invoiceNumber: null,
+      netPaid: 0,
     };
   }
 
   return {
     amount: num(invoice.totalAmount),
+    // Order matters. A refunded invoice has its full balance outstanding again
+    // — the reversal nets `amount_paid` to zero — so testing the balance first
+    // would report it as "unpaid" and invite someone to chase it. And it is not
+    // "waived": the firm charged and was paid, then gave the money back.
     status:
       invoice.status === "void"
         ? "waived"
-        : num(invoice.balanceDue) <= 0
-          ? "paid"
-          : "unpaid",
+        : invoice.status === "refunded"
+          ? "refunded"
+          : num(invoice.balanceDue) <= 0
+            ? "paid"
+            : "unpaid",
     invoiceId: row.invoiceId,
     invoiceNumber: invoice.invoiceNumber,
+    netPaid: await netPaidOnInvoice(organizationId, row.invoiceId),
   };
+};
+
+// ── The booking gate ─────────────────────────────────────────────────────────
+
+/**
+ * Is money still owed before this consultation may be booked?
+ *
+ * Replaces the old `consultation.feeStatus === "unpaid"` test, which was a
+ * stored enum standing in for a ledger. The two drifted, and each way they
+ * drifted was a bug:
+ *
+ *   - Voiding an unpaid fee invoice left `fee_status` at `"unpaid"` forever.
+ *     No payment could ever clear it — the invoice was void, so no webhook was
+ *     coming — and the lead's booking page offered no slots, permanently.
+ *   - A refund could not re-close the gate, because nothing wrote the enum
+ *     back.
+ *
+ * Reading the ledger fixes both without a special case for either: a voided
+ * invoice has no outstanding instalment, and a reversal is a negative row that
+ * lowers `netPaid` the moment it lands.
+ *
+ * The threshold is the whole fee, the deposit, or nothing, depending on the
+ * firm's schedule.
+ */
+export const consultationPaymentOutstanding = async (
+  organizationId: string,
+  consultation: { invoiceId: string | null; feeStatus: string },
+): Promise<boolean> => {
+  // Predates invoicing. The legacy flag is all there is, so trust it.
+  if (!consultation.invoiceId) return consultation.feeStatus === "unpaid";
+
+  const [invoice] = await db
+    .select({ status: invoices.status, totalAmount: invoices.totalAmount })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.organizationId, organizationId),
+        eq(invoices.id, consultation.invoiceId),
+      ),
+    )
+    .limit(1);
+
+  // The link points at nothing, or at an invoice the firm has withdrawn. Either
+  // way there is no debt to hold the booking against.
+  if (!invoice) return consultation.feeStatus === "unpaid";
+  if (invoice.status === "void") return false;
+
+  const netPaid = await netPaidOnInvoice(organizationId, consultation.invoiceId);
+
+  // A deposit schedule is the only case where part of the total is enough. The
+  // first instalment IS the deposit — `setSchedule` renumbers into due-date
+  // order, so sequence 1 is always the earliest.
+  const [deposit] = await db
+    .select({ amount: invoiceInstalments.amount })
+    .from(invoiceInstalments)
+    .where(
+      and(
+        eq(invoiceInstalments.organizationId, organizationId),
+        eq(invoiceInstalments.invoiceId, consultation.invoiceId),
+      ),
+    )
+    .orderBy(asc(invoiceInstalments.sequence))
+    .limit(1);
+
+  const required = deposit ? num(deposit.amount) : num(invoice.totalAmount);
+
+  // Half a cent, the same tolerance the payment split and schedule balance
+  // checks use, so a rounded deposit paid exactly is not one cent short.
+  return netPaid < required - 0.005;
+};
+
+/**
+ * Is a LIVE consultation billed by this invoice?
+ *
+ * The question behind refusing a Finance refund or void. The refusal exists so
+ * money cannot be sent back while a booking is still standing: cancelling is
+ * the one act that also releases the calendar slot, revokes the booking link
+ * and tells the client, and a bare refund does none of it.
+ *
+ * Once the consultation is terminal — cancelled, completed or a no-show — all
+ * of that has already happened, so the reason evaporates. Refusing then buys
+ * nothing and costs the only remaining way to return the client's money: a
+ * cancellation whose refund leg failed at the processor cannot be re-run
+ * (`cancelConsultation` refuses a cancelled consultation), so Finance is the
+ * last door.
+ */
+export const hasLiveConsultation = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<boolean> => {
+  const [row] = await db
+    .select({ id: consultations.id })
+    .from(consultations)
+    .where(
+      and(
+        eq(consultations.organizationId, organizationId),
+        eq(consultations.invoiceId, invoiceId),
+        inArray(consultations.status, [...LIVE_CONSULTATION_STATUSES]),
+      ),
+    )
+    .limit(1);
+
+  return Boolean(row);
 };

@@ -9,6 +9,10 @@ import {
   type EffectiveInvoiceStatus,
   type NewInvoiceLineItem,
 } from "../../db/schema/invoices";
+import {
+  LIVE_CONSULTATION_STATUSES,
+  consultations,
+} from "../../db/schema/consultations";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { leads } from "../../db/schema/leads";
 import { practiceAreas } from "../../db/schema/practice-areas";
@@ -17,6 +21,8 @@ import { team } from "../../db/schema/auth-schema";
 import { teamMembers } from "../../db/schema/team-members";
 import { timeEntries } from "../../db/schema/time-entries";
 import { withTransaction } from "../../db/transaction-context";
+import { recordAccessEvent } from "../shared/audit.service";
+import { createModuleLogger } from "../../lib/logging/log";
 import {
   AuthorizationError,
   BadRequestError,
@@ -46,7 +52,7 @@ import {
   writeSchedule,
 } from "./instalments.service";
 import { allocateInvoiceNumber, currentInvoiceYear } from "./invoice-number";
-import { money, num } from "./money";
+import { money, num, toMoney } from "./money";
 import {
   countableInvoices,
   effectiveStatusSql,
@@ -54,6 +60,8 @@ import {
   listableInvoices,
   statusFilter,
 } from "./status";
+import { LogEvent } from "../../lib/logging/events";
+import { retirePaymentLink } from "./payment-links.service";
 import { recalculateInvoiceTotals } from "./totals";
 import type {
   AccountAccess,
@@ -63,6 +71,8 @@ import type {
   InvoiceStats,
   InvoiceStatusFilter,
 } from "./types";
+
+const log = createModuleLogger("invoices.service");
 
 export type ListInvoicesOptions = Partial<PaginationParams> & {
   status?: InvoiceStatusFilter;
@@ -196,11 +206,18 @@ export const list = async (
   const showDrafts =
     options.status === "draft" || (isAllStatus && options.includeDrafts === true);
 
+  // A bucket that names a status the general list hides has to bypass the
+  // listable predicate entirely, or the two contradict and the filter returns
+  // nothing at all. Drafts already worked this way; `void` did not, which is
+  // why a voided invoice could not be found from anywhere in the UI.
+  const namesHiddenStatus =
+    options.status === "draft" || options.status === "void";
+
   const where = and(
     // RLS enforces this too; the explicit predicate is defence in depth and
     // universal in this codebase.
     eq(invoices.organizationId, organizationId),
-    options.status === "draft" ? undefined : listableInvoices(showDrafts),
+    namesHiddenStatus ? undefined : listableInvoices(showDrafts),
     statusFilter(options.status, today),
     accountPredicate,
     options.clientId ? eq(invoices.clientId, options.clientId) : undefined,
@@ -227,6 +244,7 @@ export const list = async (
       amountPaid: invoices.amountPaid,
       balanceDue: invoices.balanceDue,
       status: effectiveStatusSql(today),
+      consultationRefundBlocked: consultationRefundBlockedSql,
     })
     .from(invoices)
     .leftJoin(clients, onClient)
@@ -269,6 +287,7 @@ export const list = async (
     amountPaid: num(r.amountPaid),
     balanceDue: num(r.balanceDue),
     status: r.status as EffectiveInvoiceStatus,
+    consultationRefundBlocked: Boolean(r.consultationRefundBlocked),
     schedule: schedules.get(r.id) ?? null,
   }));
 
@@ -329,6 +348,28 @@ const listTotals = async (
 
 // ── Detail ───────────────────────────────────────────────────────────────────
 
+/**
+ * Will Finance refuse to refund or void this invoice?
+ *
+ * True while a LIVE consultation is billed by it. Cancelling that consultation
+ * is the one path that also releases the calendar slot and tells the client, so
+ * the UI needs to know before offering a button the API will refuse.
+ *
+ * Narrowed to live statuses deliberately, and it must stay in step with
+ * `hasLiveConsultation` — the server-side guard is the same rule, and a UI that
+ * hid the button for a CANCELLED consultation would leave a failed refund with
+ * a route the API allows and no human can reach.
+ *
+ * A correlated EXISTS rather than a join, so an invoice can never be duplicated
+ * by it.
+ */
+const consultationRefundBlockedSql = sql<boolean>`exists (
+  select 1 from ${consultations}
+  where ${consultations.invoiceId} = ${invoices.id}
+    and ${consultations.organizationId} = ${invoices.organizationId}
+    and ${inArray(consultations.status, [...LIVE_CONSULTATION_STATUSES])}
+)`;
+
 export const getById = async (
   organizationId: string,
   invoiceId: string,
@@ -341,6 +382,7 @@ export const getById = async (
       id: invoices.id,
       invoiceNumber: invoices.invoiceNumber,
       status: effectiveStatusSql(today),
+      consultationRefundBlocked: consultationRefundBlockedSql,
       storedStatus: invoices.status,
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
@@ -384,7 +426,9 @@ export const getById = async (
     )
     .limit(1);
 
-  if (!row) throw new NotFoundError("Invoice not found");
+  if (!row) { log.warn("invoice.updated", { reason: "not found" }); throw new NotFoundError("Invoice not found"); }
+
+  await recordAccessEvent({ action: "invoice.viewed", entityId: invoiceId });
 
   const lineRows = await db
     .select()
@@ -407,6 +451,22 @@ export const getById = async (
       ),
     )
     .orderBy(desc(invoicePayments.paymentDate));
+
+  /**
+   * How much has already been sent back against each payment.
+   *
+   * A fold over rows already in hand — every entry for this invoice is here,
+   * reversals included — so this costs no extra query. Reversal amounts are
+   * negative; the caller wants magnitudes.
+   */
+  const reversedAgainst = new Map<string, number>();
+  for (const p of paymentRows) {
+    if (!p.reversesPaymentId) continue;
+    reversedAgainst.set(
+      p.reversesPaymentId,
+      toMoney((reversedAgainst.get(p.reversesPaymentId) ?? 0) + Math.abs(num(p.amount))),
+    );
+  }
 
   const attorneyName = row.attorneyFirstName
     ? `${row.attorneyFirstName} ${row.attorneyLastName ?? ""}`.trim()
@@ -439,6 +499,7 @@ export const getById = async (
     id: row.id,
     invoiceNumber: row.invoiceNumber,
     status: row.status as EffectiveInvoiceStatus,
+    consultationRefundBlocked: Boolean(row.consultationRefundBlocked),
     storedStatus: row.storedStatus,
     issueDate: row.issueDate,
     dueDate: row.dueDate,
@@ -476,12 +537,40 @@ export const getById = async (
         amount: num(l.amount),
         account: l.account,
         timeEntryId: l.timeEntryId,
+        // Returned so editing a draft round-trips provenance instead of
+        // silently orphaning every line the picker composed.
+        presetId: l.presetId,
       })),
     payments: paymentRows.map((p) => ({
       id: p.id,
+      // Negative on a reversal. The sign IS the information — a UI that showed
+      // the magnitude alone would render a refund identically to the payment it
+      // undoes.
       amount: num(p.amount),
       amountOperating: num(p.amountOperating),
       amountTrust: maskTrust(access, num(p.amountTrust)),
+      kind: p.kind,
+      reversesPaymentId: p.reversesPaymentId,
+      /** Null while the money is still in flight. */
+      settledAt: p.settledAt,
+      /** Confido's word for it, so HELD reads as HELD rather than "pending". */
+      providerStatus: p.providerStatus,
+      /**
+       * What is left to send back on this payment.
+       *
+       * Net of everything already reversed against it. Without that subtraction
+       * a fully refunded payment still offered a Refund button, and the server
+       * guard measured against the GROSS amount — so the same money could be
+       * sent back twice.
+       */
+      refundableAmount: toMoney(
+        Math.max(num(p.amount) - (reversedAgainst.get(p.id) ?? 0), 0),
+      ),
+      /** Only a processor payment with something left on it can be refunded. */
+      refundable:
+        p.kind === "payment" &&
+        p.provider != null &&
+        num(p.amount) - (reversedAgainst.get(p.id) ?? 0) > 0.005,
       paymentDate: p.paymentDate,
       method: p.method,
       reference: p.reference,
@@ -512,6 +601,12 @@ export type CreateInvoiceLine = {
   quantity: number;
   rate: number;
   account: "operating" | "trust_iolta";
+  /**
+   * The catalog preset this line was composed from, when it was. Provenance
+   * only: the three fields above are what gets billed, and none of them is
+   * ever read back off the preset. See `line-presets.service.ts`.
+   */
+  presetId?: string;
 };
 
 /**
@@ -557,26 +652,31 @@ const loadBillableEntries = async (
     );
 
   if (entries.length !== entryIds.length) {
+    log.warn("invoice.created", { reason: "time entries not found" });
     throw new BadRequestError("One or more time entries could not be found");
   }
 
   for (const e of entries) {
     if (e.status !== "approved") {
+      log.warn("invoice.created", { reason: "unapproved time entry", entryId: e.id });
       throw new BadRequestError(
         "Only approved time entries can be added to an invoice",
       );
     }
     if (e.invoicedAt && !alreadyHeld.has(e.id)) {
+      log.warn("invoice.created", { reason: "already invoiced", entryId: e.id });
       throw new BadRequestError(
         "One or more time entries have already been invoiced",
       );
     }
     if (!e.billable) {
+      log.warn("invoice.created", { reason: "non-billable time entry", entryId: e.id });
       throw new BadRequestError(
         "Non-billable time entries cannot be added to an invoice",
       );
     }
     if (e.hourlyRate == null) {
+      log.warn("invoice.created", { reason: "no billing rate", entryId: e.id });
       throw new BadRequestError(
         "One or more time entries have no billing rate — set a rate for the staff member first",
       );
@@ -605,6 +705,7 @@ const buildLineValues = (
     rate: money(l.rate),
     amount: money(l.quantity * l.rate),
     account: l.account,
+    presetId: l.presetId ?? null,
     sortOrder: sortOrder++,
   }));
 
@@ -697,6 +798,7 @@ export const create = async (
     );
 
     if (lineValues.length === 0) {
+      log.warn("invoice.created", { reason: "no line items" });
       throw new BadRequestError("An invoice needs at least one line item");
     }
 
@@ -726,7 +828,7 @@ export const create = async (
 
     await logFinanceEvent({
       organizationId,
-      eventType: "invoice_created",
+      action: "finance.invoice_created",
       title: `${invoiceNumber} — draft created`,
       description: null,
       amount: totals.totalAmount,
@@ -742,18 +844,288 @@ export const create = async (
       await logCaseEvent({
         organizationId,
         caseId: input.caseId,
-        eventType: "case_invoice_created",
-        title: `Invoice ${invoiceNumber} drafted`,
-        description: `Total ${totals.totalAmount.toFixed(2)}`,
+        action: "case.invoice_created",
+        
+        summary: `Total ${totals.totalAmount.toFixed(2)}`,
         actorId: actorStaffId,
       });
     }
+
+    log.action("invoice.created", { invoiceId: invoice!.id, invoiceNumber });
 
     return getById(organizationId, invoice!.id, access);
   });
 };
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
+
+export type ExtendDueDateInput = {
+  dueDate: string;
+  reason?: string;
+};
+
+/**
+ * Give a client longer to pay.
+ *
+ * Only on a live, unsettled invoice — stored `sent` or `partial`. Note that
+ * covers the *overdue* case too, since overdue is derived from `dueBy < today`
+ * rather than stored, and an invoice already past its date is the main thing
+ * anyone wants to extend.
+ *
+ * Deliberately a separate operation from `update`, which also accepts a
+ * `dueDate`, for three reasons:
+ *
+ *   1. **Forward only.** `update` would happily move a due date backwards and
+ *      make an invoice overdue on the spot. An extension that can shorten is
+ *      not an extension.
+ *   2. It records *why*, and records the date it moved from — an audit trail
+ *      that says only "invoice updated" cannot answer "who gave them another
+ *      fortnight".
+ *   3. `update`'s content edits are draft-only, so its live-invoice surface is
+ *      a handful of header fields nobody has a dedicated screen for. This does.
+ *
+ * **On a scheduled invoice it moves the next unpaid instalment**, not the header
+ * date. The header is pinned to the FINAL instalment by `writeSchedule`, so
+ * writing to it directly would leave the invoice claiming a date its own
+ * schedule contradicts — but refusing outright was wrong too. A client who has
+ * missed instalment 1 of 4 needs longer on instalment 1; the invoice as a whole
+ * is not what is late, and rewriting the entire plan to move one date is a poor
+ * answer to "can we have another fortnight".
+ *
+ * That is also what `overdue` already means for these invoices: `dueBy` is
+ * `coalesce(next_due_date, due_date)`, so a scheduled invoice goes overdue on
+ * its next unpaid slice, never on its final one.
+ *
+ * The move is refused when it would push the instalment past the one after it —
+ * `writeSchedule` sorts and renumbers, so allowing it would silently reorder the
+ * plan. That case is a genuine reschedule and says so. Extending the LAST
+ * instalment has nothing to collide with, and carries the header date with it.
+ */
+export const extendDueDate = async (
+  organizationId: string,
+  invoiceId: string,
+  input: ExtendDueDateInput,
+  actorStaffId: string | null,
+  access: AccountAccess,
+) => {
+  const [existing] = await db
+    .select({
+      status: invoices.status,
+      invoiceNumber: invoices.invoiceNumber,
+      dueDate: invoices.dueDate,
+      amountPaid: invoices.amountPaid,
+      caseId: invoices.caseId,
+      clientId: invoices.clientId,
+    })
+    .from(invoices)
+    .where(
+      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+    )
+    .limit(1);
+
+  if (!existing) { log.warn("invoice.updated", { reason: "not found" }); throw new NotFoundError("Invoice not found"); }
+
+  // Named per state rather than one "cannot extend" — each of these is a
+  // different thing to do next.
+  if (existing.status === "draft") {
+    log.warn("invoice.updated", { reason: "draft invoice", invoiceId });
+    throw new BadRequestError(
+      "This invoice is still a draft. Change its due date by editing it.",
+    );
+  }
+  if (existing.status === "void") {
+    log.warn("invoice.updated", { reason: "voided invoice", invoiceId });
+    throw new BadRequestError("A voided invoice has no due date to extend");
+  }
+  if (existing.status === "paid") {
+    log.warn("invoice.updated", { reason: "settled invoice", invoiceId });
+    throw new BadRequestError("This invoice is settled — there is nothing owing");
+  }
+
+  const schedule = await listInstalments(organizationId, invoiceId);
+
+  // What "the due date" means for this invoice, and what moving it entails.
+  // Resolved before any validation so both shapes report against the date the
+  // caller is actually looking at.
+  const plan = schedule.length
+    ? (() => {
+        const allocated = allocate(
+          schedule.map((row) => ({ ...row, amount: num(row.amount) })),
+          num(existing.amountPaid),
+        );
+        const target = allocated.find((row) => row.outstanding > 0);
+        const after = target
+          ? allocated.find((row) => row.dueDate > target.dueDate)
+          : undefined;
+        return { kind: "scheduled" as const, target, after };
+      })()
+    : { kind: "single" as const, target: undefined, after: undefined };
+
+  const currentDue =
+    plan.kind === "scheduled" ? plan.target?.dueDate : existing.dueDate;
+
+  if (plan.kind === "scheduled" && !plan.target) {
+    // Every slice is covered but the invoice is not marked paid — a state the
+    // payment path should have resolved. Refusing beats guessing which row to
+    // move.
+    log.warn("invoice.updated", { reason: "all instalments covered", invoiceId });
+    throw new BadRequestError(
+      "Every instalment on this invoice is already covered",
+    );
+  }
+
+  if (!currentDue || input.dueDate <= currentDue) {
+    log.warn("invoice.updated", { reason: "date not forward", invoiceId });
+    throw new BadRequestError(
+      `The new due date must be later than the current one (${currentDue})`,
+    );
+  }
+
+  if (plan.after && input.dueDate >= plan.after.dueDate) {
+    log.warn("invoice.updated", { reason: "would reorder instalments", invoiceId });
+    throw new BadRequestError(
+      `This instalment must fall before the next one (due ${plan.after.dueDate}). Revise the payment plan instead.`,
+    );
+  }
+
+  return withTransaction(db, async () => {
+    if (plan.kind === "scheduled") {
+      // Rewritten through writeSchedule rather than a targeted UPDATE so the
+      // header date stays pinned to the final instalment and `sequence` stays
+      // in due-date order — the two invariants dues.ts relies on.
+      //
+      // Deliberately NOT setSchedule: that announces a revised plan to the
+      // client by email, and this is the same act as extending an unscheduled
+      // invoice, which does not. When notifications land, both should gain one
+      // together.
+      await writeSchedule(
+        organizationId,
+        invoiceId,
+        schedule.map((row) => ({
+          dueDate: row.id === plan.target!.id ? input.dueDate : row.dueDate,
+          amount: num(row.amount),
+        })),
+      );
+    } else {
+      await db
+        .update(invoices)
+        .set({ dueDate: input.dueDate, updatedAt: new Date() })
+        .where(
+          and(
+            eq(invoices.organizationId, organizationId),
+            eq(invoices.id, invoiceId),
+          ),
+        );
+    }
+
+    // `next_due_date` is a fold and recalculateInvoiceTotals is its only writer.
+    // On a scheduled invoice this is what actually moves the overdue predicate,
+    // since `dueBy` reads coalesce(next_due_date, due_date).
+    const totals = await recalculateInvoiceTotals(organizationId, invoiceId);
+    await assertScheduleBalances(organizationId, invoiceId, totals.totalAmount);
+
+    await logFinanceEvent({
+      organizationId,
+      action: "finance.invoice_updated",
+      title:
+        plan.kind === "scheduled"
+          ? `${existing.invoiceNumber} — instalment ${plan.target!.sequence} extended to ${input.dueDate}`
+          : `${existing.invoiceNumber} — due date extended to ${input.dueDate}`,
+      // The date it moved FROM lives here and nowhere else: the row now holds
+      // the new value, so without this the trail cannot say what changed.
+      description: [
+        `Was due ${currentDue}`,
+        input.reason?.trim() ? `Reason: ${input.reason.trim()}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      amount: null,
+      invoiceId,
+      caseId: existing.caseId,
+      clientId: existing.clientId,
+      actorId: actorStaffId,
+    });
+
+    log.action("invoice.updated", { invoiceId, action: "due_date_extended" });
+
+    return getById(organizationId, invoiceId, access);
+  });
+};
+
+/**
+ * Cancel an invoice.
+ *
+ * Voiding is how a sent invoice is corrected — the document the client holds is
+ * withdrawn and a fresh one issued, rather than rewritten under them.
+ *
+ * **Refused once any money has been recorded against it.** `countableInvoices()`
+ * excludes voids from every tile and report, but the `invoice_payments` rows
+ * survive: voiding a paid invoice would drop the firm's `collected` figure by
+ * money it actually received and still holds, leaving the ledger and the
+ * reports permanently disagreeing with no trace of why. There is no reversing
+ * entry to undo it with either — `invoice_payments_amount_positive` is a check
+ * constraint, so a negative payment cannot be written.
+ *
+ * The proper remedy for "paid, but the invoice was wrong" is a credit note,
+ * which this module does not model yet. Until it does, refusing is the honest
+ * answer: the firm settles it out of band rather than through a number that
+ * silently stops adding up.
+ */
+/**
+ * Put an invoice on the books without emailing it.
+ *
+ * For money the firm collects face to face. `deliver()` flips `draft -> sent`
+ * only as a side effect of a successful send, so a fee that is deliberately
+ * never emailed would otherwise sit as a draft forever — excluded from
+ * `countableInvoices`, and therefore from every revenue report, despite the
+ * cash being in the till.
+ *
+ * Deliberately not a delivery: it writes no `invoice_deliveries` row and mints
+ * no payment token, because nothing was sent anywhere and claiming otherwise
+ * would put a delivery in the audit trail that never happened.
+ *
+ * A no-op on anything already past draft, so calling it twice is safe.
+ */
+export const issueInvoice = async (
+  organizationId: string,
+  invoiceId: string,
+  reason: string,
+  actorStaffId: string | null,
+): Promise<void> => {
+  const [existing] = await db
+    .select({ status: invoices.status, invoiceNumber: invoices.invoiceNumber })
+    .from(invoices)
+    .where(
+      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+    )
+    .limit(1);
+
+  if (!existing) throw new NotFoundError("Invoice not found");
+  if (existing.status !== "draft") return;
+
+  const now = new Date();
+  await db
+    .update(invoices)
+    .set({ status: "sent", sentAt: now, updatedAt: now })
+    .where(
+      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+    );
+
+  await logFinanceEvent({
+    organizationId,
+    action: "finance.invoice_sent",
+    title: `${existing.invoiceNumber} — issued without emailing`,
+    description: reason,
+    invoiceId,
+    actorId: actorStaffId,
+  });
+
+  log.action("invoice.issued_without_delivery", {
+    invoiceId,
+    invoiceNumber: existing.invoiceNumber,
+    reason,
+  });
+};
 
 export const voidInvoice = async (
   organizationId: string,
@@ -767,6 +1139,7 @@ export const voidInvoice = async (
       status: invoices.status,
       invoiceNumber: invoices.invoiceNumber,
       totalAmount: invoices.totalAmount,
+      amountPaid: invoices.amountPaid,
     })
     .from(invoices)
     .where(
@@ -774,12 +1147,22 @@ export const voidInvoice = async (
     )
     .limit(1);
 
-  if (!existing) throw new NotFoundError("Invoice not found");
+  if (!existing) { log.warn("invoice.voided", { reason: "not found" }); throw new NotFoundError("Invoice not found"); }
   if (existing.status === "void") {
+    log.warn("invoice.voided", { reason: "already void", invoiceId });
     throw new BadRequestError("Invoice is already void");
   }
+  // Checked on `amount_paid`, not on `status === 'paid'`: a partly paid invoice
+  // carries the same problem for a smaller number, and status alone would let
+  // it through.
+  if (num(existing.amountPaid) > 0) {
+    log.warn("invoice.voided", { reason: "has payments", invoiceId });
+    throw new BadRequestError(
+      "This invoice has payments recorded against it and cannot be voided. Voiding it would remove money the firm has received from every report while the payments themselves remain on the ledger.",
+    );
+  }
 
-  return withTransaction(db, async () => {
+  const result = await withTransaction(db, async () => {
     await db
       .update(invoices)
       .set({ status: "void", voidedAt: new Date(), updatedAt: new Date() })
@@ -833,7 +1216,7 @@ export const voidInvoice = async (
 
     await logFinanceEvent({
       organizationId,
-      eventType: "invoice_voided",
+      action: "finance.invoice_voided",
       title: `${existing.invoiceNumber} — invoice voided`,
       description: reason ?? null,
       amount: num(existing.totalAmount),
@@ -841,8 +1224,27 @@ export const voidInvoice = async (
       actorId: actorStaffId,
     });
 
+    log.action("invoice.voided", { invoiceId, invoiceNumber: existing.invoiceNumber });
+
     return getById(organizationId, invoiceId, access);
   });
+
+  // Withdraw the hosted payment link, AFTER the void has committed.
+  //
+  // Our own page refuses a voided invoice's token, but that only stops the URL
+  // being obtained — a client holding it already can still pay at Confido, and
+  // the webhook then refuses to record it. Money taken, nothing on the ledger.
+  //
+  // Non-fatal: a void must still void when Confido is unreachable. The link is
+  // then stale, which is exactly why the token check stays as the second line
+  // of defence rather than being replaced by this. Logged at `warn`, because
+  // "the invoice is withdrawn but its link may still charge" is a state someone
+  // needs to know about.
+  await retirePaymentLink(organizationId, invoiceId).catch((err) =>
+    log.failure(LogEvent.PAYMENT_LINK_RETIRE_FAILED, err, { invoiceId }),
+  );
+
+  return result;
 };
 
 export type UpdateInvoiceInput = {
@@ -904,8 +1306,9 @@ export const update = async (
     )
     .limit(1);
 
-  if (!existing) throw new NotFoundError("Invoice not found");
+  if (!existing) { log.warn("invoice.updated", { reason: "not found" }); throw new NotFoundError("Invoice not found"); }
   if (existing.status === "void") {
+    log.warn("invoice.updated", { reason: "voided invoice", invoiceId });
     throw new BadRequestError("A voided invoice cannot be edited");
   }
 
@@ -921,6 +1324,7 @@ export const update = async (
     input.instalments === undefined &&
     (input.lineItems !== undefined || input.timeEntryIds !== undefined)
   ) {
+    log.warn("invoice.updated", { reason: "schedule exists without revision", invoiceId });
     throw new BadRequestError(
       "This invoice has a payment schedule. Send the updated schedule with the line changes, or remove the schedule first.",
     );
@@ -930,6 +1334,7 @@ export const update = async (
   // pins it to the final instalment. Accepting a bare due-date change here would
   // let the invoice claim a date its own schedule contradicts.
   if (scheduled && input.dueDate !== undefined && input.instalments === undefined) {
+    log.warn("invoice.updated", { reason: "schedule controls due date", invoiceId });
     throw new BadRequestError(
       "This invoice's due date follows its payment schedule. Revise the schedule instead.",
     );
@@ -948,6 +1353,7 @@ export const update = async (
       input.practiceAreaId === undefined;
 
     if (!scheduleOnly && existing.status !== "draft") {
+      log.warn("invoice.updated", { reason: "non-draft content edit", invoiceId });
       throw new BadRequestError(
         "Only a draft invoice can be edited. Void this one and issue a corrected invoice instead.",
       );
@@ -960,6 +1366,7 @@ export const update = async (
       restrictionsFor(access).trust === "no_access" &&
       num(existing.subtotalTrust) > 0
     ) {
+      log.warn("invoice.updated", { reason: "trust lines inaccessible", invoiceId });
       throw new AuthorizationError(
         "This draft has trust (IOLTA) lines you do not have access to, so it cannot be edited here",
       );
@@ -971,6 +1378,7 @@ export const update = async (
     const issueDate = input.issueDate ?? existing.issueDate;
     const dueDate = input.dueDate ?? existing.dueDate;
     if (dueDate < issueDate) {
+      log.warn("invoice.updated", { reason: "due before issue", invoiceId });
       throw new BadRequestError("Due date cannot precede the issue date");
     }
 
@@ -982,6 +1390,7 @@ export const update = async (
         ? input.practiceAreaId
         : existing.practiceAreaId;
     if (caseId == null && practiceAreaId == null) {
+      log.warn("invoice.updated", { reason: "no practice area", invoiceId });
       throw new BadRequestError(
         "A practice area is required when the invoice has no matter",
       );
@@ -1036,12 +1445,12 @@ export const update = async (
 
     await logFinanceEvent({
       organizationId,
-      eventType:
+      action:
         input.instalments !== undefined
           ? scheduled
-            ? "invoice_schedule_revised"
-            : "invoice_schedule_set"
-          : "invoice_updated",
+            ? "finance.invoice_schedule_revised"
+            : "finance.invoice_schedule_set"
+          : "finance.invoice_updated",
       title: `${existing.invoiceNumber} — ${
         input.instalments !== undefined
           ? `payment schedule ${scheduled ? "revised" : "set"}`
@@ -1053,6 +1462,8 @@ export const update = async (
       invoiceId,
       actorId: actorStaffId,
     });
+
+    log.action("invoice.updated", { invoiceId });
 
     return getById(organizationId, invoiceId, access);
   });
@@ -1116,6 +1527,7 @@ const replaceInvoiceLines = async (
     entries,
   );
   if (lineValues.length === 0) {
+    log.warn("invoice.updated", { reason: "no line items" });
     throw new BadRequestError("An invoice needs at least one line item");
   }
 
@@ -1243,13 +1655,22 @@ export const getUnbilledTime = async (
  *
  * `source` and `attorneyCount` come back so the dialog can say *why* a name was
  * filled in — a prefill nobody can account for is one nobody will correct.
+ *
+ * The matter's `practiceAreaId` and `caseTypeId` ride along because the line
+ * preset picker needs them to scope its catalog, and the dialog already calls
+ * this the moment a matter is chosen. Returning them here costs nothing and
+ * saves a second round trip.
  */
 export const getCaseDefaults = async (
   organizationId: string,
   caseId: string,
 ) => {
   const [row] = await db
-    .select({ teamId: cases.assignedTeamId })
+    .select({
+      teamId: cases.assignedTeamId,
+      practiceAreaId: cases.practiceAreaId,
+      caseTypeId: cases.caseTypeId,
+    })
     .from(cases)
     .where(and(eq(cases.organizationId, organizationId), eq(cases.id, caseId)))
     .limit(1);
@@ -1262,6 +1683,8 @@ export const getCaseDefaults = async (
     attorneyName: null as string | null,
     source: null as "team_lead" | "sole_attorney" | null,
     attorneyCount: 0,
+    practiceAreaId: row.practiceAreaId,
+    caseTypeId: row.caseTypeId,
   };
 
   if (!row.teamId) return empty;
@@ -1307,9 +1730,12 @@ export const getCaseDefaults = async (
   const named = (p: { firstName: string; lastName: string }) =>
     `${p.firstName} ${p.lastName}`.trim();
 
+  // Every branch spreads `empty` so the matter's scope rides along whichever
+  // attorney rule fired — the picker needs it on all four paths, and listing
+  // the fields per branch is how one of them would eventually be forgotten.
   if (leadRow?.role === "attorney") {
     return {
-      caseId,
+      ...empty,
       attorneyId: leadRow.id,
       attorneyName: named(leadRow),
       source: "team_lead" as const,
@@ -1319,7 +1745,7 @@ export const getCaseDefaults = async (
 
   if (attorneys.length === 1) {
     return {
-      caseId,
+      ...empty,
       attorneyId: attorneys[0]!.id,
       attorneyName: named(attorneys[0]!),
       source: "sole_attorney" as const,
@@ -1329,7 +1755,7 @@ export const getCaseDefaults = async (
 
   if (leadRow) {
     return {
-      caseId,
+      ...empty,
       attorneyId: leadRow.id,
       attorneyName: named(leadRow),
       source: "team_lead" as const,

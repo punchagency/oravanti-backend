@@ -17,7 +17,6 @@ import { cases } from "../../db/schema/cases";
 import { clients } from "../../db/schema/clients";
 import {
   documentAccess,
-  documentActivityLogs,
   documentCaseLinks,
   documentRequests,
   documents,
@@ -47,6 +46,19 @@ import {
   triggerScanForDocument,
   triggerScenarioScan,
 } from "../ai-scan/scan-triggers";
+import { recordAccessEvent, recordAuditEvent } from "../shared/audit.service";
+import type { AuditActionName } from "../../lib/audit/actions";
+import { auditEvents } from "../../db/schema/audit-events";
+
+/*
+  The document module's slice of the action registry.
+
+  Derived from AUDIT_ACTIONS rather than restated, so a document action added
+  to the registry is usable here immediately and one removed from it stops
+  compiling here — which is the property the old hand-written UPPERCASE union
+  did not have.
+*/
+type DocumentAuditAction = Extract<AuditActionName, `document.${string}`>;
 
 type DocumentPermission = "VIEW" | "COMMENT" | "EDIT" | "ADMIN";
 type DocumentStatus = "active" | "archived" | "deleted";
@@ -104,34 +116,39 @@ export const defaultRequestExpiry = () =>
   new Date(Date.now() + REQUEST_EXPIRY_DAYS * DAY_MS);
 
 export class DocumentsService {
+  /*
+    Document activity is `audit_events`, like everything else.
+
+    This module was the last of the eleven trails still writing to its own
+    table. `document_activity_logs` had no organization_id at all, so it was
+    the one audit table no tenant filter could reach; its actor was a bare
+    user id with no name snapshot, so deleting a staff member blanked the
+    history; and its timestamp had no timezone. Every one of those is fixed by
+    the row shape `recordAuditEvent` writes.
+
+    Actor, organization, IP, user-agent and requestId all come from the
+    request context, so a call site passes only what is specific to the event.
+    The externally-submitted case is the exception and passes an explicit
+    actor, because the submitter has an email and no account.
+  */
   private logActivity = async (data: {
     documentId?: string;
-    actorUserId?: string;
     actorEmail?: string;
-    action:
-      | "CREATED"
-      | "VIEWED"
-      | "DOWNLOADED"
-      | "VERSION_UPLOADED"
-      | "ACCESS_GRANTED"
-      | "ACCESS_REVOKED"
-      | "EXTERNAL_REQUEST_CREATED"
-      | "EXTERNAL_SUBMISSION_UPLOADED"
-      | "ARCHIVED"
-      | "RESTORED"
-      | "SOFT_DELETED";
+    action: DocumentAuditAction;
     metadata?: Record<string, unknown>;
-    ipAddress?: string;
-    userAgent?: string;
   }) => {
-    await db.insert(documentActivityLogs).values({
-      documentId: data.documentId,
-      actorUserId: data.actorUserId,
-      actorEmail: data.actorEmail,
+    await recordAuditEvent({
       action: data.action,
+      entityType: "document",
+      entityId: data.documentId ?? null,
       metadata: data.metadata ?? {},
-      ipAddress: data.ipAddress,
-      userAgent: data.userAgent,
+      // Never blocks the operation it describes: these are recorded after the
+      // storage write has already happened, so throwing here would roll back a
+      // change that is real.
+      onWriteFailure: "log",
+      ...(data.actorEmail
+        ? { actor: { type: "anonymous" as const, name: data.actorEmail, email: data.actorEmail } }
+        : {}),
     });
   };
 
@@ -284,10 +301,9 @@ export class DocumentsService {
           grantedByUserId: data.uploadedByUserId,
         });
 
-        await tx.insert(documentActivityLogs).values({
+        await this.logActivity({
           documentId: doc.id,
-          actorUserId: data.uploadedByUserId,
-          action: "CREATED",
+          action: "document.created",
           metadata: { caseId: data.caseId, versionId: version.id },
         });
 
@@ -562,15 +578,14 @@ export class DocumentsService {
 
       if (!updated) return null;
 
-      await tx.insert(documentActivityLogs).values({
+      await this.logActivity({
         documentId: id,
-        actorUserId: userId,
         action:
           status === "archived"
-            ? "ARCHIVED"
+            ? "document.archived"
             : status === "deleted"
-              ? "SOFT_DELETED"
-              : "RESTORED",
+              ? "document.soft_deleted"
+              : "document.restored",
         metadata: { status },
       });
 
@@ -629,10 +644,9 @@ export class DocumentsService {
           .set({ currentVersionId: version.id, updatedAt: new Date() })
           .where(eq(documents.id, id));
 
-        await tx.insert(documentActivityLogs).values({
+        await this.logActivity({
           documentId: id,
-          actorUserId: data.uploadedByUserId,
-          action: "VERSION_UPLOADED",
+          action: "document.version_uploaded",
           metadata: { versionId: version.id, versionNumber },
         });
 
@@ -669,10 +683,9 @@ export class DocumentsService {
         })
         .returning();
 
-      await tx.insert(documentActivityLogs).values({
+      await this.logActivity({
         documentId: id,
-        actorUserId: userId,
-        action: "ACCESS_GRANTED",
+        action: "document.access_granted",
         metadata: { caseId, scope: "case_link" },
       });
 
@@ -724,10 +737,9 @@ export class DocumentsService {
         })
         .returning();
 
-      await tx.insert(documentActivityLogs).values({
+      await this.logActivity({
         documentId: id,
-        actorUserId: userId,
-        action: "ACCESS_GRANTED",
+        action: "document.access_granted",
         metadata: { userId: data.targetUserId, permission: data.permission },
       });
 
@@ -756,10 +768,9 @@ export class DocumentsService {
 
       if (!grant) throw new NotFoundError("Document access not found");
 
-      await tx.insert(documentActivityLogs).values({
+      await this.logActivity({
         documentId: id,
-        actorUserId: userId,
-        action: "ACCESS_REVOKED",
+        action: "document.access_revoked",
         metadata: { userId: targetUserId },
       });
 
@@ -829,9 +840,14 @@ export class DocumentsService {
         })
         .returning();
 
-      await tx.insert(documentActivityLogs).values({
-        actorUserId: userId,
-        action: "EXTERNAL_REQUEST_CREATED",
+      await recordAuditEvent({
+        action: "document.external_request_created",
+        // The registry types this action against document_request, and there
+        // is no document yet — the request is what asks for one.
+        entityId: createdRequest.id,
+        parentEntityType: data.caseId ? "case" : data.leadId ? "lead" : null,
+        parentEntityId: data.caseId ?? data.leadId ?? null,
+        onWriteFailure: "log",
         metadata: {
           requestId: createdRequest.id,
           caseId: data.caseId ?? null,
@@ -990,7 +1006,7 @@ export class DocumentsService {
   reissueExternalRequest = async (
     id: string,
     organizationId: string,
-    userId: string,
+    _userId: string,
   ) => {
     const [existing] = await db
       .select()
@@ -1047,9 +1063,11 @@ export class DocumentsService {
       emailSent = false;
     }
 
-    await db.insert(documentActivityLogs).values({
-      actorUserId: userId,
-      action: "EXTERNAL_REQUEST_CREATED",
+    await recordAuditEvent({
+      action: "document.external_request_created",
+      entityId: id,
+      onWriteFailure: "log",
+      summary: "Document request reissued",
       metadata: {
         requestId: id,
         reissued: true,
@@ -1174,10 +1192,12 @@ export class DocumentsService {
           .set({ status: "SUBMITTED", updatedAt: new Date() })
           .where(eq(documentRequests.id, request.id));
 
-        await tx.insert(documentActivityLogs).values({
+        await this.logActivity({
           documentId: doc.id,
+          // Submitted from outside the firm: there is no account, so the
+          // actor is the email the link was sent to.
           actorEmail: data.uploadedByEmail,
-          action: "EXTERNAL_SUBMISSION_UPLOADED",
+          action: "document.external_submission_uploaded",
           metadata: {
             requestId: request.id,
             submissionId: submission.id,
@@ -1277,23 +1297,62 @@ export class DocumentsService {
 
     const signedUrl = await storageService.getSignedDownloadUrl(doc.filePath);
 
-    await this.logActivity({
-      documentId: id,
-      actorUserId: userId,
-      action: "DOWNLOADED",
+    /*
+      An access event, not an audit event.
+
+      Downloads outnumber document state changes by orders of magnitude, and
+      a firm's document timeline should not be buried under them. recordAccessEvent
+      also dedupes repeat views inside its window, which is what stops a
+      double-click producing two identical rows.
+    */
+    await recordAccessEvent({
+      action: "document.downloaded",
+      entityType: "document",
+      entityId: id,
     }).catch(() => undefined);
 
     return signedUrl;
   };
 
+  /**
+   * One document's history, read from `audit_events`.
+   *
+   * Kept as its own endpoint rather than folded into `GET /audit-events`
+   * despite reading the same table, because the two answer to different
+   * permissions: this one is gated on holding ADMIN *on the document*, while
+   * the firm-wide feed requires the `audit:read` grant that only owners and
+   * admins have. Collapsing them would either hide a document's history from
+   * the person who owns it or expose the firm-wide trail to everyone who owns
+   * one document.
+   *
+   * Both change and access rows, newest first — a download is as much a part
+   * of a document's history as a rename.
+   */
   getActivityLogs = async (id: string, userId: string) => {
     await this.ensurePermission(id, userId, "ADMIN");
 
     return db
-      .select()
-      .from(documentActivityLogs)
-      .where(eq(documentActivityLogs.documentId, id))
-      .orderBy(desc(documentActivityLogs.createdAt));
+      .select({
+        id: auditEvents.id,
+        action: auditEvents.action,
+        category: auditEvents.category,
+        summary: auditEvents.summary,
+        metadata: auditEvents.metadata,
+        actorName: auditEvents.actorName,
+        actorEmail: auditEvents.actorEmail,
+        actorId: auditEvents.actorId,
+        ipAddress: auditEvents.ipAddress,
+        userAgent: auditEvents.userAgent,
+        createdAt: auditEvents.occurredAt,
+      })
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.entityType, "document"),
+          eq(auditEvents.entityId, id),
+        ),
+      )
+      .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id));
   };
 
   getCaseDocuments = async (
@@ -1476,7 +1535,7 @@ export class DocumentsService {
     }));
   };
 
-  cancelExternalRequest = async (id: string, organizationId: string, userId: string) => {
+  cancelExternalRequest = async (id: string, organizationId: string, _userId: string) => {
     return db.transaction(async (tx) => {
       const [request] = await tx
         .update(documentRequests)
@@ -1495,9 +1554,12 @@ export class DocumentsService {
 
       if (!request) throw new NotFoundError("Open document request not found");
 
-      await tx.insert(documentActivityLogs).values({
-        actorUserId: userId,
-        action: "ACCESS_REVOKED",
+      await recordAuditEvent({
+        action: "document.access_revoked",
+        entityType: "document_request",
+        entityId: id,
+        onWriteFailure: "log",
+        summary: "Document request cancelled",
         metadata: { requestId: id, scope: "external_request" },
       });
 

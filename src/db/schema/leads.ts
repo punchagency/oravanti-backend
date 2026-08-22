@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, pgEnum, primaryKey, jsonb, index, boolean } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, pgEnum, index, boolean } from "drizzle-orm/pg-core";
 import { organization } from "./auth-schema"; 
 import { practiceAreas } from "./practice-areas"; 
 import { practiceAreaCaseTypes } from "./practice-area-case-types"; 
@@ -65,61 +65,7 @@ export const leadNoteVisibilityEnum = pgEnum("lead_note_visibility", [
  * Every action that can be taken on a lead during intake. Written append-only
  * to `lead_events`; no code path updates or deletes an event.
  */
-export const leadEventTypeEnum = pgEnum("lead_event_type", [
-  "lead_received",
-  "lead_updated",
-  "lead_viewed",
-  "stage_changed",
-  "lead_assigned",
-  "lead_archived",
-  "lead_restored",
-  "note_added",
-  "note_updated",
-  "note_deleted",
-  "note_pinned",
-  "note_unpinned",
-  "conflict_check_run",
-  "conflict_check_approved",
-  "conflict_check_declined",
-  "conflict_overridden",
-  "questionnaire_sent",
-  "questionnaire_response_received",
-  "questionnaire_opened",
-  "questionnaire_draft_saved",
-  "questionnaire_file_uploaded",
-  "consultation_scheduled",
-  "consultation_rescheduled",
-  "consultation_cancelled",
-  "consultation_completed",
-  "consultation_booking_opened",
-  "consultation_slot_selected",
-  "fee_agreement_generated",
-  "fee_agreement_sent",
-  "fee_agreement_signed",
-  "fee_agreement_discarded",
-  "fee_agreement_voided",
-  "payment_received",
-  "case_opened",
-  "pipeline_initialized",
-  "nudge_sent",
-  "task_created",
-  "task_updated",
-  "task_assigned",
-  "task_completed",
-  "task_status_changed",
-  "task_deleted",
-  "task_submitted_for_review",
-  "task_approved",
-  "task_rejected",
-  "document_linked",
-  "document_unlinked",
-  "missing_documents_requested",
-  "reminder_sent",
-  "adverse_party_added",
-  "adverse_party_updated",
-  "adverse_party_deleted",
-  "case_workflow_step_updated",
-]);
+
 
 // =========================================================================
 // LEADS TABLES
@@ -209,31 +155,7 @@ export const leads = pgTable("leads", {
   updatedAt:       timestamp("updated_at").notNull().defaultNow(),
 });
 
-/**
- * Lead Events: append-only audit trail of every action taken on a lead during
- * intake. Rows are never updated or deleted — the service exposes no such path,
- * and the read endpoint (GET /leads/:id/activity) is the only consumer.
- *
- * `actorNameSnapshot` is denormalised deliberately: the trail must still read
- * correctly after a staff member is removed.
- */
-export const leadEvents = pgTable("lead_events", {
-  id:             uuid("id").primaryKey().defaultRandom(),
-  organizationId: text("organization_id").notNull().references(() => organization.id),
-  leadId:         uuid("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
-  type:           leadEventTypeEnum("type").notNull(),
 
-  // Null for lead-driven or system events (a lead paying via the booking link,
-  // a webhook firing), and for backfilled events whose actor is unknowable.
-  actorId:           uuid("actor_id").references(() => staff.id),
-  actorNameSnapshot: text("actor_name_snapshot"),
-
-  metadata:   jsonb("metadata"),
-  ipAddress:  text("ip_address"),
-  createdAt:  timestamp("created_at").notNull().defaultNow(),
-}, (t) => [
-  index("lead_events_lead_id_created_at_idx").on(t.leadId, t.createdAt),
-]);
 
 /**
  * Lead Notes: a note is a record of what someone said at a point in time.
@@ -264,9 +186,6 @@ export type Lead = typeof leads.$inferSelect;
 export type NewLead = typeof leads.$inferInsert;
 export type LeadNote = typeof leadNotes.$inferSelect;
 export type NewLeadNote = typeof leadNotes.$inferInsert;
-export type LeadEvent = typeof leadEvents.$inferSelect;
-export type NewLeadEvent = typeof leadEvents.$inferInsert;
-export type LeadEventType = (typeof leadEventTypeEnum.enumValues)[number];
 export type LeadNoteType = (typeof leadNoteTypeEnum.enumValues)[number];
 export type LeadNoteContext = (typeof leadNoteContextEnum.enumValues)[number];
 export type LeadNoteVisibility = (typeof leadNoteVisibilityEnum.enumValues)[number];

@@ -47,15 +47,28 @@
 //
 // ─── Coverage ───────────────────────────────────────────────────────────────
 //
-// Currently covered tables (20):
-//   cases, case_events, case_record_notes, clients,
-//   leads, lead_events, lead_notes,
-//   case_issues, case_issue_documents, case_issue_events, ai_scan_jobs,
-//   invoices, invoice_line_items, invoice_payments, invoice_instalments,
-//   invoice_followups, invoice_deliveries, finance_events, billing_rates,
-//   time_entries
+// This file holds the 22 tables whose policies are bespoke — each needed a
+// different predicate for staff, clients and contractors, so each is written
+// out by hand:
 //
-// See .agents/plan-rls-remaining-tables.md for the full audit of uncovered tables.
+//   audit_events,
+//   cases, case_record_notes, clients,
+//   leads, lead_notes,
+//   case_issues, case_issue_documents, ai_scan_jobs,
+//   invoices, invoice_line_items, invoice_payments, invoice_instalments,
+//   invoice_followups, invoice_deliveries, invoice_line_presets,
+//   invoice_number_sequences, billing_rates, time_entries,
+//   confido_firms, confido_statements, confido_statement_debits
+//
+// One of these — invoice_line_presets — holds shared rows with a NULL
+// organization_id, so its read and write clauses are not the same expression.
+// See the note above its policy.
+//
+// **Every other table lives in `rls-tenant.ts`**, which covers the remaining 67
+// through org-scoped and parent-scoped factories and names the rest in an
+// explicit `RLS_EXEMPTIONS` registry with a reason each.
+// `__tests__/unit/db/rls-coverage.test.ts` fails if any table is in neither
+// place, so a new table cannot ship unconsidered.
 //
 // Prerequisites:
 //   - Custom PostgreSQL functions (get_current_organization_id, get_current_user_id)
@@ -73,20 +86,19 @@ import { pgPolicy } from "drizzle-orm/pg-core";
 // Import tables that need RLS policies
 import {
   cases,
-  caseEvents,
   caseRecordNotes,
 } from "./cases";
+import { auditEvents } from "./audit-events";
 import { aiScanJobs } from "./ai-scan-jobs";
 import {
   caseIssueDocuments,
-  caseIssueEvents,
   caseIssues,
 } from "./case-issues";
 import { billingRates } from "./billing-rates";
 import { clients } from "./clients";
-import { financeEvents } from "./finance-events";
 import { invoiceDeliveries } from "./invoice-deliveries";
 import { invoiceFollowups } from "./invoice-followups";
+import { invoiceLinePresets } from "./invoice-line-presets";
 import {
   notificationPreferences,
   notificationSettings,
@@ -94,9 +106,14 @@ import {
 import { notifications } from "./notifications";
 import { invoiceNumberSequences } from "./invoice-number-sequences";
 import { invoiceInstalments } from "./invoice-instalments";
+import { confidoFirms } from "./confido-firms";
+import {
+  confidoStatementDebits,
+  confidoStatements,
+} from "./confido-statements";
 import { invoicePayments } from "./invoice-payments";
 import { invoices, invoiceLineItems } from "./invoices";
-import { leads, leadEvents, leadNotes } from "./leads";
+import { leads, leadNotes } from "./leads";
 import { timeEntries } from "./time-entries";
 
 // =============================================================================
@@ -214,102 +231,6 @@ export const rlsCasesContractor = pgPolicy("rls_cases_contractor", {
     WHERE ca.case_id = id AND ca.user_id = ${currentUserId}
   )`,
 }).link(cases);
-
-
-// =============================================================================
-// case_events table
-// =============================================================================
-// Case events are an append-only audit trail. Access is inherited from the
-// parent case — if you can see the case, you can see its events.
-//
-// No one creates events directly on this table. Events are created by:
-//   - logCaseEvent() in case-events.service.ts
-//   - logEvent() in workflow.service.ts
-//
-// Policies use a subquery to check the parent case's organization or owner.
-
-/**
- * RESTRICTIVE policy: Case events must belong to a case in the current organization.
- *
- * Filters by: case_id → parent case → organization_id = current org
- * Staff: passes (org matches) ✓
- * Client/Contractor: fails (no org set) ✗
- *
- * Note: This is a restrictive policy that applies to ALL users. It ensures
- * that even if a permissive policy passes, the case must be in the user's org.
- * For clients/contractors, the restrictive org check fails, so they rely on
- * the permissive client/contractor policies below.
- */
-export const rlsCaseEventsStaff = pgPolicy("rls_case_events_staff", {
-  as: "restrictive",
-  for: "all",
-  using: sql`case_id IN (
-    SELECT c.id FROM cases c WHERE c.organization_id = ${currentOrgId}
-  )`,
-  withCheck: sql`case_id IN (
-    SELECT c.id FROM cases c WHERE c.organization_id = ${currentOrgId}
-  )`,
-}).link(caseEvents);
-
-/**
- * PERMISSIVE policy: Staff can access events on cases in their organization.
- *
- * This is the permissive counterpart to the restrictive staff policy.
- * Without this, staff would be denied because PostgreSQL requires ≥1 permissive pass.
- *
- * Staff: case → case.organization_id = their org → PASSES ✓
- * Client/Contractor: don't set org → doesn't match → doesn't affect them
- *
- * Added in: 0008_rls_permissive_staff_policies.sql
- */
-export const rlsCaseEventsStaffAccess = pgPolicy("rls_case_events_staff_access", {
-  as: "permissive",
-  for: "all",
-  using: sql`case_id IN (
-    SELECT c.id FROM cases c WHERE c.organization_id = ${currentOrgId}
-  )`,
-  withCheck: sql`case_id IN (
-    SELECT c.id FROM cases c WHERE c.organization_id = ${currentOrgId}
-  )`,
-}).link(caseEvents);
-
-/**
- * PERMISSIVE policy: Client can access events on cases they hired the firm for.
- *
- * Filters by: case_id → parent case → client_user_id = current user
- * Client: case.client_user_id = their user_id → PASSES ✓
- * Staff/Contractor: doesn't match → doesn't help
- */
-export const rlsCaseEventsClient = pgPolicy("rls_case_events_client", {
-  as: "permissive",
-  for: "all",
-  using: sql`case_id IN (
-    SELECT c.id FROM cases c WHERE c.client_user_id = ${currentUserId}
-  )`,
-  withCheck: sql`case_id IN (
-    SELECT c.id FROM cases c WHERE c.client_user_id = ${currentUserId}
-  )`,
-}).link(caseEvents);
-
-/**
- * PERMISSIVE policy: Contractor can access events on cases they are assigned to.
- *
- * Filters by: case_id → case_assignments → user_id = current user
- * Contractor: in case_assignments for this case → PASSES ✓
- * Staff/Client: doesn't match → doesn't help
- */
-export const rlsCaseEventsContractor = pgPolicy("rls_case_events_contractor", {
-  as: "permissive",
-  for: "all",
-  using: sql`case_id IN (
-    SELECT ca.case_id FROM case_assignments ca
-    WHERE ca.user_id = ${currentUserId}
-  )`,
-  withCheck: sql`case_id IN (
-    SELECT ca.case_id FROM case_assignments ca
-    WHERE ca.user_id = ${currentUserId}
-  )`,
-}).link(caseEvents);
 
 
 // =============================================================================
@@ -464,31 +385,30 @@ export const rlsLeadsOrg = pgPolicy("rls_leads_org", {
   withCheck: sql`organization_id = ${currentOrgId}`,
 }).link(leads);
 
+/**
+ * PERMISSIVE counterpart. Without it this table returns nothing at all.
+ *
+ * The comment above used to say a restrictive policy alone was sufficient for
+ * staff. It is not, and the header of this file says why: the rule is
+ * `(≥1 permissive passes) AND (all restrictive pass)`. With **zero** permissive
+ * policies the first half is false for every row, so an RLS-bound connection
+ * sees an empty table.
+ *
+ * It has never bitten because RLS is inert on the connection the app uses —
+ * `oravanti_admin` owns these tables and they were not `FORCE`d. Both halves of
+ * that are removed by `scripts/apply-security-baseline.ts`, which is exactly
+ * when this policy stops being theoretical.
+ */
+export const rlsLeadsStaff = pgPolicy("rls_leads_staff", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(leads);
+
 
 // =============================================================================
 // lead_events table
-// =============================================================================
-// Lead events are an append-only audit trail. Access is inherited from the
-// parent lead. STAFF ONLY — no client/contractor access to leads.
-
-/**
- * RESTRICTIVE policy: Lead events must belong to a lead in the current organization.
- *
- * Filters by: lead_id → parent lead → organization_id = current org
- * Staff: passes ✓ | Client/Contractor: fails, no permissive → denied ✗
- *
- * No permissive policies needed — staff-only table.
- */
-export const rlsLeadEventsStaff = pgPolicy("rls_lead_events_staff", {
-  as: "restrictive",
-  for: "all",
-  using: sql`lead_id IN (
-    SELECT l.id FROM leads l WHERE l.organization_id = ${currentOrgId}
-  )`,
-  withCheck: sql`lead_id IN (
-    SELECT l.id FROM leads l WHERE l.organization_id = ${currentOrgId}
-  )`,
-}).link(leadEvents);
 
 
 // =============================================================================
@@ -506,6 +426,24 @@ export const rlsLeadEventsStaff = pgPolicy("rls_lead_events_staff", {
  */
 export const rlsLeadNotesStaff = pgPolicy("rls_lead_notes_staff", {
   as: "restrictive",
+  for: "all",
+  using: sql`lead_id IN (
+    SELECT l.id FROM leads l WHERE l.organization_id = ${currentOrgId}
+  )`,
+  withCheck: sql`lead_id IN (
+    SELECT l.id FROM leads l WHERE l.organization_id = ${currentOrgId}
+  )`,
+}).link(leadNotes);
+
+/**
+ * PERMISSIVE counterpart — see the note on `rlsLeadsStaff`.
+ *
+ * Same predicate as the restrictive policy above, deliberately. The restrictive
+ * one is the baseline every role must satisfy; this one is what makes any row
+ * visible in the first place. A staff-only table still needs both.
+ */
+export const rlsLeadNotesStaffAccess = pgPolicy("rls_lead_notes_staff_access", {
+  as: "permissive",
   for: "all",
   using: sql`lead_id IN (
     SELECT l.id FROM leads l WHERE l.organization_id = ${currentOrgId}
@@ -555,24 +493,6 @@ export const rlsCaseIssueDocumentsOrg = pgPolicy("rls_case_issue_documents_org",
 
 
 // =============================================================================
-// case_issue_events table
-// =============================================================================
-// Inherited from the parent issue, as above. This is the resolution log, so it
-// is at least as sensitive as the issue itself.
-
-export const rlsCaseIssueEventsOrg = pgPolicy("rls_case_issue_events_org", {
-  as: "permissive",
-  for: "all",
-  using: sql`issue_id IN (
-    SELECT i.id FROM case_issues i WHERE i.organization_id = ${currentOrgId}
-  )`,
-  withCheck: sql`issue_id IN (
-    SELECT i.id FROM case_issues i WHERE i.organization_id = ${currentOrgId}
-  )`,
-}).link(caseIssueEvents);
-
-
-// =============================================================================
 // ai_scan_jobs table
 // =============================================================================
 // Staff only. Job rows carry no document content, but they do reveal which
@@ -590,7 +510,8 @@ export const rlsAiScanJobsOrg = pgPolicy("rls_ai_scan_jobs_org", {
 // Finance tables
 // =============================================================================
 // invoices, invoice_line_items, invoice_payments, invoice_instalments,
-// invoice_followups, finance_events, billing_rates, time_entries
+// invoice_followups, invoice_line_presets, finance_events, billing_rates,
+// time_entries
 //
 // Staff only. Billing is firm-internal: an invoice names what the firm charged
 // and what a client still owes, and the trust lines carry client money the firm
@@ -669,12 +590,37 @@ export const rlsInvoiceDeliveriesOrg = pgPolicy("rls_invoice_deliveries_org", {
   withCheck: sql`organization_id = ${currentOrgId}`,
 }).link(invoiceDeliveries);
 
-export const rlsFinanceEventsOrg = pgPolicy("rls_finance_events_org", {
-  as: "permissive",
-  for: "all",
-  using: sql`organization_id = ${currentOrgId}`,
-  withCheck: sql`organization_id = ${currentOrgId}`,
-}).link(financeEvents);
+
+/**
+ * The one policy in this file whose `using` and `withCheck` deliberately
+ * differ, and the asymmetry IS the design.
+ *
+ * `invoice_line_presets` holds two tiers in one table: rows with a NULL
+ * organization_id ship with the product and belong to every firm, rows with
+ * one belong to the firm that saved them.
+ *
+ *   - **Read** admits NULL, so every firm sees the shipped catalog.
+ *   - **Write** does not, so no firm can author, edit or delete a shipped row —
+ *     the only way to override one is to insert a firm-owned row that shadows
+ *     it, which is a write to a row the firm does own.
+ *
+ * Note this means a NULL-org row is invisible to nobody and writable by
+ * nobody through the API. The CLI seeds them outside request context, where no
+ * `app.current_organization_id` is set at all.
+ *
+ * Do NOT "tidy" this into the matching pair every other policy here uses:
+ * making `withCheck` admit NULL would let any firm mint rows for every other
+ * firm, and making `using` reject it would hide the catalog from all of them.
+ */
+export const rlsInvoiceLinePresetsOrg = pgPolicy(
+  "rls_invoice_line_presets_org",
+  {
+    as: "permissive",
+    for: "all",
+    using: sql`organization_id IS NULL OR organization_id = ${currentOrgId}`,
+    withCheck: sql`organization_id = ${currentOrgId}`,
+  },
+).link(invoiceLinePresets);
 
 /**
  * Billing rates are what every staff member's earnings are computed from, so
@@ -698,6 +644,62 @@ export const rlsTimeEntriesOrg = pgPolicy("rls_time_entries_org", {
   using: sql`organization_id = ${currentOrgId}`,
   withCheck: sql`organization_id = ${currentOrgId}`,
 }).link(timeEntries);
+
+/**
+ * confido_firms — one firm's merchant account.
+ *
+ * The row holds an encrypted, unscoped, full-access credential for moving that
+ * firm's money, so tenant isolation here is not merely about privacy.
+ *
+ * Note this policy protects the authenticated path only. The webhook route and
+ * its worker have no request context, so `db` falls back to `systemDb` and RLS
+ * does not apply to them at all — they must carry an explicit organization
+ * predicate resolved from confido_firm_id. Same discipline as
+ * payment-webhooks.service, and the reason confido_firm_id is uniquely indexed.
+ */
+export const rlsConfidoFirmsOrg = pgPolicy("rls_confido_firms_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(confidoFirms);
+
+
+// =============================================================================
+// audit_events
+// =============================================================================
+// The audit trail is firm-internal and staff-only. It names who did what to
+// whose matter, so it is at least as sensitive as every table it describes —
+// and it aggregates them, which makes it more so. Clients and contractors get
+// no permissive grant here and are therefore denied outright. A client-portal
+// "activity on my matter" view would need its own permissive policy scoped to
+// that client's own entities, not a relaxation of these.
+//
+// ─── Two things these policies deliberately do NOT do ───────────────────────
+//
+// 1. They do not make the tables immutable. RLS filters which rows a role can
+//    reach; it cannot express "INSERT and SELECT but never UPDATE or DELETE".
+//    That is a grant, and it lands in Phase 7 with the `oravanti_app` role.
+//    Until then, append-only is enforced by there being no code that updates
+//    or deletes these tables, and by no route exposing a path that would.
+//
+// 2. They do not cover rows with a NULL organization_id. Those are the
+//    platform-level security records — a failed sign-in has an email and an IP
+//    and nothing else, because the org is not known until authentication
+//    succeeds. `organization_id = get_current_organization_id()` is NULL =
+//    NULL, which is false, so a tenant connection can neither read nor write
+//    them. That is the intent: they belong to the security feed and to
+//    alerting, both of which read through `systemDb`, and they must not appear
+//    in any firm's audit view.
+
+export const rlsAuditEventsOrg = pgPolicy("rls_audit_events_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(auditEvents);
+
+
 
 /**
  * The notification ledger holds recipient names, addresses and message bodies
@@ -759,3 +761,29 @@ export const rlsNotificationPreferencesOrg = pgPolicy(
 // adding a scope would defeat the cache. Reaching a row requires already
 // knowing the checksum, which is only obtainable via a document the caller can
 // already see.
+
+/**
+ * confido_statements / confido_statement_debits — a firm's processing costs.
+ *
+ * Not client money, but commercially sensitive: volume, effective rate and what
+ * the firm pays to take payments. Scoped like everything else.
+ *
+ * Written only by the webhook worker, which runs outside RLS and therefore
+ * carries an explicit organization predicate resolved from confido_firm_id.
+ */
+export const rlsConfidoStatementsOrg = pgPolicy("rls_confido_statements_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(confidoStatements);
+
+export const rlsConfidoStatementDebitsOrg = pgPolicy(
+  "rls_confido_statement_debits_org",
+  {
+    as: "permissive",
+    for: "all",
+    using: sql`organization_id = ${currentOrgId}`,
+    withCheck: sql`organization_id = ${currentOrgId}`,
+  },
+).link(confidoStatementDebits);

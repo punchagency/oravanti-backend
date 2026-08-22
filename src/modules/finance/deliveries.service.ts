@@ -9,11 +9,14 @@ import { staff } from "../../db/schema/staff";
 import { emailService } from "../../utils/email/email.service";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { storageService } from "../../utils/storage/storage.service";
+import { createModuleLogger } from "../../lib/logging/log";
+
+const log = createModuleLogger("finance.deliveries");
 import { logCaseEvent } from "../cases/case-events.service";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
 import { mintPaymentLink, paymentLinkFor } from "./payment-links.service";
-import { isPaymentProviderConfigured } from "./payment.provider";
+import { paymentsEnabledFor } from "./confido/payments-enabled";
 import { onClient, onLead, partyEmail, partyName } from "./party";
 import { renderInvoicePdf, type InvoicePdfInput } from "./invoice-pdf";
 import type { AccountAccess } from "./types";
@@ -241,6 +244,11 @@ const deliver = async (
   if (meta.status === "void") {
     throw new BadRequestError("A voided invoice cannot be sent");
   }
+  // Same reasoning, different fact: the money already went back, so sending it
+  // would ask the client to pay an invoice the firm has settled with them.
+  if (meta.status === "refunded") {
+    throw new BadRequestError("A refunded invoice cannot be sent");
+  }
   if (!opts.isResend && meta.status !== "draft") {
     throw new BadRequestError(
       "This invoice has already been sent — use resend to deliver it again",
@@ -277,7 +285,11 @@ const deliver = async (
 
   // A link is only offered when it can actually take money. Sending one that
   // leads to "payment is not available" is worse than sending none.
-  const paymentUrl = isPaymentProviderConfigured()
+  //
+  // Per organization, not per deployment: this firm may still be in
+  // underwriting while the firm next door is trading. Getting that wrong emails
+  // a dead link to a client.
+  const paymentUrl = (await paymentsEnabledFor(organizationId))
     ? paymentLinkFor(await mintPaymentLink(organizationId, invoiceId))
     : null;
 
@@ -334,10 +346,7 @@ const deliver = async (
       .set({ status: "failed", failureReason })
       .where(eq(invoiceDeliveries.id, delivery!.id));
 
-    console.error(
-      `[finance] invoice ${invoiceNumber} delivery failed:`,
-      failureReason,
-    );
+    log.failure("invoice.delivery_failed", failureReason, { invoiceNumber });
 
     // The invoice stays a draft. Reporting success here, or promoting it
     // anyway, is exactly the lie this whole flow exists to remove.
@@ -371,7 +380,7 @@ const deliver = async (
 
   await logFinanceEvent({
     organizationId,
-    eventType: "invoice_sent",
+    action: "finance.invoice_sent",
     title: `${invoiceNumber} — sent to ${meta.clientEmail}`,
     description: opts.isResend ? "Resent" : null,
     invoiceId,
@@ -384,8 +393,8 @@ const deliver = async (
     await logCaseEvent({
       organizationId,
       caseId: meta.caseId,
-      eventType: "case_invoice_created",
-      title: `Invoice ${invoiceNumber} sent to client`,
+      action: "case.invoice_created",
+      summary: `Invoice ${invoiceNumber} sent to client`,
       actorId: actorStaffId,
     });
   }
@@ -471,7 +480,13 @@ export const sendScheduleUpdate = async (
 ): Promise<SendResult | null> => {
   const meta = await loadForDelivery(organizationId, invoiceId);
 
-  if (meta.status === "draft" || meta.status === "void") return null;
+  if (
+    meta.status === "draft" ||
+    meta.status === "void" ||
+    meta.status === "refunded"
+  ) {
+    return null;
+  }
   if (!meta.clientEmail) return null;
 
   const [{ attempts }] = await db
@@ -544,10 +559,7 @@ export const sendScheduleUpdate = async (
       .set({ status: "failed", failureReason })
       .where(eq(invoiceDeliveries.id, delivery!.id));
 
-    console.error(
-      `[finance] schedule update for ${invoiceNumber} failed:`,
-      failureReason,
-    );
+    log.failure("invoice.schedule_delivery_failed", failureReason, { invoiceNumber });
 
     // The schedule itself is already committed. Reporting the failure lets the
     // caller say "saved, but not delivered" rather than implying the client
@@ -568,9 +580,9 @@ export const sendScheduleUpdate = async (
 
   await logFinanceEvent({
     organizationId,
-    eventType: opts.revised
-      ? "invoice_schedule_revised"
-      : "invoice_schedule_set",
+    action: opts.revised
+      ? "finance.invoice_schedule_revised"
+      : "finance.invoice_schedule_set",
     title: `${invoiceNumber} — schedule sent to ${meta.clientEmail}`,
     invoiceId,
     caseId: meta.caseId,

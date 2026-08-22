@@ -1,10 +1,12 @@
-import { symmetricEncrypt } from "better-auth/crypto";
+import { symmetricEncrypt, symmetricDecrypt } from "better-auth/crypto";
 import { fromNodeHeaders } from "better-auth/node";
 import { aliasedTable, and, desc, eq, inArray, sql } from "drizzle-orm";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Request } from "express";
 import { auth } from "../../auth";
+import { ROLE_METADATA } from "../../auth/permissions";
 import { env } from "../../config/env";
+import { emailService } from "../../utils/email/email.service";
 import { db } from "../../db/client";
 import {
   AuthorizationError,
@@ -14,6 +16,7 @@ import {
   NotFoundError,
 } from "../../utils/error/app-error";
 import {
+  clients,
   practiceAreaCaseTypes,
   practiceAreas,
   practiceAreaSubcategories,
@@ -21,6 +24,7 @@ import {
   staffPracticeAreaCaseTypes,
   teamPracticeAreaCaseTypes,
 } from "../../db/schema";
+import { roleGroup, roleGroupMember } from "../../db/schema/role-groups";
 import {
   invitation,
   member,
@@ -30,11 +34,16 @@ import {
   user,
 } from "../../db/schema/auth-schema";
 import { resolveAvatarUrl } from "../../utils/storage/avatar-url";
+import { recordAuditEvent } from "../shared/audit.service";
+import { createModuleLogger } from "../../lib/logging/log";
+
+const log = createModuleLogger("organization.service");
 
 export interface GetStaffsFilters {
   search?: string;
   role?: string;
   team?: string;
+  group?: string;
   status?: string;
   page?: number;
   limit?: number;
@@ -79,9 +88,35 @@ export interface UpdateStaffMemberParams {
   teamIds?: string[];
 }
 
+/**
+ * A new hire cannot start before today. Applied on invite only — updating an
+ * existing staff member must stay free to record a genuinely historical start
+ * date.
+ *
+ * The comparison allows one day of slack because the client sends a plain
+ * calendar date from the admin's own timezone, which can legitimately read as
+ * "yesterday" in UTC for anyone far enough west of it.
+ */
+const assertStartDateNotInPast = (startDate?: string) => {
+  if (!startDate) return;
+
+  const parsed = new Date(startDate);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new BadRequestError("startDate must be a valid date");
+  }
+
+  const earliest = new Date();
+  earliest.setUTCHours(0, 0, 0, 0);
+  earliest.setUTCDate(earliest.getUTCDate() - 1);
+
+  if (parsed.getTime() < earliest.getTime()) {
+    throw new BadRequestError("Start date cannot be in the past");
+  }
+};
+
 export class OrganizationService {
   async listStaffs(organizationId: string, filters: GetStaffsFilters = {}) {
-    const { search, role, team, status, page = 1, limit = 10 } = filters;
+    const { search, role, team, group, status, page = 1, limit = 10 } = filters;
     const offset = (page - 1) * limit;
 
     // Build dynamic WHERE conditions from filter params
@@ -133,6 +168,21 @@ export class OrganizationService {
       );
     }
 
+    // Role-group filter: staff whose better-auth member row belongs to the
+    // named group of this org. Staff without a member row can't be in a
+    // group, and the NULL comparison naturally excludes them.
+    if (group) {
+      conditions.push(
+        sql`(${member.id}) IN (
+          SELECT ${roleGroupMember.memberId}
+          FROM ${roleGroupMember}
+          INNER JOIN ${roleGroup} ON ${roleGroup.id} = ${roleGroupMember.groupId}
+          WHERE ${roleGroup.organizationId} = ${organizationId}
+            AND LOWER(${roleGroup.name}) = LOWER(${group})
+        )`,
+      );
+    }
+
     // Status filter: direct enum match
     if (status) {
       conditions.push(sql`${staff.status} = ${status}`);
@@ -170,6 +220,7 @@ export class OrganizationService {
         memberId: member.id,
         staffRole: staff.role,
         status: staff.status,
+        portalStatus: staff.portalStatus,
         jobTitle: staff.jobTitle,
         barNumber: staff.barNumber,
         startDate: staff.startDate,
@@ -252,6 +303,7 @@ export class OrganizationService {
         role: row.role ?? row.staffRole,
         memberId: row.memberId,
         status: row.status,
+        portalStatus: row.portalStatus,
         jobTitle: row.jobTitle,
         barNumber: row.barNumber,
         startDate: row.startDate,
@@ -441,19 +493,74 @@ export class OrganizationService {
     email: string,
     role: string,
     organizationId: string,
-    headers: Record<string, string | string[] | undefined>,
+    _headers: Record<string, string | string[] | undefined>,
   ) {
-    const result = await auth.api.createInvitation({
-      body: {
-        email,
-        role: role as "admin" | "attorney" | "paralegal",
-        organizationId,
-        resend: true,
-      },
-      headers: fromNodeHeaders(headers as Record<string, string>),
-    });
+    const formattedEmail = email.toLowerCase().trim();
 
-    return result;
+    // Find the pending invitation to get the inviter (mirrors Better Auth's
+    // sendInvitationEmail callback, which passes data.inviter.user)
+    const [inviterRecord] = await db
+      .select({ name: user.name, email: user.email })
+      .from(invitation)
+      .innerJoin(user, eq(user.id, invitation.inviterId))
+      .where(
+        and(
+          eq(invitation.email, formattedEmail),
+          eq(invitation.organizationId, organizationId),
+          eq(invitation.status, "pending"),
+        ),
+      )
+      .limit(1);
+
+    const [orgRecord] = await db
+      .select({ name: organization.name })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .limit(1);
+
+    const loginUrl = `${env.FRONTEND_APP_URL || "http://localhost:5173"}/login?email=${encodeURIComponent(formattedEmail)}`;
+
+    const invitedByUsername = inviterRecord?.name ?? "Your team";
+    const invitedByEmail = inviterRecord?.email ?? "";
+    const orgName = orgRecord?.name ?? "your organization";
+
+    // Find the staff record to get the temp password
+    const [staffRecord] = await db
+      .select({ tempPassword: staff.tempPassword })
+      .from(staff)
+      .where(
+        and(
+          eq(staff.email, formattedEmail),
+          eq(staff.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (staffRecord?.tempPassword) {
+      const plaintextPassword = await symmetricDecrypt({
+        key: env.BETTER_AUTH_SECRET,
+        data: staffRecord.tempPassword,
+      });
+
+      await emailService.sendInvitationWithCredentials({
+        email: formattedEmail,
+        tempPassword: plaintextPassword,
+        inviteLink: `${loginUrl}&password=${encodeURIComponent(plaintextPassword)}`,
+        invitedByUsername,
+        invitedByEmail,
+        orgName,
+      });
+    } else {
+      await emailService.sendOrganizationInvitationEmail({
+        email: formattedEmail,
+        invitedByUsername,
+        invitedByEmail,
+        orgName,
+        inviteLink: loginUrl,
+      });
+    }
+
+    return { sent: true };
   }
 
   async cancelInvite(
@@ -479,6 +586,13 @@ export class OrganizationService {
           await tx.delete(staff).where(eq(staff.id, staffRecord.id));
           await tx.delete(user).where(eq(user.id, userId));
         });
+
+        await recordAuditEvent({
+          action: "admin.staff_invitation_revoked",
+          entityId: invitationId,
+          entityType: "invitation",
+          after: { email, staffId: staffRecord.id, userId },
+        });
       }
     }
 
@@ -493,6 +607,13 @@ export class OrganizationService {
       body: { invitationId },
       headers: fromNodeHeaders(headers as Record<string, string>),
     });
+
+    await recordAuditEvent({
+      action: "admin.staff_created",
+      entityId: invitationId,
+      entityType: "invitation",
+    });
+
     return data;
   }
 
@@ -535,7 +656,7 @@ export class OrganizationService {
 
   async needsSetup(userId: string) {
     const [userRecord] = await db
-      .select({ email: user.email })
+      .select({ email: user.email, accountType: user.accountType })
       .from(user)
       .where(eq(user.id, userId))
       .limit(1);
@@ -552,13 +673,17 @@ export class OrganizationService {
 
     const needsAcceptInvitation = (pendingResult?.count ?? 0) > 0;
 
-    const [staffRecord] = await db
-      .select({ tempPassword: staff.tempPassword })
-      .from(staff)
-      .where(eq(staff.userId, userId))
-      .limit(1);
+    // Only staff need password change (clients manage their own)
+    let needsPasswordChange = false;
 
-    const needsPasswordChange = !!staffRecord?.tempPassword;
+    if (userRecord?.accountType !== "client") {
+      const [staffRecord] = await db
+        .select({ tempPassword: staff.tempPassword })
+        .from(staff)
+        .where(eq(staff.userId, userId))
+        .limit(1);
+      needsPasswordChange = !!staffRecord?.tempPassword;
+    }
 
     return { needsAcceptInvitation, needsPasswordChange };
   }
@@ -588,6 +713,17 @@ export class OrganizationService {
       .update(staff)
       .set({ tempPassword: null })
       .where(eq(staff.userId, userId));
+
+    // Also clear client temp password if this is a client user
+    await db
+      .update(clients)
+      .set({ tempPassword: null })
+      .where(eq(clients.userId, userId));
+
+    await recordAuditEvent({
+      action: "admin.password_changed",
+      entityId: userId,
+    });
 
     return { message: "Password set successfully" };
   }
@@ -709,15 +845,23 @@ export class OrganizationService {
       }
     });
 
+    await recordAuditEvent({
+      action: "admin.staff_updated",
+      entityId: staffId,
+      before: { caseTypeIds: undefined, teamIds: undefined },
+      after: { ...safeFields, caseTypeIds, teamIds },
+    });
+
     return { message: "Staff updated successfully" };
   }
 
   async updateStaffMemberRole(
     staffId: string,
     organizationId: string,
-    role: string,
+    roles: string | string[],
     headers: Record<string, string | string[] | undefined>,
   ) {
+    const role = Array.isArray(roles) ? roles.join(",") : roles;
     const [staffRecord] = await db
       .select({ userId: staff.userId })
       .from(staff)
@@ -745,12 +889,82 @@ export class OrganizationService {
       throw new Error("Member record not found");
     }
 
+    // Prevent removing the last owner from the organization.
+    const newRoles = role.split(",").map((r) => r.trim()).filter(Boolean);
+    const currentMember = await db
+      .select({ id: member.id, role: member.role })
+      .from(member)
+      .where(
+        and(
+          eq(member.userId, staffRecord.userId),
+          eq(member.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    const currentRoles = (currentMember[0]?.role ?? "").split(",").map((r) => r.trim()).filter(Boolean);
+    const currentlyOwner = currentRoles.includes("owner");
+    const newRoleIncludesOwner = newRoles.includes("owner");
+
+    if (currentlyOwner && !newRoleIncludesOwner) {
+      // Count members who hold "owner" in their comma-separated role string.
+      const [{ count: ownerCount }] = await db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(member)
+        .where(
+          and(
+            eq(member.organizationId, organizationId),
+            sql`${member.role} = 'owner' OR ${member.role} LIKE 'owner,%' OR ${member.role} LIKE '%,owner' OR ${member.role} LIKE '%,owner,%'`,
+          ),
+        );
+      if (ownerCount <= 1) {
+        throw new BadRequestError(
+          "Cannot remove the Super admin role — this person is the only Super admin of the firm. Promote another staff member to Super admin first.",
+        );
+      }
+    }
+
     await auth.api.updateMemberRole({
       body: { memberId: memberRecord.id, role },
       headers: fromNodeHeaders(headers as Record<string, string>),
     });
 
+    await recordAuditEvent({
+      action: "admin.staff_role_changed",
+      entityId: staffId,
+      after: { role },
+    });
+
     return { message: "Role updated successfully" };
+  }
+
+  async updateStaffPortalStatus(
+    staffId: string,
+    organizationId: string,
+    status: "none" | "pending" | "active" | "disabled",
+  ) {
+    const [staffRecord] = await db
+      .select()
+      .from(staff)
+      .where(
+        and(eq(staff.id, staffId), eq(staff.organizationId, organizationId)),
+      )
+      .limit(1);
+
+    if (!staffRecord) throw new NotFoundError("Staff member not found");
+
+    await db
+      .update(staff)
+      .set({ portalStatus: status })
+      .where(eq(staff.id, staffId));
+
+    await recordAuditEvent({
+      action: "admin.staff_updated",
+      entityId: staffId,
+      before: { portalStatus: staffRecord.portalStatus },
+      after: { portalStatus: status },
+    });
+
+    return { staffId, portalStatus: status };
   }
 
   async listTeams(
@@ -985,8 +1199,6 @@ export class OrganizationService {
     },
     headers: Record<string, string | string[] | undefined>,
   ) {
-    console.log({ params });
-
     const createdTeam = await auth.api.createTeam({
       body: {
         name: params.name.trim(),
@@ -1059,6 +1271,17 @@ export class OrganizationService {
       );
     }
 
+    await recordAuditEvent({
+      action: "admin.team_created",
+      entityId: createdTeam.id,
+      after: {
+        name: params.name,
+        leadId: params.leadId,
+        maxCaseload: params.maxCaseload,
+        memberCount: params.memberStaffIds?.length ?? 0,
+      },
+    });
+
     return createdTeam;
   }
 
@@ -1080,6 +1303,27 @@ export class OrganizationService {
       teamIds,
     } = params;
 
+    assertStartDateNotInPast(startDate);
+
+    if (!role) {
+      throw new BadRequestError("role is required");
+    }
+
+    {
+      const isDefaultRole = role in ROLE_METADATA;
+      const isCustomRole = isDefaultRole
+        ? true
+        : (
+            await auth.api.listOrgRoles({
+              query: { organizationId },
+              headers: fromNodeHeaders(headers as Record<string, string>),
+            })
+          ).some((r) => r.role === role);
+      if (!isDefaultRole && !isCustomRole) {
+        throw new BadRequestError(`Unknown role: ${role}`);
+      }
+    }
+
     const formattedEmail = email.toLowerCase().trim();
     const tempPassword = generateTempPassword();
 
@@ -1088,6 +1332,8 @@ export class OrganizationService {
         name: `${firstName} ${lastName}`,
         email: formattedEmail,
         password: tempPassword,
+        accountType: "staff",
+        onboardingState: "completed",
       },
     });
 
@@ -1120,11 +1366,12 @@ export class OrganizationService {
           phone: phone ?? "",
           startDate: startDate ? new Date(startDate) : undefined,
           email: formattedEmail,
-          role: role as "admin" | "attorney" | "paralegal",
+          role,
           status: "pending_invitation",
           orgEmail: orgEmail?.toLowerCase().trim() ?? formattedEmail,
           maxCaseload: maxCaseload ?? 7,
           tempPassword: encryptedPassword,
+          portalStatus: "active",
         })
         .returning({ id: staff.id });
 
@@ -1151,15 +1398,34 @@ export class OrganizationService {
       }
     });
 
+    // Create a real invitation row so the invited staff member lands on the
+    // accept-invitation page. needsSetup() drives the FE redirect by counting
+    // pending invitations for the user's email, and acceptInvite() marks it
+    // accepted (afterAcceptInvitation flips the staff row to active). The
+    // sendInvitationEmail callback picks up the staff temp password and sends
+    // the credentials email.
     try {
       const createdInvitation = await auth.api.createInvitation({
         body: {
           organizationId,
           email: formattedEmail,
-          role: role as "admin" | "attorney" | "paralegal",
+          role,
           resend: true,
         },
         headers: fromNodeHeaders(headers as Record<string, string>),
+      });
+
+      await recordAuditEvent({
+        action: "admin.staff_invited",
+        entityId: staffId,
+        after: {
+          email: formattedEmail,
+          firstName,
+          lastName,
+          role,
+          organizationId,
+          invitationId: createdInvitation?.id,
+        },
       });
 
       return {
@@ -1167,8 +1433,19 @@ export class OrganizationService {
         invitationId: createdInvitation?.id,
       };
     } catch (e) {
-      console.log({ error: e });
+      log.failure("organization.staff_invite_failed", e, { organizationId });
 
+      await recordAuditEvent({
+        action: "admin.staff_invite_failed",
+        entityId: staffId,
+        entityType: "staff",
+        summary: `Staff invitation failed for ${email}, rolling back`,
+        metadata: { email, reason: "invitation_creation_failed" },
+        onWriteFailure: "log",
+      });
+
+      // Roll back the account + staff row if the invitation can't be created
+      // so we don't leave an orphaned pending_invitation staff record.
       await db.transaction(async (tx) => {
         await tx.delete(staff).where(eq(staff.id, staffId));
         await tx.delete(user).where(eq(user.id, createdUser.id));
@@ -1180,7 +1457,7 @@ export class OrganizationService {
 
   async deleteTeam(teamId: string, organizationId: string) {
     const [existingTeam] = await db
-      .select({ id: teamTable.id })
+      .select({ id: teamTable.id, name: teamTable.name })
       .from(teamTable)
       .where(
         and(
@@ -1194,6 +1471,12 @@ export class OrganizationService {
     }
 
     await db.delete(teamTable).where(eq(teamTable.id, teamId));
+
+    await recordAuditEvent({
+      action: "admin.team_deleted",
+      entityId: teamId,
+      before: { name: existingTeam.name },
+    });
   }
 
   async removeTeamMember(
@@ -1226,6 +1509,12 @@ export class OrganizationService {
       .update(teamTable)
       .set({ leadId: null })
       .where(and(eq(teamTable.id, teamId), eq(teamTable.leadId, staffId)));
+
+    await recordAuditEvent({
+      action: "admin.team_member_removed",
+      entityId: teamId,
+      after: { staffId, userId: staffMember.userId },
+    });
   }
 
   async getStaffMember(staffId: string, organizationId: string) {
@@ -1242,6 +1531,7 @@ export class OrganizationService {
         staffRole: staff.role,
         memberId: member.id,
         status: staff.status,
+        portalStatus: staff.portalStatus,
         jobTitle: staff.jobTitle,
         barNumber: staff.barNumber,
         startDate: staff.startDate,
@@ -1329,6 +1619,7 @@ export class OrganizationService {
       role: row.role ?? row.staffRole,
       memberId: row.memberId,
       status: row.status,
+      portalStatus: row.portalStatus,
       jobTitle: row.jobTitle,
       barNumber: row.barNumber,
       startDate: row.startDate,
@@ -1362,6 +1653,12 @@ export class OrganizationService {
         .where(eq(teamTable.leadId, staffId));
 
       await tx.delete(user).where(eq(user.id, staffMember.userId!));
+    });
+
+    await recordAuditEvent({
+      action: "admin.staff_deleted",
+      entityId: staffId,
+      after: { userId: staffMember.userId },
     });
   }
 
@@ -1424,6 +1721,12 @@ export class OrganizationService {
         );
       }
     }
+
+    await recordAuditEvent({
+      action: "admin.team_updated",
+      entityId: teamId,
+      after: params,
+    });
   }
 
   async addTeamMembers(
@@ -1472,6 +1775,13 @@ export class OrganizationService {
         });
       }
     }
+
+    await recordAuditEvent({
+      action: "admin.assigned_to_team",
+      entityId: teamId,
+      after: { staffIds },
+      onWriteFailure: "log",
+    });
   }
 
   updateOrganization = async (data: Record<string, string>, req: Request) => {
@@ -1513,6 +1823,11 @@ export class OrganizationService {
           throw new ExternalServiceError(message, errorData);
       }
     }
+
+    await recordAuditEvent({
+      action: "system.settings_changed",
+      after: data,
+    });
 
     return response;
   };

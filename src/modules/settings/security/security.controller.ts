@@ -1,4 +1,4 @@
-﻿import { Request, Response } from "express";
+import { Request, Response } from "express";
 import { getRequestContext } from "../../../middleware/request-context";
 import asyncWrap from "../../../utils/asyncWrapper";
 import { sendSuccess } from "../../../utils/send-success";
@@ -14,7 +14,6 @@ export class SecurityController {
   // Change Password
 
   changePassword = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const { currentPassword, newPassword } = req.body;
 
     await this.securityService.changePassword(
@@ -28,13 +27,12 @@ export class SecurityController {
   // Two-Factor Authentication
 
   get2FAStatus = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
+    const { userId } = getRequestContext();
     const result = await this.securityService.get2FAStatus(userId!);
     sendSuccess(res, result, "2FA status retrieved successfully");
   });
 
   enroll2FA = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const { password } = req.body;
 
     const data = await this.securityService.enroll2FA(req, password);
@@ -42,7 +40,6 @@ export class SecurityController {
   });
 
   verify2FA = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const { code } = req.body;
 
     await this.securityService.verify2FA(req, code);
@@ -50,7 +47,6 @@ export class SecurityController {
   });
 
   unenroll2FA = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const { password } = req.body;
 
     await this.securityService.unenroll2FA(req, password);
@@ -60,13 +56,11 @@ export class SecurityController {
   // Active Sessions
 
   getSessions = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const result = await this.securityService.getSessions(req);
     sendSuccess(res, result, "Sessions retrieved successfully");
   });
 
   deleteSession = asyncWrap(async (req: Request, res: Response) => {
-    const { userId, organizationId } = getRequestContext();
     const { id } = req.params;
 
     await this.securityService.deleteSession(req, id as string);

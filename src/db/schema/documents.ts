@@ -3,7 +3,6 @@ import {
   check,
   index,
   integer,
-  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -70,19 +69,6 @@ export const aiScanStatusEnum = pgEnum("ai_scan_status", [
   "skipped",
 ]);
 
-export const documentActivityActionEnum = pgEnum("document_activity_action", [
-  "CREATED",
-  "VIEWED",
-  "DOWNLOADED",
-  "VERSION_UPLOADED",
-  "ACCESS_GRANTED",
-  "ACCESS_REVOKED",
-  "EXTERNAL_REQUEST_CREATED",
-  "EXTERNAL_SUBMISSION_UPLOADED",
-  "ARCHIVED",
-  "RESTORED",
-  "SOFT_DELETED",
-]);
 
 export const documents = pgTable(
   "documents",
@@ -275,25 +261,6 @@ export const externalSubmissions = pgTable(
   ],
 );
 
-export const documentActivityLogs = pgTable(
-  "document_activity_logs",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    documentId: uuid("document_id").references(() => documents.id),
-    actorUserId: text("actor_user_id").references(() => user.id),
-    actorEmail: text("actor_email"),
-    action: documentActivityActionEnum("action").notNull(),
-    metadata: jsonb("metadata").notNull().default({}),
-    ipAddress: text("ip_address"),
-    userAgent: text("user_agent"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-  },
-  (table) => [
-    index("document_activity_logs_document_idx").on(table.documentId),
-    index("document_activity_logs_actor_idx").on(table.actorUserId),
-    index("document_activity_logs_action_idx").on(table.action),
-  ],
-);
 
 export type Document = typeof documents.$inferSelect;
 export type NewDocument = typeof documents.$inferInsert;
@@ -307,5 +274,3 @@ export type DocumentRequest = typeof documentRequests.$inferSelect;
 export type NewDocumentRequest = typeof documentRequests.$inferInsert;
 export type ExternalSubmission = typeof externalSubmissions.$inferSelect;
 export type NewExternalSubmission = typeof externalSubmissions.$inferInsert;
-export type DocumentActivityLog = typeof documentActivityLogs.$inferSelect;
-export type NewDocumentActivityLog = typeof documentActivityLogs.$inferInsert;

@@ -39,17 +39,83 @@ after a crash.
 
 ## Tiers
 
-| Script | Needs | What it inspects |
-|---|---|---|
-| `01-case-review-logic` | nothing | Fingerprint identity/revision, normalisation, the date-like gate |
-| `02-issue-sync` | Postgres | Diff engine: NEW → UNCHANGED → CHANGED → SUPERSEDED → REOPEN, sweep guard |
-| `03-wire-contract` | Postgres | Request built from a real scenario; wire parity with the Python service |
-| `04-live-storage` | R2 | Upload/download round trip, presigned URLs, remove, checksum parity with the Python worker |
-| `05-queue` | Postgres + Redis | Producer: job row, coalescing, the payload on the queue. Consumer: cache write, terminal status, idempotency |
-| `06-roundtrip` | Postgres + Redis | The real cross-language seam, end to end |
-| `07-rls` | Postgres | Proves tenant isolation using a role RLS applies to; audits policy coverage |
-| `08-reconcile-sweep` | Postgres | Stuck-job reconciliation and the time-driven deterministic sweep |
-| `09-live-roundtrip` | Everything | The whole system with nothing stubbed |
+| Script                       | Needs                             | What it inspects                                                                                             |
+| ---------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `01-case-review-logic`       | nothing                           | Fingerprint identity/revision, normalisation, the date-like gate                                             |
+| `02-issue-sync`              | Postgres                          | Diff engine: NEW → UNCHANGED → CHANGED → SUPERSEDED → REOPEN, sweep guard                                    |
+| `03-wire-contract`           | Postgres                          | Request built from a real scenario; wire parity with the Python service                                      |
+| `04-live-storage`            | R2                                | Upload/download round trip, presigned URLs, remove, checksum parity with the Python worker                   |
+| `05-queue`                   | Postgres + Redis                  | Producer: job row, coalescing, the payload on the queue. Consumer: cache write, terminal status, idempotency |
+| `06-roundtrip`               | Postgres + Redis                  | The real cross-language seam, end to end                                                                     |
+| `07-rls`                     | Postgres                          | Proves tenant isolation using a role RLS applies to; audits policy coverage                                  |
+| `08-reconcile-sweep`         | Postgres                          | Stuck-job reconciliation and the time-driven deterministic sweep                                             |
+| `09-live-roundtrip`          | Everything                        | The whole system with nothing stubbed                                                                        |
+| `14-confido-sandbox`         | Confido sandbox token             | Firm onboarding + trust/operating payment routing. Network only — touches no tables                          |
+| `15-confido-partial-payment` | Confido sandbox token + a browser | How Confido splits a **partial** payment across the trust and operating legs                                 |
+| `16-confido-onboarding`      | Postgres                          | The concurrency and idempotency behind firm onboarding. No network                                           |
+| `17-confido-payments`        | Confido sandbox token + Postgres  | The three shapes a payment can land in, and that the legs sum to what was paid                               |
+| `18-webhook-staleness`       | Postgres                          | That webhook events accepted but never handled are actually detected                                         |
+| `19-confido-reversals`       | Confido sandbox token             | What a void, refund, partial refund, ACH return and chargeback actually look like. Network only              |
+
+## Tier 3 — Confido Legal sandbox
+
+`14-confido-sandbox` is a throwaway spike, not a permanent regression test. It
+answers the questions Confido's docs leave open before we design schema around
+them — above all whether one client payment really splits between a trust and an
+operating bank account, and how many `Transaction` rows that produces.
+
+```bash
+CONFIDO_PARTNER_TOKEN=p_secret_sandbox_… npm run check 14-confido-sandbox
+```
+
+It refuses to run against a token whose prefix is not `sandbox`, since every
+mutation it makes either creates a firm or moves money. Sandbox firms cannot be
+deleted, so each run stamps what it creates with a short run id. Findings are
+printed as a `NOTE` block at the end; delete the script once the real provider
+lands. See `confido_legal_integration.md` in the repo root.
+
+`15-confido-partial-payment` answers the one question `14` cannot. A partial
+payment can only be made by a real payer choosing their own amount on the hosted
+page — `recordManualPaymentOnPaymentLink` requires an explicit allocation, so the
+API only ever returns the split we asked for. It runs in two phases:
+
+```bash
+npm run check 15-confido-partial-payment -- create      # prints a link to pay in a browser
+npm run check 15-confido-partial-payment -- inspect     # reports which rule Confido used
+npm run check 15-confido-partial-payment -- ach-return  # settles an ACH leg, then returns it
+```
+
+`create` builds a deliberately lopsided link ($500 trust / $1,500 operating) and
+asks for a $200 payment — less than the trust leg alone, so trust-first,
+operating-first and pro-rata each give a visibly different answer. `inspect`
+compares what actually happened against all three and says whether the processor
+agrees with our trust-first policy. Pass `--new` to start a fresh firm.
+
+`ach-return` answers the question that decides the refund schema. It settles an
+`achPayment` leg (`FUNDS_IN_TRANSIT` → `DEPOSITED`) before returning it, because
+returns happen to money that has already landed — firing at a `PENDING`
+transaction would test something that does not occur in production. It then
+reports what the return did: only the returned leg unwinds, the original flips to
+`RETURNED`, and a **separate `achReturn` row with a positive amount** points back
+at it. Needs an ACH payment on the link first.
+
+State lives in `.confido-partial.json` (gitignored, `0600` — it holds a firm API
+token). Delete it to start over.
+
+`19-confido-reversals` drives all four ways money goes back out against a fresh
+sandbox firm, because slice 3 has to classify them from an untyped `type` string
+that the docs never enumerate.
+
+```bash
+CONFIDO_PARTNER_TOKEN=p_secret_sandbox_… npm run check 19-confido-reversals
+```
+
+The load-bearing assertion is that every reversal carries
+`originalTransactionId`. The webhook recognises a reversal by that field rather
+than by its type string — which is what lets it handle a chargeback, whose
+webhook Confido does not document at all — so a reversal missing it is money we
+would silently fail to record. The type strings it observes are printed as a
+NOTE for `reversalKindFor`.
 
 ## Tier 2 — the queue round trip
 
@@ -98,10 +164,26 @@ The AI service's own Tier 3 checks (live Document AI, Gemini, and the full
 pipeline) live in the `oravanti-ai-detection-server` repo under
 `scripts/checks/`.
 
+## Email
+
+Checks run against the real service layer, so anything reaching
+`emailService.sendEmail` — invoice delivery, payment follow-ups — hits a live
+SMTP transport. `silenceEmail()` from `_bootstrap` intercepts it, and any check
+that touches a send path must call it first.
+
+It is deliberately not a blanket no-op. A malformed recipient still throws, with
+the wording nodemailer uses, because the delivery-failure path is itself under
+test: an invoice whose send fails must stay a draft with the reason recorded.
+Swallowing that would turn real assertions into ones that cannot fail.
+`capturedEmails()` returns what was intercepted, if a check wants to assert on
+it.
+
 ## Writing a check
 
 Import from `_bootstrap`:
 
+- `silenceEmail()` — intercept outbound mail. **Required** for anything that
+  reaches a send path.
 - `withTempFixture(spec, fn)` — seeds org/user/lead/documents/analyses, tears down after.
 - `withOrgContext(orgId, userId, fn)` — runs `fn` inside the AsyncLocalStorage
   request context bound to a tenant connection. **Required for anything that
@@ -137,7 +219,7 @@ column, by design.
 ## Not covered
 
 - **Extraction accuracy.** Every check asserts shape and configuration. Whether
-  Gemini reads a given field *correctly* is not asserted and cannot be without a
+  Gemini reads a given field _correctly_ is not asserted and cannot be without a
   labelled corpus.
 - **Multi-page OCR.** `imageless_mode` raises the ceiling to 30 pages; every
   sample is single-page.

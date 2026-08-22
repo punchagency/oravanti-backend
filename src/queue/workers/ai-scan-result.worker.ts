@@ -5,8 +5,12 @@ import {
   persistScanResult,
   reconcileStuckScans,
 } from "../../modules/ai-scan/scan-result.service";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
+import { runWithRequestContext } from "../../middleware/request-context";
 import { redisConnection } from "../connection";
 import { AI_SCAN_QUEUE, AI_SCAN_RESULTS_QUEUE } from "../queues";
+
+const log = createModuleLogger("ai-scan-result.worker");
 
 /**
  * Consume scan results the Python worker publishes to `ai-scan-results` and
@@ -18,9 +22,22 @@ import { AI_SCAN_QUEUE, AI_SCAN_RESULTS_QUEUE } from "../queues";
 export const createAiScanResultWorker = () =>
   new Worker<AiScanResultJob>(
     AI_SCAN_RESULTS_QUEUE,
-    async (job) => {
-      await persistScanResult(job.data);
-    },
+    async (job) =>
+      /*
+        A context, but a fresh id — unlike the reminder worker, which reuses
+        the enqueuing request's.
+
+        These jobs are produced by the Python scan worker, which never saw the
+        HTTP request and carries nothing to correlate with. What matters here
+        is that the work runs *inside* a context at all: persistScanResult
+        writes audit rows, and outside one they would be attributed to the
+        process rather than to this job. `job_id` in the payload is the
+        ai_scan_jobs row id, which is the join back to the request that
+        requested the scan.
+      */
+      runWithRequestContext({ source: "queue" }, async () => {
+        await persistScanResult(job.data);
+      }),
     // Own connection: BullMQ blocking consumers monopolize their connection, so
     // each Worker / QueueEvents gets a dedicated duplicate rather than sharing.
     { connection: redisConnection.duplicate() },
@@ -39,7 +56,7 @@ export const createAiScanQueueEvents = () => {
   });
   events.on("active", ({ jobId }) => {
     void markScanRunning(jobId).catch((err) =>
-      console.error(`[ai-scan] markScanRunning failed for ${jobId}:`, err),
+      log.failure(LogEvent.AI_SCAN_MARK_RUNNING_FAILED, err, { jobId }),
     );
   });
   return events;
@@ -57,12 +74,10 @@ export const startAiScanReconciliation = (): NodeJS.Timeout => {
     void reconcileStuckScans()
       .then(({ staleRunning, staleQueued }) => {
         if (staleRunning || staleQueued) {
-          console.warn(
-            `[ai-scan] reconciled stuck jobs: running=${staleRunning} queued=${staleQueued}`,
-          );
+          log.warn(LogEvent.AI_SCAN_RESULT_ORPHANED, { staleRunning, staleQueued });
         }
       })
-      .catch((err) => console.error("[ai-scan] reconciliation failed:", err));
+      .catch((err) => log.failure(LogEvent.AI_SCAN_RECONCILIATION_FAILED, err));
   }, RECONCILE_INTERVAL_MS);
   timer.unref?.();
   return timer;

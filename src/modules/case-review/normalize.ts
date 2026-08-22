@@ -30,7 +30,7 @@ const MONTH_NAME = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
 const isDateLike = (s: string): boolean => {
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) return true; // ISO
   if (MONTH_NAME.test(s) && /\b\d{4}\b/.test(s)) return true; // "12 March 1990"
-  if (/^\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}$/.test(s)) return true; // 12/03/1990
+  if (/^\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}$/.test(s)) return true; // 12/03/1990
   return false;
 };
 

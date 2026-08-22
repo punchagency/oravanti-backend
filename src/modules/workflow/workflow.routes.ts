@@ -227,6 +227,60 @@ export class WorkflowRouter {
 
     /**
      * @openapi
+     * /cases/{caseId}/workflow/steps/{stepId}/reopen:
+     *   post:
+     *     tags: [Workflow]
+     *     summary: Reopen a rejected step (rejected → in_progress)
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: caseId
+     *         required: true
+     *         schema: { type: string }
+     *       - in: path
+     *         name: stepId
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200:
+     *         description: Updated workflow
+     */
+    this.router.post(
+      "/:caseId/workflow/steps/:stepId/reopen",
+      requireAuth,
+      validateRequest({ params: this.validation.params("caseId", "stepId") }),
+      this.workflowController.reopenStep,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/workflow/steps/{stepId}/review-thread:
+     *   get:
+     *     tags: [Workflow]
+     *     summary: The step's submit/approve/reject/reopen note history
+     *     security: [{ bearerAuth: [] }]
+     *     parameters:
+     *       - in: path
+     *         name: caseId
+     *         required: true
+     *         schema: { type: string }
+     *       - in: path
+     *         name: stepId
+     *         required: true
+     *         schema: { type: string }
+     *     responses:
+     *       200:
+     *         description: Review events, oldest first
+     */
+    this.router.get(
+      "/:caseId/workflow/steps/:stepId/review-thread",
+      requireAuth,
+      validateRequest({ params: this.validation.params("caseId", "stepId") }),
+      this.workflowController.getStepReviewThread,
+    );
+
+    /**
+     * @openapi
      * /cases/{caseId}/workflow/steps/{stepId}/assign:
      *   post:
      *     tags: [Workflow]
@@ -537,35 +591,5 @@ export class WorkflowRouter {
       this.workflowController.bulkPinNotes,
     );
 
-    // â”€â”€ Case Audit Log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-    /**
-     * @openapi
-     * /cases/{caseId}/audit-log:
-     *   get:
-     *     tags: [Workflow]
-     *     summary: Get case audit log (case events)
-     *     security: [{ bearerAuth: [] }]
-     *     parameters:
-     *       - in: path
-     *         name: caseId
-     *         required: true
-     *         schema: { type: string }
-     *       - in: query
-     *         name: page
-     *         schema: { type: integer }
-     *       - in: query
-     *         name: limit
-     *         schema: { type: integer }
-     *     responses:
-     *       200:
-     *         description: Paginated audit log entries
-     */
-    this.router.get(
-      "/:caseId/audit-log",
-      requireAuth,
-      validateRequest({ params: this.validation.params("caseId") }),
-      this.workflowController.getAuditLog,
-    );
   }
 }

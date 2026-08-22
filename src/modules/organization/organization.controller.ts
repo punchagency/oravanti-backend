@@ -49,8 +49,8 @@ export class OrganizationController {
   getStaffs = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     if (!organizationId) return res.status(400).json({ error: "No active organization" });
-    const { search, role, team, status, page, limit } = req.query as Record<string, string | undefined>;
-    const result = await this.organizationService.listStaffs(organizationId, { search, role, team, status, page: page ? parseInt(page, 10) : undefined, limit: limit ? parseInt(limit, 10) : undefined });
+    const { search, role, team, group, status, page, limit } = req.query as Record<string, string | undefined>;
+    const result = await this.organizationService.listStaffs(organizationId, { search, role, team, group, status, page: page ? parseInt(page, 10) : undefined, limit: limit ? parseInt(limit, 10) : undefined });
     sendSuccess(res, result.data, "Staff retrieved successfully", 200, { pagination: result.pagination, counts: result.counts });
   });
 
@@ -61,7 +61,7 @@ export class OrganizationController {
     if (!firstName || !lastName || !email || !role) return res.status(400).json({ error: "firstName, lastName, email, and role are required" });
     if (!organizationId) return res.status(400).json({ error: "No active organization" });
     const result = await this.organizationService.invite({ organizationId, firstName, lastName, email, orgEmail, phone, role, startDate, maxCaseload, caseTypeIds, teamIds }, req.headers as any);
-    sendSuccess(res, { staffId: result.staffId, invitationId: result.invitationId }, "Invitation sent successfully", 201);
+    sendSuccess(res, { staffId: result.staffId }, "Invitation sent successfully", 201);
   });
 
   getInvitations = asyncWrap(async (req: Request, res: Response) => {
@@ -88,14 +88,29 @@ export class OrganizationController {
     sendSuccess(res, result, "Staff updated successfully");
   });
 
+  // `role` accepts either a single role name or an array — a staff member
+  // may hold more than one role at once (better-auth stores it comma-
+  // separated on `member.role`; `updateStaffMemberRole` joins the array).
   updateStaffMemberRole = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     if (!organizationId) return res.status(400).json({ error: "No active organization" });
     const targetStaffId = req.params.staffId as string;
-    const { role } = req.body;
-    if (!role) return res.status(400).json({ error: "role is required" });
+    const { role } = req.body as { role?: string | string[] };
+    if (!role || (Array.isArray(role) && role.length === 0)) {
+      return res.status(400).json({ error: "role is required" });
+    }
     await this.organizationService.updateStaffMemberRole(targetStaffId, organizationId, role, req.headers as any);
     sendSuccess(res, null, "Role updated successfully");
+  });
+
+  updateStaffPortalStatus = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    if (!organizationId) return res.status(400).json({ error: "No active organization" });
+    const targetStaffId = req.params.staffId as string;
+    const { status } = req.body;
+    if (!status) return res.status(400).json({ error: "status is required" });
+    const result = await this.organizationService.updateStaffPortalStatus(targetStaffId, organizationId, status);
+    sendSuccess(res, result, "Portal status updated successfully");
   });
 
   removeStaffMember = asyncWrap(async (req: Request, res: Response) => {
@@ -184,8 +199,15 @@ export class OrganizationController {
   needsSetup = asyncWrap(async (req: Request, res: Response) => {
     const { userId } = getRequestContext();
     if (!userId) return res.status(401).json({ error: "Not authenticated" });
-    const result = await this.organizationService.needsSetup(userId);
-    sendSuccess(res, result);
+
+    try {
+      const result = await this.organizationService.needsSetup(userId);
+      sendSuccess(res, result);
+    } catch {
+      // This is a status fetch, not an error condition. Always answer 200
+      // with safe defaults so the frontend can proceed.
+      sendSuccess(res, { needsAcceptInvitation: false, needsPasswordChange: false });
+    }
   });
 
   setPassword = asyncWrap(async (req: Request, res: Response) => {

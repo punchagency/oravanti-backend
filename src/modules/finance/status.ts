@@ -59,11 +59,16 @@ export const dueBy = sql`coalesce(${invoices.nextDueDate}, ${invoices.dueDate})`
  */
 export const effectiveStatusSql = (today: string) => sql<string>`
   CASE
-    WHEN ${invoices.status} = 'void'    THEN 'void'
-    WHEN ${invoices.status} = 'draft'   THEN 'draft'
-    WHEN ${invoices.status} = 'paid'    THEN 'paid'
-    WHEN ${dueBy} < ${today}            THEN 'overdue'
-    WHEN ${invoices.status} = 'partial' THEN 'partial'
+    WHEN ${invoices.status} = 'void'     THEN 'void'
+    WHEN ${invoices.status} = 'draft'    THEN 'draft'
+    WHEN ${invoices.status} = 'paid'     THEN 'paid'
+    -- ABOVE the due-date test on purpose. A refunded invoice has no balance to
+    -- be late with, and every one of them is past its due date eventually, so a
+    -- branch below this line would be unreachable exactly when it matters and
+    -- the invoice would surface in collections.
+    WHEN ${invoices.status} = 'refunded' THEN 'refunded'
+    WHEN ${dueBy} < ${today}             THEN 'overdue'
+    WHEN ${invoices.status} = 'partial'  THEN 'partial'
     ELSE 'unpaid'
   END`;
 
@@ -83,8 +88,15 @@ export const statusFilter = (
     // them sendable rather than invisible.
     case "draft":
       return eq(invoices.status, "draft");
+    // Same shape as drafts: voided invoices are hidden from the general list
+    // because they are not money, and this bucket is the only way to see them.
+    // Without it, voiding an invoice removed it from the UI permanently.
+    case "void":
+      return eq(invoices.status, "void");
     case "paid":
       return eq(invoices.status, "paid");
+    case "refunded":
+      return eq(invoices.status, "refunded");
     case "overdue":
       return and(
         inArray(invoices.status, ["sent", "partial"]),
@@ -108,7 +120,9 @@ export const statusFilter = (
  *
  * Drafts are not invoiced revenue and voided invoices are not revenue at all,
  * so both are excluded from every tile, every report figure and the collection
- * rate's denominator. Stated once here so the numbers cannot disagree.
+ * rate's denominator. Refunded invoices are out for the same reason as void:
+ * the money came back, so counting it would report revenue the firm does not
+ * have. Stated once here so the numbers cannot disagree.
  */
 export const countableInvoices = () =>
   inArray(invoices.status, ["sent", "partial", "paid"]);
@@ -118,11 +132,24 @@ export const countableInvoices = () =>
  * money. Drafts can be surfaced here on request; `countableInvoices` stays the
  * only thing the tiles, reports and footer totals are built from, so a draft
  * can never become revenue by being made visible.
+ *
+ * Stated as its own set rather than reaching for `countableInvoices()`, which
+ * is how `refunded` came to be invisible: it was added to the status enum and
+ * deliberately kept OUT of the money predicate, and the list silently inherited
+ * that exclusion. A refunded invoice is precisely the kind a firm needs to find
+ * — it is the record of money that went back — so the two questions have to be
+ * asked separately now that their answers differ.
+ *
+ * `void` remains absent, unchanged: a voided invoice has never been listable
+ * and there is no filter offering it. Worth revisiting, but not here.
  */
+const LISTABLE_STATUSES = ["sent", "partial", "paid", "refunded"] as const;
+
 export const listableInvoices = (includeDrafts: boolean) =>
-  includeDrafts
-    ? inArray(invoices.status, ["draft", "sent", "partial", "paid"])
-    : countableInvoices();
+  inArray(
+    invoices.status,
+    includeDrafts ? ["draft", ...LISTABLE_STATUSES] : [...LISTABLE_STATUSES],
+  );
 
 /**
  * The overdue predicate at INVOICE granularity — "this invoice has something

@@ -3,8 +3,12 @@ import { db } from "../../db/client";
 import { billingRates } from "../../db/schema/billing-rates";
 import { staff } from "../../db/schema/staff";
 import { withTransaction } from "../../db/transaction-context";
+import { createModuleLogger } from "../../lib/logging/log";
 import { BadRequestError } from "../../utils/error/app-error";
 import { money, num, toMoney } from "./money";
+import { recordAuditEvent } from "../shared/audit.service";
+
+const log = createModuleLogger("billing-rates.service");
 
 /**
  * Rate resolution — the source of truth for what an hour of work is worth.
@@ -66,7 +70,11 @@ export const resolveBillingRate = async (
               eq(billingRates.staffId, staffId),
               and(
                 isNull(billingRates.staffId),
-                eq(billingRates.role, member.role),
+                // `staff.role` is free text and can hold a firm-defined
+                // custom role name `billingRates.role`'s enum doesn't know —
+                // in that case this comparison simply matches no row, which
+                // is the correct "no role default for this role" outcome.
+                eq(billingRates.role, member.role as any),
               ),
             )
           : eq(billingRates.staffId, staffId),
@@ -197,6 +205,7 @@ export const setBillingRate = async (input: SetRateInput) => {
   const targetsStaff = input.staffId != null;
   const targetsRole = input.role != null;
   if (targetsStaff === targetsRole) {
+    log.warn("billing_rate.created", { reason: "must target exactly one of staff or role" });
     throw new BadRequestError(
       "A billing rate must target either a staff member or a role, not both",
     );
@@ -228,6 +237,7 @@ export const setBillingRate = async (input: SetRateInput) => {
       // billing_rates_range_ordered check would reject the closing update, and
       // an out-of-order history is not meaningful anyway.
       if (open.effectiveFrom >= input.effectiveFrom) {
+        log.warn("billing_rate.created", { reason: "out of order", currentEffectiveFrom: open.effectiveFrom });
         throw new BadRequestError(
           `A rate effective ${open.effectiveFrom} already exists; the new rate must start after it`,
         );
@@ -249,6 +259,16 @@ export const setBillingRate = async (input: SetRateInput) => {
         createdById: input.createdById ?? null,
       })
       .returning();
+
+    await recordAuditEvent({
+      action: "finance.billing_rate_changed",
+      entityId: created!.id,
+      organizationId: input.organizationId,
+      after: { staffId: input.staffId, role: input.role, rate: input.rate, effectiveFrom: input.effectiveFrom },
+      onWriteFailure: "log",
+    });
+
+    log.action("billing_rate.created", { rateId: created!.id, staffId: input.staffId, role: input.role, rate: input.rate });
 
     return created!;
   });

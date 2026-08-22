@@ -18,7 +18,7 @@ export class CasesController {
   }
 
   generateCaseNumber = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const { practiceAreaId, caseType } = req.query;
 
     const caseNumber = await this.casesService.generateCaseNumber(
@@ -30,7 +30,7 @@ export class CasesController {
   });
 
   getAllCases = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const {
       search, status, assigneeId, clientId, practiceAreaId,
       practiceAreaName, caseTypeName, subcategoryName, assigneeName,
@@ -107,7 +107,7 @@ export class CasesController {
   });
 
   getCaseDocuments = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const { page, limit } = req.query;
     const queryPagination = parsePaginationQuery({ page, limit });
     const result = await this.documentsService.getCaseDocuments(
@@ -134,8 +134,17 @@ export class CasesController {
     sendSuccess(res, null, "Team reassigned successfully");
   });
 
+  /**
+   * One matter's activity feed.
+   *
+   * Gated on the `cases` resource by the router, not on `audit` — someone who
+   * can open the matter can see what happened to it. The firm-wide trail at
+   * `GET /audit-events` is the owner/admin surface, and this route used to be
+   * shadowed by an ungated duplicate on the workflow router that was mounted
+   * at the same path first.
+   */
   getCaseAuditLog = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const caseId = req.params.id as string;
     const { page, limit } = req.query;
     const queryPagination = parsePaginationQuery({ page, limit });

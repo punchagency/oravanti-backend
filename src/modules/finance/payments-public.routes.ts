@@ -10,7 +10,6 @@ import {
   invoiceByPaymentToken,
   startCheckout,
 } from "./payment-links.service";
-import { handlePaymentWebhook } from "./payment-webhooks.service";
 
 /**
  * Public, unauthenticated finance routes. The token IS the credential, exactly
@@ -68,30 +67,3 @@ export class PaymentPublicRouter {
  * Provider webhooks, mounted separately so `express.raw` can be applied to this
  * path alone in app.ts — the signature is over the exact bytes sent.
  */
-export class PaymentWebhookRouter {
-  public router: Router;
-  public path: string;
-
-  constructor() {
-    this.router = Router();
-    this.path = "/webhooks/payments";
-    this.initializeRoutes();
-  }
-
-  private initializeRoutes() {
-    this.router.post("/", async (req: Request, res: Response) => {
-      const signature =
-        (req.headers["stripe-signature"] as string | undefined) ?? "";
-      const result = await handlePaymentWebhook(
-        req.body as Buffer,
-        signature,
-      );
-      // 200 on anything we successfully decided about, including a duplicate.
-      // A non-2xx tells the provider to retry, and retrying a duplicate would
-      // be asking for the same rejection forever. Only an unverifiable payload
-      // or a real failure throws, and the error middleware turns those into the
-      // 4xx/5xx that does mean "try again".
-      res.status(200).json(result);
-    });
-  }
-}

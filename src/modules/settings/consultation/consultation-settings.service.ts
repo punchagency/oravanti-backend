@@ -12,13 +12,38 @@ import {
   UpdateConsultationLocationBody,
   UpsertConsultationSettingsBody,
 } from "./consultation-settings.validation";
+import { recordAuditEvent } from "../../shared/audit.service";
+import { createModuleLogger } from "../../../lib/logging/log";
+
+const log = createModuleLogger("consultation-settings.service");
+
+/**
+ * Present a disabled fee structure as the one it behaves like.
+ *
+ * `waived_if_retainer` never waived anything — no code path anywhere acted on
+ * it, so a firm carrying it has been billing exactly as `flat` all along. This
+ * makes the read agree with what the money did, without a migration that would
+ * erase which firms had asked for the feature.
+ *
+ * Deliberately a read-time coercion and not an `UPDATE`: when the waiver is
+ * built for real, deleting this function restores every firm's original choice.
+ */
+const enabledFeeStructure = (
+  raw: ConsultationSettings["feeStructure"],
+): "flat" | "custom_per_case_type" | null =>
+  raw == null ? null : raw === "custom_per_case_type" ? raw : "flat";
 
 const toSettingsDTO = (row: ConsultationSettings) => ({
   organizationId: row.organizationId,
   chargesFee: row.chargesFee,
   defaultAmount: row.defaultAmount != null ? Number(row.defaultAmount) : null,
-  feeStructure: row.feeStructure,
-  waiverWindowDays: row.waiverWindowDays,
+  feeStructure: enabledFeeStructure(row.feeStructure),
+  // Only ever meaningful for the disabled waiver structure, so nothing can
+  // legitimately hold one any more.
+  waiverWindowDays: null,
+  feeSchedule: row.feeSchedule,
+  upfrontPercent: row.upfrontPercent,
+  noShowPolicy: row.noShowPolicy,
   timezone: row.timezone,
   language: row.language,
   smsEnabled: row.smsEnabled,
@@ -78,6 +103,9 @@ export class ConsultationSettingsService {
         defaultAmount: null,
         feeStructure: null,
         waiverWindowDays: null,
+        feeSchedule: "full_upfront" as const,
+        upfrontPercent: null,
+        noShowPolicy: "forfeit" as const,
         timezone: "UTC",
         language: "en",
         smsEnabled: false,
@@ -106,10 +134,24 @@ export class ConsultationSettingsService {
           ? String(body.defaultAmount)
           : null,
       feeStructure,
-      waiverWindowDays:
-        chargesFee && feeStructure === "waived_if_retainer"
-          ? body.waiverWindowDays ?? null
-          : null,
+      // The waiver structure is disabled, so nothing can set a window. Written
+      // rather than left alone so a firm that had one is cleared on next save.
+      waiverWindowDays: null,
+      ...(body.feeSchedule !== undefined
+        ? {
+            feeSchedule: body.feeSchedule,
+            // Kept in lockstep with the schedule so the pair can never
+            // contradict the table's CHECK: only `partial_upfront` carries a
+            // deposit, and changing away from it clears the stale percentage.
+            upfrontPercent:
+              body.feeSchedule === "partial_upfront"
+                ? body.upfrontPercent ?? null
+                : null,
+          }
+        : {}),
+      ...(body.noShowPolicy !== undefined
+        ? { noShowPolicy: body.noShowPolicy }
+        : {}),
       ...(body.timezone !== undefined ? { timezone: body.timezone } : {}),
       ...(body.language !== undefined ? { language: body.language } : {}),
       smsEnabled: body.smsEnabled ?? false,
@@ -128,6 +170,17 @@ export class ConsultationSettingsService {
         .set(values)
         .where(eq(consultationSettings.organizationId, organizationId))
         .returning();
+
+      await recordAuditEvent({
+        action: "system.settings_changed",
+        entityId: organizationId,
+        organizationId,
+        before: { settingType: "consultation" },
+        after: { settingType: "consultation", ...values, updatedAt: undefined },
+        onWriteFailure: "log",
+      });
+      log.action("settings.consultation_updated", { organizationId });
+
       return toSettingsDTO(updated);
     }
 
@@ -135,6 +188,16 @@ export class ConsultationSettingsService {
       .insert(consultationSettings)
       .values({ organizationId, ...values })
       .returning();
+
+    await recordAuditEvent({
+      action: "system.settings_changed",
+      entityId: organizationId,
+      organizationId,
+      after: { settingType: "consultation", ...values, updatedAt: undefined },
+      onWriteFailure: "log",
+    });
+    log.action("settings.consultation_updated", { organizationId });
+
     return toSettingsDTO(created);
   };
 
@@ -161,6 +224,18 @@ export class ConsultationSettingsService {
       .insert(consultationLocations)
       .values({ organizationId, ...body })
       .returning();
+
+    if (created) {
+      await recordAuditEvent({
+        action: "system.settings_changed",
+        entityId: organizationId,
+        organizationId,
+        after: { settingType: "consultation_location", locationId: created.id, label: created.label },
+        onWriteFailure: "log",
+      });
+      log.action("settings.consultation_updated", { organizationId, locationId: created.id });
+    }
+
     return created;
   };
 
@@ -181,6 +256,16 @@ export class ConsultationSettingsService {
       .returning();
 
     if (!updated) throw new NotFoundError("Consultation location not found");
+
+    await recordAuditEvent({
+      action: "system.settings_changed",
+      entityId: organizationId,
+      organizationId,
+      after: { settingType: "consultation_location", locationId, ...body },
+      onWriteFailure: "log",
+    });
+    log.action("settings.consultation_updated", { organizationId, locationId });
+
     return updated;
   };
 
@@ -196,6 +281,16 @@ export class ConsultationSettingsService {
       .returning();
 
     if (!deleted) throw new NotFoundError("Consultation location not found");
+
+    await recordAuditEvent({
+      action: "system.settings_changed",
+      entityId: organizationId,
+      organizationId,
+      before: { settingType: "consultation_location", locationId, label: deleted.label },
+      onWriteFailure: "log",
+    });
+    log.action("settings.consultation_updated", { organizationId, locationId });
+
     return deleted;
   };
 }

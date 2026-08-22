@@ -6,6 +6,7 @@ import { invoicePayments } from "../../db/schema/invoice-payments";
 import { invoices } from "../../db/schema/invoices";
 import { leads } from "../../db/schema/leads";
 import { practiceAreas } from "../../db/schema/practice-areas";
+import { createModuleLogger } from "../../lib/logging/log";
 import { renderReport, type ReportColumn } from "../../utils/report-export";
 import { dayjs } from "../../utils/date";
 import { canReadTrust, restrictionsFor } from "./account-access";
@@ -14,6 +15,8 @@ import { num, toMoney } from "./money";
 import { onClient, onLead, partyName } from "./party";
 import { countableInvoices, dueBy, firmToday } from "./status";
 import type { AccountAccess } from "./types";
+
+const log = createModuleLogger("reports.service");
 
 /**
  * The Reports tab is ONE endpoint returning ONE payload.
@@ -110,6 +113,8 @@ export const getMonthlyReport = async (
       : null,
     restrictions: restrictionsFor(access),
   };
+
+  log.action("report.generated", { month: targetMonth });
 };
 
 const fetchSummary = async (
@@ -395,6 +400,8 @@ export const exportReport = async (
     title: `Financial report — ${report.month}`,
     subtitle: `Invoiced ${report.summary.totalRevenue.toFixed(2)} · collected ${report.summary.collected.toFixed(2)} · ${report.summary.collectionRate}% collection rate`,
   });
+
+  log.action("report.generated", { month: report.month, format });
 
   return {
     filename: `finance-report-${report.month}.${rendered.extension}`,

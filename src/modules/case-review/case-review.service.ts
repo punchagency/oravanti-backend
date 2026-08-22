@@ -1,11 +1,11 @@
 import { and, count, countDistinct, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import { withTransaction } from "../../db/transaction-context";
+import { createModuleLogger } from "../../lib/logging/log";
 import { aiScanJobs } from "../../db/schema/ai-scan-jobs";
 import { aiSystemConfig } from "../../db/schema/ai-system-config";
 import {
   caseIssueDocuments,
-  caseIssueEvents,
   caseIssues,
 } from "../../db/schema/case-issues";
 import { cases } from "../../db/schema/cases";
@@ -54,6 +54,10 @@ import {
   type ExportFormat,
   type ReportColumn,
 } from "../../utils/report-export";
+import { recordAuditEvent } from "../shared/audit.service";
+import { auditEvents } from "../../db/schema/audit-events";
+
+const log = createModuleLogger("case-review.service");
 
 /** Why an assignee-taking action could not run, in words a reviewer can act on. */
 const ASSIGNEE_ERRORS = {
@@ -605,14 +609,14 @@ export class CaseReviewService {
     // so take the most recent resolving one.
     const resolvingEvent = db
       .select({
-        issueId: caseIssueEvents.issueId,
-        actionKey: sql<string | null>`(array_agg(${caseIssueEvents.actionKey} ORDER BY ${caseIssueEvents.createdAt} DESC))[1]`.as(
+        entityId: auditEvents.entityId,
+        actionKey: sql<string | null>`(array_agg(${auditEvents.action} ORDER BY ${auditEvents.occurredAt} DESC))[1]`.as(
           "action_key",
         ),
       })
-      .from(caseIssueEvents)
-      .where(eq(caseIssueEvents.toStatus, "resolved"))
-      .groupBy(caseIssueEvents.issueId)
+      .from(auditEvents)
+      .where(and(eq(auditEvents.entityType, "case_issue"), sql`(${auditEvents.metadata}->>'toStatus') = 'resolved'`))
+      .groupBy(auditEvents.entityId)
       .as("resolving_event");
 
     const rows = await db
@@ -640,7 +644,7 @@ export class CaseReviewService {
       )
       .leftJoin(leads, eq(leads.id, caseIssues.leadId))
       .leftJoin(staff, eq(staff.id, caseIssues.resolvedById))
-      .leftJoin(resolvingEvent, eq(resolvingEvent.issueId, caseIssues.id))
+      .leftJoin(resolvingEvent, sql`${resolvingEvent.entityId} = ${caseIssues.id}::text`)
       .where(where)
       .orderBy(desc(caseIssues.resolvedAt))
       .limit(limit)
@@ -720,10 +724,17 @@ export class CaseReviewService {
       .where(eq(caseIssueDocuments.issueId, id));
 
     const events = await db
-      .select()
-      .from(caseIssueEvents)
-      .where(eq(caseIssueEvents.issueId, id))
-      .orderBy(caseIssueEvents.createdAt);
+      .select({
+        actionKey: auditEvents.action,
+        fromStatus: sql<string | null>`${auditEvents.metadata}->>'fromStatus'`,
+        toStatus: sql<string | null>`${auditEvents.metadata}->>'toStatus'`,
+        actorStaffId: auditEvents.actorStaffId,
+        note: auditEvents.summary,
+        createdAt: auditEvents.occurredAt,
+      })
+      .from(auditEvents)
+      .where(and(eq(auditEvents.entityType, "case_issue"), eq(auditEvents.entityId, id)))
+      .orderBy(auditEvents.occurredAt);
 
     return {
       ...presentIssue(flattenIssueRow(row), language),
@@ -906,12 +917,13 @@ export class CaseReviewService {
           .set({ status: "under_review", updatedAt: new Date() })
           .where(eq(caseIssues.id, id));
       }
-      await db.insert(caseIssueEvents).values({
-        issueId: id,
-        fromStatus: issue.status,
-        toStatus: active ? "under_review" : issue.status,
-        actorStaffId: staffId ?? null,
-        actionKey,
+      await recordAuditEvent({
+        action: "case_review.issue_updated",
+        entityId: id,
+        entityType: "case_issue",
+        summary: `Issue action: ${actionKey}`,
+        metadata: { actionKey, fromStatus: issue.status, toStatus: active ? "under_review" : issue.status },
+        onWriteFailure: "log",
       });
     });
 
@@ -928,13 +940,13 @@ export class CaseReviewService {
       .leftJoin(leads, eq(leads.id, caseIssues.leadId))
       .where(eq(caseIssues.id, id));
 
+    log.action("case_review.evaluated", { issueId: id, actionKey });
+
     return {
       kind: "mutation" as const,
       issue: presentIssue(flattenIssueRow(refreshed), language),
     };
   };
-
-  // ── Status actions (resolution log) ─────────────────────────────────────────
 
   updateStatus = async (
     organizationId: string,
@@ -987,15 +999,27 @@ export class CaseReviewService {
         .set(patch)
         .where(eq(caseIssues.id, id))
         .returning();
-      await db.insert(caseIssueEvents).values({
-        issueId: id,
-        fromStatus: existing.status,
-        toStatus,
-        actorStaffId: staffId ?? null,
-        note: note ?? null,
+      const auditAction =
+        action === "resolve"
+          ? "case_review.issue_resolved"
+          : action === "dismiss"
+            ? "case_review.issue_dismissed"
+            : action === "reopen"
+              ? "case_review.issue_reopened"
+              : "case_review.issue_updated";
+      await recordAuditEvent({
+        action: auditAction,
+        entityId: id,
+        entityType: "case_issue",
+        metadata: { fromStatus: existing.status, toStatus, note: note ?? null },
+        onWriteFailure: "log",
       });
       return row;
     });
+
+    if (action === "resolve") {
+      log.action("case_review.issue_resolved", { issueId: id });
+    }
 
     const language = await getFirmLanguage(organizationId);
     return presentIssue(updated, language);

@@ -7,6 +7,7 @@ import {
   parseBooleanQuery,
   parsePaginationQuery,
 } from "../../utils/pagination";
+import { recordAccessEvent } from "../shared/audit.service";
 import { ClientsService } from "./clients.service";
 
 export class ClientsController {
@@ -21,7 +22,7 @@ export class ClientsController {
   });
 
   getTeamStaff = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     sendSuccess(res,
       await this.svc.getTeamStaff(req.params.teamId as string, organizationId!),
       "Team staff retrieved successfully",
@@ -31,7 +32,7 @@ export class ClientsController {
   // Clients
 
   getAllClients = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const { search, page, limit, all } = req.query;
     const bypassPagination = parseBooleanQuery(all, "all");
     const result = await this.svc.getAllClients(organizationId!, {
@@ -48,21 +49,23 @@ export class ClientsController {
   });
 
   getClientById = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
-    const result = await this.svc.getClientById(req.params.id as string, organizationId!);
+    const { organizationId } = getRequestContext();
+    const clientId = req.params.id as string;
+    const result = await this.svc.getClientById(clientId, organizationId!);
     if (!result) throw new NotFoundError("Client not found");
+    await recordAccessEvent({ action: "client.viewed", entityId: clientId });
     sendSuccess(res, result, "Client retrieved successfully");
   });
 
   updateClient = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const result = await this.svc.updateClient(req.params.id as string, organizationId!, req.body);
     if (!result) throw new NotFoundError("Client not found");
     sendSuccess(res, result, "Client updated successfully");
   });
 
   deleteClient = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     await this.svc.deleteClient(req.params.id as string, organizationId!);
     sendSuccess(res, null, "Client deleted successfully");
   });
@@ -70,7 +73,7 @@ export class ClientsController {
   // Contacts
 
   getClientContacts = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     sendSuccess(res,
       await this.svc.getClientContacts(req.params.id as string, organizationId!),
       "Client contacts retrieved successfully",
@@ -78,7 +81,7 @@ export class ClientsController {
   });
 
   addClientContact = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     sendSuccess(res,
       await this.svc.addClientContact(req.params.id as string, organizationId!, req.body),
       "Client contact added successfully",
@@ -87,7 +90,7 @@ export class ClientsController {
   });
 
   updateClientContact = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const result = await this.svc.updateClientContact(
       req.params.contactId as string,
       req.params.id as string,
@@ -99,7 +102,7 @@ export class ClientsController {
   });
 
   deleteClientContact = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     await this.svc.deleteClientContact(req.params.contactId as string, req.params.id as string, organizationId!);
     sendSuccess(res, null, "Client contact removed successfully");
   });
@@ -107,14 +110,14 @@ export class ClientsController {
   // Company
 
   getClientCompany = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const result = await this.svc.getClientCompany(req.params.id as string, organizationId!);
     if (!result) throw new NotFoundError("No company linked to this client");
     sendSuccess(res, result, "Client company retrieved successfully");
   });
 
   upsertClientCompany = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     sendSuccess(res,
       await this.svc.upsertClientCompany(req.params.id as string, organizationId!, req.body),
       "Client company saved successfully",
@@ -124,7 +127,7 @@ export class ClientsController {
   // Cases
 
   getClientCases = asyncWrap(async (req: Request, res: Response) => {
-    const { staffId, organizationId } = getRequestContext();
+    const { organizationId } = getRequestContext();
     const { page, limit, all } = req.query;
     const bypassPagination = parseBooleanQuery(all, "all");
     const result = await this.svc.getClientCases(req.params.id as string, organizationId!, {
@@ -217,15 +220,6 @@ export class ClientsController {
     sendSuccess(res, result, "Portal invitation sent successfully");
   });
 
-  resetClientPassword = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
-    const result = await this.svc.resetClientPassword(
-      req.params.clientId as string,
-      organizationId!,
-    );
-    sendSuccess(res, result, "Password reset email sent successfully");
-  });
-
   getClientSessions = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     const result = await this.svc.getClientSessions(
@@ -252,5 +246,16 @@ export class ClientsController {
       organizationId!,
     );
     sendSuccess(res, result, "Portal status retrieved successfully");
+  });
+
+  updatePortalStatus = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const { status } = req.body;
+    const result = await this.svc.updatePortalStatus(
+      req.params.clientId as string,
+      organizationId!,
+      status,
+    );
+    sendSuccess(res, result, "Portal status updated successfully");
   });
 }

@@ -6,6 +6,7 @@ import {
 } from "../../db/schema/invoice-instalments";
 import { invoices } from "../../db/schema/invoices";
 import { withTransaction } from "../../db/transaction-context";
+import { createModuleLogger } from "../../lib/logging/log";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { sendScheduleUpdate } from "./deliveries.service";
 import { logFinanceEvent } from "./finance-events.service";
@@ -13,6 +14,8 @@ import type { ScheduleRow } from "./instalments";
 import { money, num } from "./money";
 import { recalculateInvoiceTotals } from "./totals";
 import type { AccountAccess } from "./types";
+
+const log = createModuleLogger("instalments.service");
 
 /**
  * Reading and writing payment schedules.
@@ -76,6 +79,7 @@ export const assertScheduleBalances = async (
 
   const scheduled = num(row?.sum);
   if (Math.abs(scheduled - totalAmount) >= 0.005) {
+    log.warn("instalment.created", { reason: "schedule balance mismatch", scheduled, totalAmount });
     throw new BadRequestError(
       `The payment schedule totals ${scheduled.toFixed(2)} but the invoice ` +
         `totals ${totalAmount.toFixed(2)}. Send the revised schedule with this change.`,
@@ -164,16 +168,23 @@ export const setSchedule = async (
     )
     .limit(1);
 
-  if (!existing) throw new NotFoundError("Invoice not found");
+  if (!existing) { log.warn("instalment.created", { reason: "not found" }); throw new NotFoundError("Invoice not found"); }
   if (existing.status === "void") {
+    log.warn("instalment.created", { reason: "voided invoice", invoiceId });
     throw new BadRequestError("A voided invoice cannot be scheduled");
   }
+  if (existing.status === "refunded") {
+    log.warn("instalment.created", { reason: "refunded invoice", invoiceId });
+    throw new BadRequestError("A refunded invoice cannot be scheduled");
+  }
   if (existing.status === "paid") {
+    log.warn("instalment.created", { reason: "paid invoice", invoiceId });
     throw new BadRequestError(
       "This invoice is already paid, so there is nothing left to schedule",
     );
   }
   if (rows.length === 0) {
+    log.warn("instalment.created", { reason: "empty schedule", invoiceId });
     throw new BadRequestError("A schedule needs at least one instalment");
   }
 
@@ -186,7 +197,7 @@ export const setSchedule = async (
 
     await logFinanceEvent({
       organizationId,
-      eventType: hadSchedule ? "invoice_schedule_revised" : "invoice_schedule_set",
+      action: hadSchedule ? "finance.invoice_schedule_revised" : "finance.invoice_schedule_set",
       title: `${existing.invoiceNumber} — payment schedule ${
         hadSchedule ? "revised" : "set"
       }`,
@@ -197,6 +208,8 @@ export const setSchedule = async (
       invoiceId,
       actorId: actorStaffId,
     });
+
+    log.action("instalment.created", { invoiceId, count: rows.length });
 
     return result;
   });
@@ -237,14 +250,20 @@ export const removeSchedule = async (
     )
     .limit(1);
 
-  if (!existing) throw new NotFoundError("Invoice not found");
+  if (!existing) { log.warn("instalment.created", { reason: "not found" }); throw new NotFoundError("Invoice not found"); }
+  if (existing.status === "refunded") {
+    log.warn("instalment.created", { reason: "refunded invoice", invoiceId });
+    throw new BadRequestError("A refunded invoice cannot be edited");
+  }
   if (existing.status === "void") {
+    log.warn("instalment.created", { reason: "voided invoice", invoiceId });
     throw new BadRequestError("A voided invoice cannot be edited");
   }
 
   return withTransaction(db, async () => {
     const rows = await listInstalments(organizationId, invoiceId);
     if (rows.length === 0) {
+      log.warn("instalment.created", { reason: "no schedule to remove", invoiceId });
       throw new BadRequestError("This invoice has no payment schedule");
     }
 
@@ -263,13 +282,15 @@ export const removeSchedule = async (
 
     await logFinanceEvent({
       organizationId,
-      eventType: "invoice_schedule_removed",
+      action: "finance.invoice_schedule_removed",
       title: `${existing.invoiceNumber} — payment schedule removed`,
       description: `Now due in full on ${existing.dueDate}`,
       amount: totals.totalAmount,
       invoiceId,
       actorId: actorStaffId,
     });
+
+    log.action("instalment.created", { invoiceId, action: "schedule_removed" });
 
     return totals;
   });

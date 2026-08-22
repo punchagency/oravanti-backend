@@ -115,14 +115,14 @@ const main = async () => {
 
   checkEqual(
     "date-shaped values normalise as dates",
-    normalizeValue("date_of_birth", "04/17/1990"),
-    normalizeValue("date_of_birth", "1990-04-17"),
+    normalizeValue("04/17/1990"),
+    normalizeValue("1990-04-17"),
   );
 
   checkEqual(
     "name values normalise as text",
-    normalizeValue("full_name", "José  SMITH"),
-    normalizeValue("full_name", "jose smith"),
+    normalizeValue("José  SMITH"),
+    normalizeValue("jose smith"),
   );
 
   await report();

@@ -1,5 +1,5 @@
 ﻿import { Router } from "express";
-import multer from "multer";
+import { fieldsOnlyUpload } from "../../middleware/upload";
 
 import { requireAuth } from "../../middleware/auth.middleware";
 import { resolveActorContext } from "../../middleware/resolve-actor-context";
@@ -139,6 +139,23 @@ export class LeadWorkflowRouter {
       ctrl.rejectLeadTask,
     );
 
+    this.router.post(
+      "/:leadId/tasks/:taskId/reopen",
+      requireAuth,
+      validateRequest({
+        params: v.leadTaskIdParamsSchema,
+        body: v.submitReviewBodySchema,
+      }),
+      ctrl.reopenLeadTask,
+    );
+
+    this.router.get(
+      "/:leadId/tasks/:taskId/review-thread",
+      requireAuth,
+      validateRequest({ params: v.leadTaskIdParamsSchema }),
+      ctrl.getLeadTaskReviewThread,
+    );
+
     this.router.delete(
       "/:leadId/tasks/:taskId",
       requireAuth,
@@ -154,18 +171,6 @@ export class LeadWorkflowRouter {
       validateRequest({ params: v.leadIdParamsSchema, query: v.paginationQuerySchema }),
       ctrl.getLeadTimeline,
     );
-
-    this.router.post(
-      "/:leadId/timeline",
-      requireAuth,
-      validateRequest({
-        params: v.leadIdParamsSchema,
-        body: v.createTimelineEventBodySchema,
-      }),
-      ctrl.createLeadTimelineEvent,
-    );
-
-    // Audit Log
 
     this.router.get(
       "/:leadId/audit-log",
@@ -461,9 +466,23 @@ export class LeadsRouter {
       ctrl.updateConsultation,
     );
 
+    /**
+     * Cancelling requires the permission to send money back.
+     *
+     * Cancelling and refunding used to come apart: anyone in intake could
+     * cancel, and a cancellation by someone without `finance:refund` left the
+     * money owed and raised a task for an administrator. That produced a dead
+     * end — the task said "refund this" and the person holding it had nowhere
+     * to do it.
+     *
+     * Keeping the two together means the refund is attempted by the same act
+     * that creates the obligation, which is the only arrangement where the
+     * client's money cannot be stranded by a permission boundary.
+     */
     this.router.post(
       "/:id/consultation/cancel",
       requireAuth,
+      requirePermission({ finance: ["refund"] }),
       validateRequest({
         params: v.idParamsSchema,
         body: v.cancelConsultationBodySchema,
@@ -580,7 +599,7 @@ export class WebhooksRouter {
   private ctrl: LeadsController;
   // Dropbox Sign posts multipart/form-data with a single `json` field and no
   // files; memory storage + .none() parses that text field onto req.body.
-  private upload = multer({ storage: multer.memoryStorage() });
+  private upload = fieldsOnlyUpload();
 
   constructor(ctrl: LeadsController) {
     this.router = Router();
@@ -650,7 +669,7 @@ export class ConsultationBookingRouter {
     this.router.post(
       "/:token/pay",
       validateRequest({ params: v.bookingTokenParamsSchema }),
-      ctrl.payConsultationFee,
+      ctrl.startConsultationPayment,
     );
 
     this.router.post(

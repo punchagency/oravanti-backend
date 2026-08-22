@@ -16,9 +16,11 @@
  * subject to them.
  */
 import postgres from "postgres";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { systemDb } from "../../src/db/client";
-import { caseIssueEvents, caseIssues } from "../../src/db/schema/case-issues";
+import { auditEvents } from "../../src/db/schema/audit-events";
+import { caseIssues } from "../../src/db/schema/case-issues";
+import { invoiceLinePresets } from "../../src/db/schema/invoice-line-presets";
 import { RLS_PROBE_PASSWORD, RLS_PROBE_USER } from "../test-db/rls-probe";
 import { check, checkEqual, report, section, withTempFixture } from "./_bootstrap";
 
@@ -37,12 +39,16 @@ const probeUrl = () => {
 };
 
 const TENANT_TABLES = [
+  // The audit trail is tenant data too, and the most sensitive of it: one
+  // table naming what every other table was used for. It also replaced
+  // case_issue_events and finance_events, both of which this list went on
+  // naming for months after they were dropped.
+  "audit_events",
   "leads",
   "cases",
   "clients",
   "case_issues",
   "case_issue_documents",
-  "case_issue_events",
   "ai_scan_jobs",
   "invoices",
   "invoice_line_items",
@@ -50,9 +56,12 @@ const TENANT_TABLES = [
   "invoice_instalments",
   "invoice_followups",
   "invoice_deliveries",
-  "finance_events",
+  "invoice_line_presets",
   "billing_rates",
   "time_entries",
+  "confido_firms",
+  "confido_statements",
+  "confido_statement_debits",
 ] as const;
 
 const main = async () => {
@@ -108,7 +117,6 @@ const main = async () => {
   const mine = new Set([
     "case_issues",
     "case_issue_documents",
-    "case_issue_events",
     "ai_scan_jobs",
   ]);
 
@@ -171,11 +179,24 @@ const main = async () => {
       })
       .returning();
 
-    await systemDb.insert(caseIssueEvents).values({
-      issueId: issue.id,
-      toStatus: "open",
+    // Stands in for the case_issue_events row this used to write. That table
+    // is gone; the trail is an audit_events row, which is org-scoped directly
+    // rather than through its parent issue -- so this now asserts the audit
+    // trail's own isolation, which is the stronger property.
+    await systemDb.insert(auditEvents).values({
+      organizationId: fx.organizationId,
+      actorType: "system",
+      actorName: "rls-check",
+      category: "business",
+      action: "case_review.issue_detected",
+      actionType: "create",
+      entityType: "case_issue",
+      entityId: issue.id,
+      summary: "Issue detected",
+      source: "cli",
     });
 
+    const presetIds: string[] = [];
     const sql = postgres(probeUrl(), { max: 1 });
     try {
       const probeRole = await sql`SELECT current_user AS usr`;
@@ -189,8 +210,8 @@ const main = async () => {
       checkEqual("the owning tenant sees its issue", own[0].n, 1);
 
       const ownEvents =
-        await sql`SELECT count(*)::int AS n FROM case_issue_events WHERE issue_id = ${issue.id}`;
-      checkEqual("the owning tenant sees the issue's events", ownEvents[0].n, 1);
+        await sql`SELECT count(*)::int AS n FROM audit_events WHERE entity_id = ${issue.id}`;
+      checkEqual("the owning tenant sees the issue's audit trail", ownEvents[0].n, 1);
 
       // ── Another tenant sees nothing ─────────────────────────────────────
       await sql.unsafe(`SET app.current_organization_id = 'some-other-org'`);
@@ -199,9 +220,9 @@ const main = async () => {
       checkEqual("another tenant cannot see the issue", other[0].n, 0);
 
       const otherEvents =
-        await sql`SELECT count(*)::int AS n FROM case_issue_events WHERE issue_id = ${issue.id}`;
+        await sql`SELECT count(*)::int AS n FROM audit_events WHERE entity_id = ${issue.id}`;
       checkEqual(
-        "another tenant cannot see the events (inherited scope)",
+        "another tenant cannot see the issue's audit trail",
         otherEvents[0].n,
         0,
       );
@@ -228,6 +249,109 @@ const main = async () => {
       }
       check("a cross-tenant insert is rejected by WITH CHECK", insertRejected);
 
+      // ── The shared-catalog table: read admits NULL, write does not ──────
+      //
+      // invoice_line_presets is the only table here whose using and withCheck
+      // clauses differ. Rows with a NULL organization_id ship with the product
+      // and belong to every firm; rows with one belong to a single firm. Both
+      // halves are asserted, because getting either wrong is silent: a wrong
+      // `using` hides the catalog from everybody, a wrong `withCheck` lets any
+      // firm mint rows every other firm then sees.
+      const [shipped] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: null,
+          name: `rls-check-shipped-${fx.organizationId}`,
+          account: "operating",
+          defaultRate: "10.0000",
+        })
+        .returning();
+      const [owned] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: fx.organizationId,
+          name: `rls-check-owned-${fx.organizationId}`,
+          account: "operating",
+          defaultRate: "20.0000",
+        })
+        .returning();
+      presetIds.push(shipped!.id, owned!.id);
+
+      await sql.unsafe(
+        `SET app.current_organization_id = '${fx.organizationId}'`,
+      );
+      const seesShipped =
+        await sql`SELECT count(*)::int AS n FROM invoice_line_presets WHERE id = ${shipped!.id}`;
+      checkEqual("a tenant sees the shipped catalog", seesShipped[0].n, 1);
+      const seesOwn =
+        await sql`SELECT count(*)::int AS n FROM invoice_line_presets WHERE id = ${owned!.id}`;
+      checkEqual("and its own presets", seesOwn[0].n, 1);
+
+      await sql.unsafe(`SET app.current_organization_id = 'some-other-org'`);
+      const otherSeesShipped =
+        await sql`SELECT count(*)::int AS n FROM invoice_line_presets WHERE id = ${shipped!.id}`;
+      checkEqual(
+        "another tenant sees the shipped catalog too",
+        otherSeesShipped[0].n,
+        1,
+      );
+      const otherSeesOwned =
+        await sql`SELECT count(*)::int AS n FROM invoice_line_presets WHERE id = ${owned!.id}`;
+      checkEqual(
+        "but not another firm's presets",
+        otherSeesOwned[0].n,
+        0,
+      );
+
+      let shippedInsertRejected = false;
+      try {
+        await sql`
+          INSERT INTO invoice_line_presets (organization_id, name, account, default_rate)
+          VALUES (NULL, 'rls-forbidden-shipped', 'operating', 1)`;
+      } catch {
+        shippedInsertRejected = true;
+      }
+      check(
+        "no tenant can author a shipped preset",
+        shippedInsertRejected,
+      );
+
+      // Visible but not writable: the shipped row is readable above, so an
+      // UPDATE that reached it would be a genuine cross-tenant write.
+      //
+      // Postgres refuses this in one of two ways depending on which clause
+      // catches it, and the check must accept both. A row excluded by `using`
+      // is simply not matched, so the UPDATE reports zero rows. A row that IS
+      // matched but whose result fails `withCheck` — which is this case, since
+      // the shipped row is deliberately readable — raises instead. Asserting
+      // only the zero-row form turned a correct policy into an unhandled
+      // rejection that killed the run before anything below it executed.
+      let shippedUpdateRefused = false;
+      try {
+        const shippedUpdate = await sql`
+          UPDATE invoice_line_presets SET default_rate = 999
+           WHERE id = ${shipped!.id} RETURNING id`;
+        shippedUpdateRefused = shippedUpdate.length === 0;
+      } catch {
+        shippedUpdateRefused = true;
+      }
+      check("nor edit one it can see", shippedUpdateRefused);
+
+      // Belt and braces: "the write was refused" is only meaningful if the row
+      // really is untouched. Read it back through systemDb, which bypasses RLS
+      // and therefore sees what actually happened rather than what the tenant
+      // is allowed to see.
+      const [shippedAfter] = await systemDb
+        .select({ defaultRate: invoiceLinePresets.defaultRate })
+        .from(invoiceLinePresets)
+        .where(eq(invoiceLinePresets.id, shipped!.id))
+        .limit(1);
+      checkEqual(
+        "and the shipped row is unchanged",
+        shippedAfter?.defaultRate,
+        "10.0000",
+      );
+
       // ── No context set at all ───────────────────────────────────────────
       await sql.unsafe(`RESET app.current_organization_id`);
       const noCtx = await sql`SELECT count(*)::int AS n FROM case_issues WHERE id = ${issue.id}`;
@@ -235,6 +359,11 @@ const main = async () => {
     } finally {
       await sql.end();
       await systemDb.delete(caseIssues).where(eq(caseIssues.id, issue.id));
+      if (presetIds.length) {
+        await systemDb
+          .delete(invoiceLinePresets)
+          .where(inArray(invoiceLinePresets.id, presetIds));
+      }
     }
   });
 

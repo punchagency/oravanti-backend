@@ -1,0 +1,5 @@
+{
+  "//": "eslint without --max-warnings on purpose: the 122-warning ceiling is a repo-wide budget enforced by lint:ci, and applying it to whatever subset happens to be staged means nothing. Here, errors block the commit and warnings do not.",
+  "*.ts": ["eslint --fix"],
+  "*.{json,md,yml,yaml}": ["prettier --write"]
+}

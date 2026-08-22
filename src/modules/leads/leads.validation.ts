@@ -565,13 +565,6 @@ export const bulkPinNotesBodySchema = z.object({
   pinned: z.boolean(),
 });
 
-export const createTimelineEventBodySchema = z.object({
-  eventType: z.string().min(1),
-  title: z.string().min(1),
-  description: z.string().optional(),
-  metadata: z.record(z.string(), z.any()).optional(),
-});
-
 // Public signing page: the opaque token that resolves to a fee agreement.
 export const agreementSigningTokenParamsSchema = z.object({
   token: z.string().min(1),

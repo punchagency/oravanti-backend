@@ -37,7 +37,7 @@ export class FirmProfileController {
     this.service = service ?? new FirmProfileService();
   }
 
-  private orgId(req: Request): string {
+  private orgId(_req: Request): string {
     const { organizationId } = getRequestContext();
     if (!organizationId) {
       throw new AppError("Organization context required", 401, "UNAUTHORIZED");

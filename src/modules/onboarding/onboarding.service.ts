@@ -1,7 +1,9 @@
 import crypto from "crypto";
 import { eq } from "drizzle-orm";
 import { auth } from "../../auth";
+import { seedDefaultRoleRows } from "../../auth/seed-default-roles";
 import { db } from "../../db/client";
+import { createModuleLogger } from "../../lib/logging/log";
 import { organization, user } from "../../db/schema/auth-schema";
 import { staff } from "../../db/schema/staff";
 import {
@@ -10,6 +12,8 @@ import {
   NotFoundError,
 } from "../../utils/error/app-error";
 import type { AccountType } from "../auth/enums";
+
+const log = createModuleLogger("onboarding.service");
 
 export class OnboardingService {
   submitOnboardingData = async (
@@ -40,6 +44,7 @@ export class OnboardingService {
     const { accountType, referralSource, profile, firmDetails } = body;
 
     if (accountType !== "firm_admin") {
+      log.warn("onboarding.step_rejected", { userId, reason: "invalid_account_type" });
       throw new BadRequestError(
         "Invalid account type for onboarding submission.",
       );
@@ -56,6 +61,7 @@ export class OnboardingService {
     }
 
     if (userRecord.onboardingState === "completed") {
+      log.warn("onboarding.step_rejected", { userId, reason: "already_completed" });
       throw new ConflictError("Onboarding has already been completed.");
     }
 
@@ -75,6 +81,11 @@ export class OnboardingService {
     if (!newOrg) {
       throw new Error("Failed to create organization.");
     }
+
+    // Every new org needs its own DB rows for the four default roles before
+    // anyone can be assigned one — see the comment on `DEFAULT_ROLE_NAMES`
+    // in `auth/permissions.ts` for why they're seeded rather than static.
+    await seedDefaultRoleRows(newOrg.id);
 
     await db.transaction(async (tx) => {
       // 1. Create staff profile
@@ -121,6 +132,8 @@ export class OnboardingService {
         })
         .where(eq(user.id, userId));
     });
+
+    log.action("onboarding.completed", { userId, organizationId: newOrg.id });
 
     return { nextStep: "/admin" };
   };

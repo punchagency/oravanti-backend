@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { getRequestContext } from "../../middleware/request-context";
 import type { ExportFormat } from "../../utils/report-export";
 import { sendSuccess } from "../../utils/send-success";
+import { recordAccessEvent } from "../shared/audit.service";
 import { CaseReviewService } from "./case-review.service";
 
 export class CaseReviewController {
@@ -78,6 +79,15 @@ export class CaseReviewController {
       },
       (format as ExportFormat) ?? "csv",
     );
+
+    await recordAccessEvent({
+      action: "case_review.exported",
+      entityId: organizationId,
+      entityType: "case",
+      summary: `Case review issues exported as ${(format as ExportFormat) ?? "csv"}`,
+      metadata: { format: (format as ExportFormat) ?? "csv", type: "issues" },
+    });
+
     this.sendDownload(res, result);
   };
 
@@ -89,6 +99,15 @@ export class CaseReviewController {
       { days: days ? Number(days) : undefined },
       (format as ExportFormat) ?? "csv",
     );
+
+    await recordAccessEvent({
+      action: "case_review.exported",
+      entityId: organizationId,
+      entityType: "case",
+      summary: `Case review resolution log exported as ${(format as ExportFormat) ?? "csv"}`,
+      metadata: { format: (format as ExportFormat) ?? "csv", type: "resolution_log" },
+    });
+
     this.sendDownload(res, result);
   };
 

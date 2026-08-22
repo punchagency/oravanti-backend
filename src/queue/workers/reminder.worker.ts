@@ -7,11 +7,15 @@ import {
   questionnaireSends,
 } from "../../db/schema/questionnaires";
 import { notify } from "../../notifications/notification.service";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
+import { runWithRequestContext } from "../../middleware/request-context";
 import { redisConnection } from "../connection";
 import {
   QUESTIONNAIRE_REMINDERS_QUEUE,
   type QuestionnaireReminderJob,
 } from "../queues";
+
+const log = createModuleLogger("reminder.worker");
 
 /**
  * Build + send a reminder for an outstanding questionnaire. Shared by the worker
@@ -68,7 +72,9 @@ export const sendQuestionnaireReminder = async (
     // Keyed on the reminder count, so a manual "send reminder" after an
     // automatic one is a new message rather than a silent no-op.
     dedupeKey: `questionnaire-reminder-${sendId}-${send.lastReminderAt?.getTime() ?? 0}`,
-  }).catch((error: unknown) => console.error("[reminder] notify failed", error));
+  }).catch((err: unknown) =>
+    log.failure(LogEvent.QUESTIONNAIRE_REMINDER_FAILED, err, { sendId }),
+  );
 
   await db
     .update(questionnaireSends)
@@ -81,8 +87,24 @@ export const sendQuestionnaireReminder = async (
 export const createReminderWorker = () =>
   new Worker<QuestionnaireReminderJob>(
     QUESTIONNAIRE_REMINDERS_QUEUE,
-    async (job) => {
-      await sendQuestionnaireReminder(job.data.sendId);
-    },
+    async (job) =>
+      /*
+        Re-enter a request context inside the worker.
+
+        Without this the job runs with no store, every logger falls back to the
+        process-wide id, and any audit row it writes has a null actor and a
+        null IP. Reusing the enqueuing request's id means the reminder that
+        went out on Tuesday is still traceable to the Friday request that
+        scheduled it; a job with no origin gets a fresh id rather than none.
+      */
+      runWithRequestContext(
+        {
+          source: "queue",
+          ...(job.data.requestId ? { requestId: job.data.requestId } : {}),
+        },
+        async () => {
+          await sendQuestionnaireReminder(job.data.sendId);
+        },
+      ),
     { connection: redisConnection },
   );

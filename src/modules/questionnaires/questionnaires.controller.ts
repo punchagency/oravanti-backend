@@ -21,14 +21,12 @@ export class QuestionnairesController {
   });
 
   getSystemQuestionnaireByCaseType = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const result = await this.svc.getSystemQuestionnaireByCaseType(req.params.caseTypeId as string);
     if (!result) throw new NotFoundError("Questionnaire not found for this case type");
     sendSuccess(res, result, "Questionnaire retrieved successfully");
   });
 
   getSystemQuestionnaireById = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const result = await this.svc.getSystemQuestionnaireById(req.params.id as string);
     if (!result) throw new NotFoundError("Questionnaire not found");
     sendSuccess(res, result, "Questionnaire retrieved successfully");
@@ -37,21 +35,18 @@ export class QuestionnairesController {
   // System Questionnaire Management (admin only)
 
   createSystemQuestionnaire = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const { caseTypeId, title, description, sections } = req.body;
     const result = await this.svc.createSystemQuestionnaire({ caseTypeId, title, description, sections });
     sendSuccess(res, result, "System questionnaire created successfully", 201);
   });
 
   addSystemSection = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const { title, description, orderIndex } = req.body;
     const result = await this.svc.addSystemSection(req.params.id as string, { title, description, orderIndex });
     sendSuccess(res, result, "Section added successfully", 201);
   });
 
   addSystemQuestion = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const result = await this.svc.addSystemQuestion(
       req.params.id as string,
       req.params.sectionId as string,
@@ -242,25 +237,21 @@ export class QuestionnairesController {
   // Token-Based Client Endpoints
 
   getClientQuestionnaire = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const result = await this.svc.getClientQuestionnaireByToken(req.params.token as string);
     sendSuccess(res, result, "Questionnaire retrieved successfully");
   });
 
   saveDraftResponse = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const result = await this.svc.saveDraftResponseByToken(req.params.token as string, req.body);
     sendSuccess(res, result, "Draft saved successfully");
   });
 
   submitResponse = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const result = await this.svc.submitResponseByToken(req.params.token as string, req.body);
     sendSuccess(res, result, "Response submitted successfully");
   });
 
   uploadResponseFile = asyncWrap(async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
     const file = req.file;
     if (!file) throw new BadRequestError("File is required");
 

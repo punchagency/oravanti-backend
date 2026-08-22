@@ -16,6 +16,7 @@ import { organization } from "./auth-schema";
 import { cases } from "./cases";
 import { clients } from "./clients";
 import { accountTypeEnum } from "./financial-access-controls";
+import { invoiceLinePresets } from "./invoice-line-presets";
 import { leads } from "./leads";
 import { practiceAreas } from "./practice-areas";
 import { staff } from "./staff";
@@ -37,6 +38,11 @@ export const invoiceStatusEnum = pgEnum("invoice_status", [
   "sent",
   "partial",
   "paid",
+  // Charged, paid, and given back. Distinct from `void`, which says the firm
+  // never charged at all — the ledger already tells those apart through the
+  // reversal rows, and an invoice that read `sent` after a full refund would
+  // reappear as money the client owes and, past its due date, as overdue.
+  "refunded",
   "void",
 ]);
 
@@ -284,6 +290,22 @@ export const invoiceLineItems = pgTable(
       onDelete: "set null",
     }),
 
+    /**
+     * Which catalog preset this line was composed from, when it was composed
+     * from one at all.
+     *
+     * Provenance only. `rate` above is the billed figure and is never re-read
+     * from the preset — see the note on `invoice_line_presets.default_rate`.
+     * `set null` so retiring a preset cannot reach into an invoice the client
+     * already holds.
+     *
+     * Deliberately NOT unique, unlike `time_entry_id` below: the same preset
+     * legitimately appears twice on one invoice (two filings, two copies).
+     */
+    presetId: uuid("preset_id").references(() => invoiceLinePresets.id, {
+      onDelete: "set null",
+    }),
+
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
@@ -313,5 +335,6 @@ export type EffectiveInvoiceStatus =
   | "unpaid"
   | "partial"
   | "paid"
+  | "refunded"
   | "overdue"
   | "void";

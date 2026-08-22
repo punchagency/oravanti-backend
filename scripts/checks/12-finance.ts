@@ -18,17 +18,20 @@
  * org it creates.
  */
 import { randomUUID } from "crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, like, sql } from "drizzle-orm";
 import { closeDb, systemDb } from "../../src/db/client";
 import { organization, team, user } from "../../src/db/schema/auth-schema";
+import * as financeEvents from "../../src/modules/finance/finance-events.service";
+import { confidoFirms } from "../../src/db/schema/confido-firms";
 import { billingRates } from "../../src/db/schema/billing-rates";
 import { cases } from "../../src/db/schema/cases";
 import { clients } from "../../src/db/schema/clients";
-import { financeEvents } from "../../src/db/schema/finance-events";
+import { auditEvents } from "../../src/db/schema/audit-events";
 import { invoiceFollowups } from "../../src/db/schema/invoice-followups";
 import { notifications } from "../../src/db/schema/notifications";
 import { invoiceNumberSequences } from "../../src/db/schema/invoice-number-sequences";
 import { invoicePayments } from "../../src/db/schema/invoice-payments";
+import { invoiceLinePresets } from "../../src/db/schema/invoice-line-presets";
 import { invoiceLineItems, invoices } from "../../src/db/schema/invoices";
 import { leads } from "../../src/db/schema/leads";
 import { practiceAreaCaseTypes } from "../../src/db/schema/practice-area-case-types";
@@ -43,28 +46,35 @@ import {
   setBillingRate,
 } from "../../src/modules/finance/billing-rates.service";
 import { agingOverDues } from "../../src/modules/finance/dues";
+import * as linePresets from "../../src/modules/finance/line-presets.service";
 import { allocate, generateSchedule } from "../../src/modules/finance/instalments";
 import * as instalmentsService from "../../src/modules/finance/instalments.service";
 import * as invoicesService from "../../src/modules/finance/invoices.service";
 import { formatInvoiceNumber } from "../../src/modules/finance/invoice-number";
-import { num, proRateSplit, toMoney } from "../../src/modules/finance/money";
+import { num, trustFirstSplit, toMoney } from "../../src/modules/finance/money";
 import { firmToday } from "../../src/modules/finance/status";
 import * as paymentsService from "../../src/modules/finance/payments.service";
+import * as status from "../../src/modules/finance/status";
+import { effectiveStatusSql } from "../../src/modules/finance/status";
+import * as refundsService from "../../src/modules/finance/refunds.service";
 import * as deliveriesService from "../../src/modules/finance/deliveries.service";
 import { invoiceDeliveries } from "../../src/db/schema/invoice-deliveries";
 import * as feeAgreementBilling from "../../src/modules/finance/fee-agreement-billing.service";
+import { paymentsEnabledFor } from "../../src/modules/finance/confido/payments-enabled";
 import * as paymentLinks from "../../src/modules/finance/payment-links.service";
-import * as paymentWebhooks from "../../src/modules/finance/payment-webhooks.service";
-import {
-  getPaymentProvider,
-  isPaymentProviderConfigured,
-} from "../../src/modules/finance/payment.provider";
 import { paymentWebhookEvents } from "../../src/db/schema/payment-webhook-events";
 import * as reportsService from "../../src/modules/finance/reports.service";
 import * as timeBilling from "../../src/modules/finance/time-billing.service";
 import { deriveStoredStatus } from "../../src/modules/finance/totals";
 import type { AccountAccess } from "../../src/modules/finance/types";
-import { check, checkEqual, report, section, withOrgContext } from "./_bootstrap";
+import {
+  check,
+  checkEqual,
+  report,
+  section,
+  silenceEmail,
+  withOrgContext,
+} from "./_bootstrap";
 
 const FULL: AccountAccess = { operating: "full_access", trust: "full_access" };
 const NO_TRUST: AccountAccess = { operating: "full_access", trust: "no_access" };
@@ -76,6 +86,12 @@ const daysFromNow = (n: number) =>
   iso(new Date(Date.now() + n * 86_400_000));
 
 const main = async () => {
+  // Checks run against the real service layer, so an invoice send would reach a
+  // live SMTP transport. Intercepted here rather than mocked per call site: the
+  // point of this file is the ledger, and posting mail to whoever owns the
+  // fixture addresses is not a side effect it should have.
+  silenceEmail();
+
   const orgId = `fin-check-${randomUUID()}`;
   const userId = `user-${randomUUID()}`;
   let leadId = "";
@@ -84,7 +100,10 @@ const main = async () => {
   let clientId = "";
   let caseId = "";
   let practiceAreaId = "";
-  let subcategoryId = "";
+  // Shipped presets are not org-scoped, so cleanup has to be by the exact ids
+  // this check invents — a blanket delete of NULL-org rows would wipe a real
+  // catalog off a shared database.
+  const presetIdsToClean: string[] = [];
 
   // ── Fixture ────────────────────────────────────────────────────────────────
   await systemDb.insert(organization).values({
@@ -112,7 +131,7 @@ const main = async () => {
     .insert(practiceAreaSubcategories)
     .values({ practiceAreaId, code: `FAM${randomUUID().slice(0, 4)}`, name: "Family" })
     .returning();
-  subcategoryId = sub!.id;
+  const subcategoryId = sub!.id;
   const [caseType] = await systemDb
     .insert(practiceAreaCaseTypes)
     .values({
@@ -227,14 +246,18 @@ const main = async () => {
         "void",
       );
 
-      const split = proRateSplit(600, 500, 1500);
-      checkEqual("pro-rata trust share", split.trust, 450);
-      checkEqual("pro-rata operating share", split.operating, 150);
+      const split = trustFirstSplit(600, 500, 1500);
+      checkEqual("trust is filled first", split.trust, 600);
+      checkEqual("operating gets nothing until trust is covered", split.operating, 0);
       checkEqual(
-        "pro-rata split sums exactly",
+        "the split sums exactly",
         toMoney(split.operating + split.trust),
         600,
       );
+      // The case that proves it is trust-FIRST rather than trust-only.
+      const spill = trustFirstSplit(1000, 900, 400);
+      checkEqual("it spills into operating once trust is covered", spill.operating, 600);
+      checkEqual("with trust capped at what it owed", spill.trust, 400);
 
       // ── Finance role resolution ───────────────────────────────────────────
       section("finance role resolution");
@@ -688,18 +711,31 @@ const main = async () => {
         "bank_transfer",
       );
 
-      const [storedSplit] = await systemDb
+      // Ordered explicitly: once a provider payment writes one row per credited
+      // leg there can be several rows here, and an unordered select would pick
+      // an arbitrary one.
+      const storedRows = await systemDb
         .select({
           operating: invoicePayments.amountOperating,
           trust: invoicePayments.amountTrust,
+          amount: invoicePayments.amount,
         })
         .from(invoicePayments)
-        .where(eq(invoicePayments.invoiceId, invoice.id));
-      // 940 apportioned over 500 operating / 1440 trust outstanding.
+        .where(eq(invoicePayments.invoiceId, invoice.id))
+        .orderBy(invoicePayments.createdAt);
+
+      checkEqual("one row per recorded payment so far", storedRows.length, 1);
+      const storedSplit = storedRows[0];
+      // 940 against 1440 owed to trust: trust-first takes all of it.
       checkEqual(
         "trust share is stored, not inferred",
         Number(storedSplit!.trust),
-        toMoney((940 * 1440) / 1940),
+        940,
+      );
+      checkEqual(
+        "and operating gets nothing while trust is still owed",
+        Number(storedSplit!.operating),
+        0,
       );
       checkEqual(
         "the split sums to the payment",
@@ -875,33 +911,375 @@ const main = async () => {
         null,
       );
 
-      // ── Void releases time ────────────────────────────────────────────────
-      section("voiding releases billed time");
+      // ── Extending a due date ──────────────────────────────────────────────
+      section("extending a due date");
+
+      // `second` is sent and partly paid — the shape the action exists for, and
+      // the one a bare status === 'unpaid' check would have missed.
+      const [beforeExtend] = await systemDb
+        .select({ dueDate: invoices.dueDate, status: invoices.status })
+        .from(invoices)
+        .where(eq(invoices.id, second.id));
+      const extendedTo = daysFromNow(45);
+
+      const extended = await invoicesService.extendDueDate(
+        orgId,
+        second.id,
+        { dueDate: extendedTo, reason: "Client asked for another fortnight" },
+        staffBId,
+        FULL,
+      );
+      checkEqual("the due date moves", extended.dueDate, extendedTo);
+      checkEqual(
+        "and the invoice keeps its status",
+        extended.storedStatus,
+        beforeExtend!.status,
+      );
+
+      // The column now holds the new date, so the trail is the only place the
+      // old one survives. An audit that cannot say what changed is not one.
+      //
+      // finance_events had title + description as two columns; audit_events
+      // renders the sentence into `summary` and keeps the structured detail in
+      // `metadata`. Both halves are still asserted, they just live in different
+      // places now — and they read from metadata rather than summary because
+      // that is where `description` actually goes.
+      const [extendEvent] = await systemDb
+        .select({
+          summary: auditEvents.summary,
+          description: sql<string | null>`(${auditEvents.metadata}->>'description')`,
+        })
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.entityId, second.id),
+            like(auditEvents.summary, "%due date extended%"),
+          ),
+        );
+      check("the extension is recorded", extendEvent != null);
+      check(
+        "with the date it moved from",
+        extendEvent?.description?.includes(beforeExtend!.dueDate) ?? false,
+        extendEvent?.description ?? "(no description recorded)",
+      );
+      check(
+        "and the reason given",
+        extendEvent?.description?.includes("another fortnight") ?? false,
+        extendEvent?.description ?? "(no description recorded)",
+      );
+
+      // Forward only. This is the whole reason it is not just a PATCH.
+      let backwardsRefused = false;
+      try {
+        await invoicesService.extendDueDate(
+          orgId,
+          second.id,
+          { dueDate: daysFromNow(1) },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        backwardsRefused = true;
+      }
+      check("moving a due date backwards is refused", backwardsRefused);
+
+      let sameDateRefused = false;
+      try {
+        await invoicesService.extendDueDate(
+          orgId,
+          second.id,
+          { dueDate: extendedTo },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        sameDateRefused = true;
+      }
+      check("and so is the date it already has", sameDateRefused);
+
+      // ── Scheduled invoices move the NEXT UNPAID instalment ────────────────
+      //
+      // The header date is pinned to the FINAL instalment, so it is not what
+      // anyone means by "extend this". A client who missed instalment 1 of 3
+      // needs longer on instalment 1 — and `dueBy` agrees, since a scheduled
+      // invoice goes overdue on its next unpaid slice, never on its last.
+      //
+      // Sent, not a draft: the draft guard fires first and would make these
+      // pass for the wrong reason.
+      const scheduledInvoice = await invoicesService.create(
+        orgId,
+        staffBId,
+        FULL,
+        {
+          clientId,
+          caseId,
+          issueDate: daysFromNow(-40),
+          dueDate: daysFromNow(60),
+          status: "draft",
+          timeEntryIds: [],
+          lineItems: [
+            { description: "Scheduled work", quantity: 1, rate: 600, account: "operating" },
+          ],
+        },
+      );
+      await instalmentsService.setSchedule(
+        orgId,
+        scheduledInvoice.id,
+        [
+          // Already past — the case this whole feature exists for.
+          { dueDate: daysFromNow(-10), amount: 200 },
+          { dueDate: daysFromNow(30), amount: 200 },
+          { dueDate: daysFromNow(60), amount: 200 },
+        ],
+        staffBId,
+        FULL,
+      );
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, scheduledInvoice.id));
+
+      const [beforeShift] = await systemDb
+        .select({ dueDate: invoices.dueDate, nextDue: invoices.nextDueDate })
+        .from(invoices)
+        .where(eq(invoices.id, scheduledInvoice.id));
+      checkEqual(
+        "the header date is the final instalment",
+        beforeShift!.dueDate,
+        daysFromNow(60),
+      );
+      checkEqual(
+        "and the invoice is next owed on the overdue slice",
+        beforeShift!.nextDue,
+        daysFromNow(-10),
+      );
+
+      const shifted = await invoicesService.extendDueDate(
+        orgId,
+        scheduledInvoice.id,
+        { dueDate: daysFromNow(20), reason: "Missed the first payment" },
+        staffBId,
+        FULL,
+      );
+      const shiftedFirst = shifted.instalments.find((i) => i.sequence === 1);
+      checkEqual(
+        "the overdue instalment moves",
+        shiftedFirst?.dueDate,
+        daysFromNow(20),
+      );
+      checkEqual(
+        "the header date is untouched — it follows the LAST instalment",
+        shifted.dueDate,
+        daysFromNow(60),
+      );
+      const [afterShift] = await systemDb
+        .select({ nextDue: invoices.nextDueDate })
+        .from(invoices)
+        .where(eq(invoices.id, scheduledInvoice.id));
+      checkEqual(
+        "and next_due_date follows it, which is what clears the overdue flag",
+        afterShift!.nextDue,
+        daysFromNow(20),
+      );
+      checkEqual(
+        "the schedule still sums to the total",
+        shifted.instalments.reduce((sum, i) => sum + i.amount, 0),
+        shifted.totals.total,
+      );
+
+      // Reordering the plan is a reschedule, not an extension.
+      let reorderRefused = false;
+      try {
+        await invoicesService.extendDueDate(
+          orgId,
+          scheduledInvoice.id,
+          { dueDate: daysFromNow(45) },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        reorderRefused = true;
+      }
+      check(
+        "pushing an instalment past the next one is refused",
+        reorderRefused,
+      );
+
+      // Landing exactly on the next instalment's date leaves two slices due the
+      // same day with nothing deciding their order.
+      let collisionRefused = false;
+      try {
+        await invoicesService.extendDueDate(
+          orgId,
+          scheduledInvoice.id,
+          { dueDate: daysFromNow(30) },
+          staffBId,
+          FULL,
+        );
+      } catch {
+        collisionRefused = true;
+      }
+      check(
+        "and so is landing exactly on it",
+        collisionRefused,
+      );
+
+      // The last instalment has nothing to collide with, and the header date
+      // travels with it.
+      await paymentsService.recordPayment(
+        orgId,
+        scheduledInvoice.id,
+        staffBId,
+        FULL,
+        {
+          amount: 400,
+          paymentDate: daysFromNow(0),
+          method: "bank_transfer",
+        },
+      );
+      const lastExtended = await invoicesService.extendDueDate(
+        orgId,
+        scheduledInvoice.id,
+        { dueDate: daysFromNow(90) },
+        staffBId,
+        FULL,
+      );
+      checkEqual(
+        "extending the final instalment carries the header date with it",
+        lastExtended.dueDate,
+        daysFromNow(90),
+      );
+
+      // ── Void ──────────────────────────────────────────────────────────────
+      section("voiding");
+
+      // `invoice` was paid in full above. Voiding it would drop `collected` by
+      // money the firm actually holds while the invoice_payments rows survive,
+      // and there is no reversing entry to undo that with — the amount_positive
+      // check constraint forbids a negative payment. So it is refused.
+      let paidVoidRefused = false;
+      try {
+        await invoicesService.voidInvoice(
+          orgId,
+          invoice.id,
+          "Issued in error",
+          staffBId,
+          FULL,
+        );
+      } catch {
+        paidVoidRefused = true;
+      }
+      check("a paid invoice cannot be voided", paidVoidRefused);
+
+      const statsBeforeVoid = await invoicesService.getStats(orgId, FULL);
+
+      // A fresh, unpaid, countable invoice to void for real. It bills its own
+      // time entry, so the release assertion below still means something —
+      // `backdated` and `recent` are permanently attached to `invoice`, which
+      // can no longer be voided.
+      const voidableEntry = await timeBilling.create(orgId, staffAId, false, {
+        staffId: staffAId,
+        caseId,
+        entryDate: "2026-06-14",
+        hoursWorked: 1,
+        description: "Work billed on an invoice that gets withdrawn",
+        billable: true,
+      });
+      await timeBilling.approve(orgId, voidableEntry.id, staffBId);
+
+      const toVoid = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(0),
+        dueDate: daysFromNow(30),
+        status: "draft",
+        lineItems: [],
+        timeEntryIds: [voidableEntry.id],
+      });
+      // Countable — a draft is excluded from the tiles anyway, so voiding one
+      // would prove nothing about the revenue figures.
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, toVoid.id));
+
+      const statsWhileLive = await invoicesService.getStats(orgId, FULL);
+      checkEqual(
+        "a sent invoice counts toward revenue",
+        statsWhileLive.totalInvoiced,
+        statsBeforeVoid.totalInvoiced + toVoid.totals.total,
+      );
 
       const voided = await invoicesService.voidInvoice(
         orgId,
-        invoice.id,
+        toVoid.id,
         "Issued in error",
         staffBId,
         FULL,
       );
-      checkEqual("the invoice is void", voided.status, "void");
+      checkEqual("an unpaid invoice can be voided", voided.status, "void");
 
-      const released = await systemDb
+      const [releasedEntry] = await systemDb
         .select({ invoicedAt: timeEntries.invoicedAt })
         .from(timeEntries)
-        .where(inArray(timeEntries.id, [backdated.id, recent.id]));
-      check(
-        "its time entries can be billed again",
-        released.every((e) => e.invoicedAt == null),
+        .where(eq(timeEntries.id, voidableEntry.id));
+      checkEqual(
+        "its time entry can be billed again",
+        releasedEntry?.invoicedAt ?? null,
+        null,
       );
 
+      // Relative, not the absolute 300 this used to assert: that literal was
+      // only correct while this section voided the paid invoice, which is now
+      // refused. "Voiding removes exactly what it added" is the real invariant
+      // and does not go stale when an earlier section changes.
       const statsAfterVoid = await invoicesService.getStats(orgId, FULL);
       checkEqual(
         "a voided invoice leaves the revenue figures",
         statsAfterVoid.totalInvoiced,
-        300,
+        statsBeforeVoid.totalInvoiced,
       );
+
+      // Leaving the revenue figures is right. Leaving the UI entirely was not:
+      // a voided invoice was reachable from no filter at all, so voiding one
+      // deleted it as far as anyone using the app could tell. The Void bucket
+      // is the only way back to it, exactly as the Drafts bucket is for drafts.
+      const voidList = await invoicesService.list(orgId, FULL, {
+        status: "void",
+      });
+      check(
+        "but is still findable under the Void filter",
+        voidList.data.some((i) => i.id === toVoid.id),
+        "voiding an invoice must not remove it from the application",
+      );
+      check(
+        "which shows only voided invoices",
+        voidList.data.every((i) => i.status === "void"),
+        voidList.data.map((i) => i.status),
+      );
+
+      // And stays out of the general list, which is the behaviour that was
+      // already correct: "all" means the invoices still in play.
+      const allAfterVoid = await invoicesService.list(orgId, FULL, {
+        status: "all",
+      });
+      check(
+        "and stays out of All, which is for live invoices",
+        !allAfterVoid.data.some((i) => i.id === toVoid.id),
+      );
+      checkEqual(
+        "and the paid one it could not void is still counted",
+        statsAfterVoid.collected > 0,
+        true,
+      );
+
+      let doubleVoidRefused = false;
+      try {
+        await invoicesService.voidInvoice(orgId, toVoid.id, undefined, staffBId, FULL);
+      } catch {
+        doubleVoidRefused = true;
+      }
+      check("and cannot be voided twice", doubleVoidRefused);
 
       // ── Matter defaults (attorney prefill) ────────────────────────────────
       section("matter defaults");
@@ -971,7 +1349,29 @@ const main = async () => {
       // ── Editing a draft ───────────────────────────────────────────────────
       section("draft editing");
 
-      // The void above released these two, so they are billable again.
+      // Two entries of this section's own. This used to reuse `backdated` and
+      // `recent`, relying on the void above having released them — a hidden
+      // coupling that broke the moment voiding a paid invoice became refused.
+      // Owning its fixtures keeps this section about draft editing.
+      const swapOut = await timeBilling.create(orgId, staffAId, false, {
+        staffId: staffAId,
+        caseId,
+        entryDate: "2026-06-16",
+        hoursWorked: 2,
+        description: "Entry the draft starts with",
+        billable: true,
+      });
+      const swapIn = await timeBilling.create(orgId, staffAId, false, {
+        staffId: staffAId,
+        caseId,
+        entryDate: "2026-06-17",
+        hoursWorked: 1,
+        description: "Entry the draft swaps to",
+        billable: true,
+      });
+      await timeBilling.approve(orgId, swapOut.id, staffBId);
+      await timeBilling.approve(orgId, swapIn.id, staffBId);
+
       const draft = await invoicesService.create(orgId, staffBId, FULL, {
         clientId,
         caseId,
@@ -981,10 +1381,10 @@ const main = async () => {
         lineItems: [
           { description: "Consultation", quantity: 1, rate: 100, account: "operating" },
         ],
-        timeEntryIds: [backdated.id],
+        timeEntryIds: [swapOut.id],
       });
-      const backdatedAmount = draft.totals.total - 100;
-      check("the draft folds in its time entry", backdatedAmount > 0);
+      const foldedTimeAmount = draft.totals.total - 100;
+      check("the draft folds in its time entry", foldedTimeAmount > 0);
 
       const edited = await invoicesService.update(
         orgId,
@@ -995,7 +1395,7 @@ const main = async () => {
             { description: "Consultation", quantity: 2, rate: 100, account: "operating" },
           ],
           // Swap which time entry it bills.
-          timeEntryIds: [recent.id],
+          timeEntryIds: [swapIn.id],
         },
         staffBId,
         FULL,
@@ -1005,17 +1405,17 @@ const main = async () => {
       checkEqual("the notes stuck", edited.notes, "Revised before sending");
       checkEqual("the line set was replaced", edited.lineItems.length, 2);
 
-      const [backdatedAfter] = await systemDb
+      const [swapOutAfter] = await systemDb
         .select({ invoicedAt: timeEntries.invoicedAt })
         .from(timeEntries)
-        .where(eq(timeEntries.id, backdated.id));
-      const [recentAfter] = await systemDb
+        .where(eq(timeEntries.id, swapOut.id));
+      const [swapInAfter] = await systemDb
         .select({ invoicedAt: timeEntries.invoicedAt })
         .from(timeEntries)
-        .where(eq(timeEntries.id, recent.id));
+        .where(eq(timeEntries.id, swapIn.id));
       // The dropped entry must become billable again, or the work is stranded.
-      checkEqual("the dropped entry is released", backdatedAfter?.invoicedAt ?? null, null);
-      check("the added entry is claimed", recentAfter?.invoicedAt != null);
+      checkEqual("the dropped entry is released", swapOutAfter?.invoicedAt ?? null, null);
+      check("the added entry is claimed", swapInAfter?.invoicedAt != null);
 
       // Totals are recalculated, not left at what the draft used to say.
       const recentAmount = edited.totals.total - 200;
@@ -1032,7 +1432,7 @@ const main = async () => {
         draft.id,
         {
           lineItems: [],
-          timeEntryIds: [recent.id],
+          timeEntryIds: [swapIn.id],
         },
         staffBId,
         FULL,
@@ -1046,12 +1446,12 @@ const main = async () => {
       });
       check(
         "the held entry is offered back when editing",
-        offered.some((e) => e.id === recent.id),
+        offered.some((e) => e.id === swapIn.id),
       );
       const unbilledOnly = await invoicesService.getUnbilledTime(orgId, { clientId });
       check(
         "but not to a plain unbilled query",
-        !unbilledOnly.some((e) => e.id === recent.id),
+        !unbilledOnly.some((e) => e.id === swapIn.id),
       );
 
       // A sent invoice is a statement the client already holds; correcting it
@@ -1861,47 +2261,39 @@ const main = async () => {
       );
 
       // ── Payment provider seam ─────────────────────────────────────────────
-      section("payment provider seam");
+      section("payment readiness");
 
-      // Nothing is configured in any environment yet, and every path that could
-      // take money has to say so rather than pretend.
+      // Readiness is per ORGANIZATION now, not per deployment. This org has no
+      // confido_firms row, so it cannot take money — and every path that could
+      // has to say so rather than pretend.
       checkEqual(
-        "no provider is configured",
-        isPaymentProviderConfigured(),
-        false,
-      );
-      // The e-signature stub returns true here; this one must not. It guards an
-      // unauthenticated endpoint that writes to the ledger, so "I cannot verify
-      // this" has to mean refuse, not accept.
-      checkEqual(
-        "the stub verifies nothing",
-        getPaymentProvider().verifyWebhook(Buffer.from("{}"), "sig"),
+        "an org with no Confido account cannot take payments",
+        await paymentsEnabledFor(orgId),
         false,
       );
 
-      let unconfiguredCheckoutRefused = false;
+      // The refusal must come from readiness, not from an unrelated failure. A
+      // check that passes because the token was bogus proves nothing, which is
+      // what the previous version of this section did once a provider existed.
+      const readyInvoiceToken = await paymentLinks.mintPaymentLink(
+        orgId,
+        second.id,
+      );
+      let unreadyCheckoutRefused = false;
+      let refusalMessage = "";
       try {
-        await paymentLinks.startCheckout("whatever");
-      } catch {
-        unconfiguredCheckoutRefused = true;
+        await paymentLinks.startCheckout(readyInvoiceToken);
+      } catch (err) {
+        unreadyCheckoutRefused = true;
+        refusalMessage = err instanceof Error ? err.message : "";
       }
+      check("checkout is refused for an unready firm", unreadyCheckoutRefused);
       check(
-        "checkout is refused while no provider exists",
-        unconfiguredCheckoutRefused,
+        "and refused for the right reason",
+        refusalMessage.includes("not available yet"),
+        refusalMessage,
       );
 
-      let unconfiguredWebhookRefused = false;
-      try {
-        await paymentWebhooks.handlePaymentWebhook(Buffer.from("{}"), "sig");
-      } catch {
-        unconfiguredWebhookRefused = true;
-      }
-      check(
-        "and so is the webhook",
-        unconfiguredWebhookRefused,
-      );
-
-      // ── Payment links ─────────────────────────────────────────────────────
       section("payment links");
 
       const linkToken = await paymentLinks.mintPaymentLink(orgId, second.id);
@@ -1933,16 +2325,21 @@ const main = async () => {
       }
       check("an unknown token is refused", unknownTokenRejected);
 
-      // Paying a settled invoice must not be possible — `invoice` was paid in
-      // full earlier, then voided, so it is refused twice over.
+      // A settled invoice still RESOLVES — the page polls this while a card is
+      // processing, and throwing the moment the balance clears would flip it
+      // into an error at the instant of success. Taking money against one is
+      // what must be refused.
+      //
+      // `invoice` here was paid in full earlier and then voided, so it is
+      // refused on both counts; the void check fires first.
       const paidToken = await paymentLinks.mintPaymentLink(orgId, invoice.id);
-      let settledRejected = false;
+      let settledCheckoutRejected = false;
       try {
-        await paymentLinks.invoiceByPaymentToken(paidToken);
+        await paymentLinks.startCheckout(paidToken);
       } catch {
-        settledRejected = true;
+        settledCheckoutRejected = true;
       }
-      check("a settled invoice cannot be paid again", settledRejected);
+      check("a settled invoice cannot be paid again", settledCheckoutRejected);
 
       // ── Ledger idempotency ────────────────────────────────────────────────
       section("ledger idempotency");
@@ -2025,26 +2422,781 @@ const main = async () => {
       }
       check("a replayed event id is rejected", duplicateEventRejected);
 
+      // ── Line preset catalog ───────────────────────────────────────────────
+      // Placed here deliberately: the money assertions earlier in this file are
+      // chained and absolute (totalInvoiced 2240, statsAfterVoid 300), so the
+      // invoice this section raises must come after all of them.
+      section("line preset catalog");
+
+      // Shipped rows are written with systemDb because RLS forbids a tenant
+      // from creating one — which is itself asserted below.
+      const [shippedGeneral] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: null,
+          name: "Check — postage",
+          account: "operating",
+          defaultRate: "12.0000",
+        })
+        .returning();
+      const [shippedArea] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: null,
+          name: "Check — area filing fee",
+          account: "trust_iolta",
+          defaultRate: "405.0000",
+          practiceAreaId,
+        })
+        .returning();
+      const [shippedCaseType] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: null,
+          name: "Check — I-485 filing fee",
+          account: "trust_iolta",
+          defaultRate: "1440.0000",
+          practiceAreaId,
+          caseTypeId: caseType!.id,
+        })
+        .returning();
+      const [shippedToShadow] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: null,
+          name: "Check — superseded fee",
+          account: "operating",
+          defaultRate: "99.0000",
+          practiceAreaId,
+        })
+        .returning();
+      presetIdsToClean.push(
+        shippedGeneral!.id,
+        shippedArea!.id,
+        shippedCaseType!.id,
+        shippedToShadow!.id,
+      );
+
+      // A firm that has authored nothing still gets a working catalog. This
+      // reads through the TENANT connection, so it is the RLS `using` clause
+      // being exercised, not a bypass.
+      const scoped = await linePresets.listPresets(orgId, FULL, {
+        practiceAreaId,
+        caseTypeId: caseType!.id,
+      });
+      const scopedNames = scoped.map((p) => p.name);
+      check(
+        "a firm with no presets of its own still sees the shipped catalog",
+        scopedNames.includes("Check — postage") &&
+          scopedNames.includes("Check — area filing fee") &&
+          scopedNames.includes("Check — I-485 filing fee"),
+        scopedNames,
+      );
+      checkEqual(
+        "shipped rows report their origin",
+        scoped.find((p) => p.name === "Check — postage")?.origin,
+        "shipped",
+      );
+
+      // Most-specific first, so the picker's group headings come straight off
+      // the response.
+      const rankOf = (name: string) =>
+        scoped.find((p) => p.name === name)?.rank;
+      checkEqual("a case-type preset ranks as one", rankOf("Check — I-485 filing fee"), "case_type");
+      checkEqual("a practice-area preset ranks as one", rankOf("Check — area filing fee"), "practice_area");
+      checkEqual("an unscoped preset ranks general", rankOf("Check — postage"), "general");
+      check(
+        "and they arrive in that order",
+        scoped.findIndex((p) => p.name === "Check — I-485 filing fee") <
+          scoped.findIndex((p) => p.name === "Check — area filing fee") &&
+          scoped.findIndex((p) => p.name === "Check — area filing fee") <
+            scoped.findIndex((p) => p.name === "Check — postage"),
+      );
+
+      // Widening is one-directional: a narrower preset must not leak upward.
+      const areaOnly = await linePresets.listPresets(orgId, FULL, {
+        practiceAreaId,
+      });
+      check(
+        "a case-type preset is withheld from a matter without that case type",
+        !areaOnly.some((p) => p.name === "Check — I-485 filing fee"),
+      );
+      const unscopedOnly = await linePresets.listPresets(orgId, FULL, {});
+      checkEqual(
+        "an invoice with no matter sees only the general tier",
+        unscopedOnly.every((p) => p.rank === "general"),
+        true,
+      );
+
+      // Trust visibility. The list is a UX filter; the write path below is the
+      // boundary that actually matters.
+      const withoutTrust = await linePresets.listPresets(orgId, NO_TRUST, {
+        practiceAreaId,
+        caseTypeId: caseType!.id,
+      });
+      checkEqual(
+        "a caller without trust access is shown no trust presets",
+        withoutTrust.some((p) => p.account === "trust_iolta"),
+        false,
+      );
+      check(
+        "but still sees the operating ones",
+        withoutTrust.some((p) => p.name === "Check — postage"),
+      );
+
+      // ── Saving a custom line ──────────────────────────────────────────────
+      const savedFirst = await linePresets.saveFirmPreset(
+        orgId,
+        staffBId,
+        FULL,
+        {
+          name: "Check — bespoke drafting",
+          account: "operating",
+          defaultRate: 400,
+          practiceAreaId,
+        },
+      );
+      presetIdsToClean.push(savedFirst.id);
+      checkEqual("a saved custom line is firm-owned", savedFirst.origin, "firm");
+
+      // Re-saving the same name is an update, not a duplicate and not an error.
+      // It is the only way to correct an amount until the edit screen exists.
+      const savedAgain = await linePresets.saveFirmPreset(
+        orgId,
+        staffBId,
+        FULL,
+        {
+          name: "Check — bespoke drafting",
+          account: "operating",
+          defaultRate: 450,
+          practiceAreaId,
+        },
+      );
+      checkEqual("re-saving updates in place", savedAgain.id, savedFirst.id);
+      checkEqual("and takes the newer amount", savedAgain.defaultRate, 450);
+
+      const afterSave = await linePresets.listPresets(orgId, FULL, {
+        practiceAreaId,
+      });
+      checkEqual(
+        "the firm's list holds it exactly once",
+        afterSave.filter((p) => p.name === "Check — bespoke drafting").length,
+        1,
+      );
+      // A firm's own entry outranks the shipped rows it sits beside.
+      check(
+        "a firm entry sorts ahead of shipped ones at the same rank",
+        afterSave.findIndex((p) => p.name === "Check — bespoke drafting") <
+          afterSave.findIndex((p) => p.name === "Check — area filing fee"),
+      );
+
+      let trustPresetRefused = false;
+      try {
+        await linePresets.saveFirmPreset(orgId, staffBId, NO_TRUST, {
+          name: "Check — forbidden trust line",
+          account: "trust_iolta",
+          defaultRate: 100,
+        });
+      } catch {
+        trustPresetRefused = true;
+      }
+      check(
+        "saving a trust preset without trust access is refused",
+        trustPresetRefused,
+      );
+
+      // ── Shadowing ─────────────────────────────────────────────────────────
+      const [shadowRow] = await systemDb
+        .insert(invoiceLinePresets)
+        .values({
+          organizationId: orgId,
+          shadowsPresetId: shippedToShadow!.id,
+          name: "Check — superseded fee",
+          account: "operating",
+          defaultRate: "150.0000",
+          practiceAreaId,
+        })
+        .returning();
+      presetIdsToClean.push(shadowRow!.id);
+
+      const afterShadow = await linePresets.listPresets(orgId, FULL, {
+        practiceAreaId,
+      });
+      const supersededRows = afterShadow.filter(
+        (p) => p.name === "Check — superseded fee",
+      );
+      checkEqual(
+        "a shadowed shipped preset drops out of the list",
+        supersededRows.length,
+        1,
+      );
+      checkEqual(
+        "leaving the firm's own in its place",
+        supersededRows[0]?.defaultRate,
+        150,
+      );
+      // The shipped row is untouched — that is the whole point of shadowing
+      // rather than editing, and it is what lets a CLI correction still land.
+      const [shippedStillThere] = await systemDb
+        .select({ rate: invoiceLinePresets.defaultRate })
+        .from(invoiceLinePresets)
+        .where(eq(invoiceLinePresets.id, shippedToShadow!.id));
+      checkEqual(
+        "while the shipped row itself is unchanged",
+        num(shippedStillThere!.rate),
+        99,
+      );
+
+      // ── RLS on the shared catalog ─────────────────────────────────────────
+      //
+      // Asserted in `07-rls`, not here. That a firm cannot author a shipped
+      // (NULL-organization) preset is an RLS property, and RLS is INERT on the
+      // connection this check uses: `oravanti_admin` owns the table, so
+      // policies do not apply to it and the write simply succeeds. `07-rls`
+      // connects as `oravanti_rls_probe` — non-superuser, non-owner, no
+      // BYPASSRLS — which is the only way to demonstrate the policy at all.
+      //
+      // This check previously tried to assert it through `db` and therefore
+      // failed on any clean database, "passing" only when a leftover row from
+      // an earlier failed run tripped the unique index instead. It also leaked
+      // that row: inserted without `.returning()`, its id never reached
+      // `presetIdsToClean`, so every failure left a NULL-organization preset —
+      // a shipped catalog entry visible to every firm — behind.
+
+      // ── Provenance on the line ────────────────────────────────────────────
+      const presetInvoice = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(0),
+        dueDate: daysFromNow(30),
+        status: "draft",
+        timeEntryIds: [],
+        lineItems: [
+          {
+            description: "Check — postage",
+            quantity: 1,
+            rate: 12,
+            account: "operating",
+            presetId: shippedGeneral!.id,
+          },
+        ],
+      });
+      const presetLine = presetInvoice.lineItems[0];
+      checkEqual(
+        "a line composed from a preset records which one",
+        presetLine?.presetId,
+        shippedGeneral!.id,
+      );
+
+      // Retiring a preset must not reach into an invoice the client holds. This
+      // is why the reference is `set null` and why the rate is copied, never
+      // read back.
+      await systemDb
+        .delete(invoiceLinePresets)
+        .where(eq(invoiceLinePresets.id, shippedGeneral!.id));
+      const [orphaned] = await systemDb
+        .select({
+          description: invoiceLineItems.description,
+          rate: invoiceLineItems.rate,
+          presetId: invoiceLineItems.presetId,
+        })
+        .from(invoiceLineItems)
+        .where(eq(invoiceLineItems.id, presetLine!.id));
+      checkEqual(
+        "deleting the preset leaves the billed description intact",
+        orphaned!.description,
+        "Check — postage",
+      );
+      checkEqual(
+        "and the billed rate intact",
+        num(orphaned!.rate),
+        12,
+      );
+      checkEqual(
+        "clearing only the provenance link",
+        orphaned!.presetId,
+        null,
+      );
+
       // ── Activity trail ────────────────────────────────────────────────────
+      section("reversals");
+
+      // Raised here, after every absolute money assertion above, for the same
+      // reason the preset section is: this invoice's payments must not move
+      // the running totals those depend on.
+      const refundable = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(-3),
+        dueDate: daysFromNow(30),
+        status: "draft",
+        lineItems: [
+          { description: "USCIS filing fee", quantity: 1, rate: 1000, account: "trust_iolta" },
+          { description: "Attorney time", quantity: 1, rate: 500, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, refundable.id));
+
+      // Paid in full as a provider would report it: one single-sided row per
+      // credited account, each with its own transaction id.
+      await paymentsService.recordPayment(orgId, refundable.id, staffBId, FULL, {
+        amount: 1500,
+        paymentDate: daysFromNow(-1),
+        method: "credit_card",
+        provider: "confido",
+        legs: [
+          { account: "trust_iolta", amount: 1000, providerReference: "txn_rev_trust" },
+          { account: "operating", amount: 500, providerReference: "txn_rev_op" },
+        ],
+      });
+
+      const paidRow = async (id: string) => {
+        const [row] = await systemDb
+          .select({
+            amountPaid: invoices.amountPaid,
+            balanceDue: invoices.balanceDue,
+            status: invoices.status,
+          })
+          .from(invoices)
+          .where(eq(invoices.id, id));
+        return row!;
+      };
+
+      const afterPaid = await paidRow(refundable.id);
+      checkEqual("both legs land", Number(afterPaid.amountPaid), 1500);
+      checkEqual("and settle the invoice", afterPaid.status, "paid");
+
+      const trustLeg = await systemDb
+        .select({ id: invoicePayments.id })
+        .from(invoicePayments)
+        .where(eq(invoicePayments.providerReference, "txn_rev_trust"));
+
+      // A partial refund of the trust leg. THE invariant of the whole design:
+      // a reversal must SUBTRACT, not add. Under a positive-rows-plus-kind
+      // ledger a forgotten filter would read 1500 + 400 here.
+      await paymentsService.recordReversal(orgId, refundable.id, staffBId, FULL, {
+        kind: "refund",
+        reversesPaymentId: trustLeg[0]!.id,
+        amount: 400,
+        account: "trust_iolta",
+        paymentDate: daysFromNow(0),
+        method: "credit_card",
+        provider: "confido",
+        providerReference: "txn_rev_refund_1",
+      });
+
+      const afterRefund = await paidRow(refundable.id);
+      checkEqual("a refund reduces what was paid", Number(afterRefund.amountPaid), 1100);
+      checkEqual("the balance reopens", Number(afterRefund.balanceDue), 400);
+      // A PART refund leaves money with the firm, so this is still `partial` —
+      // the client is not owed the difference and the invoice is not settled.
+      checkEqual("a part refund is still partial", afterRefund.status, "partial");
+
+      // The trust figure Reports shows must net too — it sums amount_trust, and
+      // client money that went back is not money the firm still holds.
+      const [trustFold] = await systemDb
+        .select({ trust: sql<string>`coalesce(sum(${invoicePayments.amountTrust}), 0)` })
+        .from(invoicePayments)
+        .where(eq(invoicePayments.invoiceId, refundable.id));
+      checkEqual("the trust side nets the refund", Number(trustFold!.trust), 600);
+
+      // Giving back more than came in. The unique index catches a replay of the
+      // same reversal; this catches two distinct events describing one refund.
+      let overReversed = false;
+      try {
+        await paymentsService.recordReversal(orgId, refundable.id, staffBId, FULL, {
+          kind: "refund",
+          reversesPaymentId: trustLeg[0]!.id,
+          amount: 900,
+          account: "trust_iolta",
+          paymentDate: daysFromNow(0),
+          method: "credit_card",
+          provider: "confido",
+          providerReference: "txn_rev_refund_2",
+        });
+      } catch {
+        overReversed = true;
+      }
+      check("refunding past what remains is refused", overReversed);
+
+      // Sign follows kind, enforced by the database rather than by the service
+      // that happens to call it.
+      let positiveReversalRejected = false;
+      try {
+        await systemDb.insert(invoicePayments).values({
+          organizationId: orgId,
+          invoiceId: refundable.id,
+          kind: "refund",
+          reversesPaymentId: trustLeg[0]!.id,
+          amount: "50.00",
+          amountOperating: "50.00",
+          amountTrust: "0.00",
+          paymentDate: daysFromNow(0),
+          method: "other",
+        });
+      } catch {
+        positiveReversalRejected = true;
+      }
+      check("a positive reversal row is rejected by the constraint", positiveReversalRejected);
+
+      let unlinkedReversalRejected = false;
+      try {
+        await systemDb.insert(invoicePayments).values({
+          organizationId: orgId,
+          invoiceId: refundable.id,
+          kind: "refund",
+          amount: "-50.00",
+          amountOperating: "-50.00",
+          amountTrust: "0.00",
+          paymentDate: daysFromNow(0),
+          method: "other",
+        });
+      } catch {
+        unlinkedReversalRejected = true;
+      }
+      check("a reversal pointing at nothing is rejected too", unlinkedReversalRejected);
+
+      section("refunding a whole invoice");
+
+      // What cancelling a paid consultation does. The invoice is the unit here,
+      // not one payment: the caller is undoing a transaction rather than
+      // choosing a leg to reverse.
+      const cancelled = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(-2),
+        dueDate: daysFromNow(28),
+        status: "draft",
+        lineItems: [
+          { description: "Consultation fee", quantity: 1, rate: 400, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, cancelled.id));
+
+      await paymentsService.recordPayment(orgId, cancelled.id, staffBId, FULL, {
+        amount: 400,
+        paymentDate: daysFromNow(-1),
+        method: "credit_card",
+        provider: "confido",
+        legs: [{ account: "operating", amount: 400, providerReference: "txn_consult_fee" }],
+      });
+
+      checkEqual(
+        "the firm is holding the fee",
+        await refundsService.netPaidOnInvoice(orgId, cancelled.id),
+        400,
+      );
+
+      // A hand-recorded payment on the same invoice. Confido has nothing to
+      // refund for this one, so it must be reported rather than dropped.
+      await paymentsService.recordPayment(orgId, cancelled.id, staffBId, FULL, {
+        amount: 60,
+        paymentDate: daysFromNow(-1),
+        method: "check",
+        reference: "cheque 1191",
+      });
+
+      const summary = await refundsService.refundInvoiceInFull(
+        orgId,
+        cancelled.id,
+        staffBId,
+        FULL,
+        "Consultation cancelled",
+      );
+
+      checkEqual(
+        "money taken outside the processor is reported, not silently kept",
+        summary.manualOutstanding,
+        60,
+      );
+
+      // This fixture has no Confido credential, so the card leg cannot reach the
+      // processor — which is the more valuable thing to assert. A cancellation
+      // must not be blocked because a refund failed, so the failure is COLLECTED
+      // rather than thrown, and the money stays visibly held. The successful
+      // refund path needs a sandbox and is covered by 19-confido-reversals.
+      checkEqual(
+        "a leg that cannot reach the processor is collected, not thrown",
+        summary.failures.length,
+        1,
+      );
+      checkEqual("and nothing is claimed as refunded", summary.refunded, 0);
+      checkEqual(
+        "so the full amount still reads as held",
+        await refundsService.netPaidOnInvoice(orgId, cancelled.id),
+        460,
+      );
+
+      // What makes "refund owed" safe to derive: the figure is a fold over the
+      // ledger, so a second attempt cannot double-refund — it re-reads the same
+      // outstanding amounts and fails the same way.
+      const rerun = await refundsService.refundInvoiceInFull(
+        orgId,
+        cancelled.id,
+        staffBId,
+        FULL,
+      );
+      checkEqual("a second attempt sends nothing more", rerun.refunded, 0);
+      checkEqual(
+        "and the held figure is unchanged",
+        await refundsService.netPaidOnInvoice(orgId, cancelled.id),
+        460,
+      );
+
+      section("a fully refunded invoice says so");
+
+      // The regression this status exists for. Refunding everything nets
+      // `amount_paid` to zero, and before `refunded` existed the invoice fell
+      // through to `sent` — reappearing as money the client owes, and then as
+      // OVERDUE once the due date passed. A firm chasing someone for money it
+      // has already given back.
+      const fullyRefunded = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        // Deliberately already past due, because that is the case the old code
+        // got wrong: any refunded invoice is eventually past its due date.
+        issueDate: daysFromNow(-40),
+        dueDate: daysFromNow(-10),
+        status: "draft",
+        lineItems: [
+          { description: "Consultation fee", quantity: 1, rate: 300, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, fullyRefunded.id));
+
+      await paymentsService.recordPayment(orgId, fullyRefunded.id, staffBId, FULL, {
+        amount: 300,
+        paymentDate: daysFromNow(-20),
+        method: "credit_card",
+        provider: "confido",
+        legs: [{ account: "operating", amount: 300, providerReference: "txn_full_refund" }],
+      });
+
+      const paidLeg = await systemDb
+        .select({ id: invoicePayments.id })
+        .from(invoicePayments)
+        .where(eq(invoicePayments.providerReference, "txn_full_refund"));
+
+      await paymentsService.recordReversal(orgId, fullyRefunded.id, staffBId, FULL, {
+        kind: "refund",
+        reversesPaymentId: paidLeg[0]!.id,
+        amount: 300,
+        account: "operating",
+        paymentDate: daysFromNow(0),
+        method: "credit_card",
+        provider: "confido",
+        providerReference: "txn_full_refund_rev",
+      });
+
+      const settled = await paidRow(fullyRefunded.id);
+      checkEqual("the stored status is refunded", settled.status, "refunded");
+      checkEqual("with nothing left paid", Number(settled.amountPaid), 0);
+
+      // The one that actually matters. `effectiveStatusSql` tests the due date
+      // before falling through, so a `refunded` branch below that line would be
+      // unreachable for precisely the invoices that need it.
+      const [effective] = await systemDb
+        .select({ effective: effectiveStatusSql(await status.firmToday(orgId)) })
+        .from(invoices)
+        .where(eq(invoices.id, fullyRefunded.id));
+      checkEqual(
+        "and it does NOT read as overdue despite being past due",
+        effective!.effective,
+        "refunded",
+      );
+
+      // Not revenue. The firm collected nothing net, so every money tile and
+      // report figure has to leave it out, the same as a void.
+      const [counted] = await systemDb
+        .select({ n: sql<number>`count(*)::int` })
+        .from(invoices)
+        .where(and(eq(invoices.id, fullyRefunded.id), status.countableInvoices()));
+      checkEqual("and is not counted as revenue", counted!.n, 0);
+
+      // Chasing it is the worst version of the bug, so it is refused outright.
+      let chaseRefundedRejected = false;
+      try {
+        await paymentsService.sendFollowUp(orgId, fullyRefunded.id, staffBId, {
+          message: "x",
+          channel: "email",
+        });
+      } catch {
+        chaseRefundedRejected = true;
+      }
+      check("and cannot be chased", chaseRefundedRejected);
+
+      // The assertions above all tested what the invoice IS. None of them
+      // tested whether anyone can find it, and that is exactly where this went
+      // wrong: `listableInvoices` was built on `countableInvoices()`, so
+      // excluding refunded money from the tiles silently excluded refunded
+      // invoices from the list — under "all" AND under the Refunded filter the
+      // UI now offers.
+      const allList = await invoicesService.list(orgId, FULL, { status: "all" });
+      check(
+        "a refunded invoice appears under All",
+        allList.data.some((i) => i.id === fullyRefunded.id),
+        "listable and countable are different questions",
+      );
+
+      const refundedList = await invoicesService.list(orgId, FULL, {
+        status: "refunded",
+      });
+      check(
+        "and under the Refunded filter",
+        refundedList.data.some((i) => i.id === fullyRefunded.id),
+      );
+      check(
+        "which shows only refunded invoices",
+        refundedList.data.every((i) => i.status === "refunded"),
+        refundedList.data.map((i) => i.status),
+      );
+
+      section("clearing policy");
+
+      // A card payment reported but not deposited. Which policy the firm is on
+      // decides whether it can open a case.
+      const clearing = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(-3),
+        dueDate: daysFromNow(30),
+        status: "draft",
+        lineItems: [
+          { description: "Deposit", quantity: 1, rate: 800, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await systemDb
+        .update(invoices)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(eq(invoices.id, clearing.id));
+
+      await paymentsService.recordPayment(orgId, clearing.id, staffBId, FULL, {
+        amount: 800,
+        paymentDate: daysFromNow(0),
+        method: "credit_card",
+        provider: "confido",
+        settledAt: null,
+        providerStatus: "PENDING",
+        legs: [{ account: "operating", amount: 800, providerReference: "txn_pending_card" }],
+      });
+
+      const gateUnder = async (policy: "on_report" | "ach_only" | "all_payments") => {
+        await systemDb
+          .insert(confidoFirms)
+          .values({
+            organizationId: orgId,
+            confidoFirmId: `firm-${orgId}`,
+            status: "ACTIVE",
+            isAcceptingPayments: true,
+            provisioningState: "ready",
+            paymentClearingPolicy: policy,
+          })
+          .onConflictDoUpdate({
+            target: confidoFirms.organizationId,
+            set: { paymentClearingPolicy: policy },
+          });
+        return feeAgreementBilling.feeInvoiceSatisfied(orgId, clearing.id);
+      };
+
+      checkEqual(
+        "on_report opens a case on money merely reported",
+        await gateUnder("on_report"),
+        true,
+      );
+      checkEqual(
+        "ach_only lets an unsettled CARD through",
+        await gateUnder("ach_only"),
+        true,
+      );
+      checkEqual(
+        "all_payments holds it until the money clears",
+        await gateUnder("all_payments"),
+        false,
+      );
+
+      // HELD is Confido's risk review — "we are not sure this money is good" —
+      // and must not pass even the permissive card rule.
+      await systemDb
+        .update(invoicePayments)
+        .set({ providerStatus: "HELD" })
+        .where(eq(invoicePayments.providerReference, "txn_pending_card"));
+      checkEqual(
+        "but a HELD card never counts, even under ach_only",
+        await gateUnder("ach_only"),
+        false,
+      );
+
+      await paymentsService.markPaymentSettled(
+        orgId,
+        "confido",
+        "txn_pending_card",
+        "DEPOSITED",
+        true,
+      );
+      checkEqual(
+        "once deposited it counts under every policy",
+        await gateUnder("all_payments"),
+        true,
+      );
+
       section("activity trail");
 
       const events = await systemDb
-        .select({ eventType: financeEvents.eventType })
-        .from(financeEvents)
-        .where(eq(financeEvents.organizationId, orgId));
-      const types = new Set(events.map((e) => e.eventType));
-      check("invoice creation is recorded", types.has("invoice_sent"));
-      check("payment is recorded", types.has("invoice_partially_paid"));
-      check("settlement is recorded", types.has("invoice_paid"));
-      check("follow-up is recorded", types.has("payment_followup_sent"));
-      check("void is recorded", types.has("invoice_voided"));
-      check("time approval is recorded", types.has("time_entry_approved"));
-      check("a schedule being set is recorded", types.has("invoice_schedule_set"));
-      check("a revision is recorded", types.has("invoice_schedule_revised"));
-      check("a removal is recorded", types.has("invoice_schedule_removed"));
+        .select({ action: auditEvents.action })
+        .from(auditEvents)
+        .where(eq(auditEvents.organizationId, orgId));
+      const types = new Set(events.map((e) => e.action));
+      check("invoice creation is recorded", types.has("finance.invoice_sent"));
+      check("payment is recorded", types.has("finance.invoice_partially_paid"));
+      check("settlement is recorded", types.has("finance.invoice_paid"));
+      check("follow-up is recorded", types.has("finance.payment_followup_sent"));
+      check("void is recorded", types.has("finance.invoice_voided"));
+      check("time approval is recorded", types.has("finance.time_entry_approved"));
+      check("a schedule being set is recorded", types.has("finance.invoice_schedule_set"));
+      check("a revision is recorded", types.has("finance.invoice_schedule_revised"));
+      check("a removal is recorded", types.has("finance.invoice_schedule_removed"));
+
+      // Everything above reads `audit_events` DIRECTLY, which is why a broken
+      // read path shipped: `getRecentActivity` joins invoices on
+      // `invoices.id = audit_events.entity_id`, and that is `uuid = text` —
+      // refused by Postgres every single time. The endpoint 500'd from the day
+      // the audit tables landed and no assertion here noticed, because none of
+      // them called the function the route calls.
+      const feed = await financeEvents.getRecentActivity(orgId, 8);
+      check("the activity feed loads at all", feed.length > 0);
+      check(
+        "and resolves the invoice each entry belongs to",
+        feed.some((e) => e.invoiceNumber != null),
+        "every entry has invoiceNumber null — the invoices join matched nothing",
+      );
+      check(
+        "and carries the detail saying what changed",
+        feed.some((e) => e.description != null),
+        "description is null throughout — logFinanceEvent is dropping it again",
+      );
     });
   } finally {
     // ── Cleanup ──────────────────────────────────────────────────────────────
+    // The clearing-policy section attaches a Confido firm to this org, and the
+    // FK to `organization` is not cascading — deliberately, since a firm's
+    // merchant account should outlive a careless delete.
+    await systemDb
+      .delete(confidoFirms)
+      .where(eq(confidoFirms.organizationId, orgId));
+
     const orgInvoices = await systemDb
       .select({ id: invoices.id })
       .from(invoices)
@@ -2068,11 +3220,30 @@ const main = async () => {
     await systemDb
       .delete(notifications)
       .where(eq(notifications.organizationId, orgId));
+    // Before the practice area, whose cascade would otherwise reach the scoped
+    // ones and leave the unscoped shipped row behind.
+    if (presetIdsToClean.length) {
+      await systemDb
+        .delete(invoiceLinePresets)
+        .where(inArray(invoiceLinePresets.id, presetIdsToClean));
+    }
+    // Belt and braces for the shared catalog: anything NULL-organization this
+    // check named, whether or not its id was captured. A leaked shipped preset
+    // is visible to every firm, so it is worth sweeping by name rather than
+    // trusting that every insert remembered to return its id.
+    await systemDb
+      .delete(invoiceLinePresets)
+      .where(
+        and(
+          isNull(invoiceLinePresets.organizationId),
+          like(invoiceLinePresets.name, "Check %"),
+        ),
+      );
     // Not org-scoped by design, so cleaned by the ids this check invents.
     await systemDb
       .delete(paymentWebhookEvents)
       .where(eq(paymentWebhookEvents.eventId, "evt_check_1"));
-    await systemDb.delete(financeEvents).where(eq(financeEvents.organizationId, orgId));
+    await systemDb.delete(auditEvents).where(eq(auditEvents.organizationId, orgId));
     await systemDb.delete(invoices).where(eq(invoices.organizationId, orgId));
     await systemDb
       .delete(invoiceNumberSequences)

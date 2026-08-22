@@ -9,7 +9,6 @@ import {
   teamMember,
   user,
 } from "../schema/auth-schema";
-import { practiceAreas } from "../schema/practice-areas";
 import { staff, staffRoleEnum, staffStatusEnum } from "../schema/staff";
 
 type StaffRole = (typeof staffRoleEnum.enumValues)[number];
@@ -422,12 +421,13 @@ export const seedStaffAndTeams = async (organizationId?: string) => {
 
   const suffix = `staff-${Date.now()}`;
 
-  const practiceAreaRows = await db.select().from(practiceAreas);
 
   interface StaffEntry {
     id: string;
     userId: string | null;
-    role: StaffRole | null;
+    // `staff.role` is free text (a best-effort "primary role" projection,
+    // not authoritative) — see `src/db/schema/staff.ts`.
+    role: string | null;
     status: StaffStatus;
     email: string;
   }

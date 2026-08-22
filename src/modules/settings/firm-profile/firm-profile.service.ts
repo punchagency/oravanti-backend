@@ -10,13 +10,11 @@ import {
   adverseParties,
   aiScanJobs,
   aiSystemConfig,
-  approvalWorkflows,
   assignments,
   calendarEvents,
   caseIssues,
   cases,
   caseNotes,
-  caseTimelineEvents,
   caseTypeDocumentRequirements,
   caseWorkflowSteps,
   clientCompanies,
@@ -28,9 +26,7 @@ import {
   consultationParticipants,
   consultationSettings,
   consultations,
-  dataAccessControls,
   documentAccess,
-  documentActivityLogs,
   documentCaseLinks,
   documentRequests,
   documents,
@@ -43,17 +39,11 @@ import {
   firmQuestionnaireQuestions,
   firmQuestionnaireSections,
   leadDocumentLinks,
-  leadEvents,
   leadNotes,
   leadTasks,
-  leadTimelineEvents,
   leads,
   leaveRequests,
-  modulePermissions,
-  paralegalActivationRequirements,
-  paralegalCertificationGates,
   paralegalProfiles,
-  permissionAuditLog,
   questionnaireAnswers,
   questionnaireResponseFiles,
   questionnaireResponses,
@@ -63,16 +53,20 @@ import {
   staffAvailability,
   staffAvailabilityBreaks,
   staffAvailabilityOverrides,
-  stepActionLogs,
+
   subscriptions,
   SubscriptionStatus,
   tasks,
   timeEntries,
-  workflowLog,
+
 } from "../../../db/schema";
+import { recordAuditEvent } from "../../shared/audit.service";
 import { getFirmTimezone } from "../consultation/consultation-settings.service";
 import { storageService } from "../../../utils/storage/storage.service";
 import { BadRequestError } from "../../../utils/error/app-error";
+import { createModuleLogger } from "../../../lib/logging/log";
+
+const log = createModuleLogger("firm-profile.service");
 
 const DEFAULT_COUNTRY = "United States";
 
@@ -254,6 +248,7 @@ export class FirmProfileService {
       }
     }
 
+    log.action("settings.firm_profile_updated", { organizationId });
     return this.getProfile(organizationId);
   };
 
@@ -454,14 +449,14 @@ export class FirmProfileService {
       await del(firmQuestionnaireQuestions, eq(firmQuestionnaireQuestions.organizationId, organizationId));
       await del(firmQuestionnaireSections, eq(firmQuestionnaireSections.organizationId, organizationId));
 
-      // ── Workflow / activity logs ──
-      await del(stepActionLogs, eq(stepActionLogs.organizationId, organizationId));
-      await del(workflowLog, eq(workflowLog.organizationId, organizationId));
+
 
       // ── Leads & consultations ──
-      await del(leadTimelineEvents, eq(leadTimelineEvents.organizationId, organizationId));
       await del(leadTasks, eq(leadTasks.organizationId, organizationId));
-      await del(leadEvents, eq(leadEvents.organizationId, organizationId));
+      // `lead_events` used to be deleted here. Its replacement, `audit_events`,
+      // is deliberately NOT — the record of what a firm did survives the firm
+      // erasing its data, which is the entire point of a retained audit trail.
+      // See the `admin.firm_data_reset` event written at the end of this method.
       await del(leadNotes, inIds(leadNotes.leadId, orgLeadIds));
       await del(consultationParticipants, eq(consultationParticipants.organizationId, organizationId));
       await del(consultations, eq(consultations.organizationId, organizationId));
@@ -474,7 +469,6 @@ export class FirmProfileService {
       await del(externalSubmissions, inIds(externalSubmissions.requestId, requestIds));
       await del(documentRequests, inIds(documentRequests.id, requestIds));
       await del(documentAccess, inIds(documentAccess.documentId, docIds));
-      await del(documentActivityLogs, inIds(documentActivityLogs.documentId, docIds));
       await del(documentVersions, inIds(documentVersions.documentId, docIds));
       await del(leadDocumentLinks, inIds(leadDocumentLinks.leadId, orgLeadIds));
       await del(documentCaseLinks, inIds(documentCaseLinks.caseId, orgCaseIds));
@@ -497,15 +491,8 @@ export class FirmProfileService {
       await del(timeEntries, eq(timeEntries.organizationId, organizationId));
       await del(caseWorkflowSteps, eq(caseWorkflowSteps.organizationId, organizationId));
       await del(caseNotes, eq(caseNotes.organizationId, organizationId));
-      await del(caseTimelineEvents, eq(caseTimelineEvents.organizationId, organizationId));
       await del(tasks, eq(tasks.organizationId, organizationId));
-      await del(approvalWorkflows, eq(approvalWorkflows.organizationId, organizationId));
-      await del(modulePermissions, eq(modulePermissions.organizationId, organizationId));
-      await del(permissionAuditLog, eq(permissionAuditLog.organizationId, organizationId));
-      await del(dataAccessControls, eq(dataAccessControls.organizationId, organizationId));
       await del(financialAccessControls, eq(financialAccessControls.organizationId, organizationId));
-      await del(paralegalCertificationGates, eq(paralegalCertificationGates.organizationId, organizationId));
-      await del(paralegalActivationRequirements, eq(paralegalActivationRequirements.organizationId, organizationId));
       await del(paralegalProfiles, eq(paralegalProfiles.organizationId, organizationId));
       await del(staffAvailabilityOverrides, eq(staffAvailabilityOverrides.organizationId, organizationId));
       await del(staffAvailabilityBreaks, eq(staffAvailabilityBreaks.organizationId, organizationId));
@@ -522,6 +509,28 @@ export class FirmProfileService {
       await del(team, eq(team.organizationId, organizationId));
 
       await del(staff, eq(staff.organizationId, organizationId));
+    });
+
+    // The most destructive operation in the system, and until now the only one
+    // that left no trace — it deleted six audit tables and wrote nothing about
+    // itself. Recorded before the organization row goes, and deliberately
+    // outside the transaction above so it is not rolled back with a partial
+    // failure: an attempted reset is as much worth knowing about as a
+    // completed one.
+    await recordAuditEvent({
+      action: "admin.firm_data_reset",
+      entityId: organizationId,
+      organizationId,
+      summary: `Firm account and all tenant data deleted for ${organizationId}`,
+      metadata: {
+        staffAccountsRemoved: staffUserIds.length,
+        leadsRemoved: orgLeadIds.length,
+        casesRemoved: orgCaseIds.length,
+        documentsRemoved: docIds.length,
+      },
+      // The org is about to cease to exist, so a failure here cannot be undone
+      // by rolling anything back — but it must not silently disappear either.
+      onWriteFailure: "log",
     });
 
     // Auth/system rows — deleted outside the tenant transaction (not RLS-scoped).

@@ -1,5 +1,6 @@
 import { and, asc, eq, ilike, inArray } from "drizzle-orm";
 import { db } from "../../db/client";
+import { createModuleLogger } from "../../lib/logging/log";
 import { firmPracticeAreas } from "../../db/schema/firm-practice-areas";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreaSubcategories } from "../../db/schema/practice-area-subcategories";
@@ -13,6 +14,9 @@ import {
   ConflictError,
   NotFoundError,
 } from "../../utils/error/app-error";
+import { recordAuditEvent } from "../shared/audit.service";
+
+const log = createModuleLogger("practice-areas.service");
 
 const BILLING_CYCLES = ["monthly", "annual"] as const;
 type BillingCycle = (typeof BILLING_CYCLES)[number];
@@ -334,7 +338,7 @@ export const createSubscriptions = async (
     );
   }
 
-  return db.transaction(async (tx) => {
+    return db.transaction(async (tx) => {
     const created = [];
 
     for (const item of items) {
@@ -371,6 +375,16 @@ export const createSubscriptions = async (
         firmPracticeArea,
       });
     }
+
+    await recordAuditEvent({
+      action: "admin.practice_areas_changed",
+      entityId: organizationId,
+      organizationId,
+      after: { practiceAreaIds: items.map((i) => i.practiceAreaId), action: "subscribed" },
+      onWriteFailure: "log",
+    });
+
+    log.action("practice_area.subscribed", { organizationId, practiceAreaIds: items.map((i) => i.practiceAreaId) });
 
     return created;
   });
@@ -454,6 +468,16 @@ export const cancelSubscriptions = async (
         ),
       );
 
+    await recordAuditEvent({
+      action: "admin.practice_areas_changed",
+      entityId: organizationId,
+      organizationId,
+      after: { practiceAreaIds: activeFirmAreas.map((a) => a.practiceAreaId), action: "cancelled" },
+      onWriteFailure: "log",
+    });
+
+    log.action("practice_area.unsubscribed", { organizationId, practiceAreaIds: activeFirmAreas.map((a) => a.practiceAreaId) });
+
     return cancelledSubscriptions;
   });
 };
@@ -461,74 +485,143 @@ export const cancelSubscriptions = async (
 type PracticeAreaTreeNode = {
   id: string;
   name: string;
-  children: PracticeAreaTreeNode[];
+  children?: PracticeAreaTreeNode[];
 };
 
 type PracticeAreaTreeData = {
   practiceAreaTreeNodes: PracticeAreaTreeNode[];
-  practiceAreaIds: string[];
-  subcategoryIds: string[];
-  caseTypeIds: string[];
-  practiceAreaNameLookup: Record<string, string>;
 };
 
-export const getTreeData = async (): Promise<PracticeAreaTreeData> => {
+export type TreeDataOptions = {
+  /** Restrict to the practice areas the firm actively subscribes to. */
+  organizationId?: string | null;
+  /** Restrict to specific practice areas, so callers can fetch one subtree. */
+  practiceAreaIds?: string[];
+  /** 1 = practice areas only, 2 = + subcategories, 3 = + case types. */
+  depth?: number;
+};
+
+/**
+ * Practice areas the firm has an active subscription to. Returns null when the
+ * firm has none so callers can fall back to the full taxonomy — an org whose
+ * subscriptions were never seeded should still be able to staff its cases
+ * rather than face an empty picker.
+ */
+const getSubscribedPracticeAreaIds = async (organizationId: string) => {
+  const rows = await db
+    .selectDistinct({ practiceAreaId: firmPracticeAreas.practiceAreaId })
+    .from(firmPracticeAreas)
+    .where(
+      and(
+        eq(firmPracticeAreas.organizationId, organizationId),
+        eq(firmPracticeAreas.active, true),
+      ),
+    );
+
+  return rows.length > 0 ? rows.map((row) => row.practiceAreaId) : null;
+};
+
+/**
+ * The practice-area taxonomy as a nested tree. Leaves omit `children` entirely
+ * rather than carrying an empty array, and nothing here is duplicated into flat
+ * id lists or name lookups — those are cheap for the client to derive from the
+ * tree and used to account for nearly half the response body.
+ */
+export const getTreeData = async (
+  options: TreeDataOptions = {},
+): Promise<PracticeAreaTreeData> => {
+  const depth = options.depth ?? 3;
+
+  const requestedIds = options.practiceAreaIds?.filter(Boolean) ?? [];
+  const subscribedIds = options.organizationId
+    ? await getSubscribedPracticeAreaIds(options.organizationId)
+    : null;
+
+  // Both filters apply when both are present: a caller asking for a specific
+  // practice area still only gets it if the firm subscribes to it.
+  let allowedIds: string[] | null = null;
+  if (requestedIds.length && subscribedIds) {
+    const subscribed = new Set(subscribedIds);
+    allowedIds = requestedIds.filter((id) => subscribed.has(id));
+  } else if (requestedIds.length) {
+    allowedIds = requestedIds;
+  } else if (subscribedIds) {
+    allowedIds = subscribedIds;
+  }
+
+  if (allowedIds && allowedIds.length === 0) {
+    return { practiceAreaTreeNodes: [] };
+  }
+
   const areas = await db
-    .select({
-      id: practiceAreas.id,
-      name: practiceAreas.name,
-    })
+    .select({ id: practiceAreas.id, name: practiceAreas.name })
     .from(practiceAreas)
+    .where(allowedIds ? inArray(practiceAreas.id, allowedIds) : undefined)
     .orderBy(asc(practiceAreas.name));
 
-  const subcategoriesByPracticeArea = await getSubcategoriesByPracticeArea(
-    areas.map((a) => a.id),
-  );
+  if (depth < 2 || areas.length === 0) {
+    return { practiceAreaTreeNodes: areas };
+  }
 
-  const practiceAreaIds: string[] = [];
-  const subcategoryIds: string[] = [];
-  const caseTypeIds: string[] = [];
-  const practiceAreaNameLookup: Record<string, string> = {};
-  const practiceAreaTreeNodes: PracticeAreaTreeNode[] = [];
+  const subcategoryRows = await db
+    .select({
+      id: practiceAreaSubcategories.id,
+      practiceAreaId: practiceAreaSubcategories.practiceAreaId,
+      name: practiceAreaSubcategories.name,
+    })
+    .from(practiceAreaSubcategories)
+    .where(
+      inArray(
+        practiceAreaSubcategories.practiceAreaId,
+        areas.map((area) => area.id),
+      ),
+    )
+    .orderBy(asc(practiceAreaSubcategories.name));
 
-  for (const area of areas) {
-    practiceAreaIds.push(area.id);
-    practiceAreaNameLookup[area.id] = area.name;
+  const caseTypesBySubcategory = new Map<string, PracticeAreaTreeNode[]>();
+  if (depth > 2 && subcategoryRows.length > 0) {
+    const caseTypeRows = await db
+      .select({
+        id: practiceAreaCaseTypes.id,
+        subcategoryId: practiceAreaCaseTypes.subcategoryId,
+        name: practiceAreaCaseTypes.name,
+      })
+      .from(practiceAreaCaseTypes)
+      .where(
+        inArray(
+          practiceAreaCaseTypes.subcategoryId,
+          subcategoryRows.map((sub) => sub.id),
+        ),
+      )
+      .orderBy(asc(practiceAreaCaseTypes.name));
 
-    const subcategories = subcategoriesByPracticeArea.get(area.id) ?? [];
-    const children: PracticeAreaTreeNode[] = [];
-
-    for (const sub of subcategories as {
-      id: string;
-      name: string;
-      caseTypes: { id: string; name: string }[];
-    }[]) {
-      subcategoryIds.push(sub.id);
-      practiceAreaNameLookup[sub.id] = sub.name;
-
-      const grandchildren: PracticeAreaTreeNode[] = [];
-      for (const ct of sub.caseTypes ?? []) {
-        caseTypeIds.push(ct.id);
-        practiceAreaNameLookup[ct.id] = ct.name;
-        grandchildren.push({ id: ct.id, name: ct.name, children: [] });
-      }
-
-      children.push({ id: sub.id, name: sub.name, children: grandchildren });
+    for (const row of caseTypeRows) {
+      const siblings = caseTypesBySubcategory.get(row.subcategoryId);
+      const node = { id: row.id, name: row.name };
+      if (siblings) siblings.push(node);
+      else caseTypesBySubcategory.set(row.subcategoryId, [node]);
     }
+  }
 
-    practiceAreaTreeNodes.push({
-      id: area.id,
-      name: area.name,
-      children,
-    });
+  const subcategoriesByPracticeArea = new Map<string, PracticeAreaTreeNode[]>();
+  for (const row of subcategoryRows) {
+    const caseTypes = caseTypesBySubcategory.get(row.id);
+    const node: PracticeAreaTreeNode = caseTypes
+      ? { id: row.id, name: row.name, children: caseTypes }
+      : { id: row.id, name: row.name };
+
+    const siblings = subcategoriesByPracticeArea.get(row.practiceAreaId);
+    if (siblings) siblings.push(node);
+    else subcategoriesByPracticeArea.set(row.practiceAreaId, [node]);
   }
 
   return {
-    practiceAreaTreeNodes,
-    practiceAreaIds,
-    subcategoryIds,
-    caseTypeIds,
-    practiceAreaNameLookup,
+    practiceAreaTreeNodes: areas.map((area) => {
+      const children = subcategoriesByPracticeArea.get(area.id);
+      return children
+        ? { id: area.id, name: area.name, children }
+        : { id: area.id, name: area.name };
+    }),
   };
 };
 

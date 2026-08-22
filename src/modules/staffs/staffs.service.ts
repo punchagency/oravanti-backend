@@ -12,6 +12,10 @@ import {
 import { member, user } from "../../db/schema/auth-schema";
 import { resolveAvatarUrl } from "../../utils/storage/avatar-url";
 import { storageService } from "../../utils/storage/storage.service";
+import { recordAuditEvent } from "../shared/audit.service";
+import { createModuleLogger } from "../../lib/logging/log";
+
+const log = createModuleLogger("staffs.service");
 
 export interface UpdateOwnProfileParams {
   firstName?: string;
@@ -145,6 +149,17 @@ export class StaffsService {
       .where(
         and(eq(staff.userId, userId), eq(staff.organizationId, organizationId)),
       );
+
+    await recordAuditEvent({
+      action: "admin.staff_updated",
+      entityType: "staff",
+      entityId: userId,
+      summary: "Staff profile updated",
+      after: params,
+      onWriteFailure: "log",
+    });
+
+    log.action("staff.profile_updated", { staffId: userId });
   }
 
   async uploadAvatar(
@@ -179,6 +194,18 @@ export class StaffsService {
       .update(staff)
       .set({ avatarUrl: key })
       .where(eq(staff.id, staffRecord.id));
+
+    await recordAuditEvent({
+      action: "admin.staff_updated",
+      entityType: "staff",
+      entityId: staffRecord.id,
+      summary: "Staff avatar updated",
+      before: { avatarUrl: staffRecord.avatarUrl },
+      after: { avatarUrl: key },
+      onWriteFailure: "log",
+    });
+
+    log.action("staff.avatar_uploaded", { staffId: staffRecord.id });
 
     return { avatarUrl };
   }

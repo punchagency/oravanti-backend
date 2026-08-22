@@ -1,6 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../../../db/client";
 import { financialAccessControls } from "../../../db/schema";
+import { recordAuditEvent } from "../../shared/audit.service";
+import { createModuleLogger } from "../../../lib/logging/log";
+
+const log = createModuleLogger("financial-access.service");
 
 export class FinancialAccessService {
   getFinancialAccess = async (organizationId: string) => {
@@ -37,5 +41,12 @@ export class FinancialAccessService {
           ),
       ),
     );
+    await recordAuditEvent({
+      action: "admin.financial_access_changed",
+      entityId: organizationId,
+      entityType: "permission",
+      onWriteFailure: "log",
+    });
+    log.action("settings.financial_access_updated", { organizationId });
   };
 }
