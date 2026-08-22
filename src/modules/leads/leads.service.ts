@@ -4118,21 +4118,25 @@ const refundOwedTask = async (opts: {
       .where(eq(leads.id, opts.leadId))
       .limit(1);
 
-    // Best effort at somebody who can act. `finance:refund` belongs to the
-    // owner and admin org roles; `staff.role` is the closest thing a plain
-    // query can see, so an unresolved assignee leaves the task unassigned
-    // rather than parked on someone powerless to close it.
-    const [assignee] = await db
-      .select({ id: staff.id })
-      .from(staff)
-      .where(
-        and(
-          eq(staff.organizationId, opts.organizationId),
-          eq(staff.role, "admin"),
-          eq(staff.status, "active"),
-        ),
-      )
-      .limit(1);
+    // Deliberately unassigned.
+    //
+    // This used to guess an assignee with `staff.role = 'admin'`. Since roles
+    // became dynamic, `staff.role` is free text and only a best-effort
+    // "primary role" projection of `member.role`, which can hold several roles
+    // and may name a role the firm invented. So the guess can find nobody at a
+    // firm that renamed its roles, find someone whose admin-named role no
+    // longer carries `finance:refund`, or miss everyone who holds it through a
+    // role group.
+    //
+    // A wrong assignee is worse than none: it parks the work on someone who
+    // cannot do it and makes the task look handled. Unassigned, it stays
+    // visible and filterable on the lead's consultation stage, and the title
+    // already names the amount and the permission needed.
+    //
+    // Assigning for real would mean resolving actual grants, and
+    // `resolveMemberGrants` needs request headers this background path does not
+    // have. That wants a headers-free variant, which belongs with the RBAC
+    // module rather than here.
 
     // orderIndex is a per-stage ordinal, not a global one.
     const [{ n }] = await db
@@ -4161,15 +4165,14 @@ const refundOwedTask = async (opts: {
         .join(" "),
       orderIndex: Number(n),
       pipelineStage: "consultation",
-      assignedToId: assignee?.id ?? null,
-      assignedAt: assignee ? new Date() : null,
+      assignedToId: null,
+      assignedAt: null,
     });
 
     log.action("leads.consultation_refund_task_created", {
       leadId: opts.leadId,
       consultationId: opts.consultationId,
       amount: opts.amount,
-      assigned: Boolean(assignee),
     });
   } catch (err) {
     log.failure("leads.consultation_refund_task_failed", err, {
