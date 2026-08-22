@@ -22,6 +22,7 @@ import {
 import {
   NotificationsModule,
   ResendWebhookModule,
+  TelnyxWebhookModule,
   TwilioWebhookModule,
 } from "./notifications/notifications.module";
 import { RevenueAnalyticsModule } from "./revenue-analytics/revenue-analytics.module";
@@ -74,6 +75,7 @@ export const modules: Module[] = [
   // Public: the token is the credential, no requireAuth.
   new PaymentPublicModule(),
   new TwilioWebhookModule(),
+  new TelnyxWebhookModule(),
   new ResendWebhookModule(),
   new NotificationsModule(),
   // Public: the HMAC signature is the credential, no requireAuth.

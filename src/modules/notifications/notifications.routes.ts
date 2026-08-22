@@ -5,14 +5,16 @@
  *     description: Provider delivery callbacks — public, signature-verified
  */
 import { Router, type Request, type Response } from "express";
-import { env } from "../../config/env";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import {
   handleResendWebhook,
-  handleTwilioInbound,
-  handleTwilioStatusCallback,
+  handleSmsWebhook,
 } from "../../notifications/notifications.webhooks.service";
+import {
+  getSmsProviderByName,
+  type SmsProviderName,
+} from "../../notifications/sms/sms.provider";
 import { NotificationsController } from "./notifications.controller";
 
 /**
@@ -28,84 +30,106 @@ import { NotificationsController } from "./notifications.controller";
  * path: Twilio signs the URL plus sorted FORM params (urlencoded), Resend signs
  * the RAW bytes (raw). Both parsers must precede express.json().
  */
-export class TwilioWebhookRouter {
+/**
+ * One router shape, instantiated per provider.
+ *
+ * BOTH are mounted regardless of SMS_PROVIDER, and that is deliberate. At the
+ * instant you switch vendors the old one still owes status callbacks for
+ * everything already in flight; unmounting its route turns those into 404s, and
+ * a lost opted-out error means someone who said STOP stays flagged as
+ * consenting and keeps receiving messages. The cost of leaving it up is nil —
+ * an unconfigured provider resolves to null and the endpoint answers 503
+ * without ever trusting a payload.
+ */
+export class SmsWebhookRouter {
   public router: Router;
   public path: string;
 
-  constructor() {
+  constructor(
+    private readonly providerName: SmsProviderName,
+    path: string,
+    private readonly baseUrl: () => string | undefined,
+  ) {
     this.router = Router();
-    this.path = "/webhooks/twilio";
+    this.path = path;
     this.initializeRoutes();
   }
 
   /**
-   * The exact URL Twilio signed. Rebuilt from configuration rather than from
-   * the request, because behind a proxy req.protocol reports "http" while
-   * Twilio signed "https" — and every legitimate request would then fail
-   * verification, looking like an attack rather than a misconfiguration.
+   * The exact URL the provider was configured to call. Rebuilt from
+   * configuration rather than from the request, because Twilio signs it and
+   * behind a proxy req.protocol reports "http" where Twilio signed "https" —
+   * every legitimate request would then fail verification, looking like an
+   * attack rather than a misconfiguration.
    */
   private signedUrl(suffix: string): string {
-    const base = env.TWILIO_WEBHOOK_BASE_URL ?? "";
-    return `${base}${this.path}${suffix}`;
+    return `${this.baseUrl() ?? ""}${this.path}${suffix}`;
+  }
+
+  private handle(suffix: string) {
+    return async (req: Request, res: Response) => {
+      const provider = getSmsProviderByName(this.providerName);
+      if (!provider) {
+        // Configured off. Not an error the caller can fix, and not something to
+        // pretend we processed.
+        res.status(503).json({ error: `${this.providerName} is not configured` });
+        return;
+      }
+
+      // express.raw leaves a Buffer. Anything else means the parser did not
+      // match, and verifying a re-serialised body would fail for every
+      // legitimate request.
+      if (!Buffer.isBuffer(req.body)) {
+        res.status(400).json({ error: "Expected a raw request body" });
+        return;
+      }
+
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (typeof v === "string") headers[k.toLowerCase()] = v;
+      }
+
+      const { response } = await handleSmsWebhook(provider, {
+        rawBody: req.body,
+        headers,
+        url: this.signedUrl(suffix),
+      });
+
+      res.status(response.status).type(response.contentType).send(response.body);
+    };
   }
 
   private initializeRoutes() {
     /**
      * @openapi
-     * /webhooks/twilio/status:
+     * /webhooks/{provider}/status:
      *   post:
      *     tags: [Notifications (webhooks)]
-     *     summary: Twilio delivery status callback
+     *     summary: SMS delivery status callback
      *     responses:
      *       204: { description: Recorded }
-     *       400: { description: Signature could not be verified }
+     *       401: { description: Signature could not be verified }
      */
-    this.router.post("/status", async (req: Request, res: Response) => {
-      const signature =
-        (req.headers["x-twilio-signature"] as string | undefined) ?? "";
-
-      await handleTwilioStatusCallback(
-        this.signedUrl("/status"),
-        (req.body ?? {}) as Record<string, string>,
-        signature,
-      );
-
-      // 204 on anything we verified, including a status for a message we have
-      // no row for. A 4xx would tell Twilio to retry, and retrying an unknown
-      // SID means retrying forever.
-      res.status(204).end();
-    });
+    this.router.post("/status", this.handle("/status"));
 
     /**
      * @openapi
-     * /webhooks/twilio/inbound:
+     * /webhooks/{provider}/inbound:
      *   post:
      *     tags: [Notifications (webhooks)]
      *     summary: Inbound SMS — STOP / START / HELP
      *     responses:
-     *       200: { description: TwiML response }
-     *       400: { description: Signature could not be verified }
+     *       200: { description: Provider-specific acknowledgement }
+     *       401: { description: Signature could not be verified }
      */
-    this.router.post("/inbound", async (req: Request, res: Response) => {
-      const signature =
-        (req.headers["x-twilio-signature"] as string | undefined) ?? "";
+    this.router.post("/inbound", this.handle("/inbound"));
 
-      const { reply } = await handleTwilioInbound(
-        this.signedUrl("/inbound"),
-        (req.body ?? {}) as Record<string, string>,
-        signature,
-      );
-
-      // TwiML. An empty <Response/> means "received, say nothing back", which
-      // is the right answer to a STOP: Twilio's Advanced Opt-Out sends the
-      // compliant confirmation, and a second message to someone who just asked
-      // us to stop is what they asked us not to do.
-      res.type("text/xml").send(
-        reply
-          ? `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${escapeXml(reply)}</Message></Response>`
-          : `<?xml version="1.0" encoding="UTF-8"?><Response/>`,
-      );
-    });
+    /**
+     * Telnyx delivers every messaging event to ONE configured URL, so the
+     * provider root accepts both kinds. The handler dispatches on the payload
+     * rather than the path, which is what makes this safe.
+     */
+    this.router.post("/", this.handle(""));
   }
 }
 
@@ -193,11 +217,3 @@ export class NotificationsRouter {
     this.router.get("/capabilities", this.controller.capabilities);
   }
 }
-
-const escapeXml = (value: string): string =>
-  value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");

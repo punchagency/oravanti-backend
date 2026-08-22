@@ -181,16 +181,21 @@ export class App {
       express.raw({ type: "application/json" }),
     );
     /**
-     * Twilio is the odd one out: it posts application/x-www-form-urlencoded and
-     * signs the request URL concatenated with its form params sorted by key —
-     * not the bytes. So it needs a parser rather than the raw body, but it
-     * still has to come before express.json(), which would otherwise leave
-     * req.body empty for a content type it does not handle.
+     * Both SMS providers take the raw body, for different reasons that resolve
+     * to the same requirement.
+     *
+     * Telnyx signs the exact bytes, like Resend. Twilio signs the URL plus its
+     * form params sorted by key — so it does not need the bytes, but giving it
+     * them anyway is what lets one SmsWebhookRequest shape serve both providers
+     * with no optional-by-vendor field. TwilioSmsProvider parses the form
+     * itself.
+     *
+     * `type: () => true` rather than a content-type match: a mismatch leaves
+     * req.body as {} and 400s every request, and the two vendors do not agree
+     * on the header.
      */
-    this.express.use(
-      "/webhooks/twilio",
-      express.urlencoded({ extended: false }),
-    );
+    this.express.use("/webhooks/twilio", express.raw({ type: () => true }));
+    this.express.use("/webhooks/telnyx", express.raw({ type: () => true }));
     // Explicit ceiling. Express defaults to 100kb, but the default is not a
     // decision — anything larger than this belongs on an upload route, where
     // middleware/upload.ts applies a per-file limit instead.

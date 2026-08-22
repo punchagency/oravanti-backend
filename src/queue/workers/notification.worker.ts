@@ -116,14 +116,12 @@ export const dispatchNotification = async (
         }
 
         const provider = getSmsProvider();
-        const { providerMessageId, status } = await provider.sendSms({
+        // No callback URL is passed: each provider builds its own from its own
+        // base URL and its own route, because the field name differs
+        // (statusCallback vs webhook_url) and that is vendor knowledge.
+        const { providerMessageId, providerStatus } = await provider.sendSms({
           to: claimed.recipientAddress,
           body: claimed.body,
-          ...(env.TWILIO_WEBHOOK_BASE_URL
-            ? {
-                statusCallbackUrl: `${env.TWILIO_WEBHOOK_BASE_URL}/webhooks/twilio/status`,
-              }
-            : {}),
         });
 
         await systemDb
@@ -132,7 +130,12 @@ export const dispatchNotification = async (
             status: "sent",
             sentAt: new Date(),
             providerMessageId,
-            providerStatus: status,
+            // Same shape as the email branch: a provider that cannot report
+            // delivery leaves a row final at `sent`, and saying so beats
+            // leaving it looking stuck.
+            providerStatus: provider.deliveryTrackingEnabled
+              ? providerStatus
+              : "no_delivery_tracking",
             updatedAt: new Date(),
           })
           .where(eq(notifications.id, notificationId));

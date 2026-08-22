@@ -560,6 +560,17 @@ export const LogEvent = {
   NOTIFICATION_SWEEP_FAILED: "notification.sweep_failed",
 
   // ── SMS ───────────────────────────────────────────────────────────────────
+  SMS_PROVIDER_SELECTED: "sms.provider_selected",
+  SMS_PROVIDER_UNSET: "sms.provider_unset",
+  /** SMS_PROVIDER held something we do not recognise — typo, or a vendor name that never shipped. */
+  SMS_PROVIDER_UNRECOGNISED: "sms.provider_unrecognised",
+  /** The named provider is missing credentials, so nothing will send. */
+  SMS_PROVIDER_UNCONFIGURED: "sms.provider_unconfigured",
+  SMS_WEBHOOK_SIGNATURE_INVALID: "sms.webhook_signature_invalid",
+  /** A vendor sent a delivery status word its provider does not map. */
+  SMS_STATUS_UNMAPPED: "sms.status_unmapped",
+  SMS_INBOUND_RECEIVED: "sms.inbound_received",
+  SMS_HELP_REPLY_FAILED: "sms.help_reply_failed",
   SMS_SENT: "sms.sent",
   SMS_SEND_FAILED: "sms.send_failed",
   /** No provider configured: the message was logged, not sent. */

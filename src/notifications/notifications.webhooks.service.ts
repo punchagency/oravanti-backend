@@ -4,7 +4,8 @@ import { env } from "../config/env";
 import { systemDb } from "../db/client";
 import { notifications } from "../db/schema/notifications";
 import { smsInboundMessages } from "../db/schema/sms-inbound-messages";
-import { toE164 } from "../utils/phone";
+import { maskPhone, toE164 } from "../utils/phone";
+import { createModuleLogger, LogEvent } from "../lib/logging/log";
 import {
   applyGlobalOptIn,
   applyGlobalOptOut,
@@ -12,7 +13,14 @@ import {
   unsuppressEmail,
 } from "./consent.service";
 import { classifyKeyword, HELP_REPLY } from "./sms/keywords";
-import { getSmsProvider } from "./sms/sms.provider";
+import type {
+  SmsProvider,
+  SmsWebhookEvent,
+  SmsWebhookRequest,
+  SmsWebhookResponse,
+} from "./sms/sms.provider";
+
+const log = createModuleLogger("notifications.webhooks_service");
 
 /**
  * Delivery callbacks from Twilio and Resend.
@@ -34,120 +42,139 @@ import { getSmsProvider } from "./sms/sms.provider";
  *   forever.
  */
 
-// ─── Twilio: status callbacks ─────────────────────────────────────────────────
+// ─── SMS: status callbacks and inbound ───────────────────────────────────────
+
+/** Thrown on an unverifiable payload — the one case that must NOT get a 2xx. */
+export class SmsWebhookVerificationError extends Error {
+  constructor(provider: string) {
+    super(`Invalid ${provider} webhook signature`);
+    this.name = "SmsWebhookVerificationError";
+  }
+}
+
+export type SmsWebhookResult = {
+  handled: boolean;
+  kind?: "status" | "inbound";
+  keyword?: string | null;
+  reason?: string;
+  /** Built by the provider; the route writes it verbatim. */
+  response: SmsWebhookResponse;
+};
 
 /**
- * Twilio's terminal error for sending to a number that has opted out.
+ * One handler for both callback kinds and every provider.
  *
- * Handled as a second, independent opt-out path: when Advanced Opt-Out absorbs
- * a STOP at the carrier level, it may never forward the inbound message to us,
- * and this error is then the only signal that our consent columns are stale.
+ * The provider is passed IN rather than resolved from env: a route bound to
+ * Twilio must keep verifying Twilio callbacks even while SMS_PROVIDER says
+ * telnyx, or a switchover silently discards in-flight status callbacks — and
+ * with them the opted-out error code that is often the only signal a recipient
+ * said STOP.
  */
-const TWILIO_OPTED_OUT_ERROR = "21610";
-
-const STATUS_MAP: Record<string, "sent" | "delivered" | "failed"> = {
-  sent: "sent",
-  delivered: "delivered",
-  undelivered: "failed",
-  failed: "failed",
-};
-
-export type TwilioStatusResult = {
-  handled: boolean;
-  reason?: string;
-};
-
-export const handleTwilioStatusCallback = async (
-  url: string,
-  params: Record<string, string>,
-  signature: string,
-): Promise<TwilioStatusResult> => {
-  const provider = getSmsProvider();
-
-  if (!provider.verifyWebhook(url, params, signature)) {
-    // Thrown, not returned: an unverifiable payload is the one case that must
-    // NOT get a 2xx, because accepting it would let anyone on the internet mark
-    // messages delivered or opt numbers out.
-    throw new Error("Invalid Twilio signature");
+export const handleSmsWebhook = async (
+  provider: SmsProvider,
+  req: SmsWebhookRequest,
+): Promise<SmsWebhookResult> => {
+  if (!provider.verifyWebhook(req)) {
+    throw new SmsWebhookVerificationError(provider.name);
   }
 
-  const event = provider.parseStatusCallback(params);
-  if (!event) return { handled: false, reason: "unrecognised payload" };
+  const event = provider.parseWebhook(req);
+  if (!event) {
+    return {
+      handled: false,
+      reason: "unrecognised payload",
+      response: { status: 204, contentType: "text/plain", body: "" },
+    };
+  }
 
-  const mapped = STATUS_MAP[event.status];
+  if (event.kind === "status") {
+    return handleStatus(provider, event);
+  }
 
-  // queued / sending / accepted are progress, not outcomes. Recorded as the
-  // provider's own word without touching our status.
-  if (!mapped) {
+  return handleInbound(provider, event);
+};
+
+const handleStatus = async (
+  provider: SmsProvider,
+  event: Extract<SmsWebhookEvent, { kind: "status" }>,
+): Promise<SmsWebhookResult> => {
+  const ack: SmsWebhookResponse = {
+    status: 204,
+    contentType: "text/plain",
+    body: "",
+  };
+
+  // A word the provider does not recognise is progress, not an outcome. Logged
+  // rather than swallowed, so a vendor adding a status is something you can
+  // alert on instead of a row that quietly never moves again.
+  if (event.unmapped) {
+    log.warn(LogEvent.SMS_STATUS_UNMAPPED, {
+      provider: provider.name,
+      providerStatus: event.providerStatus,
+      providerMessageId: event.providerMessageId,
+    });
+  }
+
+  // queued/sending are progress, not outcomes: record the provider's own word
+  // without touching our status.
+  if (event.status === "queued" || event.unmapped) {
     await systemDb
       .update(notifications)
-      .set({ providerStatus: event.status, updatedAt: new Date() })
+      .set({ providerStatus: event.providerStatus, updatedAt: new Date() })
       .where(eq(notifications.providerMessageId, event.providerMessageId));
-    return { handled: true, reason: `non-terminal status ${event.status}` };
+  } else {
+    const failureReason =
+      event.status === "failed"
+        ? [event.errorCode, event.errorMessage].filter(Boolean).join(": ") ||
+          "delivery failed"
+        : null;
+
+    await systemDb
+      .update(notifications)
+      .set({
+        status: event.status,
+        providerStatus: event.providerStatus,
+        ...(event.status === "delivered" ? { deliveredAt: new Date() } : {}),
+        ...(failureReason ? { failureReason } : {}),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(notifications.providerMessageId, event.providerMessageId),
+          // Never walk back a delivery — callbacks arrive out of order.
+          sql`${notifications.status} <> 'delivered'`,
+        ),
+      );
   }
 
-  const failureReason =
-    mapped === "failed"
-      ? [event.errorCode, event.errorMessage].filter(Boolean).join(": ") ||
-        "delivery failed"
-      : null;
-
-  await systemDb
-    .update(notifications)
-    .set({
-      status: mapped,
-      providerStatus: event.status,
-      ...(mapped === "delivered" ? { deliveredAt: new Date() } : {}),
-      ...(failureReason ? { failureReason } : {}),
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(notifications.providerMessageId, event.providerMessageId),
-        // Never walk back a delivery.
-        sql`${notifications.status} <> 'delivered'`,
-      ),
-    );
-
-  if (event.errorCode === TWILIO_OPTED_OUT_ERROR) {
-    const phone = event.to ?? params.To;
-    if (phone) await applyGlobalOptOut(phone, "twilio_21610");
+  // The provider decided this error means "opted out"; the vendor's code and
+  // its recorded source stay entirely behind that decision.
+  if (event.optOut && event.to) {
+    await applyGlobalOptOut(event.to, event.optOut.source);
   }
 
-  return { handled: true };
+  return { handled: true, kind: "status", response: ack };
 };
 
-// ─── Twilio: inbound messages ─────────────────────────────────────────────────
-
-export type TwilioInboundResult = {
-  keyword: string | null;
-  /** TwiML body to reply with, or null to reply with an empty response. */
-  reply: string | null;
-};
-
-export const handleTwilioInbound = async (
-  url: string,
-  params: Record<string, string>,
-  signature: string,
-): Promise<TwilioInboundResult> => {
-  const provider = getSmsProvider();
-
-  if (!provider.verifyWebhook(url, params, signature)) {
-    throw new Error("Invalid Twilio signature");
-  }
-
-  const event = provider.parseInbound(params);
-  if (!event) return { keyword: null, reply: null };
-
+const handleInbound = async (
+  provider: SmsProvider,
+  event: Extract<SmsWebhookEvent, { kind: "inbound" }>,
+): Promise<SmsWebhookResult> => {
   const keyword = classifyKeyword(event.body);
   const fromE164 = toE164(event.from) ?? event.from;
+
+  log.info(LogEvent.SMS_INBOUND_RECEIVED, {
+    provider: provider.name,
+    keyword,
+    fromMasked: maskPhone(fromE164),
+  });
 
   /**
    * Recorded before acting, and unique on the provider id.
    *
-   * The insert is the idempotency guard: Twilio's webhook is at-least-once, and
-   * a redelivered STOP must not double-count the rows it affected. A conflict
-   * means we have already handled this message.
+   * The insert is the idempotency guard: every provider's webhook is
+   * at-least-once, and a redelivered STOP must not double-count the rows it
+   * affected.
    */
   const [recorded] = await systemDb
     .insert(smsInboundMessages)
@@ -161,43 +188,40 @@ export const handleTwilioInbound = async (
     .onConflictDoNothing()
     .returning({ id: smsInboundMessages.id });
 
+  const reply = keyword === "HELP" ? HELP_REPLY : null;
+
   if (!recorded) {
+    // Still replies to a redelivered HELP: the carrier requirement is about
+    // what the sender receives, not about our bookkeeping.
     return {
+      handled: true,
+      kind: "inbound",
       keyword,
-      // Still replies to a redelivered HELP: the carrier requirement is about
-      // what the sender receives, not about our bookkeeping.
-      reply: keyword === "HELP" ? HELP_REPLY : null,
+      response: await provider.respondToInbound(reply, fromE164),
     };
   }
 
-  if (keyword === "STOP") {
-    const affected = await applyGlobalOptOut(fromE164, "sms_stop");
+  if (keyword === "STOP" || keyword === "START") {
+    const affected =
+      keyword === "STOP"
+        ? await applyGlobalOptOut(fromE164, "sms_stop")
+        : await applyGlobalOptIn(fromE164, "sms_start");
+
     await systemDb
       .update(smsInboundMessages)
       .set({ affected })
       .where(eq(smsInboundMessages.id, recorded.id));
-    // No reply. Twilio's Advanced Opt-Out sends the compliant confirmation, and
-    // a second message to someone who just asked us to stop is exactly what
-    // they asked us not to do.
-    return { keyword, reply: null };
   }
 
-  if (keyword === "START") {
-    const affected = await applyGlobalOptIn(fromE164, "sms_start");
-    await systemDb
-      .update(smsInboundMessages)
-      .set({ affected })
-      .where(eq(smsInboundMessages.id, recorded.id));
-    return { keyword, reply: null };
-  }
-
-  if (keyword === "HELP") {
-    return { keyword, reply: HELP_REPLY };
-  }
-
-  // A message that is not a keyword. Kept as a record — the firm has no SMS
-  // inbox, so this is the only place it exists — but nothing is sent back.
-  return { keyword: null, reply: null };
+  // No reply to a STOP: the provider's own opt-out handling sends the
+  // compliant confirmation, and a second message to someone who just asked us
+  // to stop is precisely what they asked us not to do.
+  return {
+    handled: true,
+    kind: "inbound",
+    keyword,
+    response: await provider.respondToInbound(reply, fromE164),
+  };
 };
 
 // ─── Resend: email delivery ───────────────────────────────────────────────────
