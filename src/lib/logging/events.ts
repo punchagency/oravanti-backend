@@ -441,6 +441,13 @@ export const LogEvent = {
   PAYMENT_LINK_CREATED: "payment_link.created",
   PAYMENT_LINK_SENT: "payment_link.sent",
   PAYMENT_LINK_EXPIRED: "payment_link.expired",
+  /**
+   * Withdrawn at the processor because the invoice was voided, so the hosted
+   * URL can no longer take money a voided invoice cannot record.
+   */
+  PAYMENT_LINK_RETIRED: "payment_link.retired",
+  /** The link outlived its invoice: withdrawal failed and the URL may still pay. */
+  PAYMENT_LINK_RETIRE_FAILED: "payment_link.retire_failed",
   FINANCE_EVENT_RECORDED: "finance.event_recorded",
   FINANCE_EVENT_QUERY_FAILED: "finance.event_query_failed",
   FEE_AGREEMENT_GENERATED: "fee_agreement.generated",

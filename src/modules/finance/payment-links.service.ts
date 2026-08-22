@@ -5,6 +5,7 @@ import { db, systemDb } from "../../db/client";
 import { invoiceInstalments } from "../../db/schema/invoice-instalments";
 import { invoicePayments } from "../../db/schema/invoice-payments";
 import { invoices } from "../../db/schema/invoices";
+import { LogEvent } from "../../lib/logging/events";
 import { createModuleLogger } from "../../lib/logging/log";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { onClient, onLead, partyEmail, partyName } from "./party";
@@ -433,4 +434,43 @@ const outstandingBySide = async (
     operating: Math.max(num(totals?.operating) - num(paid?.operating), 0),
     trust: Math.max(num(totals?.trust) - num(paid?.trust), 0),
   };
+};
+
+/**
+ * Withdraw an invoice's payment link so it can no longer take money.
+ *
+ * Called when an invoice is VOIDED. `invoiceByPaymentToken` already refuses a
+ * voided invoice, but that only stops the hosted URL being obtained — a client
+ * who already has it can still pay at Confido, and the webhook then calls
+ * `recordPayment`, which refuses a voided invoice and throws. The result is
+ * money taken at the processor, nothing on our ledger, and a job retrying until
+ * it exhausts.
+ *
+ * **Void only, deliberately.** `refunded` looks like the same case and is not:
+ * `deriveStoredStatus` returns `void` unchanged forever, but derives `refunded`
+ * from the ledger, so a later payment moves it back to `partial`. Confido has
+ * no un-remove, so retiring a refunded invoice's link would permanently break a
+ * payment the firm may still legitimately be owed.
+ *
+ * No-op when the invoice never had a link, which is most of them — links are
+ * minted lazily on first checkout.
+ */
+export const retirePaymentLink = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<boolean> => {
+  const { credential } = await confidoCredentialFor(organizationId);
+  const client = getConfidoClient();
+
+  const existing = await client.findPaymentLinkByExternalId(credential, invoiceId);
+  if (!existing) return false;
+
+  await client.removePaymentLink(credential, { id: existing.id });
+
+  log.action(LogEvent.PAYMENT_LINK_RETIRED, {
+    invoiceId,
+    paymentLinkId: existing.id,
+  });
+
+  return true;
 };

@@ -60,6 +60,8 @@ import {
   listableInvoices,
   statusFilter,
 } from "./status";
+import { LogEvent } from "../../lib/logging/events";
+import { retirePaymentLink } from "./payment-links.service";
 import { recalculateInvoiceTotals } from "./totals";
 import type {
   AccountAccess,
@@ -1160,7 +1162,7 @@ export const voidInvoice = async (
     );
   }
 
-  return withTransaction(db, async () => {
+  const result = await withTransaction(db, async () => {
     await db
       .update(invoices)
       .set({ status: "void", voidedAt: new Date(), updatedAt: new Date() })
@@ -1226,6 +1228,23 @@ export const voidInvoice = async (
 
     return getById(organizationId, invoiceId, access);
   });
+
+  // Withdraw the hosted payment link, AFTER the void has committed.
+  //
+  // Our own page refuses a voided invoice's token, but that only stops the URL
+  // being obtained — a client holding it already can still pay at Confido, and
+  // the webhook then refuses to record it. Money taken, nothing on the ledger.
+  //
+  // Non-fatal: a void must still void when Confido is unreachable. The link is
+  // then stale, which is exactly why the token check stays as the second line
+  // of defence rather than being replaced by this. Logged at `warn`, because
+  // "the invoice is withdrawn but its link may still charge" is a state someone
+  // needs to know about.
+  await retirePaymentLink(organizationId, invoiceId).catch((err) =>
+    log.failure(LogEvent.PAYMENT_LINK_RETIRE_FAILED, err, { invoiceId }),
+  );
+
+  return result;
 };
 
 export type UpdateInvoiceInput = {

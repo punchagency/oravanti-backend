@@ -468,6 +468,32 @@ export class ConfidoClient {
     return data.updatePaymentLink;
   }
 
+  /**
+   * Withdraw a payment link so it can no longer take money.
+   *
+   * For an invoice the firm has voided. Our own page already refuses a voided
+   * invoice's token, but that only stops the URL being *obtained* — a client
+   * holding it from an earlier visit can still pay at Confido, and the webhook
+   * then fails to record it because `recordPayment` refuses a voided invoice.
+   * Money taken, nothing on the ledger.
+   *
+   * Returns the link in its withdrawn state. There is no un-remove, which is
+   * why this is only ever called for `void` — a terminal, non-reverting status.
+   */
+  async removePaymentLink(
+    firmToken: string,
+    input: { id: string },
+  ): Promise<ConfidoPaymentLink> {
+    const data = await this.gql<{ removePaymentLink: ConfidoPaymentLink }>(
+      firmToken,
+      `mutation RemoveLink($input: RemovePaymentLinkInput!) {
+        removePaymentLink(input: $input) { ${LINK_FIELDS} }
+      }`,
+      { input },
+    );
+    return data.removePaymentLink;
+  }
+
   /** One transaction, for turning a thin webhook into a ledger row. */
   async getTransaction(
     firmToken: string,
@@ -789,4 +815,15 @@ export const isConfidoConfigured = (): boolean =>
 /** Test seam: drops the memoized client so a config change is picked up. */
 export const resetConfidoClient = (): void => {
   cached = null;
+};
+
+/**
+ * Test seam: install a stand-in client.
+ *
+ * Paired with `resetConfidoClient`, which callers must use to put the real one
+ * back. Nothing in `src/` should call this — it exists so a check can observe
+ * which mutations a code path issues without reaching the sandbox.
+ */
+export const setConfidoClient = (client: ConfidoClient): void => {
+  cached = client;
 };
