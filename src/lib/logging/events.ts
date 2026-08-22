@@ -553,6 +553,26 @@ export const LogEvent = {
    * and nothing else will ever mention it.
    */
   NOTIFICATION_DISPATCH_FAILED: "notification.dispatch_failed",
+  /** The row was written but could not be queued; the sweep will pick it up. */
+  NOTIFICATION_ENQUEUE_FAILED: "notification.enqueue_failed",
+  NOTIFICATION_CANCEL_FAILED: "notification.cancel_failed",
+  NOTIFICATION_SWEEP_COMPLETED: "notification.sweep_completed",
+  NOTIFICATION_SWEEP_FAILED: "notification.sweep_failed",
+
+  // ── SMS ───────────────────────────────────────────────────────────────────
+  SMS_SENT: "sms.sent",
+  SMS_SEND_FAILED: "sms.send_failed",
+  /** No provider configured: the message was logged, not sent. */
+  SMS_STUB_SEND: "sms.stub_send",
+  /** A body that will be billed as more than one segment. */
+  SMS_BODY_MULTI_SEGMENT: "sms.body_multi_segment",
+  /** A recipient asked to stop, and it was applied across every organization. */
+  SMS_OPT_OUT_APPLIED: "sms.opt_out_applied",
+  SMS_OPT_IN_APPLIED: "sms.opt_in_applied",
+
+  // ── Email suppression ─────────────────────────────────────────────────────
+  EMAIL_SUPPRESSED: "email.suppressed",
+  EMAIL_SUPPRESSION_LIFTED: "email.suppression_lifted",
   CONSULTATION_REMINDERS_SCHEDULE_FAILED:
     "consultation.reminders_schedule_failed",
   /**

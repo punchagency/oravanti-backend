@@ -1,6 +1,9 @@
 import { randomUUID } from "crypto";
 import { env } from "../../config/env";
 import { maskPhone } from "../../utils/phone";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
+
+const log = createModuleLogger("notifications.sms_provider");
 
 /**
  * Contract for sending a text message.
@@ -92,7 +95,7 @@ export class StubSmsProvider implements SmsProvider {
   async sendSms(input: SendSmsInput): Promise<SendSmsResult> {
     // Masked: this line exists in development logs, and a full phone number in
     // a log is a phone number in every log aggregator downstream.
-    console.log(`[sms-stub] -> ${maskPhone(input.to)}: ${input.body}`);
+    log.info(LogEvent.SMS_STUB_SEND, { toMasked: maskPhone(input.to) });
     return { providerMessageId: `stub_${randomUUID()}`, status: "queued" };
   }
 
@@ -131,8 +134,11 @@ export const getSmsProvider = (): SmsProvider => {
   if (cached) return cached;
 
   if (isSmsProviderConfigured()) {
-    // Required lazily so an unconfigured environment never constructs a Twilio
-    // client, and so importing this module stays free of that dependency.
+    // Required lazily so an unconfigured environment never loads the Twilio
+    // SDK at all, and so importing this module stays free of that dependency.
+    // A static import would pull it into every process that touches
+    // notifications, configured or not.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { TwilioSmsProvider } = require("./twilio.provider") as typeof import("./twilio.provider");
     cached = new TwilioSmsProvider();
   } else {

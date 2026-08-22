@@ -8,7 +8,7 @@ import { assertAssignableStaff } from "../../utils/assignable-staff";
 import { dayjs } from "../../utils/date";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 import { recordAuditEvent } from "../shared/audit.service";
-import { createModuleLogger } from "../../lib/logging/log";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
 
 const log = createModuleLogger("tasks.service");
 
@@ -322,8 +322,11 @@ export class TasksService {
         // before still tells them.
         dedupeKey: `task-assigned-${task.id}-${task.assignedToId}`,
       });
-    } catch (error) {
-      console.error("[tasks] assignment notify failed", error);
+    } catch (err) {
+      log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+        taskId: task.id,
+        event: "task_assigned",
+      });
     }
   };
 

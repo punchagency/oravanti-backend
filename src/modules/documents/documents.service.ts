@@ -49,6 +49,9 @@ import {
 import { recordAccessEvent, recordAuditEvent } from "../shared/audit.service";
 import type { AuditActionName } from "../../lib/audit/actions";
 import { auditEvents } from "../../db/schema/audit-events";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
+
+const log = createModuleLogger("documents.service");
 
 /*
   The document module's slice of the action registry.
@@ -1264,7 +1267,9 @@ export class DocumentsService {
         dedupeKey: `document-uploaded-${request.id}`,
       });
     } catch (error) {
-      console.error("[documents] upload notify failed", error);
+      log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, error, {
+        event: "document_uploaded_staff",
+      });
     }
   };
 

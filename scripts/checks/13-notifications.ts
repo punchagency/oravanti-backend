@@ -946,7 +946,7 @@ const main = async () => {
     const c1 = await makeConsultation(future);
     await scheduleConsultationReminders(orgId, c1.id);
 
-    let rows = await remindersFor(c1.id);
+    const rows = await remindersFor(c1.id);
     const events = rows.map((r) => r.event).sort();
     check(
       "both reminders are scheduled",

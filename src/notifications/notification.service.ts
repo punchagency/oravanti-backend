@@ -25,6 +25,9 @@ import type {
   NotifyResultRow,
   ResolvedRecipient,
 } from "./types";
+import { createModuleLogger, LogEvent } from "../lib/logging/log";
+
+const log = createModuleLogger("notifications.notification_service");
 
 /**
  * The entry point every caller uses instead of touching a provider.
@@ -118,7 +121,9 @@ export const notify = async (input: NotifyInput): Promise<NotifyResult> => {
     ).catch((error) => {
       // Redis being down must not fail the caller's request. The row stays
       // `pending` and the sweep picks it up.
-      console.error("[notify] failed to enqueue", row.id, error);
+      log.failure(LogEvent.NOTIFICATION_ENQUEUE_FAILED, error, {
+        notificationId: row.id,
+      });
       return undefined;
     });
 
@@ -239,7 +244,7 @@ const renderChannel = (
   if (!template) return null;
 
   if (channel === "email" && template.email) {
-    const { subject, html } = template.email(context, meta);
+    const { subject } = template.email(context, meta);
     // Email HTML is not persisted — see notifications.payload. The body is
     // re-rendered from the context at send time.
     return { subject, body: null };
@@ -315,7 +320,9 @@ export const cancelNotifications = async (
 
   for (const row of pending) {
     await cancelNotificationJob(row.id).catch((error) =>
-      console.error("[notify] failed to cancel job", row.id, error),
+      log.failure(LogEvent.NOTIFICATION_CANCEL_FAILED, error, {
+        notificationId: row.id,
+      }),
     );
   }
 

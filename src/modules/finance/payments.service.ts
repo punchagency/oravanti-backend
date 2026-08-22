@@ -279,7 +279,10 @@ export const recordPayment = async (
       fullySettled,
       actorStaffId,
     }).catch((error: unknown) =>
-      console.error("[finance] payment notify failed", error),
+      log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, error, {
+        invoiceId,
+        event: "payment_receipt_sent",
+      }),
     );
 
     return getById(organizationId, invoiceId, access);

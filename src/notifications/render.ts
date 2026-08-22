@@ -12,6 +12,10 @@
  * Retrofitting the existing templates is a separate change — this file does not
  * touch them.
  */
+import { createModuleLogger, LogEvent } from "../lib/logging/log";
+
+const log = createModuleLogger("notifications.render");
+
 
 /** Lifted from src/modules/finance/deliveries.service.ts, which had the only copy. */
 export const escapeHtml = (value: unknown): string =>
@@ -114,9 +118,11 @@ export const smsBody = (firmName: string, text: string): string => {
     // consultation reminder because it is 12 characters long would be worse
     // than paying for it. The check asserts templates stay inside one segment;
     // this catches the ones that drift past it in production.
-    console.warn(
-      `[sms] body exceeds one segment (${gsmSegments(body)} segments, ${[...body].length} chars, gsm7=${isGsm7(body)})`,
-    );
+    log.warn(LogEvent.SMS_BODY_MULTI_SEGMENT, {
+      segments: gsmSegments(body),
+      chars: [...body].length,
+      gsm7: isGsm7(body),
+    });
   }
 
   return body;

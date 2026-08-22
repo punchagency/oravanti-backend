@@ -9,6 +9,9 @@ import type {
   SmsProvider,
   SmsStatusEvent,
 } from "./sms.provider";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
+
+const log = createModuleLogger("notifications.twilio_provider");
 
 /**
  * Twilio, as one platform-owned account shared by every firm.
@@ -51,7 +54,10 @@ export class TwilioSmsProvider implements SmsProvider {
 
       return { providerMessageId: message.sid, status: message.status };
     } catch (error) {
-      console.error(`[twilio] send failed to ${maskPhone(input.to)}:`, error);
+      log.failure(LogEvent.SMS_SEND_FAILED, error, {
+        provider: "twilio",
+        toMasked: maskPhone(input.to),
+      });
       throw error;
     }
   }

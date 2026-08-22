@@ -18,6 +18,9 @@ import {
   NOTIFICATIONS_QUEUE,
   type NotificationJob,
 } from "../queues";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
+
+const log = createModuleLogger("queue.notification_worker");
 
 /**
  * Delivers one notification, whatever its channel.
@@ -257,9 +260,11 @@ export const startNotificationSweep = () =>
       }
 
       if (due.length) {
-        console.log(`[notification-sweep] re-enqueued ${due.length}`);
+        log.info(LogEvent.NOTIFICATION_SWEEP_COMPLETED, {
+          reEnqueued: due.length,
+        });
       }
     } catch (error) {
-      console.error("[notification-sweep] failed", error);
+      log.failure(LogEvent.NOTIFICATION_SWEEP_FAILED, error);
     }
   }, SWEEP_INTERVAL_MS);

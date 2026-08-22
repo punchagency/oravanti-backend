@@ -5,6 +5,9 @@ import { emailSuppressions } from "../db/schema/email-suppressions";
 import { leads } from "../db/schema/leads";
 import { toE164 } from "../utils/phone";
 import type { ResolvedRecipient } from "./types";
+import { createModuleLogger, LogEvent } from "../lib/logging/log";
+
+const log = createModuleLogger("notifications.consent_service");
 
 /**
  * SMS consent and email suppression.
@@ -102,9 +105,11 @@ export const applyGlobalOptOut = async (
       .where(inIds(clients.id, clientIds));
   }
 
-  console.log(
-    `[sms] opt-out applied (${source}): ${leadIds.length} leads, ${clientIds.length} clients`,
-  );
+  log.action(LogEvent.SMS_OPT_OUT_APPLIED, {
+    source,
+    leads: leadIds.length,
+    clients: clientIds.length,
+  });
 
   return { leads: leadIds.length, clients: clientIds.length };
 };
@@ -155,9 +160,11 @@ export const applyGlobalOptIn = async (
       .where(inIds(clients.id, clientIds));
   }
 
-  console.log(
-    `[sms] opt-in applied (${source}): ${leadIds.length} leads, ${clientIds.length} clients`,
-  );
+  log.action(LogEvent.SMS_OPT_IN_APPLIED, {
+    source,
+    leads: leadIds.length,
+    clients: clientIds.length,
+  });
 
   return { leads: leadIds.length, clients: clientIds.length };
 };
@@ -311,7 +318,7 @@ export const suppressEmail = async (
       },
     });
 
-  console.log(`[email] suppressed ${normalised} (${reason})`);
+  log.action(LogEvent.EMAIL_SUPPRESSED, { email: normalised, reason });
 };
 
 /** Lift a suppression, in response to the provider reporting the address reinstated. */
@@ -329,5 +336,5 @@ export const unsuppressEmail = async (email: string): Promise<void> => {
       ),
     );
 
-  console.log(`[email] suppression lifted for ${normalised}`);
+  log.action(LogEvent.EMAIL_SUPPRESSION_LIFTED, { email: normalised });
 };
