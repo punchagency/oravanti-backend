@@ -3049,6 +3049,7 @@ const applyNoShowPolicy = async (
         summary.manualOutstanding > 0
           ? "The lead did not attend. This much was paid outside the processor, so it has to be returned to the client directly."
           : "The lead did not attend, but the refund could not be completed automatically.",
+      detail: summary.failures[0]?.reason ?? null,
     });
   }
 
@@ -4079,6 +4080,15 @@ const refundOwedTask = async (opts: {
   consultationId: string;
   amount: number;
   reason: string;
+  /**
+   * What the processor actually said, when a leg failed.
+   *
+   * Without it the task reads "could not be completed automatically", which
+   * does not distinguish a timeout worth retrying from a hard refusal that has
+   * to be settled at the bank. The summary carried this all along and both
+   * callers discarded it.
+   */
+  detail?: string | null;
 }): Promise<void> => {
   try {
     // The marker the idempotency check matches on. `lead_tasks` has no metadata
@@ -4141,7 +4151,14 @@ const refundOwedTask = async (opts: {
       organizationId: opts.organizationId,
       leadId: opts.leadId,
       title: `Refund $${opts.amount.toFixed(2)} to ${who}`,
-      description: `${opts.reason} Requires the finance:refund permission. ${marker}`,
+      description: [
+        opts.reason,
+        opts.detail ? `The processor said: ${opts.detail}` : null,
+        "Requires the finance:refund permission.",
+        marker,
+      ]
+        .filter(Boolean)
+        .join(" "),
       orderIndex: Number(n),
       pipelineStage: "consultation",
       assignedToId: assignee?.id ?? null,
@@ -4268,6 +4285,11 @@ const cancelConsultation = async (
     manualOutstanding: 0,
   };
 
+  // What the processor said when a leg failed, carried out to the task that
+  // reports the money as still owed. `summary` is scoped to the refund branch
+  // below, and this is read after it.
+  let cancellationFailure: string | null = null;
+
   if (consultation.invoiceId) {
     const held = await netPaidOnInvoice(organizationId, consultation.invoiceId);
 
@@ -4281,6 +4303,7 @@ const cancelConsultation = async (
       );
       cancellation.refunded = summary.refunded;
       cancellation.manualOutstanding = summary.manualOutstanding;
+      cancellationFailure = summary.failures[0]?.reason ?? null;
       // Whatever the refund could not reach — a failed leg, or money that never
       // went through Confido — is still the client's.
       cancellation.refundOwed = await netPaidOnInvoice(
@@ -4329,6 +4352,7 @@ const cancelConsultation = async (
         : cancellation.manualOutstanding > 0
           ? "Consultation cancelled. This much was paid outside the processor, so it has to be returned to the client directly."
           : "Consultation cancelled, but the refund could not be completed automatically.",
+      detail: cancellationFailure,
     });
   }
 
