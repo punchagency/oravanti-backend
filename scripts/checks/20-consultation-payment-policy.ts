@@ -28,6 +28,7 @@ import { consultationPaymentOutstanding } from "../../src/modules/finance/consul
 import { systemAccess } from "../../src/modules/finance/account-access";
 import * as invoicesService from "../../src/modules/finance/invoices.service";
 import { isWholeTransaction } from "../../src/modules/finance/refunds.service";
+import { hasLiveConsultation } from "../../src/modules/finance/consultation-billing.service";
 import { CONFIDO_PROVIDER } from "../../src/modules/finance/confido/confido-webhooks.service";
 import { invoiceByPaymentToken } from "../../src/modules/finance/payment-links.service";
 import { check, checkEqual, report, section } from "./_bootstrap";
@@ -387,6 +388,53 @@ const main = async () => {
       "a half-cent difference still counts as whole",
       isWholeTransaction(199.998, 200),
     );
+
+    // ── 4d. The Finance block follows liveness, not existence ────────────────
+    section("Finance refuses only while the consultation is still live");
+
+    {
+      const statuses = [
+        ["pending_payment", true],
+        ["awaiting_slot_selection", true],
+        ["scheduled", true],
+        ["in_progress", true],
+        ["cancelled", false],
+        ["completed", false],
+        ["no_show", false],
+      ] as const;
+
+      for (const [status, expected] of statuses) {
+        const inv = await makeInvoice(100);
+        const cons = await makeConsultation(inv);
+        await systemDb
+          .update(consultations)
+          .set({ status })
+          .where(eq(consultations.id, cons.id));
+
+        const blocked = await hasLiveConsultation(orgId, inv);
+        checkEqual(`${status} -> blocked=${expected}`, blocked, expected);
+
+        // The same rule is written twice — TypeScript for the controller guard,
+        // SQL for the list and detail queries. A check that exercised only one
+        // would let them drift, and a UI hiding the button for a CANCELLED
+        // consultation would leave a failed refund reachable by API and by no
+        // human.
+        const detail = await invoicesService.getById(orgId, inv, systemAccess());
+        checkEqual(
+          `${status} -> SQL agrees with the guard`,
+          detail.consultationRefundBlocked,
+          blocked,
+        );
+      }
+    }
+
+    {
+      const inv = await makeInvoice(100);
+      check(
+        "an invoice with no consultation is never blocked",
+        !(await hasLiveConsultation(orgId, inv)),
+      );
+    }
 
     // ── 5. No invoice: the legacy flag still governs ──────────────────────────
     section("Consultations that predate invoicing");
