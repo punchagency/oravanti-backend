@@ -1,7 +1,10 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { netPaidOnInvoice } from "./refunds.service";
 import { db } from "../../db/client";
-import { consultations } from "../../db/schema/consultations";
+import {
+  LIVE_CONSULTATION_STATUSES,
+  consultations,
+} from "../../db/schema/consultations";
 import { invoiceInstalments } from "../../db/schema/invoice-instalments";
 import { invoices } from "../../db/schema/invoices";
 import { leads } from "../../db/schema/leads";
@@ -334,4 +337,38 @@ export const consultationPaymentOutstanding = async (
   // Half a cent, the same tolerance the payment split and schedule balance
   // checks use, so a rounded deposit paid exactly is not one cent short.
   return netPaid < required - 0.005;
+};
+
+/**
+ * Is a LIVE consultation billed by this invoice?
+ *
+ * The question behind refusing a Finance refund or void. The refusal exists so
+ * money cannot be sent back while a booking is still standing: cancelling is
+ * the one act that also releases the calendar slot, revokes the booking link
+ * and tells the client, and a bare refund does none of it.
+ *
+ * Once the consultation is terminal — cancelled, completed or a no-show — all
+ * of that has already happened, so the reason evaporates. Refusing then buys
+ * nothing and costs the only remaining way to return the client's money: a
+ * cancellation whose refund leg failed at the processor cannot be re-run
+ * (`cancelConsultation` refuses a cancelled consultation), so Finance is the
+ * last door.
+ */
+export const hasLiveConsultation = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<boolean> => {
+  const [row] = await db
+    .select({ id: consultations.id })
+    .from(consultations)
+    .where(
+      and(
+        eq(consultations.organizationId, organizationId),
+        eq(consultations.invoiceId, invoiceId),
+        inArray(consultations.status, [...LIVE_CONSULTATION_STATUSES]),
+      ),
+    )
+    .limit(1);
+
+  return Boolean(row);
 };

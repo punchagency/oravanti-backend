@@ -17,10 +17,8 @@ import { listPresets, saveFirmPreset } from "./line-presets.service";
 import * as invoicesService from "./invoices.service";
 import * as paymentsService from "./payments.service";
 import * as refundsService from "./refunds.service";
-import { and, eq } from "drizzle-orm";
-import { db } from "../../db/client";
-import { consultations } from "../../db/schema/consultations";
 import { BadRequestError } from "../../utils/error/app-error";
+import { hasLiveConsultation } from "./consultation-billing.service";
 import { settleConsultationForInvoice } from "../leads/leads.service";
 import { createModuleLogger } from "../../lib/logging/log";
 import type { AccountFilter, InvoiceStatusFilter } from "./types";
@@ -28,13 +26,18 @@ import type { AccountFilter, InvoiceStatusFilter } from "./types";
 const log = createModuleLogger("invoices.controller");
 
 /**
- * Refuse to reverse or withdraw a consultation fee from the Finance screen.
+ * Refuse to reverse or withdraw a fee for a consultation that is still live.
  *
- * Cancelling the consultation already does this properly: it refunds what was
- * paid, releases the calendar slot, revokes the booking link and tells the
- * client. Refunding the invoice on its own does none of that, so the
- * consultation stays scheduled, the Meet link keeps working, and the client
- * arrives for a call the firm believes it refunded.
+ * Cancelling the consultation does this properly: it refunds what was paid,
+ * releases the calendar slot, revokes the booking link and tells the client.
+ * Refunding the invoice on its own does none of that, so the consultation would
+ * stay scheduled, the Meet link would keep working, and the client would arrive
+ * for a call the firm believes it refunded.
+ *
+ * Gated on LIVE rather than on "is a consultation fee". Once the consultation
+ * is terminal there is no booking left to diverge from, and refusing would
+ * close the last door on a refund whose processor leg failed — that
+ * cancellation cannot be re-run, so Finance is the only way to finish it.
  *
  * Guarded HERE and not in the service on purpose: `cancelConsultation` reaches
  * `refundInvoiceInFull` -> `refundPayment` internally and must keep working.
@@ -46,20 +49,9 @@ const refuseIfConsultationFee = async (
   invoiceId: string,
   verb: string,
 ): Promise<void> => {
-  const [consultation] = await db
-    .select({ id: consultations.id })
-    .from(consultations)
-    .where(
-      and(
-        eq(consultations.organizationId, organizationId),
-        eq(consultations.invoiceId, invoiceId),
-      ),
-    )
-    .limit(1);
-
-  if (consultation) {
+  if (await hasLiveConsultation(organizationId, invoiceId)) {
     throw new BadRequestError(
-      `This invoice is for a consultation, so it cannot be ${verb} from here. Cancel the consultation instead — that refunds the client, releases the calendar slot and notifies them in one step.`,
+      `This invoice is for a consultation that has not happened yet, so it cannot be ${verb} from here. Cancel the consultation instead — that refunds the client, releases the calendar slot and notifies them in one step.`,
     );
   }
 };

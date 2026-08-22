@@ -32,6 +32,23 @@ export const consultationStatusEnum = pgEnum("consultation_status", [
   "no_show",
 ]);
 
+/**
+ * The statuses where the consultation has not happened and can still be
+ * cancelled — as opposed to `completed`, `cancelled` and `no_show`, which are
+ * terminal.
+ *
+ * Lives beside the enum rather than in a service because two services need it
+ * and importing between them is a cycle: `invoices.service` builds a SQL
+ * predicate from it at module scope, and `consultation-billing.service` already
+ * imports `invoices.service`.
+ */
+export const LIVE_CONSULTATION_STATUSES = [
+  "pending_payment",
+  "awaiting_slot_selection",
+  "scheduled",
+  "in_progress",
+] as const;
+
 export const consultationOutcomeEnum = pgEnum("consultation_outcome", [
   "proceed",
   "close_no_case",
