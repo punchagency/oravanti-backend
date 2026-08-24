@@ -4,9 +4,15 @@
  *   - name: Notifications (webhooks)
  *     description: Provider delivery callbacks — public, signature-verified
  */
-import { Router, type Request, type Response } from "express";
+import {
+  Router,
+  type NextFunction,
+  type Request,
+  type Response,
+} from "express";
 import { env } from "../../config/env";
 import { requireAuth } from "../../middleware/auth.middleware";
+import { requirePermission } from "../../middleware/permission.middleware";
 import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import {
   handleResendWebhook,
@@ -148,6 +154,36 @@ export class ResendWebhookRouter {
  * Separate from the webhook routers above so it gets the normal auth chain and
  * the ordinary JSON body parser.
  */
+/**
+ * Gate the ledger on the entity actually being asked about.
+ *
+ * The communications panel is a per-entity view — a lead, a client, a matter,
+ * an invoice — so one blanket resource would be wrong in both directions: it
+ * would either lock finance staff out of an invoice's delivery history, or
+ * hand anyone who can read leads the firm's entire outbound record.
+ *
+ * Any single supplied identifier is enough to authorise. The service ANDs its
+ * filters, so adding one only ever narrows the result: a caller passing both a
+ * lead and an invoice gets a subset of what either permission alone already
+ * entitles them to.
+ *
+ * With no identifier at all the query is precisely "every message this firm
+ * has ever sent", which is the audit surface's own reasoning — reading every
+ * action a colleague took — so it takes `audit:read` rather than defaulting to
+ * whichever resource happens to be listed first.
+ */
+const requireLedgerRead = (req: Request, res: Response, next: NextFunction) => {
+  if (req.query.invoiceId)
+    return requirePermission("finance", "read")(req, res, next);
+  if (req.query.clientId)
+    return requirePermission("clients", "read")(req, res, next);
+  if (req.query.caseId)
+    return requirePermission("cases", "read")(req, res, next);
+  if (req.query.leadId)
+    return requirePermission("leads", "read")(req, res, next);
+  return requirePermission("audit", "read")(req, res, next);
+};
+
 export class NotificationsRouter {
   public router: Router;
   public path: string;
@@ -178,7 +214,7 @@ export class NotificationsRouter {
      *       200:
      *         description: Paginated notifications, newest first
      */
-    this.router.get("/", this.controller.list);
+    this.router.get("/", requireLedgerRead, this.controller.list);
 
     /**
      * @openapi
@@ -190,7 +226,14 @@ export class NotificationsRouter {
      *       200:
      *         description: Per-channel delivery tracking availability
      */
-    this.router.get("/capabilities", this.controller.capabilities);
+    // Deployment capability flags, no tenant data — but gated all the same, so
+    // the module has no ungated route for the coverage ratchet to grandfather.
+    // `leads:read` is the weakest grant any caller of the panel already holds.
+    this.router.get(
+      "/capabilities",
+      requirePermission("leads", "read"),
+      this.controller.capabilities,
+    );
   }
 }
 
