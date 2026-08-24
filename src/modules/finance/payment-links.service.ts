@@ -454,6 +454,18 @@ const outstandingBySide = async (
  *
  * No-op when the invoice never had a link, which is most of them — links are
  * minted lazily on first checkout.
+ *
+ * **This cannot close the door on a partially-paid invoice.** Confido confirmed
+ * that `removePaymentLink` is rejected once the link is referenced by other
+ * records — "if the paylink has been paid or has associated transactions, the
+ * delete will fail" (Aug 2026) — and an invoice with a payment against it is
+ * exactly the one a firm is most likely to void. So the call below reliably
+ * fails in that case and the URL stays live.
+ *
+ * That is survivable because it is not the only guard, and deliberately not the
+ * last one: `invoiceByPaymentToken` refuses a voided invoice, and the webhook
+ * path records a payment against a voided invoice on the finance trail instead
+ * of retrying forever. See `PAYMENT_WEBHOOK_VOIDED_INVOICE_PAYMENT`.
  */
 export const retirePaymentLink = async (
   organizationId: string,
