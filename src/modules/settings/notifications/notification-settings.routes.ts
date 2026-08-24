@@ -7,6 +7,7 @@
 import { Router } from "express";
 
 import { requireAuth } from "../../../middleware/auth.middleware";
+import { requireResource } from "../../../middleware/permission.middleware";
 import { resolveActorContext } from "../../../middleware/resolve-actor-context";
 import { validateRequest } from "../../../middleware/validate.middleware";
 import { NotificationSettingsController } from "./notification-settings.controller";
@@ -31,6 +32,11 @@ export class NotificationSettingsRouter {
   private initializeRoutes() {
     this.router.use(requireAuth);
     this.router.use(resolveActorContext);
+    // GET -> firm_settings:read, PUT/PATCH -> firm_settings:update. The
+    // resource is defined for exactly this surface ("general, billing,
+    // notifications, compliance, payments"), and gating the router rather
+    // than each route means a preference added later inherits the gate.
+    this.router.use(requireResource("firm_settings"));
 
     /**
      * @openapi

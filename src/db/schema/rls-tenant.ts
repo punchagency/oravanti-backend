@@ -416,4 +416,14 @@ export const RLS_EXEMPTIONS: Record<string, string> = {
   contractor_payment_details: "hangs off contractors; gated by app-level permission",
   contractor_certification_documents: "hangs off contractors, which is cross-firm",
   contractor_identification_documents: "hangs off contractors, which is cross-firm",
+  // The platform sends SMS from one number and email from one domain, so a STOP
+  // and a hard bounce are facts about the address, not about one firm's
+  // relationship with it. Both tables carry a nullable, unlinked
+  // organization_id: a row scoped to no organization cannot be filtered by one.
+  // Reached only through systemDb with an explicit address predicate — see
+  // sms-inbound-messages.ts and email-suppressions.ts for the full reasoning.
+  sms_inbound_messages:
+    "opt-outs on ONE shared sender number; organization_id is nullable, so there is no tenant to scope by",
+  email_suppressions:
+    "bounces and complaints on ONE shared sending domain; suppressing for every firm is the point",
 };
