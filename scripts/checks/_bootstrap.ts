@@ -145,6 +145,10 @@ export const silenceEmail = (): void => {
       throw new Error("No recipients defined");
     }
     captured.push({ to: options.to, subject: options.subject });
+    // Null rather than a synthetic id: nothing was handed to a provider, so
+    // there is no id a delivery callback could ever reference. The type is
+    // nullable for exactly this case.
+    return { providerMessageId: null };
   };
 };
 

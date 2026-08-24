@@ -50,10 +50,12 @@ import {
   DEFAULT_CHANNEL_PREFERENCES,
   FIRM_PREFERENCE_EVENTS,
   FIRM_PREFERENCE_LABELS,
+  getEventDef,
   isFirmPreferenceEvent,
   NOTIFICATION_EVENTS,
   type NotificationEventKey,
 } from "../../src/notifications/events";
+import type { ResolvedRecipient } from "../../src/notifications/types";
 import {
   escapeHtml,
   gsmSegments,
@@ -169,9 +171,10 @@ const main = async () => {
   check(
     "no transactional event carries a prefKey",
     eventKeys.every(
-      (key) =>
-        NOTIFICATION_EVENTS[key].tier !== "transactional" ||
-        NOTIFICATION_EVENTS[key].prefKey === undefined,
+      (key) => {
+        const def = getEventDef(key);
+        return def.tier !== "transactional" || def.prefKey === undefined;
+      },
     ),
   );
 
@@ -199,9 +202,9 @@ const main = async () => {
   // product does not detect yet; this pins the number so it can only go up.
   const wiredPrefKeys = new Set(
     eventKeys
-      .map((key) => NOTIFICATION_EVENTS[key])
+      .map((key) => getEventDef(key))
       .filter((def) => def.tier === "preference" && def.producer === "wired")
-      .map((def) => def.prefKey!),
+      .flatMap((def) => (def.prefKey === undefined ? [] : [def.prefKey])),
   );
   const unwired = FIRM_PREFERENCE_EVENTS.filter(
     (event) => !wiredPrefKeys.has(event),
@@ -622,8 +625,8 @@ const main = async () => {
       smsEnabled: true,
       preferences: new Map(),
     };
-    const consented = {
-      type: "lead" as const,
+    const consented: ResolvedRecipient = {
+      type: "lead",
       id: fixture.leadId,
       name: "Jane Doe",
       email: "jane@example.test",
@@ -632,7 +635,7 @@ const main = async () => {
       smsOptOutAt: null,
     };
 
-    const decide = (recipient: typeof consented, firm = firmSmsOn) =>
+    const decide = (recipient: ResolvedRecipient, firm = firmSmsOn) =>
       resolveChannelDecision({
         def: NOTIFICATION_EVENTS.questionnaire_sent,
         channel: "sms",
