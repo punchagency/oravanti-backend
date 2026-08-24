@@ -276,6 +276,23 @@ export const LogEvent = {
   LEAD_PIPELINE_TEMPLATE_MISSING: "lead.pipeline_template_missing",
   LEADS_CONSULTATION_INVOICE_FAILED: "leads.consultation_invoice_failed",
   /**
+   * The consultation completed but its `invoice_after` fee could not be
+   * emailed. The invoice stands and the money is still owed — it just has
+   * not been asked for, so this is the signal to ask by hand.
+   */
+  LEADS_CONSULTATION_INVOICE_SEND_FAILED: "leads.consultation_invoice_send_failed",
+  /**
+   * A payment was recorded but the consultation it pays for did not advance.
+   * The money is on the ledger; the booking gate may still be closed.
+   */
+  LEADS_CONSULTATION_SETTLE_FAILED: "leads.consultation_settle_failed",
+  /** An owed refund was turned into an assignable task for someone who can act. */
+  LEADS_CONSULTATION_REFUND_TASK_CREATED: "leads.consultation_refund_task_created",
+  /** The reminder failed to raise. The refund is still owed and now untracked. */
+  LEADS_CONSULTATION_REFUND_TASK_FAILED: "leads.consultation_refund_task_failed",
+  /** A no-show was resolved against the firm's policy (refund / void / task). */
+  LEADS_CONSULTATION_NO_SHOW_SETTLED: "leads.consultation_no_show_settled",
+  /**
    * A cancelled consultation left money with the firm that it did not return.
    *
    * Either the person cancelling lacks `finance:refund`, or part of the fee
@@ -381,6 +398,12 @@ export const LogEvent = {
   INVOICE_DUPLICATED: "invoice.duplicated",
   INVOICE_PAID: "invoice.paid",
   INVOICE_VOIDED: "invoice.voided",
+  /**
+   * Moved out of draft onto the books without being emailed — a fee the
+   * firm collects face to face. Distinct from INVOICE_SENT, which implies
+   * a delivery that in this case never happened.
+   */
+  INVOICE_ISSUED_WITHOUT_DELIVERY: "invoice.issued_without_delivery",
   INVOICE_DELIVERY_FAILED: "invoice.delivery_failed",
   INVOICE_SCHEDULE_DELIVERY_FAILED: "invoice.schedule_delivery_failed",
   INSTALMENT_CREATED: "instalment.created",
@@ -428,6 +451,13 @@ export const LogEvent = {
   PAYMENT_LINK_CREATED: "payment_link.created",
   PAYMENT_LINK_SENT: "payment_link.sent",
   PAYMENT_LINK_EXPIRED: "payment_link.expired",
+  /**
+   * Withdrawn at the processor because the invoice was voided, so the hosted
+   * URL can no longer take money a voided invoice cannot record.
+   */
+  PAYMENT_LINK_RETIRED: "payment_link.retired",
+  /** The link outlived its invoice: withdrawal failed and the URL may still pay. */
+  PAYMENT_LINK_RETIRE_FAILED: "payment_link.retire_failed",
   FINANCE_EVENT_RECORDED: "finance.event_recorded",
   FINANCE_EVENT_QUERY_FAILED: "finance.event_query_failed",
   FEE_AGREEMENT_GENERATED: "fee_agreement.generated",

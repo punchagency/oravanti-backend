@@ -41,6 +41,9 @@ const toSettingsDTO = (row: ConsultationSettings) => ({
   // Only ever meaningful for the disabled waiver structure, so nothing can
   // legitimately hold one any more.
   waiverWindowDays: null,
+  feeSchedule: row.feeSchedule,
+  upfrontPercent: row.upfrontPercent,
+  noShowPolicy: row.noShowPolicy,
   timezone: row.timezone,
   language: row.language,
   smsEnabled: row.smsEnabled,
@@ -100,6 +103,9 @@ export class ConsultationSettingsService {
         defaultAmount: null,
         feeStructure: null,
         waiverWindowDays: null,
+        feeSchedule: "full_upfront" as const,
+        upfrontPercent: null,
+        noShowPolicy: "forfeit" as const,
         timezone: "UTC",
         language: "en",
         smsEnabled: false,
@@ -131,6 +137,21 @@ export class ConsultationSettingsService {
       // The waiver structure is disabled, so nothing can set a window. Written
       // rather than left alone so a firm that had one is cleared on next save.
       waiverWindowDays: null,
+      ...(body.feeSchedule !== undefined
+        ? {
+            feeSchedule: body.feeSchedule,
+            // Kept in lockstep with the schedule so the pair can never
+            // contradict the table's CHECK: only `partial_upfront` carries a
+            // deposit, and changing away from it clears the stale percentage.
+            upfrontPercent:
+              body.feeSchedule === "partial_upfront"
+                ? body.upfrontPercent ?? null
+                : null,
+          }
+        : {}),
+      ...(body.noShowPolicy !== undefined
+        ? { noShowPolicy: body.noShowPolicy }
+        : {}),
       ...(body.timezone !== undefined ? { timezone: body.timezone } : {}),
       ...(body.language !== undefined ? { language: body.language } : {}),
       smsEnabled: body.smsEnabled ?? false,

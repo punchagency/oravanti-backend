@@ -466,9 +466,23 @@ export class LeadsRouter {
       ctrl.updateConsultation,
     );
 
+    /**
+     * Cancelling requires the permission to send money back.
+     *
+     * Cancelling and refunding used to come apart: anyone in intake could
+     * cancel, and a cancellation by someone without `finance:refund` left the
+     * money owed and raised a task for an administrator. That produced a dead
+     * end — the task said "refund this" and the person holding it had nowhere
+     * to do it.
+     *
+     * Keeping the two together means the refund is attempted by the same act
+     * that creates the obligation, which is the only arrangement where the
+     * client's money cannot be stranded by a permission boundary.
+     */
     this.router.post(
       "/:id/consultation/cancel",
       requireAuth,
+      requirePermission({ finance: ["refund"] }),
       validateRequest({
         params: v.idParamsSchema,
         body: v.cancelConsultationBodySchema,

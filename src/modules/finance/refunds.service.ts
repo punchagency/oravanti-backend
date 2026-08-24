@@ -34,15 +34,35 @@ const log = createModuleLogger("refunds.service");
 
 export type RefundPaymentInput = {
   /**
-   * How much to send back. Omitted means all of it.
+   * How much to send back. Omitted means everything still left on the payment.
    *
-   * A partial can only be expressed by `transactionRefund`, which Confido
-   * accepts only after settlement — so a partial refund of a payment that has
-   * not cleared is refused by them, correctly.
+   * This does NOT decide which Confido mutation runs — `isWholeTransaction`
+   * does, from the resolved figure. A caller asking for the full amount
+   * explicitly gets the same void-capable path as one that omits it.
    */
   amount?: number;
   reason?: string;
 };
+
+/**
+ * Is this reversal for the entire original transaction?
+ *
+ * The question that picks the Confido mutation. Reversing the whole thing can
+ * be a VOID, which is the only way to touch a payment that has not settled
+ * (`PENDING` / `IN_TRANSIT`); anything less has to be a refund, which Confido
+ * accepts only once the payment is `DEPOSITED`.
+ *
+ * A partly reversed payment therefore cannot be voided, and should not be: a
+ * transaction with a refund already against it is no longer whole.
+ *
+ * Exported and pure so the choice can be asserted without standing up a
+ * processor stub. 0.005 is the half-cent tolerance used by the payment split
+ * and `assertScheduleBalances`.
+ */
+export const isWholeTransaction = (
+  requested: number,
+  paymentAmount: number,
+): boolean => Math.abs(requested - paymentAmount) < 0.005;
 
 export type RefundOutcome = {
   /** What Confido actually did: a void before settlement, a refund after. */
@@ -96,13 +116,23 @@ export const refundPayment = async (
     );
   }
 
-  const full = input.amount == null;
-  const requested = full ? num(payment.amount) : toMoney(input.amount!);
+  // Measured against what is LEFT of the payment, not its gross amount. The
+  // gross comparison let the same payment be refunded twice: each request was
+  // under the original figure, so each passed, and two reversals went to the
+  // processor for money received once.
+  const remaining = await unreversedAmount(organizationId, payment.id);
+  if (remaining <= 0) {
+    throw new BadRequestError("This payment has already been fully refunded");
+  }
+
+  const requested = input.amount == null ? remaining : toMoney(input.amount);
   if (requested <= 0) {
     throw new BadRequestError("A refund must be for more than zero");
   }
-  if (requested - num(payment.amount) >= 0.005) {
-    throw new BadRequestError("A refund cannot exceed the payment");
+  if (requested - remaining >= 0.005) {
+    throw new BadRequestError(
+      "A refund cannot exceed what is left of the payment",
+    );
   }
 
   const { credential } = await confidoCredentialFor(organizationId);
@@ -113,7 +143,19 @@ export const refundPayment = async (
 
   const result = await getConfidoClient().reverseTransaction(credential, {
     transactionId: payment.providerReference,
-    ...(full ? {} : { amount: Math.round(requested * 100) }),
+    // Chosen by WHAT IS BEING REVERSED, never by how the caller phrased it.
+    // Omitting the amount routes to `transactionVoidOrRefund`, the only
+    // mutation that can touch a payment which has not settled; sending one
+    // forces `transactionRefund`, which Confido accepts only after DEPOSITED.
+    //
+    // `refundInvoiceInFull` passes an explicit amount even when reversing the
+    // whole payment, so deciding on `input.amount != null` meant a cancellation
+    // before settlement ALWAYS took the settled-only path and always failed —
+    // leaving the client's money owed with a task nobody could complete.
+    // Deciding here, on the figure, makes that unreachable from any caller.
+    ...(isWholeTransaction(requested, num(payment.amount))
+      ? {}
+      : { amount: Math.round(requested * 100) }),
     externalId,
   });
 

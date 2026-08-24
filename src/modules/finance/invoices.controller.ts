@@ -17,7 +17,44 @@ import { listPresets, saveFirmPreset } from "./line-presets.service";
 import * as invoicesService from "./invoices.service";
 import * as paymentsService from "./payments.service";
 import * as refundsService from "./refunds.service";
+import { BadRequestError } from "../../utils/error/app-error";
+import { hasLiveConsultation } from "./consultation-billing.service";
+import { settleConsultationForInvoice } from "../leads/leads.service";
+import { createModuleLogger } from "../../lib/logging/log";
 import type { AccountFilter, InvoiceStatusFilter } from "./types";
+
+const log = createModuleLogger("invoices.controller");
+
+/**
+ * Refuse to reverse or withdraw a fee for a consultation that is still live.
+ *
+ * Cancelling the consultation does this properly: it refunds what was paid,
+ * releases the calendar slot, revokes the booking link and tells the client.
+ * Refunding the invoice on its own does none of that, so the consultation would
+ * stay scheduled, the Meet link would keep working, and the client would arrive
+ * for a call the firm believes it refunded.
+ *
+ * Gated on LIVE rather than on "is a consultation fee". Once the consultation
+ * is terminal there is no booking left to diverge from, and refusing would
+ * close the last door on a refund whose processor leg failed — that
+ * cancellation cannot be re-run, so Finance is the only way to finish it.
+ *
+ * Guarded HERE and not in the service on purpose: `cancelConsultation` reaches
+ * `refundInvoiceInFull` -> `refundPayment` internally and must keep working.
+ * The controller is the only layer where "a human clicked this in Finance" is
+ * actually true.
+ */
+const refuseIfConsultationFee = async (
+  organizationId: string,
+  invoiceId: string,
+  verb: string,
+): Promise<void> => {
+  if (await hasLiveConsultation(organizationId, invoiceId)) {
+    throw new BadRequestError(
+      `This invoice is for a consultation that has not happened yet, so it cannot be ${verb} from here. Cancel the consultation instead — that refunds the client, releases the calendar slot and notifies them in one step.`,
+    );
+  }
+};
 
 export class InvoicesController {
   getStats = async (req: Request, res: Response) => {
@@ -264,6 +301,15 @@ export class InvoicesController {
   void = async (req: Request, res: Response) => {
     const { organizationId, staffId } = getRequestContext();
     const access = await accessForRequest();
+    // Closed for the same reason as the refund above. Leaving void open while
+    // closing refund would keep the stranded-consultation bug alive through the
+    // other door: voiding the fee invoice used to leave the lead on a booking
+    // page that would never offer a slot.
+    await refuseIfConsultationFee(
+      organizationId!,
+      req.params.id as string,
+      "voided",
+    );
     const invoice = await invoicesService.voidInvoice(
       organizationId!,
       req.params.id as string,
@@ -297,12 +343,37 @@ export class InvoicesController {
       access,
       req.body,
     );
+
+    // A consultation fee settled by hand moves the consultation on, exactly as
+    // a Confido payment does. Until now `settleConsultationForInvoice` had a
+    // single caller — the webhook — so `pay_in_person`, the one timing that is
+    // ALWAYS recorded manually, was the one flow with no automation behind it:
+    // staff had to record the payment and then separately PATCH the fee status.
+    //
+    // Called here rather than inside `recordPayment` so the webhook, which
+    // already calls it, does not fire it twice and race its own confirmation
+    // email. Non-fatal for the same reason as the webhook's call: the money is
+    // recorded, and a consultation that fails to advance is recoverable.
+    await settleConsultationForInvoice(
+      organizationId!,
+      req.params.id as string,
+    ).catch((err) =>
+      log.failure("leads.consultation_settle_failed", err, {
+        invoiceId: req.params.id,
+      }),
+    );
+
     sendSuccess(res, invoice, "Payment recorded successfully", 201);
   };
 
   refundPayment = async (req: Request, res: Response) => {
     const { organizationId, staffId } = getRequestContext();
     const access = await accessForRequest();
+    await refuseIfConsultationFee(
+      organizationId!,
+      req.params.id as string,
+      "refunded",
+    );
     const result = await refundsService.refundPayment(
       organizationId!,
       req.params.id as string,
