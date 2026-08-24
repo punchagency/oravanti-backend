@@ -213,6 +213,47 @@ const main = async () => {
       }
     }
 
+    // ── The "Paylink not found" tripwire ──────────────────────────────────
+    //
+    // A missing Payment Link comes back as a 500 INTERNAL_SERVER_ERROR reading
+    // "Paylink not found" rather than the 400 USER_INPUT_ERROR a missing Client
+    // gets. Confido confirmed that is unintentional, committed to no fix, and
+    // recommended we keep matching on the message (Aug 2026).
+    //
+    // So `findPaymentLinkByExternalId` classifies absence purely by that string,
+    // and the wording can change without notice. If it ever does, the lookup
+    // starts reading real outages as "no link exists" and mints a duplicate
+    // link for an invoice that already has one — permanently, since a link with
+    // transactions against it cannot be removed.
+    //
+    // This asserts the string, not the behaviour. It is the only thing watching.
+    section("the not-found message our lookup depends on");
+
+    let notFoundMessage = "";
+    try {
+      await gql(
+        firmToken,
+        `query FindLink($externalId: String) {
+          paymentLink(externalId: $externalId) { id }
+        }`,
+        // A uuid that was never used as an externalId, so absence is certain.
+        { externalId: randomUUID() },
+      );
+    } catch (err) {
+      notFoundMessage = (err as Error).message;
+    }
+
+    check(
+      'a missing payment link still reports "Paylink not found"',
+      notFoundMessage.toLowerCase().includes("paylink not found"),
+      {
+        received: notFoundMessage || "(the query unexpectedly succeeded)",
+        soWhat:
+          "confido.client.ts findPaymentLinkByExternalId matches on this string; " +
+          "if it changed, absence now reads as an outage and duplicate links follow",
+      },
+    );
+
     section("what our ledger would record");
 
     // The mapping the webhook applies, asserted directly: one single-sided row

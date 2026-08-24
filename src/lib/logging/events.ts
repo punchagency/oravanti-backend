@@ -431,6 +431,23 @@ export const LogEvent = {
    */
   PAYMENT_WEBHOOK_TRANSACTION_SKIPPED: "payment_webhook.transaction_skipped",
   /**
+   * A client paid at the processor against an invoice we have since VOIDED.
+   *
+   * The worst outcome in this file: real money moved and no ledger row can be
+   * written for it, because `recordPayment` refuses a voided invoice by design
+   * and reversing that would let a withdrawn invoice collect. Confido cannot
+   * prevent it either — `removePaymentLink` is rejected once a link has any
+   * transaction against it, which is precisely the partially-paid invoice most
+   * likely to be voided.
+   *
+   * Deliberately terminal rather than retried: the invoice stays void, so no
+   * number of attempts changes the outcome and retrying only delays the moment
+   * a person finds out. Paired with a finance-trail entry on the invoice, since
+   * this needs to reach the firm and not only the operator.
+   */
+  PAYMENT_WEBHOOK_VOIDED_INVOICE_PAYMENT:
+    "payment_webhook.voided_invoice_payment",
+  /**
    * Webhook events accepted but never handled.
    *
    * The failure this exists for is a worker that is running and consuming
@@ -484,6 +501,17 @@ export const LogEvent = {
   PAYMENT_SETTINGS_CLEARING_POLICY_SET: "payment_settings.clearing_policy_set",
   PAYMENT_SETTINGS_BANK_ACCOUNTS_UNAVAILABLE:
     "payment_settings.bank_accounts_unavailable",
+  /**
+   * A `statements` read was refused with "Access denied" and retried.
+   *
+   * Confido could not account for this ("I have not heard of this surfacing
+   * before... I would treat it as temporary for now", Aug 2026) and asked for
+   * timestamps, so this record exists to be handed back to them as much as to
+   * explain a slow sync. If it ever stops being transient it will show up as a
+   * retry that exhausted rather than as silence.
+   */
+  PAYMENT_SETTINGS_STATEMENTS_ACCESS_RETRIED:
+    "payment_settings.statements_access_retried",
   CONSULTATION_BILLING_SENT: "consultation_billing.sent",
   BILLING_RATE_CREATED: "billing_rate.created",
   BILLING_RATE_UPDATED: "billing_rate.updated",

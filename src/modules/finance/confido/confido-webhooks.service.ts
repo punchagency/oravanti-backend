@@ -4,8 +4,9 @@ import { createModuleLogger } from "../../../lib/logging/log";
 import { systemDb } from "../../../db/client";
 import { paymentWebhookEvents } from "../../../db/schema/payment-webhook-events";
 import { enqueueConfidoWebhook } from "../../../queue/queues";
-import type { PaymentMethod } from "../../../db/schema/invoices";
+import { invoices, type PaymentMethod } from "../../../db/schema/invoices";
 import { systemAccess } from "../account-access";
+import { logFinanceEvent } from "../finance-events.service";
 import {
   findPaymentByProviderReference,
   markPaymentSettled,
@@ -367,6 +368,65 @@ const recordConfidoTransaction = async (
   // this is what the invoice is actually credited.
   const amount = txn.amountProcessed / 100;
   if (amount <= 0) return;
+
+  // Money against an invoice that has since been VOIDED.
+  //
+  // `recordPayment` refuses one by design, and that refusal is right — a
+  // withdrawn invoice must not collect. But its `BadRequestError` used to
+  // escape the catch below, which only swallows the uniqueness guard, so the
+  // job failed and BullMQ retried it. The invoice stays void, so no attempt
+  // could ever succeed: the retries only delayed the moment a person found out
+  // that money had moved and nothing had recorded it.
+  //
+  // Not preventable at Confido either. `removePaymentLink` is rejected once a
+  // link has any transaction against it, which is exactly the partially-paid
+  // invoice most likely to be voided — so `retirePaymentLink` cannot close this
+  // door and this path, not that one, is the real guard.
+  //
+  // Handled rather than thrown: recorded where a person will see it, then
+  // finished, so the job completes.
+  const [invoice] = await systemDb
+    .select({ status: invoices.status, number: invoices.invoiceNumber })
+    .from(invoices)
+    .where(
+      and(eq(invoices.id, invoiceId), eq(invoices.organizationId, organizationId)),
+    )
+    .limit(1);
+
+  if (invoice?.status === "void") {
+    log.failure(
+      LogEvent.PAYMENT_WEBHOOK_VOIDED_INVOICE_PAYMENT,
+      new Error("Payment received against a voided invoice"),
+      { organizationId, invoiceId, transactionId, amount },
+    );
+
+    // The operator log is not enough on its own — the firm is the one who has
+    // to give this money back, and the invoice's own trail is where they will
+    // be looking.
+    await logFinanceEvent({
+      organizationId,
+      action: "finance.payment_recorded",
+      title: `${invoice.number} — payment received after voiding`,
+      description:
+        "A client paid this invoice at the payment processor after it was voided. " +
+        "It has NOT been credited to the invoice and will need to be refunded.",
+      amount,
+      invoiceId,
+      // No actor: nobody did this, it arrived. Matches how `recordPayment`
+      // attributes a webhook-driven payment.
+      actorId: null,
+      metadata: {
+        transactionId,
+        providerPaymentId: txn.payment?.id ?? null,
+      },
+    }).catch((err) =>
+      // The finance trail is the notification, but failing to write it must not
+      // resurrect the retry loop this guard exists to end.
+      log.failure(LogEvent.FINANCE_EVENT_QUERY_FAILED, err, { invoiceId }),
+    );
+
+    return;
+  }
 
   try {
     await recordPayment(organizationId, invoiceId, null, systemAccess(), {
