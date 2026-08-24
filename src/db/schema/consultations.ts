@@ -155,6 +155,19 @@ export const consultations = pgTable("consultations", {
   // which is who it is *with*.
   scheduledById: uuid("scheduled_by_id").references(() => staff.id),
   cancelledById: uuid("cancelled_by_id").references(() => staff.id),
+
+  // Reminder bookkeeping. The reminders themselves are `notifications` rows
+  // with a deterministic dedupeKey, so these columns are not the schedule — the
+  // ledger is. They record what actually went out, which is what the
+  // consultation card needs to display without joining across.
+  //
+  // remindersScheduledAt is the "we have queued these" marker: a reschedule
+  // cancels and re-queues, and a consultation that was never in a schedulable
+  // state has it null.
+  reminder24hSentAt: timestamp("reminder_24h_sent_at"),
+  reminder1hSentAt: timestamp("reminder_1h_sent_at"),
+  remindersScheduledAt: timestamp("reminders_scheduled_at"),
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

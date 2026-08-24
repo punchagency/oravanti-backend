@@ -25,7 +25,7 @@ import {
 import { cancelQuestionnaireReminder } from "../../queue/queues";
 import { sendQuestionnaireReminder } from "../../queue/workers/reminder.worker";
 import { formatWithZone } from "../../utils/date";
-import { emailService } from "../../utils/email/email.service";
+import { notify } from "../../notifications/notification.service";
 import {
   BadRequestError,
   ConflictError,
@@ -37,7 +37,7 @@ import {
   PaginationParams,
 } from "../../utils/pagination";
 import { storageService } from "../../utils/storage/storage.service";
-import { createModuleLogger } from "../../lib/logging/log";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
 import { triggerScenarioScan } from "../ai-scan/scan-triggers";
 import { flagsByDocument } from "../case-review/document-flags";
 
@@ -1419,22 +1419,28 @@ export class QuestionnairesService {
         .where(eq(leads.id, send.leadId))
         .limit(1);
       if (lead) {
-        emailService
-          .sendEmail({
-            to: lead.email,
-            subject: "Outstanding documents for your intake",
-            html: `<p>Dear ${lead.firstName},</p>
-              <p>To continue with your intake, we still need the following document(s):</p>
-              <ul>${missing.map((label) => `<li>${label}</li>`).join("")}</ul>
-              <p>Please upload them using your intake questionnaire link. If you have
-              misplaced your link, please contact your attorney's office.</p>`,
-          })
-          .catch((err) => log.failure("email.send_failed", err, { leadId: send.leadId! }));
+        const channels = ((send.deliveryChannels as string[] | null) ?? [
+          "email",
+        ]) as ("email" | "sms")[];
 
-        const channels = (send.deliveryChannels as string[] | null) ?? [];
-        if (channels.includes("sms") && lead.phone) {
-          log.debug("sms.missing_docs_stub", { leadId: send.leadId!, phone: lead.phone, sendId });
-        }
+        void notify({
+          organizationId,
+          event: "missing_documents_requested",
+          recipients: [{ type: "lead", id: lead.id }],
+          // No link: this flow does not mint a fresh access token, so it can
+          // only point the lead at the one they already hold.
+          context: { documents: missing },
+          channels,
+          scenario: { leadId: lead.id },
+          // Keyed on the outstanding set, so chasing the same documents twice
+          // is idempotent while a shorter list after a partial upload sends.
+          dedupeKey: `missing-docs-${sendId}-${missing.length}`,
+        }).catch((err: unknown) =>
+          log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+            leadId: send.leadId!,
+            event: "missing_documents_requested",
+          }),
+        );
       }
     }
 

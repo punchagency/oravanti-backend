@@ -41,8 +41,28 @@ export interface InvitationWithCredentialsProps extends InvitationEmailProps {
   tempPassword: string;
 }
 
+/**
+ * What the provider said when it accepted the message.
+ *
+ * The id is how a later delivery webhook finds the row that sent it — Resend
+ * reports back with the same value it returns here, as `data.email_id`.
+ *
+ * Nullable because the development transport is Gmail SMTP, which has no
+ * webhooks at all: its Message-ID is real but nothing will ever reference it.
+ */
+export type SendEmailResult = {
+  providerMessageId: string | null;
+};
+
 export abstract class BaseEmailService {
-  abstract sendEmail(options: SendEmailOptions): Promise<void>;
+  /**
+   * Returns the provider's message id.
+   *
+   * Widening this from `Promise<void>` is backward compatible — every existing
+   * caller ignores the return — and it is what lets the notification ledger
+   * correlate an asynchronous delivery callback back to the row that sent it.
+   */
+  abstract sendEmail(options: SendEmailOptions): Promise<SendEmailResult>;
 
   async sendVerificationEmail({
     email,

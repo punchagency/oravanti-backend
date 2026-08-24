@@ -42,12 +42,17 @@ export const invoiceFollowups = pgTable(
     sentToEmail: text("sent_to_email"),
     sentToPhone: text("sent_to_phone"),
 
-    emailDelivered: boolean("email_delivered").notNull().default(false),
     /**
-     * Stays false while SMS is the repo-wide `[sms-stub]` console log. Do not
-     * set it true until a provider is actually wired — the column should not
-     * claim a delivery that did not happen.
+     * Both record whether the provider ACCEPTED the message, which is why
+     * `sendFollowUp` dispatches inline rather than queueing: a chase is a staff
+     * member pressing send and then reading a row that claims what happened,
+     * and a queued send could only record an intention.
+     *
+     * A later bounce or carrier failure moves the corresponding `notifications`
+     * row to `failed` via the provider webhook; it does not rewrite these,
+     * because "we sent it on the 4th" stays true even if it later bounced.
      */
+    emailDelivered: boolean("email_delivered").notNull().default(false),
     smsDelivered: boolean("sms_delivered").notNull().default(false),
 
     sentById: uuid("sent_by_id").references(() => staff.id),

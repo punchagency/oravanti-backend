@@ -94,7 +94,12 @@ export const consultationSettings = pgTable("consultation_settings", {
   // `client_contacts.languagePreference` (enum "en") and
   // `questionnaires.language` (text "english").
   language: text("language").notNull().default("en"),
-  // Present in the model but kept disabled for now (SMS not yet supported).
+  // The firm-wide SMS master switch, read by resolveChannelDecision on every
+  // SMS send. Off means no text message leaves the system for this firm, on any
+  // channel-picker or event, transactional or not.
+  //
+  // Defaults false and stays false until an admin turns it on: SMS costs money
+  // per message and reaches a phone rather than an inbox, so it is an opt-in.
   smsEnabled: boolean("sms_enabled").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),

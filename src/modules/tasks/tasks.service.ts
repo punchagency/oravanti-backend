@@ -1,12 +1,14 @@
 import { and, count, desc, eq, gte, lte, or } from "drizzle-orm";
+import { env } from "../../config/env";
 import { db } from "../../db/client";
 import type { UpdateTaskInput } from "./tasks.validation";
 import { admins, cases, clients, staff, tasks } from "../../db/schema";
+import { notify } from "../../notifications/notification.service";
 import { assertAssignableStaff } from "../../utils/assignable-staff";
 import { dayjs } from "../../utils/date";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 import { recordAuditEvent } from "../shared/audit.service";
-import { createModuleLogger } from "../../lib/logging/log";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
 
 const log = createModuleLogger("tasks.service");
 
@@ -216,6 +218,7 @@ export class TasksService {
       })
       .returning();
 
+    void this.notifyAssignee(newTask, data.assignedById);
     await recordAuditEvent({
       action: "task.created",
       entityId: newTask.id,
@@ -234,11 +237,27 @@ export class TasksService {
     organizationId: string,
     data: UpdateTaskInput,
   ) => {
+    // Read first, so a reassignment can be distinguished from an edit that
+    // happens to mention the same assignee.
+    const [before] = await db
+      .select({ assignedToId: tasks.assignedToId })
+      .from(tasks)
+      .where(and(eq(tasks.id, id), eq(tasks.organizationId, organizationId)))
+      .limit(1);
+
     const [updated] = await db
       .update(tasks)
       .set({ ...data, updatedAt: new Date() })
       .where(and(eq(tasks.id, id), eq(tasks.organizationId, organizationId)))
       .returning();
+
+    if (
+      updated &&
+      data.assignedToId &&
+      data.assignedToId !== before?.assignedToId
+    ) {
+      void this.notifyAssignee(updated, updated.assignedById);
+    }
 
     if (updated) {
       await recordAuditEvent({
@@ -253,6 +272,62 @@ export class TasksService {
     log.action("task.updated", { taskId: id });
 
     return updated ?? null;
+  };
+
+  /**
+   * Tell someone a task landed on them.
+   *
+   * Nothing did this before: tasks were created and reassigned entirely
+   * silently, and the assignee found out by opening the app. Preference-gated
+   * under `case_stage_changed`, and email/in-app only — a task is not worth a
+   * text message.
+   *
+   * Never notifies someone about their own action: assigning yourself a task is
+   * not news to you.
+   */
+  private notifyAssignee = async (
+    task: typeof tasks.$inferSelect,
+    assignedById: string | null,
+  ) => {
+    if (!task.assignedToId || task.assignedToId === assignedById) return;
+
+    try {
+      const assigner = assignedById
+        ? (
+            await db
+              .select({ firstName: staff.firstName, lastName: staff.lastName })
+              .from(staff)
+              .where(eq(staff.id, assignedById))
+              .limit(1)
+          )[0]
+        : undefined;
+
+      await notify({
+        organizationId: task.organizationId,
+        event: "task_assigned",
+        recipients: [{ type: "staff", id: task.assignedToId }],
+        context: {
+          taskTitle: task.title,
+          dueDate: task.dueDate,
+          ...(assigner
+            ? {
+                assignedBy: `${assigner.firstName} ${assigner.lastName}`.trim(),
+              }
+            : {}),
+          link: `${env.FRONTEND_APP_URL}/admin/tasks/${task.id}`,
+        },
+        scenario: { caseId: task.caseId ?? undefined },
+        actorStaffId: assignedById,
+        // Keyed on the assignee, so a reassignment back to someone who held it
+        // before still tells them.
+        dedupeKey: `task-assigned-${task.id}-${task.assignedToId}`,
+      });
+    } catch (err) {
+      log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+        taskId: task.id,
+        event: "task_assigned",
+      });
+    }
   };
 
   deleteTask = async (id: string, organizationId: string) => {

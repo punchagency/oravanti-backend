@@ -89,6 +89,12 @@ import {
   mintPaymentLink,
   startCheckout,
 } from "../finance/payment-links.service";
+import {
+  cancelConsultationReminders,
+  scheduleConsultationReminders,
+} from "../../notifications/consultation-reminders";
+import { notify } from "../../notifications/notification.service";
+import { staffRecipientsForFirm } from "../../notifications/recipients";
 import { emailService } from "../../utils/email/email.service";
 import {
   AuthorizationError,
@@ -107,7 +113,7 @@ import { generateCaseNumber } from "../cases/cases.service";
 import { materializeCaseTypeRequirements } from "../document-requirements/document-requirements.service";
 import { relinkLeadDocumentsToCase } from "../documents/document-ingest";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
-import { createModuleLogger } from "../../lib/logging/log";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
 import { hydrateCaseWorkflow } from "../workflow/workflow.service";
 import { generateConsultationSlots } from "./consultation-slots.service";
 import { getESignatureProvider } from "./dropbox-sign.provider";
@@ -480,6 +486,7 @@ const createLead = async (
     lastName: string;
     email: string;
     phone?: string;
+    smsConsent?: boolean;
     entityType?: "individual" | "company";
     source: string;
     practiceAreaId?: string;
@@ -510,6 +517,13 @@ const createLead = async (
       intakeAdversePartyEmail: data.intakeAdversePartyEmail,
       language: data.language,
       timezone: data.timezone,
+      // Consent is only recorded when it was actually given. Absent means
+      // false, and false carries no timestamp — a consent date that does not
+      // correspond to an act of consenting is worse than no date at all.
+      smsConsent: data.smsConsent === true,
+      ...(data.smsConsent === true
+        ? { smsConsentAt: new Date(), smsConsentSource: "intake_form" }
+        : {}),
     })
     .returning();
 
@@ -533,6 +547,37 @@ const createLead = async (
   // immediately populated without requiring a manual init click.
   const wfSvc = new LeadWorkflowService();
   await wfSvc.initializePipelineSteps(lead.id, organizationId);
+
+  /**
+   * Tell the firm a lead arrived.
+   *
+   * Firm-wide rather than to one person, because a new lead belongs to nobody
+   * yet — `respondentId` is whoever happened to create the record, which for a
+   * web-form submission is a system actor rather than someone waiting to
+   * respond.
+   *
+   * Preference-gated under `new_lead_submitted`, so a firm drowning in leads
+   * can switch it off. Email and in-app only: no firm wants every intake
+   * arriving as a text.
+   */
+  void notify({
+    organizationId,
+    event: "new_lead_submitted",
+    recipients: await staffRecipientsForFirm(organizationId),
+    context: {
+      leadName: `${lead.firstName} ${lead.lastName}`.trim(),
+      source: data.source,
+      link: `${env.FRONTEND_APP_URL}/admin/leads/${lead.id}`,
+    },
+    scenario: { leadId: lead.id },
+    actorStaffId: creatorStaffId,
+    dedupeKey: `new-lead-${lead.id}`,
+  }).catch((err: unknown) =>
+    log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+      leadId: lead.id,
+      event: "new_lead_submitted",
+    }),
+  );
 
   return lead;
 };
@@ -820,6 +865,7 @@ const updateLead = async (
       caseTypeId: string;
       notes: string;
       noteContext: string;
+      smsConsent: boolean;
     }
   >,
   actorId?: string,
@@ -864,6 +910,27 @@ const updateLead = async (
 
     patch[column] = next;
     changes[column] = { from: prev ?? null, to: next };
+  }
+
+  // SMS consent is handled outside the generic allowlist: it needs its own
+  // timestamp and source, and it has a rule the other columns do not.
+  //
+  // Staff may GRANT consent but may never revoke an opt-out. Once smsOptOutAt
+  // is set the recipient has told us to stop, and that is their decision to
+  // reverse — by texting START — not the firm's to overwrite from an admin
+  // screen. The switch is rendered read-only in that state; this is the server
+  // side of the same rule, because a UI-only guard is not a guard.
+  if (data.smsConsent !== undefined && data.smsConsent !== existing.smsConsent) {
+    if (existing.smsOptOutAt && data.smsConsent === true) {
+      throw new BadRequestError(
+        "This contact opted out of SMS. They must text START to opt back in.",
+      );
+    }
+
+    patch.smsConsent = data.smsConsent;
+    patch.smsConsentAt = data.smsConsent ? new Date() : null;
+    patch.smsConsentSource = data.smsConsent ? "staff_manual" : null;
+    changes.smsConsent = { from: existing.smsConsent, to: data.smsConsent };
   }
 
   // Practice area and case type are plain columns, but the activity trail must
@@ -2288,23 +2355,27 @@ const sendQuestionnaire = async (
   const orgSlug = encodeURIComponent(organizationId);
   const clientLink = `${baseUrl}/questionnaire/${orgSlug}/${accessToken}`;
 
-  // Fire-and-forget delivery to lead via the configured channels.
-  if (deliveryChannels.includes("email")) {
-    emailService
-      .sendEmail({
-        to: lead.email,
-        subject: "Please complete your intake questionnaire",
-        html: `<p>Dear ${lead.firstName},</p>
-          <p>Please complete your intake questionnaire using the link below:</p>
-          <p><a href="${clientLink}">Complete Questionnaire</a></p>
-          <p>This link is unique to you. Please do not share it.</p>`,
-      })
-      .catch((err) => log.failure("questionnaire.send_failed", err, { leadId }));
-  }
-  if (deliveryChannels.includes("sms") && lead.phone) {
-    // SMS provider not yet wired — log the intent for now.
-    log.debug("sms.questionnaire_link_stub", { leadId, phone: lead.phone });
-  }
+  // Delivery via the configured channels. Still fire-and-forget from the
+  // caller's point of view, but every outcome — including a channel that was
+  // deliberately skipped — is now a row in `notifications` rather than a log
+  // line, so "did they get it?" has an answer.
+  void notify({
+    organizationId,
+    event: "questionnaire_sent",
+    recipients: [{ type: "lead", id: leadId }],
+    context: { link: clientLink },
+    channels: deliveryChannels as ("email" | "sms")[],
+    scenario: { leadId },
+    actorStaffId: sentById,
+    // Scoped to the send, not the lead: re-sending a questionnaire creates a
+    // new questionnaire_sends row and must be able to message the lead again.
+    dedupeKey: `questionnaire-sent-${send.id}`,
+  }).catch((err: unknown) =>
+    log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+      leadId,
+      event: "questionnaire_sent",
+    }),
+  );
 
   return { send: { ...send, accessToken }, clientLink, sentAt: send.sentAt };
 };
@@ -2856,40 +2927,35 @@ const initiateConsultation = async (
     ? data.notifyChannels
     : ["email"];
 
-  // Instant pay_now consultations can only begin once the client pays, so the
-  // payment link is always emailed regardless of the chosen channels.
-  if (notifyChannels.includes("email") || startNow) {
-    const needsPayment = feeStatus === "unpaid";
-    const urgent = Boolean(data.urgent);
-    const leadName = `${lead.firstName} ${lead.lastName}`;
-    emailService
-      .sendEmail({
-        to: lead.email,
-        subject: needsPayment
-          ? "Action needed: pay your consultation fee"
-          : "Pick a time for your consultation",
-        html: needsPayment
-          ? `<p>Dear ${leadName},</p>
-            <p>Please pay your consultation fee of <strong>$${feeAmount}</strong>${
-              urgent
-                ? " to be connected with an attorney as soon as possible"
-                : " and then choose a time that works for you"
-            }:</p>
-            <p><a href="${bookingLink}">${bookingLink}</a></p>${
-              urgent
-                ? "<p>You'll receive your confirmation with the scheduled time immediately after payment.</p>"
-                : ""
-            }`
-          : `<p>Dear ${leadName},</p>
-            <p>Please choose a time that works for your consultation:</p>
-            <p><a href="${bookingLink}">${bookingLink}</a></p>`,
-      })
-      .catch((err) => log.failure("email.send_failed", err, { leadId }));
-  }
+  const needsPayment = feeStatus === "unpaid";
 
-  if (notifyChannels.includes("sms") && lead.phone) {
-    log.debug("sms.booking_link_stub", { leadId, phone: lead.phone });
-  }
+  // Instant pay_now consultations cannot begin until the client pays, so the
+  // payment link is always emailed regardless of the chosen channels — a
+  // consultation nobody was told to pay for would simply never start.
+  const channels = startNow
+    ? Array.from(new Set([...notifyChannels, "email"]))
+    : notifyChannels;
+
+  void notify({
+    organizationId,
+    event: "consultation_booking_link",
+    recipients: [{ type: "lead", id: leadId }],
+    context: {
+      link: bookingLink,
+      requiresPayment: needsPayment,
+      amount: needsPayment ? `$${feeAmount}` : undefined,
+      urgent: Boolean(data.urgent),
+    },
+    channels: channels as ("email" | "sms")[],
+    scenario: { leadId, consultationId: consultation.id },
+    actorStaffId: scheduledById,
+    dedupeKey: `consultation-booking-${consultation.id}`,
+  }).catch((err: unknown) =>
+    log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+      leadId,
+      event: "consultation_booking_link",
+    }),
+  );
 
   return { consultation, bookingToken: accessToken };
 };
@@ -3162,6 +3228,39 @@ const updateConsultation = async (
         to: data.scheduledAt.toISOString(),
       },
     });
+  }
+
+  /**
+   * Keep the reminders honest about whatever just changed.
+   *
+   * A reschedule re-arms them at the new time (the scheduler cancels before
+   * re-adding, so the old times cannot survive). A consultation that has
+   * completed, been cancelled or been marked no-show has no future to remind
+   * anyone about — and a "your consultation is in an hour" text after a no-show
+   * is the kind of thing a client remembers.
+   */
+  const becameTerminal =
+    data.status !== undefined &&
+    data.status !== existing.status &&
+    ["completed", "cancelled", "no_show"].includes(data.status);
+
+  if (becameTerminal) {
+    await cancelConsultationReminders(organizationId, updated.id).catch(
+      (err: unknown) =>
+        log.failure(LogEvent.CONSULTATION_REMINDERS_CANCEL_FAILED, err, {
+          consultationId: updated.id,
+        }),
+    );
+  } else if (
+    data.scheduledAt &&
+    existing.scheduledAt?.getTime() !== data.scheduledAt.getTime()
+  ) {
+    void scheduleConsultationReminders(organizationId, updated.id).catch(
+      (err: unknown) =>
+        log.failure(LogEvent.CONSULTATION_REMINDERS_SCHEDULE_FAILED, err, {
+          consultationId: updated.id,
+        }),
+    );
   }
 
   if (data.feeStatus === "paid" && existing.feeStatus === "unpaid") {
@@ -3991,6 +4090,28 @@ const finalizeConsultation = async (
   }
 
   await sendConsultationConfirmation(updated);
+
+  /**
+   * Every scheduling path funnels through here — slot selection, urgent
+   * auto-schedule, instant start, and payment completion — so this is the one
+   * place reminders need to be armed.
+   *
+   * It reschedules rather than merely schedules: a lead who moves their
+   * appointment reaches this again, and scheduleConsultationReminders cancels
+   * before re-adding so the old times cannot survive.
+   *
+   * An instant consultation begins now, so both reminder times are already in
+   * the past and none are created — handled inside, not special-cased here.
+   */
+  void scheduleConsultationReminders(
+    updated.organizationId,
+    updated.id,
+  ).catch((err: unknown) =>
+    log.failure(LogEvent.CONSULTATION_REMINDERS_SCHEDULE_FAILED, err, {
+      consultationId: updated.id,
+    }),
+  );
+
   return updated;
 };
 
@@ -4249,6 +4370,15 @@ const cancelConsultation = async (
         eq(calendarEvents.organizationId, organizationId),
       ),
     );
+
+  // Awaited, unlike the scheduling side: a reminder telling someone to attend a
+  // consultation the firm has just cancelled is worse than a slow request.
+  await cancelConsultationReminders(organizationId, consultation.id).catch(
+    (err: unknown) =>
+      log.failure(LogEvent.CONSULTATION_REMINDERS_CANCEL_FAILED, err, {
+        consultationId: consultation.id,
+      }),
+  );
 
   await logLeadEvent({
     organizationId,
@@ -5154,6 +5284,61 @@ type DropboxSignEvent = {
 // Authoritative completion signal. The controller parses the multipart `json`
 // field and passes the decoded event here. Must be idempotent — Dropbox Sign
 // retries and may deliver duplicates.
+/**
+ * Tell the firm what became of a fee agreement.
+ *
+ * Reached from the Dropbox Sign webhook, which has no request context — so the
+ * lead is re-read here rather than passed in, and the recipient is the staff
+ * member handling the lead rather than "whoever is logged in", because nobody
+ * is.
+ *
+ * Falls back to the whole firm when the lead has no respondent: a signed fee
+ * agreement is the moment a matter becomes real, and it is better for several
+ * people to hear about it than nobody.
+ */
+const notifyAgreementOutcome = async (
+  agreement: typeof feeAgreements.$inferSelect,
+  event: "fee_agreement_signed" | "fee_agreement_declined",
+  extra: Record<string, unknown> = {},
+) => {
+  try {
+    const [lead] = await db
+      .select({
+        firstName: leads.firstName,
+        lastName: leads.lastName,
+        respondentId: leads.respondentId,
+      })
+      .from(leads)
+      .where(eq(leads.id, agreement.leadId))
+      .limit(1);
+
+    if (!lead) return;
+
+    const recipients = lead.respondentId
+      ? [{ type: "staff" as const, id: lead.respondentId }]
+      : await staffRecipientsForFirm(agreement.organizationId);
+
+    await notify({
+      organizationId: agreement.organizationId,
+      event,
+      recipients,
+      context: {
+        leadName: `${lead.firstName} ${lead.lastName}`.trim(),
+        link: `${env.FRONTEND_APP_URL}/admin/leads/${agreement.leadId}`,
+        ...extra,
+      },
+      scenario: { leadId: agreement.leadId },
+      // Keyed on the agreement, so a redelivered webhook does not re-alert.
+      dedupeKey: `${event}-${agreement.id}`,
+    });
+  } catch (err) {
+    log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+      leadId: agreement.leadId,
+      event,
+    });
+  }
+};
+
 const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
   const event = payload?.event;
   if (!event?.event_time || !event?.event_type || !event?.event_hash) {
@@ -5265,6 +5450,12 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
       );
     }
 
+    // Both branches of this webhook used to end in silence: the lead signed,
+    // or refused to, and nobody at the firm was told. The signing itself is
+    // Dropbox Sign's own email to the lead; this is the half about the firm
+    // learning what happened.
+    void notifyAgreementOutcome(agreement, "fee_agreement_signed");
+
     return { processed: true, agreementId: agreement.id };
   }
 
@@ -5284,6 +5475,15 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
         action: "lead.fee_agreement_voided",
         actorId: null,
         metadata: { agreementId: agreement.id, reason: event.event_type },
+      });
+
+      // A declined fee agreement stalls the whole pipeline, and the firm has
+      // no other way to find out — the lead simply stops progressing.
+      void notifyAgreementOutcome(agreement, "fee_agreement_declined", {
+        reason:
+          event.event_type === "signature_request_declined"
+            ? "Declined by signer"
+            : "Cancelled",
       });
     }
     return { processed: true, agreementId: agreement.id, voided: true };
@@ -5587,31 +5787,40 @@ const openCase = async (
     }
 
     /**
-     * TODO: Notify assigned team lead of new case. This is commented out for now because the assigned team may not be set at the time of case opening, and we don't want to send notifications to the wrong person. We will revisit this logic once we have a clearer understanding of how team assignments will work in the future.
+     * Tell the staff member who owns this lead that it became a case.
+     *
+     * The previous attempt at this was commented out because the assigned team
+     * may not be set at case-opening time and nobody wanted to notify the wrong
+     * person — a sound worry, and the commented code had the bug that proves
+     * it: `data.assignedTeamId ?? lead.respondentId` passed a TEAM id where a
+     * staff id was expected, so it would have looked up a staff row that does
+     * not exist, or worse, one that coincidentally does.
+     *
+     * Resolved by notifying `respondentId` instead: the staff member who has
+     * actually been handling this lead through intake. That person is known,
+     * correct, and interested. Team-lead routing stays unresolved, which is the
+     * honest state — it depends on how team assignment ends up working.
      */
-    // 7. Notify
-    // const assignedStaffId = data.assignedTeamId ?? lead.respondentId;
-    //     if (assignedStaffId) {
-    //       const [assignedStaff] = await db
-    //         .select({ email: user.email, firstName: staff.firstName })
-    //         .from(staff)
-    //         .leftJoin(user, eq(staff.userId, user.id))
-    //         .where(eq(staff.id, assignedStaffId))
-    //         .limit(1);
-    //
-    //       if (assignedStaff) {
-    //         emailService
-    //           .sendEmail({
-    //             to: assignedStaff.email!,
-    //             subject: `New case opened: ${newCase.caseNumber}`,
-    //             html: `<p>Hi ${assignedStaff.firstName},</p>
-    //               <p>A new case has been opened for ${leadName}.</p>
-    //               <p><strong>Case Number:</strong> ${newCase.caseNumber}</p>
-    //               <p><strong>Case Type:</strong> ${caseType.name}</p>`,
-    //           })
-    //           .catch(console.error);
-    //       }
-    //     }
+    if (lead.respondentId) {
+      void notify({
+        organizationId,
+        event: "case_opened_staff",
+        recipients: [{ type: "staff", id: lead.respondentId }],
+        context: {
+          caseNumber: newCase.caseNumber,
+          clientName: leadName,
+          link: `${env.FRONTEND_APP_URL}/admin/cases/${newCase.id}`,
+        },
+        scenario: { leadId: lead.id, caseId: newCase.id },
+        actorStaffId: creatorStaffId,
+        dedupeKey: `case-opened-${newCase.id}`,
+      }).catch((err: unknown) =>
+        log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+          leadId: lead.id,
+          event: "case_opened_staff",
+        }),
+      );
+    }
 
     emailService
       .sendEmail({

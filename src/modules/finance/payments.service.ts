@@ -10,9 +10,12 @@ import {
 } from "../../db/schema/invoice-payments";
 import { invoices, type PaymentMethod } from "../../db/schema/invoices";
 import { withTransaction } from "../../db/transaction-context";
+import { env } from "../../config/env";
+import { notify } from "../../notifications/notification.service";
+import { staffRecipientsForFirm } from "../../notifications/recipients";
+import { dispatchNotification } from "../../queue/workers/notification.worker";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
-import { emailService } from "../../utils/email/email.service";
-import { createModuleLogger } from "../../lib/logging/log";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
 
 const log = createModuleLogger("finance.payments");
 import { logCaseEvent } from "../cases/case-events.service";
@@ -254,7 +257,123 @@ export const recordPayment = async (
       });
     }
 
+    /**
+     * Both halves of a payment landing. Until now this moment was entirely
+     * silent: money arrived, the ledger moved, and neither the payer nor the
+     * firm was told — whether recorded by hand or by the payment webhook.
+     *
+     * Deliberately two events. The receipt is transactional, because someone
+     * who paid is owed one no matter what the firm has switched off; the staff
+     * alert is preference-gated, because it is an alert. Modelling them as one
+     * would force a choice between spamming staff and withholding receipts.
+     *
+     * Fire-and-forget, and outside the caller's error path: a notification
+     * failure must never roll back a recorded payment.
+     */
+    void notifyPaymentRecorded({
+      organizationId,
+      invoiceId,
+      invoiceNumber: invoice.invoiceNumber,
+      amount: input.amount,
+      paymentDate: input.paymentDate,
+      fullySettled,
+      actorStaffId,
+    }).catch((error: unknown) =>
+      log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, error, {
+        invoiceId,
+        event: "payment_receipt_sent",
+      }),
+    );
+
     return getById(organizationId, invoiceId, access);
+  });
+};
+
+/**
+ * Receipt to the payer, alert to the firm.
+ *
+ * Re-reads the party rather than taking it from the caller because
+ * `recordPayment` selects only what the ledger maths needs, and the payer of an
+ * invoice may be a lead or a client (see ./party) — which determines whose
+ * consent and suppression state applies.
+ */
+const notifyPaymentRecorded = async (args: {
+  organizationId: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  amount: number;
+  paymentDate: string;
+  fullySettled: boolean;
+  actorStaffId: string | null;
+}): Promise<void> => {
+  const [row] = await db
+    .select({
+      clientId: invoices.clientId,
+      leadId: invoices.leadId,
+      caseId: invoices.caseId,
+      balanceDue: invoices.balanceDue,
+      partyName: partyName,
+    })
+    .from(invoices)
+    .leftJoin(clients, onClient)
+    .leftJoin(leads, onLead)
+    .where(
+      and(
+        eq(invoices.organizationId, args.organizationId),
+        eq(invoices.id, args.invoiceId),
+      ),
+    )
+    .limit(1);
+
+  if (!row) return;
+
+  const amount = `$${money(args.amount)}`;
+
+  await notify({
+    organizationId: args.organizationId,
+    event: "payment_receipt_sent",
+    recipients: [
+      row.clientId
+        ? { type: "client", id: row.clientId }
+        : { type: "lead", id: row.leadId! },
+    ],
+    context: {
+      amount,
+      invoiceNumber: args.invoiceNumber,
+      paidAt: args.paymentDate,
+      // Omitted once settled: "remaining balance: $0.00" reads as a demand.
+      ...(args.fullySettled
+        ? {}
+        : { balance: `$${money(num(row.balanceDue))}` }),
+    },
+    scenario: {
+      invoiceId: args.invoiceId,
+      clientId: row.clientId ?? undefined,
+      caseId: row.caseId ?? undefined,
+    },
+    actorStaffId: args.actorStaffId,
+    // Not keyed on the invoice: instalment plans pay the same invoice several
+    // times, and each payment earns its own receipt.
+    dedupeKey: `payment-receipt-${args.invoiceId}-${args.paymentDate}-${amount}`,
+  });
+
+  await notify({
+    organizationId: args.organizationId,
+    event: "payment_received_staff",
+    recipients: await staffRecipientsForFirm(args.organizationId),
+    context: {
+      amount,
+      invoiceNumber: args.invoiceNumber,
+      clientName: row.partyName,
+      link: `${env.FRONTEND_APP_URL}/admin/finance/invoices/${args.invoiceId}`,
+    },
+    scenario: {
+      invoiceId: args.invoiceId,
+      clientId: row.clientId ?? undefined,
+      caseId: row.caseId ?? undefined,
+    },
+    actorStaffId: args.actorStaffId,
+    dedupeKey: `payment-staff-${args.invoiceId}-${args.paymentDate}-${amount}`,
   });
 };
 
@@ -537,22 +656,9 @@ export type SendFollowUpInput = {
   channel: FollowupChannelInput;
 };
 
-const followUpTemplate = (opts: {
-  firmName: string;
-  message: string;
-}): string => `
-  <div style="font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; color: #1a1a1a;">
-    <p style="white-space: pre-wrap; margin: 0 0 16px;">${escapeHtml(opts.message)}</p>
-    <p style="margin: 24px 0 0; color: #666; font-size: 13px;">${escapeHtml(opts.firmName)}</p>
-  </div>
-`;
-
-const escapeHtml = (s: string): string =>
-  s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+// The follow-up template moved to src/notifications/templates/finance.templates.ts,
+// along with the local escapeHtml it used — the shared renderer escapes every
+// interpolation by default rather than relying on each template remembering to.
 
 export const sendFollowUp = async (
   organizationId: string,
@@ -566,6 +672,10 @@ export const sendFollowUp = async (
       status: invoices.status,
       caseId: invoices.caseId,
       clientId: invoices.clientId,
+      // An invoice bills a lead OR a client, never both — see ./party. The
+      // notification needs whichever one it is, to resolve consent against the
+      // row the phone number came from.
+      leadId: invoices.leadId,
       balanceDue: invoices.balanceDue,
       amountPaid: invoices.amountPaid,
       // Not `due_date`: on a scheduled invoice the header is the FINAL
@@ -617,30 +727,63 @@ export const sendFollowUp = async (
     throw new BadRequestError("This client has no phone number on file");
   }
 
-  let emailDelivered = false;
-  if (wantsEmail && row.clientEmail) {
-    // A send failure must not lose the record of the attempt, so the row is
-    // written either way with the real outcome in `emailDelivered`.
-    try {
-      await emailService.sendEmail({
-        to: row.clientEmail,
-        subject: `Payment reminder — invoice ${row.invoiceNumber}`,
-        html: followUpTemplate({
-          firmName: row.firmName ?? "Your legal team",
-          message: input.message,
-        }),
-      });
-      emailDelivered = true;
-    } catch (err) {
-      log.failure("payment.followup_email_failed", err, { invoiceNumber: row.invoiceNumber });
-    }
-  }
+  const channels = [
+    ...(wantsEmail ? (["email"] as const) : []),
+    ...(wantsSms ? (["sms"] as const) : []),
+  ];
 
-  if (wantsSms && row.clientPhone) {
-    // No SMS provider is wired anywhere in this repo yet; every other flow logs
-    // the intent the same way. `smsDelivered` stays false rather than claiming
-    // a delivery that did not happen.
-    log.debug("sms.followup_stub", { phone: row.clientPhone, invoiceNumber: row.invoiceNumber });
+  /**
+   * Dispatched inline rather than left to the worker.
+   *
+   * Every other caller of notify() is fire-and-forget, but this one is a staff
+   * member pressing "send" and then reading an audit row that claims what
+   * happened. `invoice_followups.emailDelivered` has always recorded the real
+   * outcome; queueing would force it to record an intention instead, and the
+   * one column whose job is to not overstate a delivery would start doing
+   * exactly that.
+   */
+  const { notifications: queued } = await notify({
+    organizationId,
+    event: "payment_followup",
+    recipients: [
+      row.clientId
+        ? { type: "client", id: row.clientId }
+        : { type: "lead", id: row.leadId! },
+    ],
+    context: {
+      message: input.message,
+      invoiceNumber: row.invoiceNumber,
+      // Formatted here, never in the template: the context is persisted as
+      // jsonb and re-rendered later, so a raw number would invite a second,
+      // divergent notion of what an amount looks like.
+      amount: `$${money(num(row.balanceDue))}`,
+      dueDate: row.dueDate,
+    },
+    channels: [...channels],
+    scenario: { invoiceId, clientId: row.clientId ?? undefined },
+    actorStaffId,
+  });
+
+  let emailDelivered = false;
+  let smsDelivered = false;
+
+  for (const notification of queued) {
+    // A skipped row already carries its reason — consent, suppression, the
+    // firm's SMS switch. Nothing to attempt.
+    if (notification.status === "skipped") continue;
+
+    const ok = await dispatchNotification(notification.id).catch(
+      (err: unknown) => {
+        log.failure(LogEvent.PAYMENT_FOLLOWUP_SEND_FAILED, err, {
+          invoiceNumber: row.invoiceNumber,
+          channel: notification.channel,
+        });
+        return false;
+      },
+    );
+
+    if (notification.channel === "email") emailDelivered = ok;
+    if (notification.channel === "sms") smsDelivered = ok;
   }
 
   const [followup] = await db
@@ -653,7 +796,7 @@ export const sendFollowUp = async (
       sentToEmail: wantsEmail ? row.clientEmail : null,
       sentToPhone: wantsSms ? row.clientPhone : null,
       emailDelivered,
-      smsDelivered: false,
+      smsDelivered,
       sentById: actorStaffId,
     })
     .returning();

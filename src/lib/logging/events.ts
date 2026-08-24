@@ -391,6 +391,8 @@ export const LogEvent = {
   QUESTIONNAIRE_REMINDER_SENT: "questionnaire.reminder_sent",
   QUESTIONNAIRE_SEND_FAILED: "questionnaire.send_failed",
   QUESTIONNAIRE_REMINDER_FAILED: "questionnaire.reminder_failed",
+  /** A payment chase could not be sent on one of its chosen channels. */
+  PAYMENT_FOLLOWUP_SEND_FAILED: "payment.followup_send_failed",
 
   // ── Finance ───────────────────────────────────────────────────────────────
   INVOICE_CREATED: "invoice.created",
@@ -540,12 +542,55 @@ export const LogEvent = {
   STORAGE_DOWNLOAD_FAILED: "storage.download_failed",
   INTEGRATION_REQUEST_FAILED: "integration.request_failed",
 
-  // ── SMS (stubs) ──────────────────────────────────────────────────────────
-  /** SMS sending is not wired yet. These stubs record the intent for when it is. */
-  SMS_FOLLOWUP_STUB: "sms.followup_stub",
-  SMS_QUESTIONNAIRE_LINK_STUB: "sms.questionnaire_link_stub",
-  SMS_BOOKING_LINK_STUB: "sms.booking_link_stub",
-  SMS_MISSING_DOCS_STUB: "sms.missing_docs_stub",
+  // ── Notifications ─────────────────────────────────────────────────────────
+  /**
+   * A notify() call could not even be recorded.
+   *
+   * Note this is NOT "the message was not delivered" — a send that is
+   * deliberately skipped, or that fails at the provider, is a row in
+   * `notifications` with a reason, which is a far better record than a log
+   * line. This event means the ledger write itself failed, so there is no row
+   * and nothing else will ever mention it.
+   */
+  NOTIFICATION_DISPATCH_FAILED: "notification.dispatch_failed",
+  /** The row was written but could not be queued; the sweep will pick it up. */
+  NOTIFICATION_ENQUEUE_FAILED: "notification.enqueue_failed",
+  NOTIFICATION_CANCEL_FAILED: "notification.cancel_failed",
+  NOTIFICATION_SWEEP_COMPLETED: "notification.sweep_completed",
+  NOTIFICATION_SWEEP_FAILED: "notification.sweep_failed",
+
+  // ── SMS ───────────────────────────────────────────────────────────────────
+  SMS_PROVIDER_SELECTED: "sms.provider_selected",
+  SMS_PROVIDER_UNSET: "sms.provider_unset",
+  /** SMS_PROVIDER held something we do not recognise — typo, or a vendor name that never shipped. */
+  SMS_PROVIDER_UNRECOGNISED: "sms.provider_unrecognised",
+  /** The named provider is missing credentials, so nothing will send. */
+  SMS_PROVIDER_UNCONFIGURED: "sms.provider_unconfigured",
+  SMS_WEBHOOK_SIGNATURE_INVALID: "sms.webhook_signature_invalid",
+  /** A vendor sent a delivery status word its provider does not map. */
+  SMS_STATUS_UNMAPPED: "sms.status_unmapped",
+  SMS_INBOUND_RECEIVED: "sms.inbound_received",
+  SMS_HELP_REPLY_FAILED: "sms.help_reply_failed",
+  SMS_SENT: "sms.sent",
+  SMS_SEND_FAILED: "sms.send_failed",
+  /** No provider configured: the message was logged, not sent. */
+  SMS_STUB_SEND: "sms.stub_send",
+  /** A body that will be billed as more than one segment. */
+  SMS_BODY_MULTI_SEGMENT: "sms.body_multi_segment",
+  /** A recipient asked to stop, and it was applied across every organization. */
+  SMS_OPT_OUT_APPLIED: "sms.opt_out_applied",
+  SMS_OPT_IN_APPLIED: "sms.opt_in_applied",
+
+  // ── Email suppression ─────────────────────────────────────────────────────
+  EMAIL_SUPPRESSED: "email.suppressed",
+  EMAIL_SUPPRESSION_LIFTED: "email.suppression_lifted",
+  CONSULTATION_REMINDERS_SCHEDULE_FAILED:
+    "consultation.reminders_schedule_failed",
+  /**
+   * Worse than failing to schedule: a reminder for a consultation that has been
+   * moved or called off is still queued and will still fire.
+   */
+  CONSULTATION_REMINDERS_CANCEL_FAILED: "consultation.reminders_cancel_failed",
 
   // ── Audit trail ───────────────────────────────────────────────────────────
   /**

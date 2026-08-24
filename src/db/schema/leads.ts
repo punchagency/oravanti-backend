@@ -111,6 +111,22 @@ export const leads = pgTable("leads", {
   // unset — see getLeadTimezone.
   timezone:       text("timezone"),
 
+  // SMS consent.
+  //
+  // `smsOptOutAt` is what GATES a send — see canReceiveSms. A lead is textable
+  // unless they have explicitly opted out, because the firm decides whether a
+  // given message goes by email or SMS and leads have no preference model.
+  //
+  // `smsConsent` / `smsConsentAt` / `smsConsentSource` record affirmative
+  // agreement where it was given (an intake-form tick, a texted START). They no
+  // longer gate anything, but they are the evidence an A2P 10DLC campaign
+  // registration asks for, so they are still written.
+  smsConsent:       boolean("sms_consent").notNull().default(false),
+  smsConsentAt:     timestamp("sms_consent_at"),
+  // "intake_form" | "staff_manual" | "sms_start"
+  smsConsentSource: text("sms_consent_source"),
+  smsOptOutAt:      timestamp("sms_opt_out_at"),
+
   // Pipeline tracking references (unlinked raw UUIDs avoiding complex circular references)
   conflictCheckId:     uuid("conflict_check_id"),
   questionnaireSendId: uuid("questionnaire_send_id"),
