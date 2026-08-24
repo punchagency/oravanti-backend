@@ -98,6 +98,34 @@ type AppEnv = Record<RequiredEnvKey, string> & {
    */
   PHONE_DEFAULT_REGION?: string;
   /**
+   * Which SMS vendor sends. "twilio" | "telnyx", case-insensitive.
+   *
+   * Deliberately typed `string` and not narrowed here: everything validateEnv
+   * validates, it THROWS on, and an unrecognised provider must fall back to the
+   * stub rather than take the process down. Recognition happens in
+   * sms.provider.ts, which warns rather than throws.
+   *
+   * This is the rollback switch. A problem with one vendor is one env var and a
+   * restart — both webhook routes stay mounted whatever this says, so callbacks
+   * for messages already in flight are still accepted during a switchover.
+   */
+  SMS_PROVIDER?: string;
+  /**
+   * Platform-owned Telnyx account and Messaging Profile, shared across every
+   * firm — the same arrangement as Twilio above.
+   *
+   * TELNYX_PUBLIC_KEY is NOT optional when Telnyx is active. Telnyx verifies
+   * webhooks with a public key that is a different value from a different page
+   * of the portal than the API key, so it is the one credential that can be
+   * forgotten while sending still works — and its absence would mean every
+   * opt-out signal is rejected as forged.
+   */
+  TELNYX_API_KEY?: string;
+  TELNYX_MESSAGING_PROFILE_ID?: string;
+  TELNYX_FROM_NUMBER?: string;
+  TELNYX_PUBLIC_KEY?: string;
+  TELNYX_WEBHOOK_BASE_URL?: string;
+  /**
    * Confido Legal — the processor that replaces Stripe, chosen because it routes
    * a single client payment into separate trust (IOLTA) and operating bank
    * accounts, which Stripe cannot do.
@@ -193,6 +221,14 @@ const validateEnv = (): AppEnv => {
   const twilioWebhookBaseUrl = readEnv("TWILIO_WEBHOOK_BASE_URL");
   const resendWebhookSecret = readEnv("RESEND_WEBHOOK_SECRET");
   const phoneDefaultRegion = readEnv("PHONE_DEFAULT_REGION");
+  // Lowercased: SMS_PROVIDER=Twilio silently falling back to the stub would be
+  // a nasty production incident.
+  const smsProvider = readEnv("SMS_PROVIDER")?.toLowerCase();
+  const telnyxApiKey = readEnv("TELNYX_API_KEY");
+  const telnyxMessagingProfileId = readEnv("TELNYX_MESSAGING_PROFILE_ID");
+  const telnyxFromNumber = readEnv("TELNYX_FROM_NUMBER");
+  const telnyxPublicKey = readEnv("TELNYX_PUBLIC_KEY");
+  const telnyxWebhookBaseUrl = readEnv("TELNYX_WEBHOOK_BASE_URL");
   // Defaults to test mode everywhere except production so quota is never
   // consumed accidentally; set DROPBOX_SIGN_TEST_MODE=false to override.
   const dropboxSignTestMode = isProduction
@@ -241,6 +277,16 @@ const validateEnv = (): AppEnv => {
       ? { RESEND_WEBHOOK_SECRET: resendWebhookSecret }
       : {}),
     ...(phoneDefaultRegion ? { PHONE_DEFAULT_REGION: phoneDefaultRegion } : {}),
+    ...(smsProvider ? { SMS_PROVIDER: smsProvider } : {}),
+    ...(telnyxApiKey ? { TELNYX_API_KEY: telnyxApiKey } : {}),
+    ...(telnyxMessagingProfileId
+      ? { TELNYX_MESSAGING_PROFILE_ID: telnyxMessagingProfileId }
+      : {}),
+    ...(telnyxFromNumber ? { TELNYX_FROM_NUMBER: telnyxFromNumber } : {}),
+    ...(telnyxPublicKey ? { TELNYX_PUBLIC_KEY: telnyxPublicKey } : {}),
+    ...(telnyxWebhookBaseUrl
+      ? { TELNYX_WEBHOOK_BASE_URL: telnyxWebhookBaseUrl }
+      : {}),
     DROPBOX_SIGN_TEST_MODE: dropboxSignTestMode,
     FEE_PAYMENT_GATE_BYPASS: feePaymentGateBypass,
     databaseUrl: isProduction ? prodDatabaseUrl! : values.DATABASE_URL,
