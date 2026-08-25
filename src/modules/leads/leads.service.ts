@@ -40,7 +40,7 @@ import {
   rescheduleBalanceInstalment,
   raiseConsultationInvoice,
 } from "../finance/consultation-billing.service";
-import { sendInvoice } from "../finance/deliveries.service";
+import { resendInvoice, sendInvoice } from "../finance/deliveries.service";
 import { invoiceDeliveries } from "../../db/schema/invoice-deliveries";
 import { issueInvoice, voidInvoice } from "../finance/invoices.service";
 import {
@@ -3151,7 +3151,11 @@ const applyNoShowPolicy = async (
   // regardless. Send it, then chase it.
   if (policy === "forfeit") {
     if (await invoiceStillOwedAndUndelivered(organizationId, consultation.invoiceId)) {
-      await sendInvoice(
+      // `resendInvoice` for the same reason the completion path uses it: the
+      // invoice was issued at booking, so its status is already "sent" and
+      // `sendInvoice` would refuse it. `invoiceStillOwedAndUndelivered` has
+      // just established that nothing has actually been delivered.
+      await resendInvoice(
         organizationId,
         consultation.invoiceId,
         actorId ?? null,
@@ -3456,6 +3460,14 @@ export const updateConsultation = async (
     // the invoice mints a payment token as part of the same act and reuses the
     // one email template the rest of finance sends.
     //
+    // `resendInvoice`, not `sendInvoice`, and this is the whole reason the mail
+    // never arrived: a consultation invoice is ISSUED at booking, which sets
+    // its status to "sent", and `sendInvoice` refuses anything that is not a
+    // draft — "use resend to deliver it again". So every `invoice_after` fee
+    // threw here and the failure went into the log below. The guard is about
+    // status, not about delivery; `resendInvoice` skips it, and the invoice has
+    // in fact never been delivered once.
+    //
     // Non-fatal: the consultation is complete and that must stand even if the
     // mail fails. The invoice is already on the books either way, so the money
     // is not lost — it just has not been asked for yet.
@@ -3464,7 +3476,7 @@ export const updateConsultation = async (
       updated.feeStatus === "unpaid" &&
       updated.invoiceId
     ) {
-      await sendInvoice(
+      await resendInvoice(
         organizationId,
         updated.invoiceId,
         actorId ?? null,

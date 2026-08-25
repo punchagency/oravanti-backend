@@ -41,6 +41,7 @@ import {
 import { encryptPaymentValue } from "../../src/utils/payment-crypto";
 import { confidoFirms } from "../../src/db/schema/confido-firms";
 import { invoiceByPaymentToken } from "../../src/modules/finance/payment-links.service";
+import { invoiceDeliveries } from "../../src/db/schema/invoice-deliveries";
 import { leadTasks } from "../../src/db/schema/lead-tasks";
 import {
   settleConsultationForInvoice,
@@ -713,6 +714,43 @@ const main = async () => {
       );
     }
 
+    // ── 8b. The invoice-after fee is actually delivered ──────────────────────
+    section("Completing an invoice_after consultation delivers the invoice");
+
+    {
+      const invD = await makeInvoice(300);
+      const consD = await makeConsultation(invD);
+      await systemDb
+        .update(consultations)
+        .set({
+          status: "scheduled",
+          scheduledAt: new Date(Date.now() - 60 * 60 * 1000),
+          paymentTiming: "invoice_after",
+        })
+        .where(eq(consultations.id, consD.id));
+      await systemDb
+        .update(leads)
+        .set({ consultationId: consD.id })
+        .where(eq(leads.id, leadId));
+
+      const before = capturedEmails().length;
+      await withOrgContext(orgId, userId, () =>
+        updateConsultation(leadId, orgId, { status: "completed" }, staffId, true),
+      );
+
+      // The regression: a consultation invoice is ISSUED at booking, so its
+      // status is already "sent" — and `sendInvoice` refuses anything that is
+      // not a draft. Every invoice_after fee threw here and the failure was
+      // swallowed by the non-fatal catch, so the client was never asked to pay.
+      const deliveries = await systemDb
+        .select({ id: invoiceDeliveries.id })
+        .from(invoiceDeliveries)
+        .where(eq(invoiceDeliveries.invoiceId, invD));
+
+      checkEqual("the invoice is delivered exactly once", deliveries.length, 1);
+      check("and an email actually went out", capturedEmails().length > before);
+    }
+
     // ── 9. No-show policy ────────────────────────────────────────────────────
     section("No-show policy, against paid and unpaid fees");
 
@@ -844,6 +882,9 @@ const main = async () => {
     // settleConsultationForInvoice writes a lead event through recordAuditEvent.
     await systemDb.delete(auditEvents).where(eq(auditEvents.organizationId, orgId));
     await systemDb.delete(leadTasks).where(eq(leadTasks.organizationId, orgId));
+    await systemDb
+      .delete(invoiceDeliveries)
+      .where(eq(invoiceDeliveries.organizationId, orgId));
     await systemDb.delete(consultationSettings).where(eq(consultationSettings.organizationId, orgId));
     await systemDb.delete(invoicePayments).where(eq(invoicePayments.organizationId, orgId));
     await systemDb.delete(invoiceInstalments).where(eq(invoiceInstalments.organizationId, orgId));
