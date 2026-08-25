@@ -37,9 +37,11 @@ import {
   consultationFee,
   consultationFeeUnsettled,
   consultationPaymentOutstanding,
+  rescheduleBalanceInstalment,
   raiseConsultationInvoice,
 } from "../finance/consultation-billing.service";
 import { sendInvoice } from "../finance/deliveries.service";
+import { invoiceDeliveries } from "../../db/schema/invoice-deliveries";
 import { issueInvoice, voidInvoice } from "../finance/invoices.service";
 import {
   netPaidOnInvoice,
@@ -91,6 +93,10 @@ import {
   mintPaymentLink,
   startCheckout,
 } from "../finance/payment-links.service";
+import {
+  cancelConsultationBalanceNotice,
+  scheduleConsultationBalanceNotice,
+} from "../../notifications/consultation-balance";
 import {
   cancelConsultationReminders,
   scheduleConsultationReminders,
@@ -2478,6 +2484,7 @@ const initiateConsultation = async (
     urgent?: boolean;
     parentConsultationId?: string;
     startNow?: boolean;
+    balanceDueDays?: number;
     paymentTiming?: "pay_now" | "invoice_after" | "pay_in_person";
     isEmergency?: boolean;
     emergencyMultiplier?: number;
@@ -2655,6 +2662,15 @@ const initiateConsultation = async (
    */
   const feeGatesBooking = feeStatus === "unpaid" && timing !== "invoice_after";
 
+  // The scheduler's figure wins only when the firm said it could — `fixed`
+  // means the same wait for everyone, and honouring an override there would
+  // make the setting a suggestion. Null (a firm that has not set one) falls
+  // back to the standard invoice terms, as every firm had before this existed.
+  const resolvedBalanceDueDays =
+    settings?.balanceDueMode === "custom" && data.balanceDueDays != null
+      ? data.balanceDueDays
+      : settings?.balanceDueDays ?? null;
+
   // Instant consultations begin immediately, except pay_now with a fee, which
   // begins at payment time. A pay_now choice with no fee configured degrades
   // gracefully to begin-immediately.
@@ -2698,6 +2714,7 @@ const initiateConsultation = async (
       // completion and settlement paths both branch on it, and leaving it null
       // is what made `invoice_after` unreachable for ordinary bookings.
       paymentTiming: feeAmount != null ? timing : null,
+      balanceDueDays: resolvedBalanceDueDays,
       // `urgent`, not `startNow`: an ordinary urgent booking can carry a
       // surcharge too, and these columns are the audit trail for it.
       isEmergency: Boolean(urgent && data.isEmergency),
@@ -2772,6 +2789,12 @@ const initiateConsultation = async (
         // Only `partial_upfront` carries one; the column is null otherwise, so
         // this is the setting speaking for itself rather than a second test.
         upfrontPercent: settings?.upfrontPercent ?? null,
+        // Days after the consultation. The scheduler's figure wins only when
+        // the firm said it could — `fixed` means the same wait for everyone,
+        // and honouring an override there would make the setting a suggestion.
+        // Null (a firm that has not set one) falls back to the standard terms,
+        // which is what every firm had before this existed.
+        balanceDueDays: resolvedBalanceDueDays,
       });
 
       // Never left as a draft, but only emailed when the fee is actually due
@@ -3049,6 +3072,48 @@ const getConsultation = async (leadId: string, organizationId: string) => {
 };
 
 /**
+ * Is money still owed on this invoice, and has it never actually reached the
+ * client?
+ *
+ * Both halves matter. Delivery is asked rather than inferred from
+ * `paymentTiming`: `pay_in_person` is never emailed by design, and a `pay_now`
+ * invoice whose send failed is in the same position as an `invoice_after` one
+ * that was never due to be sent — the delivery log is the record of what left
+ * the building. And a settled invoice is not chased, so sending it would be a
+ * demand for money already received.
+ */
+const invoiceStillOwedAndUndelivered = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<boolean> => {
+  const [invoice] = await db
+    .select({ status: invoices.status, balanceDue: invoices.balanceDue })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.organizationId, organizationId),
+        eq(invoices.id, invoiceId),
+      ),
+    )
+    .limit(1);
+
+  if (!invoice || invoice.status === "void") return false;
+  if (Number(invoice.balanceDue) <= 0) return false;
+
+  const [delivered] = await db
+    .select({ id: invoiceDeliveries.id })
+    .from(invoiceDeliveries)
+    .where(
+      and(
+        eq(invoiceDeliveries.organizationId, organizationId),
+        eq(invoiceDeliveries.invoiceId, invoiceId),
+      ),
+    )
+    .limit(1);
+  return !delivered;
+};
+
+/**
  * What happens to the fee when the lead does not turn up.
  *
  * Firms disagree about this and both positions are defensible — the attorney's
@@ -3077,10 +3142,29 @@ const applyNoShowPolicy = async (
 
   const policy = settings?.noShowPolicy ?? "forfeit";
 
-  // The firm keeps what it holds and is still owed what it does not. Explicitly
-  // nothing, so the behaviour is now a decision somebody can revisit rather
-  // than an oversight nobody noticed.
-  if (policy === "forfeit") return;
+  // The firm keeps what it holds and is still owed what it does not.
+  //
+  // Not quite nothing, though: an `invoice_after` fee is ISSUED at booking and
+  // only EMAILED when the consultation completes, which a no-show never does.
+  // So the debt the firm is entitled to chase was one the client had never
+  // seen and had no working link to pay — it went overdue and into dunning
+  // regardless. Send it, then chase it.
+  if (policy === "forfeit") {
+    if (await invoiceStillOwedAndUndelivered(organizationId, consultation.invoiceId)) {
+      await sendInvoice(
+        organizationId,
+        consultation.invoiceId,
+        actorId ?? null,
+        systemAccess(),
+      ).catch((err) =>
+        log.failure(LogEvent.CONSULTATION_NO_SHOW_INVOICE_SEND_FAILED, err, {
+          leadId,
+          invoiceId: consultation.invoiceId,
+        }),
+      );
+    }
+    return;
+  }
 
   const held = await netPaidOnInvoice(organizationId, consultation.invoiceId);
 
@@ -3165,7 +3249,12 @@ const applyNoShowPolicy = async (
   });
 };
 
-const updateConsultation = async (
+/**
+ * Exported for the payment-policy check, which asserts the no-show branches
+ * through the real service path rather than reimplementing them. The controller
+ * remains the only production caller.
+ */
+export const updateConsultation = async (
   leadId: string,
   organizationId: string,
   data: Partial<{
@@ -3285,6 +3374,17 @@ const updateConsultation = async (
     await cancelConsultationReminders(organizationId, updated.id).catch(
       (err: unknown) =>
         log.failure(LogEvent.CONSULTATION_REMINDERS_CANCEL_FAILED, err, {
+          consultationId: updated.id,
+        }),
+    );
+
+    // The deposit's balance is asked for once the call has happened — and only
+    // then. `scheduleConsultationBalanceNotice` refuses a cancelled or no-show
+    // consultation itself, so calling it on every terminal transition also
+    // clears a notice that a completion had already scheduled.
+    void scheduleConsultationBalanceNotice(organizationId, updated.id).catch(
+      (err: unknown) =>
+        log.failure(LogEvent.CONSULTATION_BALANCE_NOTICE_FAILED, err, {
           consultationId: updated.id,
         }),
     );
@@ -4248,6 +4348,20 @@ const selectConsultationSlot = async (token: string, startIso: string) => {
   consultation.scheduledAt = start;
   await finalizeConsultation(consultation);
 
+  // The deposit's balance was dated when the invoice was raised, before this
+  // consultation had a time — so it fell back to the standard terms. Now that
+  // there is a date to count from, move it. Non-fatal: the slot is booked and
+  // that must stand even if the ledger write fails.
+  await rescheduleBalanceInstalment(
+    consultation.organizationId,
+    consultation,
+    null,
+  ).catch((err) =>
+    log.failure(LogEvent.CONSULTATION_BALANCE_RESCHEDULE_FAILED, err, {
+      consultationId: consultation.id,
+    }),
+  );
+
   await logLeadEvent({
     organizationId: consultation.organizationId,
     leadId: consultation.leadId,
@@ -4476,6 +4590,15 @@ const cancelConsultation = async (
   await cancelConsultationReminders(organizationId, consultation.id).catch(
     (err: unknown) =>
       log.failure(LogEvent.CONSULTATION_REMINDERS_CANCEL_FAILED, err, {
+        consultationId: consultation.id,
+      }),
+  );
+
+  // Same reasoning, and more so: a demand for the balance of a consultation the
+  // firm has just cancelled and refunded is worse than a slow request.
+  await cancelConsultationBalanceNotice(organizationId, consultation.id).catch(
+    (err: unknown) =>
+      log.failure(LogEvent.CONSULTATION_BALANCE_NOTICE_CANCEL_FAILED, err, {
         consultationId: consultation.id,
       }),
   );

@@ -218,6 +218,10 @@ export const initiateConsultationBodySchema = z
     paymentTiming: z
       .enum(["pay_now", "invoice_after", "pay_in_person"])
       .optional(),
+    // Per-consultation override for when the deposit's balance falls due, in
+    // days after the call. Honoured only when the firm's balance mode is
+    // `custom`; the firm's own figure is the default and the fallback.
+    balanceDueDays: z.number().int().min(0).max(90).optional(),
     isEmergency: z.boolean().optional(),
     emergencyMultiplier: z.number().positive().max(10).optional(),
     autoSendQuestionnaire: z.boolean().optional(),

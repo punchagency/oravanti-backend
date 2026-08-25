@@ -14,6 +14,7 @@ import { systemAccess } from "./account-access";
 import { create } from "./invoices.service";
 import { setSchedule } from "./instalments.service";
 import { num, toMoney } from "./money";
+import { amountDueNow } from "./payment-links.service";
 import { firmToday } from "./status";
 
 const log = createModuleLogger("consultation-billing.service");
@@ -57,6 +58,38 @@ export type ConsultationFeeInput = {
    * balance falls due after the consultation.
    */
   upfrontPercent?: number | null;
+  /**
+   * How many days after the consultation the balance falls due. Null falls back
+   * to the standard terms, which is what every firm got before the setting
+   * existed.
+   */
+  balanceDueDays?: number | null;
+};
+
+/**
+ * When the deposit's balance falls due.
+ *
+ * Counted from the CONSULTATION, per the firm's setting — the balance is owed
+ * for a call that has happened. A consultation with no time yet (every
+ * lead-driven booking at the moment it is raised) has nothing to count from, so
+ * it takes the standard terms and is recomputed by `rescheduleBalanceInstalment`
+ * the moment the lead picks a slot.
+ *
+ * Always strictly after the deposit. `setSchedule` renumbers sequence into
+ * due-date order, so two slices sharing a date have no deterministic tiebreaker
+ * — and the booking gate reads sequence 1 as the deposit, so a collision would
+ * silently gate on the balance instead. An instant consultation is scheduled for
+ * today, which is exactly when that happens.
+ */
+export const balanceDueDate = (
+  today: string,
+  scheduledAt: Date | null,
+  balanceDueDays: number | null | undefined,
+): string => {
+  const base = scheduledAt
+    ? addDays(scheduledAt.toISOString().slice(0, 10), balanceDueDays ?? 0)
+    : addDays(today, balanceDueDays ?? TERMS_DAYS);
+  return base > today ? base : addDays(today, 1);
 };
 
 /**
@@ -138,18 +171,11 @@ export const raiseConsultationInvoice = async (
     // schedule with a zero slice, which `assertScheduleBalances` would reject
     // and which would take the whole booking down with it.
     if (deposit > 0 && balance > 0) {
-      // The balance is due when the consultation happens; an unscheduled one
-      // falls back to the standard terms.
-      const balanceDue = input.scheduledAt
-        ? input.scheduledAt.toISOString().slice(0, 10)
-        : addDays(today, TERMS_DAYS);
-
-      // Strictly after the deposit, always. `setSchedule` renumbers sequence
-      // into due-date order, so two slices sharing a date have no deterministic
-      // tiebreaker — and the booking gate reads sequence 1 as the deposit. An
-      // instant consultation is scheduled for today, which is exactly when that
-      // collision happens, and it would silently gate on the balance instead.
-      const dueDate = balanceDue > today ? balanceDue : addDays(today, 1);
+      const dueDate = balanceDueDate(
+        today,
+        input.scheduledAt,
+        input.balanceDueDays,
+      );
 
       await setSchedule(
         organizationId,
@@ -174,6 +200,79 @@ export const raiseConsultationInvoice = async (
   return invoice.id;
 };
 
+/**
+ * Move the deposit's balance instalment to match a newly-agreed consultation
+ * time.
+ *
+ * The balance date is computed when the invoice is raised, which for a
+ * lead-driven booking is BEFORE any time exists — so it took the standard terms
+ * and nothing ever revisited it. A firm setting "due 7 days after the
+ * consultation" got 14 days after booking, and a lead who booked six weeks out
+ * owed the balance a month before the call.
+ *
+ * Only touches a two-slice schedule whose deposit is already settled or
+ * pending; anything else is left alone. Non-fatal by design — the slot is
+ * booked and that must stand even if the ledger write fails.
+ */
+export const rescheduleBalanceInstalment = async (
+  organizationId: string,
+  consultation: {
+    invoiceId: string | null;
+    scheduledAt: Date | null;
+    /**
+     * The consultation's own snapshot, not the firm's current setting. A
+     * `custom` firm lets the scheduler choose per consultation, and re-reading
+     * settings here would quietly discard that choice — as would a firm that
+     * changed its default between the booking and the lead picking a slot.
+     */
+    balanceDueDays: number | null;
+  },
+  actorStaffId: string | null,
+): Promise<void> => {
+  if (!consultation.invoiceId || !consultation.scheduledAt) return;
+
+  const rows = await db
+    .select({
+      sequence: invoiceInstalments.sequence,
+      dueDate: invoiceInstalments.dueDate,
+      amount: invoiceInstalments.amount,
+    })
+    .from(invoiceInstalments)
+    .where(
+      and(
+        eq(invoiceInstalments.organizationId, organizationId),
+        eq(invoiceInstalments.invoiceId, consultation.invoiceId),
+      ),
+    )
+    .orderBy(asc(invoiceInstalments.sequence));
+
+  // Only the deposit shape. A hand-built schedule of three or more slices is
+  // somebody's deliberate arrangement and not this function's business.
+  if (rows.length !== 2) return;
+
+  const today = await firmToday(organizationId);
+  const dueDate = balanceDueDate(
+    today,
+    consultation.scheduledAt,
+    consultation.balanceDueDays,
+  );
+
+  if (dueDate === rows[1]!.dueDate) return;
+
+  // The deposit keeps its own date: it was due when the invoice was raised and
+  // may already be paid. Only the balance moves.
+  await setSchedule(
+    organizationId,
+    consultation.invoiceId,
+    [
+      { dueDate: rows[0]!.dueDate, amount: num(rows[0]!.amount) },
+      { dueDate, amount: num(rows[1]!.amount) },
+    ],
+    actorStaffId,
+    systemAccess(),
+  );
+};
+
 export type ConsultationFee = {
   amount: number | null;
   status: "none" | "unpaid" | "paid" | "waived" | "refunded";
@@ -189,6 +288,16 @@ export type ConsultationFee = {
    * cannot fall out of step with the ledger.
    */
   netPaid: number;
+  /**
+   * What is being ASKED for right now, as distinct from `amount`.
+   *
+   * They differ only on a deposit schedule, and that difference is the point:
+   * the lead owes the whole fee but is being asked for the deposit, so a
+   * booking page quoting `amount` beside a payment form charging the deposit
+   * showed two contradictory figures. Null when there is no invoice to ask
+   * against.
+   */
+  dueNow: number | null;
 };
 
 /**
@@ -220,6 +329,7 @@ export const consultationFee = async (
       // No invoice means no ledger rows. The legacy `feeStatus` flag was never
       // backed by money moving, so claiming an amount is held would be a guess.
       netPaid: 0,
+      dueNow: null,
     };
   }
 
@@ -228,6 +338,7 @@ export const consultationFee = async (
       invoiceNumber: invoices.invoiceNumber,
       status: invoices.status,
       totalAmount: invoices.totalAmount,
+      amountPaid: invoices.amountPaid,
       balanceDue: invoices.balanceDue,
     })
     .from(invoices)
@@ -248,6 +359,7 @@ export const consultationFee = async (
       invoiceId: row.invoiceId,
       invoiceNumber: null,
       netPaid: 0,
+      dueNow: null,
     };
   }
 
@@ -268,6 +380,15 @@ export const consultationFee = async (
     invoiceId: row.invoiceId,
     invoiceNumber: invoice.invoiceNumber,
     netPaid: await netPaidOnInvoice(organizationId, row.invoiceId),
+    // The same figure the payment page and Confido are given, from the same
+    // function — a second derivation here would be a second thing to keep in
+    // step with `allocate`.
+    dueNow: await amountDueNow(
+      organizationId,
+      row.invoiceId,
+      num(invoice.amountPaid),
+      num(invoice.balanceDue),
+    ),
   };
 };
 
