@@ -41,7 +41,12 @@ import {
 import { encryptPaymentValue } from "../../src/utils/payment-crypto";
 import { confidoFirms } from "../../src/db/schema/confido-firms";
 import { invoiceByPaymentToken } from "../../src/modules/finance/payment-links.service";
-import { settleConsultationForInvoice } from "../../src/modules/leads/leads.service";
+import { leadTasks } from "../../src/db/schema/lead-tasks";
+import {
+  settleConsultationForInvoice,
+  updateConsultation,
+} from "../../src/modules/leads/leads.service";
+import { netPaidOnInvoice } from "../../src/modules/finance/refunds.service";
 import {
   capturedEmails,
   check,
@@ -707,11 +712,138 @@ const main = async () => {
         "Payment received — thank you",
       );
     }
+
+    // ── 9. No-show policy ────────────────────────────────────────────────────
+    section("No-show policy, against paid and unpaid fees");
+
+    await systemDb
+      .update(consultationSettings)
+      .set({ feeSchedule: "full_upfront" })
+      .where(eq(consultationSettings.organizationId, orgId));
+
+    /**
+     * Marks a no-show through the real service path and reports what moved.
+     *
+     * `canRefund` is passed explicitly because the controller resolves it from
+     * the caller's grant — a check has no session, and the split between "may
+     * mark a no-show" and "may send money back" is the thing being asserted.
+     */
+    const noShow = async (
+      policy: "forfeit" | "refund" | "decide",
+      paidAmount: number,
+      canRefund = true,
+    ) => {
+      await systemDb
+        .update(consultationSettings)
+        .set({ noShowPolicy: policy })
+        .where(eq(consultationSettings.organizationId, orgId));
+
+      const inv = await makeInvoice(300);
+      const cons = await makeConsultation(inv);
+      await systemDb
+        .update(consultations)
+        .set({
+          status: "scheduled",
+          scheduledAt: new Date(Date.now() - 60 * 60 * 1000),
+        })
+        .where(eq(consultations.id, cons.id));
+      await systemDb
+        .update(leads)
+        .set({ consultationId: cons.id })
+        .where(eq(leads.id, leadId));
+      if (paidAmount > 0) await pay(inv, paidAmount);
+
+      await withOrgContext(orgId, userId, () =>
+        updateConsultation(
+          leadId,
+          orgId,
+          { status: "no_show" },
+          staffId,
+          canRefund,
+        ),
+      );
+
+      const [row] = await systemDb
+        .select({ status: invoices.status })
+        .from(invoices)
+        .where(eq(invoices.id, inv))
+        .limit(1);
+      const [task] = await systemDb
+        .select({ id: leadTasks.id })
+        .from(leadTasks)
+        .where(
+          and(
+            eq(leadTasks.organizationId, orgId),
+            sql`${leadTasks.description} like ${`%[consultation:${cons.id}]%`}`,
+          ),
+        )
+        .limit(1);
+
+      return {
+        invoiceStatus: row!.status,
+        held: await netPaidOnInvoice(orgId, inv),
+        hasTask: Boolean(task),
+      };
+    };
+
+    // forfeit: the firm keeps what it holds and is still owed the rest.
+    const forfeitPaid = await noShow("forfeit", 300);
+    checkEqual("forfeit + paid: money stays", forfeitPaid.held, 300);
+    check("forfeit + paid: no task raised", !forfeitPaid.hasTask);
+
+    const forfeitUnpaid = await noShow("forfeit", 0);
+    checkEqual(
+      "forfeit + unpaid: the debt stands",
+      forfeitUnpaid.invoiceStatus,
+      "sent",
+    );
+
+    // refund + unpaid: voided, so it never goes overdue into dunning.
+    const refundUnpaid = await noShow("refund", 0);
+    checkEqual(
+      "refund + unpaid: the invoice is voided",
+      refundUnpaid.invoiceStatus,
+      "void",
+    );
+
+    // A manual payment cannot be sent back through the processor, so the money
+    // is still held and a human is told to return it.
+    const refundPaid = await noShow("refund", 300);
+    check(
+      "refund + paid outside the processor: a task is raised",
+      refundPaid.hasTask,
+    );
+
+    // Marking a no-show is an intake action; refunding is a finance one.
+    const refundNoGrant = await noShow("refund", 300, false);
+    check(
+      "refund + paid + no refund grant: task, not a silent refund",
+      refundNoGrant.hasTask,
+    );
+    checkEqual(
+      "refund + no grant: the money has not moved",
+      refundNoGrant.held,
+      300,
+    );
+
+    // decide: nothing moves either way; a human chooses.
+    const decidePaid = await noShow("decide", 300);
+    checkEqual("decide + paid: nothing moves", decidePaid.held, 300);
+    check("decide + paid: a task is raised", decidePaid.hasTask);
+
+    const decideUnpaid = await noShow("decide", 0);
+    checkEqual(
+      "decide + unpaid: an ordinary receivable, left alone",
+      decideUnpaid.invoiceStatus,
+      "sent",
+    );
+    check("decide + unpaid: no task", !decideUnpaid.hasTask);
   } finally {
     // Before the organization delete: confido_firms references it with no cascade.
     await systemDb.delete(confidoFirms).where(eq(confidoFirms.organizationId, orgId));
     // settleConsultationForInvoice writes a lead event through recordAuditEvent.
     await systemDb.delete(auditEvents).where(eq(auditEvents.organizationId, orgId));
+    await systemDb.delete(leadTasks).where(eq(leadTasks.organizationId, orgId));
     await systemDb.delete(consultationSettings).where(eq(consultationSettings.organizationId, orgId));
     await systemDb.delete(invoicePayments).where(eq(invoicePayments.organizationId, orgId));
     await systemDb.delete(invoiceInstalments).where(eq(invoiceInstalments.organizationId, orgId));
