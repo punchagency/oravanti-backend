@@ -2582,18 +2582,35 @@ const initiateConsultation = async (
   // Kept so the invoice line can name the surcharge rather than presenting a
   // multiplied figure with no explanation.
   let baseFee: number | null = null;
+  // Honoured for any urgent booking, not just instant ones. An ordinary urgent
+  // consultation is exactly as much of an out-of-hours imposition as a
+  // "start now" one, and this pair is now the ONLY way to charge more than the
+  // firm's published fee (see the fee resolution below).
   const emergencyMultiplier =
-    startNow && data.isEmergency && data.emergencyMultiplier != null
+    urgent && data.isEmergency && data.emergencyMultiplier != null
       ? data.emergencyMultiplier
       : null;
 
   if (settings?.chargesFee) {
     const defaultAmount =
       settings.defaultAmount != null ? Number(settings.defaultAmount) : null;
-    // Urgent bookings let the admin override the amount (urgency surcharge)
-    // regardless of the firm's fee structure.
+    /**
+     * The firm's fee structure decides this, and nothing else.
+     *
+     * `urgent` used to share the disjunct, which quietly made a `flat` fee
+     * mutable: `startNow` forces `urgent` (see above), so EVERY instant
+     * consultation took the override branch and the firm's structure was never
+     * consulted at all. A caller could book a $300 flat-fee firm at $5, or bill
+     * an arbitrary amount upward — the floor was $5 and there was no ceiling —
+     * and the activity trail recorded the charged figure without recording that
+     * it differed from the firm default.
+     *
+     * Urgency is now priced through `isEmergency` + `emergencyMultiplier`,
+     * which is what that pair exists for and which leaves a trail: both columns
+     * are persisted and the invoice line names the arithmetic.
+     */
     const resolved =
-      urgent || settings.feeStructure === "custom_per_case_type"
+      settings.feeStructure === "custom_per_case_type"
         ? (data.feeAmount ?? defaultAmount)
         : defaultAmount;
     if (resolved != null && resolved < MINIMUM_CONSULTATION_FEE) {
@@ -2665,9 +2682,11 @@ const initiateConsultation = async (
       // completion and settlement paths both branch on it, and leaving it null
       // is what made `invoice_after` unreachable for ordinary bookings.
       paymentTiming: feeAmount != null ? timing : null,
-      isEmergency: Boolean(startNow && data.isEmergency),
+      // `urgent`, not `startNow`: an ordinary urgent booking can carry a
+      // surcharge too, and these columns are the audit trail for it.
+      isEmergency: Boolean(urgent && data.isEmergency),
       emergencyMultiplier:
-        startNow && data.isEmergency && data.emergencyMultiplier != null
+        urgent && data.isEmergency && data.emergencyMultiplier != null
           ? String(data.emergencyMultiplier)
           : null,
       autoSendQuestionnaire: Boolean(startNow && data.autoSendQuestionnaire),
