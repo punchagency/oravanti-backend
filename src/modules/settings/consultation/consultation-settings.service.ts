@@ -154,7 +154,17 @@ export class ConsultationSettingsService {
         : {}),
       ...(body.timezone !== undefined ? { timezone: body.timezone } : {}),
       ...(body.language !== undefined ? { language: body.language } : {}),
-      smsEnabled: body.smsEnabled ?? false,
+      // Conditional like every other optional field above, and emphatically not
+      // `body.smsEnabled ?? false`. That default meant any caller omitting the
+      // field turned the firm's SMS master switch OFF — and every caller omits
+      // it: the fee-defaults card, the payment-policy card and the firm-timezone
+      // card all send fee fields only. Saving a no-show policy silently stopped
+      // the firm texting anybody.
+      //
+      // The switch has its own endpoint for exactly this reason
+      // (`notification-settings.service.ts`, PATCH /settings/notifications/sms),
+      // which does a targeted upsert rather than coming through here.
+      ...(body.smsEnabled !== undefined ? { smsEnabled: body.smsEnabled } : {}),
       updatedAt: new Date(),
     };
 
