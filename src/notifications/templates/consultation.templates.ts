@@ -29,6 +29,15 @@ type ReminderContext = {
   attorneyName?: string;
 };
 
+type BalanceContext = {
+  /** Formatted by the caller, in the recipient's zone. Empty when unknown. */
+  when?: string;
+  /** Pre-formatted currency, e.g. "$150.00" — the worker has no locale. */
+  amount: string;
+  payUrl?: string;
+  invoiceNumber?: string;
+};
+
 const detail = (ctx: ReminderContext) =>
   (ctx.attorneyName ? html`<p><strong>With:</strong> ${ctx.attorneyName}</p>` : "") +
   (ctx.modeLabel ? html`<p><strong>Format:</strong> ${ctx.modeLabel}</p>` : "") +
@@ -69,5 +78,31 @@ export const consultationTemplates = {
           ? `Your consultation starts at ${ctx.when}. Join: ${ctx.joinUrl}`
           : `Your consultation starts at ${ctx.when}.`,
       ),
+  },
+
+  /**
+   * The balance of a deposit, once the consultation has happened.
+   *
+   * `payUrl` is minted at scheduling time and points at the invoice's existing
+   * Confido link, whose amount tracks the next unpaid instalment — so by the
+   * time this lands it is asking for the balance, not the deposit that was
+   * already paid.
+   */
+  consultation_balance_due: {
+    email: (ctx: BalanceContext, meta) => ({
+      subject: `Balance due for your consultation with ${meta.firmName}`,
+      html: layout(
+        `Hello ${meta.recipientName},`,
+        html`<p>Thank you for your consultation${ctx.when ? html` on <strong>${ctx.when}</strong>` : ""}.</p>` +
+          html`<p>The remaining balance of <strong>${ctx.amount}</strong> is now due.</p>` +
+          (ctx.payUrl
+            ? html`<p><a href="${ctx.payUrl}">Pay the balance</a></p>`
+            : html`<p>Please contact the office to settle it.</p>`) +
+          (ctx.invoiceNumber
+            ? html`<p style="color: #666; font-size: 13px;">Invoice ${ctx.invoiceNumber}</p>`
+            : ""),
+        meta,
+      ),
+    }),
   },
 } satisfies Partial<Record<string, TemplateDef>>;
