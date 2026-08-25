@@ -55,6 +55,20 @@ export const consultationNoShowPolicyEnum = pgEnum(
   ],
 );
 
+/**
+ * How the deposit's balance due date is decided.
+ *
+ * `fixed` applies the same number of days to every consultation; `custom` makes
+ * that number the default and lets whoever schedules the consultation change it.
+ * There is no per-case-type option because there is no per-case-type storage
+ * anywhere in the system — `custom_per_case_type` on the fee structure names a
+ * lookup that does not exist either, and is a per-consultation override in fact.
+ */
+export const consultationBalanceDueModeEnum = pgEnum(
+  "consultation_balance_due_mode",
+  ["fixed", "custom"],
+);
+
 export const consultationSettings = pgTable("consultation_settings", {
   id: uuid("id").primaryKey().defaultRandom(),
   organizationId: text("organization_id")
@@ -77,6 +91,20 @@ export const consultationSettings = pgTable("consultation_settings", {
    * fee on a cheap consultation.
    */
   upfrontPercent: integer("upfront_percent"),
+  /**
+   * When the deposit's balance falls due, counted in days FROM THE
+   * CONSULTATION — the balance is owed for a call that has happened, so the
+   * call is what it hangs off.
+   *
+   * Both columns are null unless the firm collects a deposit, mirroring
+   * `upfrontPercent`. Before this the balance was due on `scheduledAt`, which
+   * is still null at booking time for every lead-driven consultation, so it
+   * silently fell back to the standard 14-day terms and the settings copy
+   * promising "due when the consultation happens" was true only for urgent and
+   * instant bookings.
+   */
+  balanceDueMode: consultationBalanceDueModeEnum("balance_due_mode"),
+  balanceDueDays: integer("balance_due_days"),
   noShowPolicy: consultationNoShowPolicyEnum("no_show_policy")
     .notNull()
     .default("forfeit"),
@@ -115,6 +143,24 @@ export const consultationSettings = pgTable("consultation_settings", {
   check(
     "consultation_settings_upfront_percent_matches_schedule",
     sql`(${table.feeSchedule} = 'partial_upfront') = (${table.upfrontPercent} IS NOT NULL)`,
+  ),
+  // The mode and the day count are one setting in two columns; neither says
+  // anything alone. Same biconditional shape as the deposit above.
+  check(
+    "consultation_settings_balance_due_pair",
+    sql`(${table.balanceDueMode} IS NULL) = (${table.balanceDueDays} IS NULL)`,
+  ),
+  // A balance falls due after the consultation, never before it, and a firm
+  // waiting more than a quarter for it has a collections problem rather than a
+  // settings one.
+  check(
+    "consultation_settings_balance_due_days_range",
+    sql`${table.balanceDueDays} IS NULL OR (${table.balanceDueDays} >= 0 AND ${table.balanceDueDays} <= 90)`,
+  ),
+  // And it only means anything on the schedule that produces a balance.
+  check(
+    "consultation_settings_balance_due_matches_schedule",
+    sql`${table.balanceDueMode} IS NULL OR ${table.feeSchedule} = 'partial_upfront'`,
   ),
 ]);
 

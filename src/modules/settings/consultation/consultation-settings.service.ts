@@ -43,6 +43,8 @@ const toSettingsDTO = (row: ConsultationSettings) => ({
   waiverWindowDays: null,
   feeSchedule: row.feeSchedule,
   upfrontPercent: row.upfrontPercent,
+  balanceDueMode: row.balanceDueMode,
+  balanceDueDays: row.balanceDueDays,
   noShowPolicy: row.noShowPolicy,
   timezone: row.timezone,
   language: row.language,
@@ -105,6 +107,8 @@ export class ConsultationSettingsService {
         waiverWindowDays: null,
         feeSchedule: "full_upfront" as const,
         upfrontPercent: null,
+        balanceDueMode: null,
+        balanceDueDays: null,
         noShowPolicy: "forfeit" as const,
         timezone: "UTC",
         language: "en",
@@ -146,6 +150,17 @@ export class ConsultationSettingsService {
             upfrontPercent:
               body.feeSchedule === "partial_upfront"
                 ? body.upfrontPercent ?? null
+                : null,
+            // The balance due date belongs to the deposit, so it is cleared by
+            // the same move that clears the percentage. Written as a pair
+            // because the table's CHECK requires both or neither.
+            balanceDueMode:
+              body.feeSchedule === "partial_upfront"
+                ? body.balanceDueMode ?? null
+                : null,
+            balanceDueDays:
+              body.feeSchedule === "partial_upfront"
+                ? body.balanceDueDays ?? null
                 : null,
           }
         : {}),
