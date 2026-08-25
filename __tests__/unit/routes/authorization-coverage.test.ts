@@ -16,6 +16,18 @@ import { auditRoutes, coverageOf, summarise } from "../../../src/lib/route-audit
   So this pins the current state exactly and fails only on regression. The
   budget below is a census of an open gap, NOT a list of things that are fine.
 
+  ─── What this does NOT see ─────────────────────────────────────────────────
+
+  `coverageOf` grades a whole MODULE, and a module counts as gated the moment
+  it contains a single `requirePermission`. So an ungated route inside an
+  otherwise-gated file is invisible here: `leads.routes.ts` declares 71 routes
+  and holds three permission checks, and the other 68 have never appeared in
+  any number below. `POST /leads/:id/consultation` — which sets a consultation
+  fee — sat ungated behind exactly that blind spot.
+
+  Per-route accounting would be the real fix. Until then, do not read a module's
+  absence from the budget as evidence that its routes are gated.
+
   ─── When this fails ────────────────────────────────────────────────────────
 
   It prints which module and what to do. `npm run routes:audit` shows the whole
@@ -76,7 +88,6 @@ const UNGATED_BUDGET: Record<string, number> = {
   "access-control": 7,
   security: 7,
   "client-responsiveness": 6,
-  "consultation-settings": 6,
   tasks: 6,
   "firm-profile": 5,
   "practice-areas": 5,
@@ -92,7 +103,7 @@ const UNGATED_BUDGET: Record<string, number> = {
 };
 
 /** Total ungated routes when last measured. Ratcheted downward only. */
-const UNGATED_ROUTE_BUDGET = 92;
+const UNGATED_ROUTE_BUDGET = 86;
 
 describe("route authorization coverage", () => {
   it("discovers the route modules", () => {
