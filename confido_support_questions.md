@@ -199,16 +199,75 @@ we most need to hear about and the only one with nothing to announce it.
    `transaction.created` fires we would record it correctly without needing a named event.
 3. Is `transaction.charged_back` planned?
 
-We could not settle this ourselves: `sandboxOnlyTriggerChargeback` refuses with _"must be card
-transaction"_, and every transaction our scripts can create is a `manualPayment`. Reaching a real
-card transaction means a payer entering card details on the hosted page.
-
 **The workaround we have shipped:** monthly statement ingestion. A chargeback appears as a debit
 line whether or not an event announces it — but that is reconciliation after the fact, not
 notification, and the gap is a month wide.
 
 > **This received no response.** It is the highest-value question in this document and should be
 > re-asked on its own rather than inside another batch.
+
+#### We tried to answer it empirically — 24 Aug 2026
+
+The earlier note here said we could not settle this because
+`sandboxOnlyTriggerChargeback` refuses with _"must be card transaction"_ and every transaction our
+scripts can mint is a `manualPayment`. We cleared that bar and hit a different one underneath.
+
+**What we did.** A throwaway sandbox firm (`4a95841d-fa91-40e7-a701-eafb0c86ec77`), a split Payment
+Link (`d74c1695-585d-4fc1-8949-811f0a494114`, $30.00 trust / $20.00 operating), and **a real card
+payment typed into the hosted page** — Visa, `paymentMethod: CREDIT`. The hosted page works fine when
+opened directly; the CSP problem in Q3 only blocks _framing_ it, which is worth knowing on its own,
+because it means manual testing is not blocked on Trusted Domains.
+
+**What we confirmed on the way.** Nothing new, but all of it now verified against a real card
+payment rather than a `manualPayment`:
+
+- One transaction per credited account, both carrying the same `payment.id` as the correlator.
+- Both `originalTransactionId: null` — payments, not reversals.
+- The settlement ladder runs `PENDING → FUNDS_IN_TRANSIT → DEPOSITED`, each step emitting its own
+  webhook, and the sandbox advances a card payment on its own timeline without being pushed.
+- **Webhooks reach us reliably.** Five events on this firm, which is what makes the negative below
+  meaningful rather than ambiguous.
+
+**Where it stopped.** With the trust leg at `DEPOSITED` and `settledOn` populated:
+
+```
+sandboxOnlyTriggerChargeback(input: { transactionId: "4ef5fb9d-…", amount: 3000 })
+  -> unsupported processor: emergepay_card
+```
+
+The sandbox **UI returns the same error**, so this is not an API-only restriction.
+
+**And we cannot configure around it.** `CreditCardProcessor` is
+`adyen | emergepay | emergepay_sandbox | epmock`, but **no `INPUT_OBJECT` in the schema exposes a
+processor field** on a firm or a payment — we checked all of them. A partner has no way to provision
+a firm onto a processor that supports chargeback simulation.
+
+**So the question stays open, but the ask is now much stronger:** this is a reproducible defect in
+Confido's own tooling rather than a question about their documentation, which is a great deal harder
+to skip.
+
+#### A second finding, arguably worth more than the original question
+
+Introspecting the sandbox mutations turned up two that appear in no documentation we have found:
+
+```
+sandboxOnlyTriggerChargebackReversal   (transactionId, amount)
+sandboxOnlyTriggerPrearbitrationLost   (transactionId, amount)
+```
+
+**A chargeback can be reversed** — money clawed back, then returned when the firm wins the dispute —
+and pre-arbitration means there is at least a third stage beyond that. Our reversal model treats a
+reversal as terminal: signed negative rows, no un-reversal. Money returning after a won dispute is a
+case we have never modelled.
+
+Had we only ever got an answer to "is there a chargeback webhook", we would have built for a single
+event and been wrong about the shape of the thing. Whatever we ask next must cover the **lifecycle**,
+not one event in it.
+
+**Reproduction scaffolding** is kept outside the repo (session scratchpad): provisioning, transaction
+capture, the settle/chargeback driver, and a webhook-arrival observer. The probe firm is still live
+and its **operating leg is unspent**, so if Confido enables the processor the test can be finished
+without asking anyone to type card details again.
 
 ## Confirmations — we believe we have these right, but they are load-bearing
 
@@ -299,7 +358,13 @@ explicitly."_
 Four things from this batch were not answered. In priority order:
 
 1. **Chargeback webhooks (Q13)** — no response at all. The only reversal that moves money with no
-   firm action and no event to announce it. Re-ask on its own.
+   firm action and no event to announce it. Re-ask on its own. **Now blocked on Confido's side
+   rather than ours:** we drove a real card payment to `DEPOSITED` and
+   `sandboxOnlyTriggerChargeback` refuses with `unsupported processor: emergepay_card`, from both the
+   API and the UI, with no partner-accessible way to change the processor. The re-ask must lead with
+   that defect, and must cover the whole **dispute lifecycle** — `sandboxOnlyTriggerChargebackReversal`
+   and `sandboxOnlyTriggerPrearbitrationLost` exist and are undocumented, so a chargeback is not
+   necessarily final and our reversal model assumes it is.
 2. **Trusted Domains (Q3)** — all three sub-questions unanswered: whether registration reaches the
    hosted-field `frame-ancestors` list, whether `http://localhost:5173` can be registered, and
    whether wildcards work for preview deploys.
