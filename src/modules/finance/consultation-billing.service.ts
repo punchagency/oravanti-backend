@@ -5,6 +5,7 @@ import {
   LIVE_CONSULTATION_STATUSES,
   consultations,
 } from "../../db/schema/consultations";
+import { consultationSettings } from "../../db/schema/consultation-settings";
 import { invoiceInstalments } from "../../db/schema/invoice-instalments";
 import { invoices } from "../../db/schema/invoices";
 import { leads } from "../../db/schema/leads";
@@ -290,13 +291,53 @@ export const consultationFee = async (
  * lowers `netPaid` the moment it lands.
  *
  * The threshold is the whole fee, the deposit, or nothing, depending on the
- * firm's schedule.
+ * firm's schedule. The "nothing" case was described here from the beginning and
+ * never implemented: `after_consultation` writes no instalments, so it fell
+ * through to the whole-fee branch and its leads were asked to pay before they
+ * could pick a time — the exact opposite of the setting they had chosen, and
+ * with an invoice that is deliberately never emailed until the call is done.
+ *
+ * Distinct from `consultationFeeUnsettled`, which asks whether the money has
+ * actually arrived. The two agree on every schedule except this one, where
+ * "you may book" and "we have been paid" are deliberately different questions.
  */
 export const consultationPaymentOutstanding = async (
   organizationId: string,
   consultation: { invoiceId: string | null; feeStatus: string },
 ): Promise<boolean> => {
   // Predates invoicing. The legacy flag is all there is, so trust it.
+  if (!consultation.invoiceId) return consultation.feeStatus === "unpaid";
+
+  // Nothing is due before the consultation happens, so the gate is open from
+  // the start. Read before the invoice: there is no figure to compare against.
+  const [settings] = await db
+    .select({ feeSchedule: consultationSettings.feeSchedule })
+    .from(consultationSettings)
+    .where(eq(consultationSettings.organizationId, organizationId))
+    .limit(1);
+
+  if (settings?.feeSchedule === "after_consultation") return false;
+
+  return consultationFeeUnsettled(organizationId, consultation);
+};
+
+/**
+ * Is this consultation's fee still short of what has been collected?
+ *
+ * The settlement question, as opposed to the booking-gate question above. On
+ * `full_upfront` and `partial_upfront` the two coincide — clearing the gate IS
+ * paying what was due — so this carries the threshold and the gate defers to
+ * it. On `after_consultation` they part company: the gate opens before any
+ * money exists, and reusing it to decide settlement would mark a $300 fee paid
+ * the moment a $1 payment landed.
+ *
+ * `partial_upfront` settles at the DEPOSIT, not the total, so a lead who has
+ * cleared the gate is not simultaneously recorded as owing the consultation.
+ */
+export const consultationFeeUnsettled = async (
+  organizationId: string,
+  consultation: { invoiceId: string | null; feeStatus: string },
+): Promise<boolean> => {
   if (!consultation.invoiceId) return consultation.feeStatus === "unpaid";
 
   const [invoice] = await db

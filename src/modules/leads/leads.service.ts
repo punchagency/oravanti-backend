@@ -35,6 +35,7 @@ import { invoices } from "../../db/schema/invoices";
 import { systemAccess } from "../finance/account-access";
 import {
   consultationFee,
+  consultationFeeUnsettled,
   consultationPaymentOutstanding,
   raiseConsultationInvoice,
 } from "../finance/consultation-billing.service";
@@ -51,6 +52,7 @@ import {
 import { consultationLocations } from "../../db/schema/consultation-locations";
 import { consultationSettings } from "../../db/schema/consultation-settings";
 import {
+  LIVE_CONSULTATION_STATUSES,
   consultationParticipants,
   consultations,
 } from "../../db/schema/consultations";
@@ -2639,18 +2641,32 @@ const initiateConsultation = async (
     settings?.feeSchedule ?? "full_upfront",
   );
 
+  /**
+   * Does this fee have to be settled before the lead may book?
+   *
+   * A fee that is not due yet is not a payment gate. `invoice_after` bills once
+   * the call is done, so the lead books first and pays later — parking them in
+   * `pending_payment` left them on a booking page with no slots, because slot
+   * generation tests for `awaiting_slot_selection` exactly, and left an urgent
+   * booking marked `scheduled` with no time on it.
+   *
+   * Derived from the resolved `timing` rather than re-reading the setting, so
+   * it cannot disagree with the due date or the send decision.
+   */
+  const feeGatesBooking = feeStatus === "unpaid" && timing !== "invoice_after";
+
   // Instant consultations begin immediately, except pay_now with a fee, which
   // begins at payment time. A pay_now choice with no fee configured degrades
   // gracefully to begin-immediately.
   const beginsNow =
     startNow && !(feeStatus === "unpaid" && timing === "pay_now");
 
-  // Urgent bookings are auto-scheduled ASAP: immediately when no fee applies,
-  // otherwise at payment time. Lead-driven bookings leave scheduledAt null
-  // until the lead picks a slot.
+  // Urgent bookings are auto-scheduled ASAP: immediately when nothing is owed
+  // up front, otherwise at payment time. Lead-driven bookings leave scheduledAt
+  // null until the lead picks a slot.
   const scheduledAt = beginsNow
     ? new Date()
-    : urgent && feeStatus !== "unpaid" && !startNow
+    : urgent && !feeGatesBooking && !startNow
       ? nextAsapSlot()
       : null;
 
@@ -2663,7 +2679,7 @@ const initiateConsultation = async (
     ? beginsNow
       ? "scheduled"
       : "pending_payment"
-    : feeStatus === "unpaid"
+    : feeGatesBooking
       ? "pending_payment"
       : data.urgent
         ? "scheduled"
@@ -2931,9 +2947,11 @@ const initiateConsultation = async (
     return { consultation: finalized, bookingToken: accessToken };
   }
 
-  // Urgent + no fee: connect ASAP — finalize immediately (mints the Meet link
-  // and sends the confirmation). No lead action is required.
-  if (!startNow && data.urgent && feeStatus !== "unpaid") {
+  // Urgent with nothing owed up front: connect ASAP — finalize immediately
+  // (mints the Meet link and sends the confirmation). No lead action is
+  // required. `invoice_after` qualifies as much as a free consultation does;
+  // testing feeStatus alone left it `scheduled` with no time and no Meet link.
+  if (!startNow && data.urgent && !feeGatesBooking) {
     const finalized = await finalizeConsultation(consultation);
     return { consultation: finalized, bookingToken: accessToken };
   }
@@ -3770,11 +3788,61 @@ export const settleConsultationForInvoice = async (
 
   if (!consultation || consultation.feeStatus !== "unpaid") return;
 
-  // The same threshold the booking gate uses, so a deposit that unlocks slot
-  // selection also settles the consultation. Testing `amount_paid >= total`
-  // here instead would leave a `partial_upfront` lead able to pick a time while
-  // the consultation still counted as unpaid.
-  if (await consultationPaymentOutstanding(organizationId, consultation)) return;
+  // The SETTLEMENT question, not the booking gate. The two coincide on
+  // `full_upfront` and `partial_upfront` — a deposit that unlocks slot
+  // selection also settles the consultation, which is why this is not a
+  // `amount_paid >= total` test — but they part company on
+  // `after_consultation`, where the gate is open before any money exists.
+  // Asking the gate here would mark a $300 fee paid on a $1 payment.
+  if (await consultationFeeUnsettled(organizationId, consultation)) return;
+
+  /**
+   * The call is already over. Record the money and stop.
+   *
+   * Everything below this point moves a consultation FORWARD — re-finalizing,
+   * rewriting the status, minting a Meet link, inserting a calendar event,
+   * emailing "pick a time". Run against a consultation that has already
+   * happened and it does not advance anything, it resurrects it: a completed
+   * booking was rewritten to `awaiting_slot_selection` and the lead invited to
+   * choose a slot for a consultation they had already attended, while the
+   * urgent branch pushed it back to `scheduled` with a second calendar event
+   * and a fresh join link mailed to the lead and every staff member.
+   *
+   * That was mostly unreachable while `after_consultation` could not get past
+   * the booking gate. Now that it can, this is the ordinary path: the invoice
+   * is sent at completion and paid afterwards, by definition.
+   */
+  if (!(LIVE_CONSULTATION_STATUSES as readonly string[]).includes(consultation.status)) {
+    await db
+      .update(consultations)
+      .set({ feeStatus: "paid", updatedAt: new Date() })
+      .where(eq(consultations.id, consultation.id));
+
+    // A receipt, not an announcement — `sendConsultationPaymentConfirmation`
+    // reads the same terminal status and drops the time and the join link.
+    const [settled] = await db
+      .select()
+      .from(consultations)
+      .where(eq(consultations.id, consultation.id))
+      .limit(1);
+    if (settled) {
+      await sendConsultationPaymentConfirmation(settled, {
+        startingNow: false,
+      });
+    }
+
+    await logLeadEvent({
+      organizationId: consultation.organizationId,
+      leadId: consultation.leadId,
+      action: "lead.payment_received",
+      metadata: {
+        consultationId: consultation.id,
+        amount: Number(consultation.feeAmount),
+        afterConsultation: true,
+      },
+    });
+    return;
+  }
 
   // Instant consultations: pay_now begins the consultation at payment time;
   // invoice_after / pay_in_person fees paid after the call just get marked
