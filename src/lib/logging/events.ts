@@ -620,6 +620,38 @@ export const LogEvent = {
    */
   CONSULTATION_REMINDERS_CANCEL_FAILED: "consultation.reminders_cancel_failed",
 
+  // ── Consultation balance (deposit schedules) ──────────────────────────────
+  /**
+   * The client was never told the balance of their deposit is due. The money is
+   * still on the invoice and still owed; nobody has asked for it.
+   */
+  CONSULTATION_BALANCE_NOTICE_FAILED: "consultation.balance_notice_failed",
+  /**
+   * Worse than failing to schedule one: a demand for the balance of a
+   * consultation that has since been cancelled or refunded is still queued.
+   */
+  CONSULTATION_BALANCE_NOTICE_CANCEL_FAILED:
+    "consultation.balance_notice_cancel_failed",
+  /**
+   * The lead picked a slot but the balance instalment kept the placeholder date
+   * it was given at booking, so the balance falls due on the wrong day.
+   */
+  CONSULTATION_BALANCE_RESCHEDULE_FAILED:
+    "consultation.balance_reschedule_failed",
+  /**
+   * The balance notice could not be given a payment link. It still goes out —
+   * the client learns what is owed and can call the office — but they cannot
+   * pay from the email.
+   */
+  CONSULTATION_BALANCE_LINK_FAILED: "consultation.balance_link_failed",
+  /**
+   * A no-show left an invoice the client had never been sent, and the attempt
+   * to send it before chasing it failed. It will go overdue with no working
+   * pay link behind it.
+   */
+  CONSULTATION_NO_SHOW_INVOICE_SEND_FAILED:
+    "consultation.no_show_invoice_send_failed",
+
   // ── Audit trail ───────────────────────────────────────────────────────────
   /**
    * The audit row could not be written.
