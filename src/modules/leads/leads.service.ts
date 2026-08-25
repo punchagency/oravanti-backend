@@ -3676,15 +3676,28 @@ const sendConsultationPaymentConfirmation = async (
     consultation.organizationId,
   );
 
+  /**
+   * The call is already behind us, so this mail is a receipt: nothing to
+   * announce, nothing to join.
+   *
+   * Keyed on the STATUS, not on `isInstant`. `isInstant` was only ever a proxy
+   * for "the call already happened" and it missed every other way of getting
+   * here — a completed `invoice_after` booking, a no-show settled afterwards, a
+   * cancelled consultation whose invoice is paid late.
+   */
+  const alreadyHappened =
+    !opts.startingNow &&
+    (["completed", "no_show", "cancelled"] as const).includes(
+      consultation.status as "completed" | "no_show" | "cancelled",
+    );
+
+  // Gated on `alreadyHappened` like everything else below it. It was not, which
+  // is how a receipt reading "nothing further is needed" went out with
+  // "Join here when it starts" stapled underneath it.
   const joinLine =
-    consultation.mode === "video" && consultation.videoLink
+    !alreadyHappened && consultation.mode === "video" && consultation.videoLink
       ? `<p>Join here when it starts: <a href="${consultation.videoLink}">${consultation.videoLink}</a></p>`
       : "";
-
-  // An instant consultation whose fee was settled AFTER the call has nothing to
-  // announce and nothing to join — it is a receipt, and saying "your
-  // consultation is starting" would be wrong.
-  const alreadyHappened = consultation.isInstant && !opts.startingNow;
 
   const whenLine =
     consultation.scheduledAt && !alreadyHappened
