@@ -47,7 +47,7 @@
 //
 // ─── Coverage ───────────────────────────────────────────────────────────────
 //
-// This file holds the 22 tables whose policies are bespoke — each needed a
+// This file holds the 25 tables whose policies are bespoke — each needed a
 // different predicate for staff, clients and contractors, so each is written
 // out by hand:
 //
@@ -58,11 +58,14 @@
 //   invoices, invoice_line_items, invoice_payments, invoice_instalments,
 //   invoice_followups, invoice_deliveries, invoice_line_presets,
 //   invoice_number_sequences, billing_rates, time_entries,
-//   confido_firms, confido_statements, confido_statement_debits
+//   confido_firms, confido_statements, confido_statement_debits,
+//   workflow_templates, workflow_modules, workflow_template_steps
 //
-// One of these — invoice_line_presets — holds shared rows with a NULL
-// organization_id, so its read and write clauses are not the same expression.
-// See the note above its policy.
+// Two of these hold shared rows with a NULL organization_id, so their read and
+// write clauses are not the same expression: invoice_line_presets (see the note
+// above its policy) and workflow_templates (see the note above
+// rlsWorkflowTemplatesOrg) — workflow_modules and workflow_template_steps
+// inherit the same asymmetry through their parent template.
 //
 // **Every other table lives in `rls-tenant.ts`**, which covers the remaining 67
 // through org-scoped and parent-scoped factories and names the rest in an
@@ -110,6 +113,7 @@ import { invoicePayments } from "./invoice-payments";
 import { invoices, invoiceLineItems } from "./invoices";
 import { leads, leadNotes } from "./leads";
 import { timeEntries } from "./time-entries";
+import { workflowModules, workflowTemplates, workflowTemplateSteps } from "./workflow";
 
 // =============================================================================
 // Helper: SQL references to custom PostgreSQL RLS functions
@@ -731,3 +735,74 @@ export const rlsConfidoStatementDebitsOrg = pgPolicy(
     withCheck: sql`organization_id = ${currentOrgId}`,
   },
 ).link(confidoStatementDebits);
+
+
+// =============================================================================
+// Workflow templates (workflow_templates, workflow_modules, workflow_template_steps)
+// =============================================================================
+//
+// Moved here from the `RLS_EXEMPTIONS` list in rls-tenant.ts. They used to be
+// pure platform blueprints with no organization_id at all — one template per
+// practice area, for the whole platform. Now `workflow_templates.organization_id`
+// is nullable: NULL is the system default Oravanti ships, non-null is one firm's
+// own cloned copy (created the first time that firm edits a locked system
+// default — see workflow-template.service.ts). That is exactly the shape
+// `invoice_line_presets` already solves above, so these three follow the same
+// asymmetric pattern rather than the generic `orgScoped`/`parentScoped`
+// factories in rls-tenant.ts.
+//
+// Why not the generic factories: `orgScoped`'s predicate is a strict
+// `organization_id = current_org_id`, which is never true for a NULL column —
+// it would make every system-default template (and everything hanging off it)
+// invisible to every tenant. `parentScoped` has the identical problem one level
+// down. (This is, as far as this change goes, an existing latent gap in
+// `intake_pipeline_templates`/`intake_pipeline_template_steps`, which use the
+// generic factories despite having the same nullable-org shape — not fixed
+// here, out of scope for this change, but not copied into these three either.)
+//
+//   - **Read** admits a NULL-org parent, so every firm sees the shipped
+//     backbone (and their own clone, if they have one).
+//   - **Write** does not, so no firm can edit the shared system default —
+//     the only way to change one is to clone it into an org-owned row first,
+//     which is a write to a row the firm does own.
+//
+// workflow_modules and workflow_template_steps carry no organization_id
+// themselves; both reach it by walking back to workflow_templates, so their
+// predicates are ordinary parent-scoping the way rls-tenant.ts's `parentScoped`
+// works — the read side just has to admit the same NULL as the parent.
+
+/** See the section note above for why this policy's `using`/`withCheck` differ. */
+export const rlsWorkflowTemplatesOrg = pgPolicy("rls_workflow_templates_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id IS NULL OR organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(workflowTemplates);
+
+const templateVisible = sql.raw(
+  `template_id IN (SELECT id FROM workflow_templates WHERE organization_id IS NULL OR organization_id = get_current_organization_id())`,
+);
+const templateOwned = sql.raw(
+  `template_id IN (SELECT id FROM workflow_templates WHERE organization_id = get_current_organization_id())`,
+);
+
+export const rlsWorkflowModulesOrg = pgPolicy("rls_workflow_modules_org", {
+  as: "permissive",
+  for: "all",
+  using: templateVisible,
+  withCheck: templateOwned,
+}).link(workflowModules);
+
+const moduleVisible = sql.raw(
+  `module_id IN (SELECT id FROM workflow_modules WHERE template_id IN (SELECT id FROM workflow_templates WHERE organization_id IS NULL OR organization_id = get_current_organization_id()))`,
+);
+const moduleOwned = sql.raw(
+  `module_id IN (SELECT id FROM workflow_modules WHERE template_id IN (SELECT id FROM workflow_templates WHERE organization_id = get_current_organization_id()))`,
+);
+
+export const rlsWorkflowTemplateStepsOrg = pgPolicy("rls_workflow_template_steps_org", {
+  as: "permissive",
+  for: "all",
+  using: moduleVisible,
+  withCheck: moduleOwned,
+}).link(workflowTemplateSteps);
