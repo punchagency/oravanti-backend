@@ -11,6 +11,29 @@ const requiredValue = (field: string) =>
       `${field} is required`,
     );
 
+/**
+ * A phone number as typed by a human.
+ *
+ * Deliberately permissive: this rejects only input that could not be a phone
+ * number at all. It does NOT require E.164, because intake forms and staff both
+ * type national formats, and rejecting those at the API boundary would lose
+ * contact details the firm needs for calling even when SMS is switched off.
+ *
+ * Normalisation to a dialable number happens at send time in `toE164`
+ * (src/utils/phone.ts), where a failure is recorded against the notification as
+ * `unparseable_phone` and stays visible in the UI.
+ *
+ * Exported standalone as well as on `CommonValidation` because the class is
+ * instantiated per-module and injected into routers, while `*.validation.ts`
+ * schema files compose plain Zod consts.
+ */
+export const phoneSchema = z
+  .string()
+  .trim()
+  .min(7, "Phone number is too short")
+  .max(32, "Phone number is too long")
+  .regex(/^[+()\-.\s\d]+$/, "Phone number contains invalid characters");
+
 export class CommonValidation {
   public nonEmptyString = z.string().min(1, "Value is required");
   public uuid = z.string().uuid("Must be a valid UUID");
@@ -19,6 +42,8 @@ export class CommonValidation {
   public idParams = z.object({
     id: this.uuid,
   });
+
+  public phone = phoneSchema;
 
   public paginationQuery = z.object({
     page: z.string().optional(),

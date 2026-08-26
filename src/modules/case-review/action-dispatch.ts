@@ -59,7 +59,12 @@ const documentsService = new DocumentsService();
 const workflowService = new WorkflowService();
 
 export const defaultActionDeps: ActionDeps = {
-  sendEmail: (opts) => emailService.sendEmail(opts),
+  // Discards the provider message id the mailer now returns: this port is a
+  // fire-and-forget seam that fakes are written against, and widening it would
+  // make every test double invent an id it has no use for.
+  sendEmail: async (opts) => {
+    await emailService.sendEmail(opts);
+  },
   createDocumentRequest: (input) =>
     documentsService.createExternalRequest(input.organizationId, input.actorUserId, {
       leadId: input.leadId,

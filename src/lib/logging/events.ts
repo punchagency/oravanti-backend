@@ -276,6 +276,23 @@ export const LogEvent = {
   LEAD_PIPELINE_TEMPLATE_MISSING: "lead.pipeline_template_missing",
   LEADS_CONSULTATION_INVOICE_FAILED: "leads.consultation_invoice_failed",
   /**
+   * The consultation completed but its `invoice_after` fee could not be
+   * emailed. The invoice stands and the money is still owed — it just has
+   * not been asked for, so this is the signal to ask by hand.
+   */
+  LEADS_CONSULTATION_INVOICE_SEND_FAILED: "leads.consultation_invoice_send_failed",
+  /**
+   * A payment was recorded but the consultation it pays for did not advance.
+   * The money is on the ledger; the booking gate may still be closed.
+   */
+  LEADS_CONSULTATION_SETTLE_FAILED: "leads.consultation_settle_failed",
+  /** An owed refund was turned into an assignable task for someone who can act. */
+  LEADS_CONSULTATION_REFUND_TASK_CREATED: "leads.consultation_refund_task_created",
+  /** The reminder failed to raise. The refund is still owed and now untracked. */
+  LEADS_CONSULTATION_REFUND_TASK_FAILED: "leads.consultation_refund_task_failed",
+  /** A no-show was resolved against the firm's policy (refund / void / task). */
+  LEADS_CONSULTATION_NO_SHOW_SETTLED: "leads.consultation_no_show_settled",
+  /**
    * A cancelled consultation left money with the firm that it did not return.
    *
    * Either the person cancelling lacks `finance:refund`, or part of the fee
@@ -377,6 +394,8 @@ export const LogEvent = {
   QUESTIONNAIRE_REMINDER_SENT: "questionnaire.reminder_sent",
   QUESTIONNAIRE_SEND_FAILED: "questionnaire.send_failed",
   QUESTIONNAIRE_REMINDER_FAILED: "questionnaire.reminder_failed",
+  /** A payment chase could not be sent on one of its chosen channels. */
+  PAYMENT_FOLLOWUP_SEND_FAILED: "payment.followup_send_failed",
 
   // ── Finance ───────────────────────────────────────────────────────────────
   INVOICE_CREATED: "invoice.created",
@@ -384,6 +403,12 @@ export const LogEvent = {
   INVOICE_DUPLICATED: "invoice.duplicated",
   INVOICE_PAID: "invoice.paid",
   INVOICE_VOIDED: "invoice.voided",
+  /**
+   * Moved out of draft onto the books without being emailed — a fee the
+   * firm collects face to face. Distinct from INVOICE_SENT, which implies
+   * a delivery that in this case never happened.
+   */
+  INVOICE_ISSUED_WITHOUT_DELIVERY: "invoice.issued_without_delivery",
   INVOICE_DELIVERY_FAILED: "invoice.delivery_failed",
   INVOICE_SCHEDULE_DELIVERY_FAILED: "invoice.schedule_delivery_failed",
   INSTALMENT_CREATED: "instalment.created",
@@ -409,6 +434,23 @@ export const LogEvent = {
    */
   PAYMENT_WEBHOOK_TRANSACTION_SKIPPED: "payment_webhook.transaction_skipped",
   /**
+   * A client paid at the processor against an invoice we have since VOIDED.
+   *
+   * The worst outcome in this file: real money moved and no ledger row can be
+   * written for it, because `recordPayment` refuses a voided invoice by design
+   * and reversing that would let a withdrawn invoice collect. Confido cannot
+   * prevent it either — `removePaymentLink` is rejected once a link has any
+   * transaction against it, which is precisely the partially-paid invoice most
+   * likely to be voided.
+   *
+   * Deliberately terminal rather than retried: the invoice stays void, so no
+   * number of attempts changes the outcome and retrying only delays the moment
+   * a person finds out. Paired with a finance-trail entry on the invoice, since
+   * this needs to reach the firm and not only the operator.
+   */
+  PAYMENT_WEBHOOK_VOIDED_INVOICE_PAYMENT:
+    "payment_webhook.voided_invoice_payment",
+  /**
    * Webhook events accepted but never handled.
    *
    * The failure this exists for is a worker that is running and consuming
@@ -431,6 +473,13 @@ export const LogEvent = {
   PAYMENT_LINK_CREATED: "payment_link.created",
   PAYMENT_LINK_SENT: "payment_link.sent",
   PAYMENT_LINK_EXPIRED: "payment_link.expired",
+  /**
+   * Withdrawn at the processor because the invoice was voided, so the hosted
+   * URL can no longer take money a voided invoice cannot record.
+   */
+  PAYMENT_LINK_RETIRED: "payment_link.retired",
+  /** The link outlived its invoice: withdrawal failed and the URL may still pay. */
+  PAYMENT_LINK_RETIRE_FAILED: "payment_link.retire_failed",
   FINANCE_EVENT_RECORDED: "finance.event_recorded",
   FINANCE_EVENT_QUERY_FAILED: "finance.event_query_failed",
   FEE_AGREEMENT_GENERATED: "fee_agreement.generated",
@@ -455,6 +504,17 @@ export const LogEvent = {
   PAYMENT_SETTINGS_CLEARING_POLICY_SET: "payment_settings.clearing_policy_set",
   PAYMENT_SETTINGS_BANK_ACCOUNTS_UNAVAILABLE:
     "payment_settings.bank_accounts_unavailable",
+  /**
+   * A `statements` read was refused with "Access denied" and retried.
+   *
+   * Confido could not account for this ("I have not heard of this surfacing
+   * before... I would treat it as temporary for now", Aug 2026) and asked for
+   * timestamps, so this record exists to be handed back to them as much as to
+   * explain a slow sync. If it ever stops being transient it will show up as a
+   * retry that exhausted rather than as silence.
+   */
+  PAYMENT_SETTINGS_STATEMENTS_ACCESS_RETRIED:
+    "payment_settings.statements_access_retried",
   CONSULTATION_BILLING_SENT: "consultation_billing.sent",
   BILLING_RATE_CREATED: "billing_rate.created",
   BILLING_RATE_UPDATED: "billing_rate.updated",
@@ -513,12 +573,87 @@ export const LogEvent = {
   STORAGE_DOWNLOAD_FAILED: "storage.download_failed",
   INTEGRATION_REQUEST_FAILED: "integration.request_failed",
 
-  // ── SMS (stubs) ──────────────────────────────────────────────────────────
-  /** SMS sending is not wired yet. These stubs record the intent for when it is. */
-  SMS_FOLLOWUP_STUB: "sms.followup_stub",
-  SMS_QUESTIONNAIRE_LINK_STUB: "sms.questionnaire_link_stub",
-  SMS_BOOKING_LINK_STUB: "sms.booking_link_stub",
-  SMS_MISSING_DOCS_STUB: "sms.missing_docs_stub",
+  // ── Notifications ─────────────────────────────────────────────────────────
+  /**
+   * A notify() call could not even be recorded.
+   *
+   * Note this is NOT "the message was not delivered" — a send that is
+   * deliberately skipped, or that fails at the provider, is a row in
+   * `notifications` with a reason, which is a far better record than a log
+   * line. This event means the ledger write itself failed, so there is no row
+   * and nothing else will ever mention it.
+   */
+  NOTIFICATION_DISPATCH_FAILED: "notification.dispatch_failed",
+  /** The row was written but could not be queued; the sweep will pick it up. */
+  NOTIFICATION_ENQUEUE_FAILED: "notification.enqueue_failed",
+  NOTIFICATION_CANCEL_FAILED: "notification.cancel_failed",
+  NOTIFICATION_SWEEP_COMPLETED: "notification.sweep_completed",
+  NOTIFICATION_SWEEP_FAILED: "notification.sweep_failed",
+
+  // ── SMS ───────────────────────────────────────────────────────────────────
+  SMS_PROVIDER_SELECTED: "sms.provider_selected",
+  SMS_PROVIDER_UNSET: "sms.provider_unset",
+  /** SMS_PROVIDER held something we do not recognise — typo, or a vendor name that never shipped. */
+  SMS_PROVIDER_UNRECOGNISED: "sms.provider_unrecognised",
+  /** The named provider is missing credentials, so nothing will send. */
+  SMS_PROVIDER_UNCONFIGURED: "sms.provider_unconfigured",
+  SMS_WEBHOOK_SIGNATURE_INVALID: "sms.webhook_signature_invalid",
+  /** A vendor sent a delivery status word its provider does not map. */
+  SMS_STATUS_UNMAPPED: "sms.status_unmapped",
+  SMS_INBOUND_RECEIVED: "sms.inbound_received",
+  SMS_HELP_REPLY_FAILED: "sms.help_reply_failed",
+  SMS_SENT: "sms.sent",
+  SMS_SEND_FAILED: "sms.send_failed",
+  /** No provider configured: the message was logged, not sent. */
+  SMS_STUB_SEND: "sms.stub_send",
+  /** A body that will be billed as more than one segment. */
+  SMS_BODY_MULTI_SEGMENT: "sms.body_multi_segment",
+  /** A recipient asked to stop, and it was applied across every organization. */
+  SMS_OPT_OUT_APPLIED: "sms.opt_out_applied",
+  SMS_OPT_IN_APPLIED: "sms.opt_in_applied",
+
+  // ── Email suppression ─────────────────────────────────────────────────────
+  EMAIL_SUPPRESSED: "email.suppressed",
+  EMAIL_SUPPRESSION_LIFTED: "email.suppression_lifted",
+  CONSULTATION_REMINDERS_SCHEDULE_FAILED:
+    "consultation.reminders_schedule_failed",
+  /**
+   * Worse than failing to schedule: a reminder for a consultation that has been
+   * moved or called off is still queued and will still fire.
+   */
+  CONSULTATION_REMINDERS_CANCEL_FAILED: "consultation.reminders_cancel_failed",
+
+  // ── Consultation balance (deposit schedules) ──────────────────────────────
+  /**
+   * The client was never told the balance of their deposit is due. The money is
+   * still on the invoice and still owed; nobody has asked for it.
+   */
+  CONSULTATION_BALANCE_NOTICE_FAILED: "consultation.balance_notice_failed",
+  /**
+   * Worse than failing to schedule one: a demand for the balance of a
+   * consultation that has since been cancelled or refunded is still queued.
+   */
+  CONSULTATION_BALANCE_NOTICE_CANCEL_FAILED:
+    "consultation.balance_notice_cancel_failed",
+  /**
+   * The lead picked a slot but the balance instalment kept the placeholder date
+   * it was given at booking, so the balance falls due on the wrong day.
+   */
+  CONSULTATION_BALANCE_RESCHEDULE_FAILED:
+    "consultation.balance_reschedule_failed",
+  /**
+   * The balance notice could not be given a payment link. It still goes out —
+   * the client learns what is owed and can call the office — but they cannot
+   * pay from the email.
+   */
+  CONSULTATION_BALANCE_LINK_FAILED: "consultation.balance_link_failed",
+  /**
+   * A no-show left an invoice the client had never been sent, and the attempt
+   * to send it before chasing it failed. It will go overdue with no working
+   * pay link behind it.
+   */
+  CONSULTATION_NO_SHOW_INVOICE_SEND_FAILED:
+    "consultation.no_show_invoice_send_failed",
 
   // ── Audit trail ───────────────────────────────────────────────────────────
   /**

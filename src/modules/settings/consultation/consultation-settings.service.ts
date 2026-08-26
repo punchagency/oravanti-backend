@@ -41,6 +41,11 @@ const toSettingsDTO = (row: ConsultationSettings) => ({
   // Only ever meaningful for the disabled waiver structure, so nothing can
   // legitimately hold one any more.
   waiverWindowDays: null,
+  feeSchedule: row.feeSchedule,
+  upfrontPercent: row.upfrontPercent,
+  balanceDueMode: row.balanceDueMode,
+  balanceDueDays: row.balanceDueDays,
+  noShowPolicy: row.noShowPolicy,
   timezone: row.timezone,
   language: row.language,
   smsEnabled: row.smsEnabled,
@@ -100,6 +105,11 @@ export class ConsultationSettingsService {
         defaultAmount: null,
         feeStructure: null,
         waiverWindowDays: null,
+        feeSchedule: "full_upfront" as const,
+        upfrontPercent: null,
+        balanceDueMode: null,
+        balanceDueDays: null,
+        noShowPolicy: "forfeit" as const,
         timezone: "UTC",
         language: "en",
         smsEnabled: false,
@@ -131,9 +141,45 @@ export class ConsultationSettingsService {
       // The waiver structure is disabled, so nothing can set a window. Written
       // rather than left alone so a firm that had one is cleared on next save.
       waiverWindowDays: null,
+      ...(body.feeSchedule !== undefined
+        ? {
+            feeSchedule: body.feeSchedule,
+            // Kept in lockstep with the schedule so the pair can never
+            // contradict the table's CHECK: only `partial_upfront` carries a
+            // deposit, and changing away from it clears the stale percentage.
+            upfrontPercent:
+              body.feeSchedule === "partial_upfront"
+                ? body.upfrontPercent ?? null
+                : null,
+            // The balance due date belongs to the deposit, so it is cleared by
+            // the same move that clears the percentage. Written as a pair
+            // because the table's CHECK requires both or neither.
+            balanceDueMode:
+              body.feeSchedule === "partial_upfront"
+                ? body.balanceDueMode ?? null
+                : null,
+            balanceDueDays:
+              body.feeSchedule === "partial_upfront"
+                ? body.balanceDueDays ?? null
+                : null,
+          }
+        : {}),
+      ...(body.noShowPolicy !== undefined
+        ? { noShowPolicy: body.noShowPolicy }
+        : {}),
       ...(body.timezone !== undefined ? { timezone: body.timezone } : {}),
       ...(body.language !== undefined ? { language: body.language } : {}),
-      smsEnabled: body.smsEnabled ?? false,
+      // Conditional like every other optional field above, and emphatically not
+      // `body.smsEnabled ?? false`. That default meant any caller omitting the
+      // field turned the firm's SMS master switch OFF — and every caller omits
+      // it: the fee-defaults card, the payment-policy card and the firm-timezone
+      // card all send fee fields only. Saving a no-show policy silently stopped
+      // the firm texting anybody.
+      //
+      // The switch has its own endpoint for exactly this reason
+      // (`notification-settings.service.ts`, PATCH /settings/notifications/sms),
+      // which does a targeted upsert rather than coming through here.
+      ...(body.smsEnabled !== undefined ? { smsEnabled: body.smsEnabled } : {}),
       updatedAt: new Date(),
     };
 

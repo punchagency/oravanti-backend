@@ -1,13 +1,20 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { netPaidOnInvoice } from "./refunds.service";
 import { db } from "../../db/client";
-import { consultations } from "../../db/schema/consultations";
+import {
+  LIVE_CONSULTATION_STATUSES,
+  consultations,
+} from "../../db/schema/consultations";
+import { consultationSettings } from "../../db/schema/consultation-settings";
+import { invoiceInstalments } from "../../db/schema/invoice-instalments";
 import { invoices } from "../../db/schema/invoices";
 import { leads } from "../../db/schema/leads";
 import { createModuleLogger } from "../../lib/logging/log";
 import { systemAccess } from "./account-access";
 import { create } from "./invoices.service";
-import { num } from "./money";
+import { setSchedule } from "./instalments.service";
+import { num, toMoney } from "./money";
+import { amountDueNow } from "./payment-links.service";
 import { firmToday } from "./status";
 
 const log = createModuleLogger("consultation-billing.service");
@@ -46,6 +53,43 @@ export type ConsultationFeeInput = {
   scheduledAt: Date | null;
   /** `pay_now` is due immediately; the consultation does not start until paid. */
   dueImmediately: boolean;
+  /**
+   * The deposit as a percentage of the fee, when the firm collects one. The
+   * balance falls due after the consultation.
+   */
+  upfrontPercent?: number | null;
+  /**
+   * How many days after the consultation the balance falls due. Null falls back
+   * to the standard terms, which is what every firm got before the setting
+   * existed.
+   */
+  balanceDueDays?: number | null;
+};
+
+/**
+ * When the deposit's balance falls due.
+ *
+ * Counted from the CONSULTATION, per the firm's setting — the balance is owed
+ * for a call that has happened. A consultation with no time yet (every
+ * lead-driven booking at the moment it is raised) has nothing to count from, so
+ * it takes the standard terms and is recomputed by `rescheduleBalanceInstalment`
+ * the moment the lead picks a slot.
+ *
+ * Always strictly after the deposit. `setSchedule` renumbers sequence into
+ * due-date order, so two slices sharing a date have no deterministic tiebreaker
+ * — and the booking gate reads sequence 1 as the deposit, so a collision would
+ * silently gate on the balance instead. An instant consultation is scheduled for
+ * today, which is exactly when that happens.
+ */
+export const balanceDueDate = (
+  today: string,
+  scheduledAt: Date | null,
+  balanceDueDays: number | null | undefined,
+): string => {
+  const base = scheduledAt
+    ? addDays(scheduledAt.toISOString().slice(0, 10), balanceDueDays ?? 0)
+    : addDays(today, balanceDueDays ?? TERMS_DAYS);
+  return base > today ? base : addDays(today, 1);
 };
 
 /**
@@ -55,6 +99,11 @@ export type ConsultationFeeInput = {
  * the consultation flow has its own moment for it: `pay_now` sends at once,
  * `invoice_after` when the call is completed, `pay_in_person` never — staff
  * record the payment directly.
+ *
+ * The two that are not emailed are still ISSUED (`issueInvoice`) rather than
+ * left in draft. A draft is excluded from `countableInvoices`, so a fee
+ * collected in cash would otherwise be missing from every revenue report while
+ * sitting in the till.
  *
  * Returns null when there is no practice area on the lead. The invoice would be
  * refused by validation (a practice area is required when there is no matter,
@@ -105,6 +154,42 @@ export const raiseConsultationInvoice = async (
     timeEntryIds: [],
   });
 
+  // A deposit is two dated slices of ONE invoice, not two invoices. Two would
+  // mean two numbers, two dunning tracks and a reconciliation problem;
+  // `invoice_instalments` exists precisely to avoid that, and
+  // `assertScheduleBalances` guarantees the slices sum to the total inside the
+  // same transaction as the write.
+  if (input.upfrontPercent != null && input.amount > 0) {
+    // Rounding lands on the deposit and the balance is the remainder, so the
+    // two always sum to the total exactly — never round(a) + round(b), which
+    // can miss by a cent and trip the balance assertion.
+    const deposit = toMoney((input.amount * input.upfrontPercent) / 100);
+    const balance = toMoney(input.amount - deposit);
+
+    // A deposit that rounds to nothing, or to the whole fee, is not a deposit.
+    // Falling back to a single-payment invoice is better than writing a
+    // schedule with a zero slice, which `assertScheduleBalances` would reject
+    // and which would take the whole booking down with it.
+    if (deposit > 0 && balance > 0) {
+      const dueDate = balanceDueDate(
+        today,
+        input.scheduledAt,
+        input.balanceDueDays,
+      );
+
+      await setSchedule(
+        organizationId,
+        invoice.id,
+        [
+          { dueDate: today, amount: deposit },
+          { dueDate, amount: balance },
+        ],
+        actorStaffId,
+        systemAccess(),
+      );
+    }
+  }
+
   await db
     .update(consultations)
     .set({ invoiceId: invoice.id, updatedAt: new Date() })
@@ -113,6 +198,79 @@ export const raiseConsultationInvoice = async (
   log.action("consultation_billing.generated", { consultationId: input.consultationId, invoiceId: invoice.id });
 
   return invoice.id;
+};
+
+/**
+ * Move the deposit's balance instalment to match a newly-agreed consultation
+ * time.
+ *
+ * The balance date is computed when the invoice is raised, which for a
+ * lead-driven booking is BEFORE any time exists — so it took the standard terms
+ * and nothing ever revisited it. A firm setting "due 7 days after the
+ * consultation" got 14 days after booking, and a lead who booked six weeks out
+ * owed the balance a month before the call.
+ *
+ * Only touches a two-slice schedule whose deposit is already settled or
+ * pending; anything else is left alone. Non-fatal by design — the slot is
+ * booked and that must stand even if the ledger write fails.
+ */
+export const rescheduleBalanceInstalment = async (
+  organizationId: string,
+  consultation: {
+    invoiceId: string | null;
+    scheduledAt: Date | null;
+    /**
+     * The consultation's own snapshot, not the firm's current setting. A
+     * `custom` firm lets the scheduler choose per consultation, and re-reading
+     * settings here would quietly discard that choice — as would a firm that
+     * changed its default between the booking and the lead picking a slot.
+     */
+    balanceDueDays: number | null;
+  },
+  actorStaffId: string | null,
+): Promise<void> => {
+  if (!consultation.invoiceId || !consultation.scheduledAt) return;
+
+  const rows = await db
+    .select({
+      sequence: invoiceInstalments.sequence,
+      dueDate: invoiceInstalments.dueDate,
+      amount: invoiceInstalments.amount,
+    })
+    .from(invoiceInstalments)
+    .where(
+      and(
+        eq(invoiceInstalments.organizationId, organizationId),
+        eq(invoiceInstalments.invoiceId, consultation.invoiceId),
+      ),
+    )
+    .orderBy(asc(invoiceInstalments.sequence));
+
+  // Only the deposit shape. A hand-built schedule of three or more slices is
+  // somebody's deliberate arrangement and not this function's business.
+  if (rows.length !== 2) return;
+
+  const today = await firmToday(organizationId);
+  const dueDate = balanceDueDate(
+    today,
+    consultation.scheduledAt,
+    consultation.balanceDueDays,
+  );
+
+  if (dueDate === rows[1]!.dueDate) return;
+
+  // The deposit keeps its own date: it was due when the invoice was raised and
+  // may already be paid. Only the balance moves.
+  await setSchedule(
+    organizationId,
+    consultation.invoiceId,
+    [
+      { dueDate: rows[0]!.dueDate, amount: num(rows[0]!.amount) },
+      { dueDate, amount: num(rows[1]!.amount) },
+    ],
+    actorStaffId,
+    systemAccess(),
+  );
 };
 
 export type ConsultationFee = {
@@ -130,6 +288,16 @@ export type ConsultationFee = {
    * cannot fall out of step with the ledger.
    */
   netPaid: number;
+  /**
+   * What is being ASKED for right now, as distinct from `amount`.
+   *
+   * They differ only on a deposit schedule, and that difference is the point:
+   * the lead owes the whole fee but is being asked for the deposit, so a
+   * booking page quoting `amount` beside a payment form charging the deposit
+   * showed two contradictory figures. Null when there is no invoice to ask
+   * against.
+   */
+  dueNow: number | null;
 };
 
 /**
@@ -161,6 +329,7 @@ export const consultationFee = async (
       // No invoice means no ledger rows. The legacy `feeStatus` flag was never
       // backed by money moving, so claiming an amount is held would be a guess.
       netPaid: 0,
+      dueNow: null,
     };
   }
 
@@ -169,6 +338,7 @@ export const consultationFee = async (
       invoiceNumber: invoices.invoiceNumber,
       status: invoices.status,
       totalAmount: invoices.totalAmount,
+      amountPaid: invoices.amountPaid,
       balanceDue: invoices.balanceDue,
     })
     .from(invoices)
@@ -189,6 +359,7 @@ export const consultationFee = async (
       invoiceId: row.invoiceId,
       invoiceNumber: null,
       netPaid: 0,
+      dueNow: null,
     };
   }
 
@@ -209,5 +380,157 @@ export const consultationFee = async (
     invoiceId: row.invoiceId,
     invoiceNumber: invoice.invoiceNumber,
     netPaid: await netPaidOnInvoice(organizationId, row.invoiceId),
+    // The same figure the payment page and Confido are given, from the same
+    // function — a second derivation here would be a second thing to keep in
+    // step with `allocate`.
+    dueNow: await amountDueNow(
+      organizationId,
+      row.invoiceId,
+      num(invoice.amountPaid),
+      num(invoice.balanceDue),
+    ),
   };
+};
+
+// ── The booking gate ─────────────────────────────────────────────────────────
+
+/**
+ * Is money still owed before this consultation may be booked?
+ *
+ * Replaces the old `consultation.feeStatus === "unpaid"` test, which was a
+ * stored enum standing in for a ledger. The two drifted, and each way they
+ * drifted was a bug:
+ *
+ *   - Voiding an unpaid fee invoice left `fee_status` at `"unpaid"` forever.
+ *     No payment could ever clear it — the invoice was void, so no webhook was
+ *     coming — and the lead's booking page offered no slots, permanently.
+ *   - A refund could not re-close the gate, because nothing wrote the enum
+ *     back.
+ *
+ * Reading the ledger fixes both without a special case for either: a voided
+ * invoice has no outstanding instalment, and a reversal is a negative row that
+ * lowers `netPaid` the moment it lands.
+ *
+ * The threshold is the whole fee, the deposit, or nothing, depending on the
+ * firm's schedule. The "nothing" case was described here from the beginning and
+ * never implemented: `after_consultation` writes no instalments, so it fell
+ * through to the whole-fee branch and its leads were asked to pay before they
+ * could pick a time — the exact opposite of the setting they had chosen, and
+ * with an invoice that is deliberately never emailed until the call is done.
+ *
+ * Distinct from `consultationFeeUnsettled`, which asks whether the money has
+ * actually arrived. The two agree on every schedule except this one, where
+ * "you may book" and "we have been paid" are deliberately different questions.
+ */
+export const consultationPaymentOutstanding = async (
+  organizationId: string,
+  consultation: { invoiceId: string | null; feeStatus: string },
+): Promise<boolean> => {
+  // Predates invoicing. The legacy flag is all there is, so trust it.
+  if (!consultation.invoiceId) return consultation.feeStatus === "unpaid";
+
+  // Nothing is due before the consultation happens, so the gate is open from
+  // the start. Read before the invoice: there is no figure to compare against.
+  const [settings] = await db
+    .select({ feeSchedule: consultationSettings.feeSchedule })
+    .from(consultationSettings)
+    .where(eq(consultationSettings.organizationId, organizationId))
+    .limit(1);
+
+  if (settings?.feeSchedule === "after_consultation") return false;
+
+  return consultationFeeUnsettled(organizationId, consultation);
+};
+
+/**
+ * Is this consultation's fee still short of what has been collected?
+ *
+ * The settlement question, as opposed to the booking-gate question above. On
+ * `full_upfront` and `partial_upfront` the two coincide — clearing the gate IS
+ * paying what was due — so this carries the threshold and the gate defers to
+ * it. On `after_consultation` they part company: the gate opens before any
+ * money exists, and reusing it to decide settlement would mark a $300 fee paid
+ * the moment a $1 payment landed.
+ *
+ * `partial_upfront` settles at the DEPOSIT, not the total, so a lead who has
+ * cleared the gate is not simultaneously recorded as owing the consultation.
+ */
+export const consultationFeeUnsettled = async (
+  organizationId: string,
+  consultation: { invoiceId: string | null; feeStatus: string },
+): Promise<boolean> => {
+  if (!consultation.invoiceId) return consultation.feeStatus === "unpaid";
+
+  const [invoice] = await db
+    .select({ status: invoices.status, totalAmount: invoices.totalAmount })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.organizationId, organizationId),
+        eq(invoices.id, consultation.invoiceId),
+      ),
+    )
+    .limit(1);
+
+  // The link points at nothing, or at an invoice the firm has withdrawn. Either
+  // way there is no debt to hold the booking against.
+  if (!invoice) return consultation.feeStatus === "unpaid";
+  if (invoice.status === "void") return false;
+
+  const netPaid = await netPaidOnInvoice(organizationId, consultation.invoiceId);
+
+  // A deposit schedule is the only case where part of the total is enough. The
+  // first instalment IS the deposit — `setSchedule` renumbers into due-date
+  // order, so sequence 1 is always the earliest.
+  const [deposit] = await db
+    .select({ amount: invoiceInstalments.amount })
+    .from(invoiceInstalments)
+    .where(
+      and(
+        eq(invoiceInstalments.organizationId, organizationId),
+        eq(invoiceInstalments.invoiceId, consultation.invoiceId),
+      ),
+    )
+    .orderBy(asc(invoiceInstalments.sequence))
+    .limit(1);
+
+  const required = deposit ? num(deposit.amount) : num(invoice.totalAmount);
+
+  // Half a cent, the same tolerance the payment split and schedule balance
+  // checks use, so a rounded deposit paid exactly is not one cent short.
+  return netPaid < required - 0.005;
+};
+
+/**
+ * Is a LIVE consultation billed by this invoice?
+ *
+ * The question behind refusing a Finance refund or void. The refusal exists so
+ * money cannot be sent back while a booking is still standing: cancelling is
+ * the one act that also releases the calendar slot, revokes the booking link
+ * and tells the client, and a bare refund does none of it.
+ *
+ * Once the consultation is terminal — cancelled, completed or a no-show — all
+ * of that has already happened, so the reason evaporates. Refusing then buys
+ * nothing and costs the only remaining way to return the client's money: a
+ * cancellation whose refund leg failed at the processor cannot be re-run
+ * (`cancelConsultation` refuses a cancelled consultation), so Finance is the
+ * last door.
+ */
+export const hasLiveConsultation = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<boolean> => {
+  const [row] = await db
+    .select({ id: consultations.id })
+    .from(consultations)
+    .where(
+      and(
+        eq(consultations.organizationId, organizationId),
+        eq(consultations.invoiceId, invoiceId),
+        inArray(consultations.status, [...LIVE_CONSULTATION_STATUSES]),
+      ),
+    )
+    .limit(1);
+
+  return Boolean(row);
 };

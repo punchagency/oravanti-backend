@@ -1,5 +1,7 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { env } from "../../../config/env";
+import { LogEvent } from "../../../lib/logging/events";
+import { createModuleLogger } from "../../../lib/logging/log";
 import { ExternalServiceError } from "../../../utils/error/app-error";
 import type {
   ConfidoBankAccount,
@@ -93,7 +95,33 @@ export class ConfidoApiError extends ExternalServiceError {
       this.messages.some((m) => m.toLowerCase().includes(f.toLowerCase())),
     );
   }
+
+  /**
+   * An authorization refusal that goes away on its own.
+   *
+   * `statements` intermittently answers "Access denied! You don't have
+   * permission for this action!" and then succeeds seconds later with the same
+   * token and nothing changed on our side — reproduced with both a firm token
+   * and a partner token. Confido could not explain it, said to treat it as
+   * temporary and asked for timestamps (Aug 2026), so this is a retry against a
+   * fault they have **not** characterised rather than a documented one.
+   *
+   * Matched on the message because the failure arrives with no
+   * `extensions.code` at all, so there is nothing else to key on. Deliberately
+   * narrow, and deliberately paired with a bounded retry: a real permission
+   * problem — a revoked token, a firm we are not entitled to — reads
+   * identically, and must still surface rather than being retried away.
+   */
+  isTransientAuthFailure(): boolean {
+    return this.messages.some((m) => m.toLowerCase().includes("access denied"));
+  }
 }
+
+/** Attempts after the first, and the delay between them. */
+const TRANSIENT_AUTH_RETRIES = 2;
+const TRANSIENT_AUTH_BACKOFF_MS = 500;
+
+const log = createModuleLogger("confido.client");
 
 export class ConfidoClient {
   constructor(
@@ -440,6 +468,60 @@ export class ConfidoClient {
     return data.addPaymentLink;
   }
 
+  /**
+   * Re-point an existing link at what is owed NOW.
+   *
+   * Needed because a link is created once per invoice — `externalId` is our
+   * invoice id and Confido has no delete endpoint, so the create is permanent —
+   * while the amount due can change. An invoice paid by instalments asks for the
+   * deposit first and the balance later, and without this the link would be
+   * stuck asking for the deposit forever.
+   */
+  async updatePaymentLink(
+    firmToken: string,
+    input: {
+      id: string;
+      trust?: number;
+      operating?: number;
+      partialPaymentAllowed?: boolean;
+    },
+  ): Promise<ConfidoPaymentLink> {
+    const data = await this.gql<{ updatePaymentLink: ConfidoPaymentLink }>(
+      firmToken,
+      `mutation UpdateLink($input: UpdatePaymentLinkInput!) {
+        updatePaymentLink(input: $input) { ${LINK_FIELDS} }
+      }`,
+      { input },
+    );
+    return data.updatePaymentLink;
+  }
+
+  /**
+   * Withdraw a payment link so it can no longer take money.
+   *
+   * For an invoice the firm has voided. Our own page already refuses a voided
+   * invoice's token, but that only stops the URL being *obtained* — a client
+   * holding it from an earlier visit can still pay at Confido, and the webhook
+   * then fails to record it because `recordPayment` refuses a voided invoice.
+   * Money taken, nothing on the ledger.
+   *
+   * Returns the link in its withdrawn state. There is no un-remove, which is
+   * why this is only ever called for `void` — a terminal, non-reverting status.
+   */
+  async removePaymentLink(
+    firmToken: string,
+    input: { id: string },
+  ): Promise<ConfidoPaymentLink> {
+    const data = await this.gql<{ removePaymentLink: ConfidoPaymentLink }>(
+      firmToken,
+      `mutation RemoveLink($input: RemovePaymentLinkInput!) {
+        removePaymentLink(input: $input) { ${LINK_FIELDS} }
+      }`,
+      { input },
+    );
+    return data.removePaymentLink;
+  }
+
   /** One transaction, for turning a thin webhook into a ledger row. */
   async getTransaction(
     firmToken: string,
@@ -469,31 +551,38 @@ export class ConfidoClient {
    * id has to fetch a window and match within it. `limit` is required by their
    * schema. A statement older than the window is unreachable this way, which is
    * why ingestion also runs on a lookback rather than webhooks alone.
+   *
+   * Retried on the transient "Access denied" described in
+   * `isTransientAuthFailure`. Safe because it is a read — the standing rule in
+   * this client is that backoff goes on reads only, since none of Confido's
+   * mutations carry an idempotency key.
    */
   async listStatements(
     firmToken: string,
     limit = 12,
   ): Promise<ConfidoStatementRecord[]> {
-    const data = await this.gql<{
-      statements: { records: ConfidoStatementRecord[] };
-    }>(
-      firmToken,
-      `query Statements($limit: Int!) {
-        statements(limit: $limit, orderDir: desc) {
-          records {
-            id
-            month
-            bankAccounts {
-              bankAccountCategory bankAccountMask bankAccountNickname
-              totalPaymentVolume totalFees cardFees achFees surchargeFeesCollected
+    const data = await this.retryTransientAuth(() =>
+      this.gql<{
+        statements: { records: ConfidoStatementRecord[] };
+      }>(
+        firmToken,
+        `query Statements($limit: Int!) {
+          statements(limit: $limit, orderDir: desc) {
+            records {
+              id
+              month
+              bankAccounts {
+                bankAccountCategory bankAccountMask bankAccountNickname
+                totalPaymentVolume totalFees cardFees achFees surchargeFeesCollected
+              }
+              debits { amount fromBankAccountCategory fromBankAccountMask statementDescriptor }
+              additionalFees { amount description type }
+              additionalCredits { amount description type }
             }
-            debits { amount fromBankAccountCategory fromBankAccountMask statementDescriptor }
-            additionalFees { amount description type }
-            additionalCredits { amount description type }
           }
-        }
-      }`,
-      { limit },
+        }`,
+        { limit },
+      ),
     );
     return data.statements.records;
   }
@@ -668,6 +757,43 @@ export class ConfidoClient {
 
   // ─── Transport ─────────────────────────────────────────────────────────────
 
+  /**
+   * Run a READ again when Confido answers with the unexplained "Access denied".
+   *
+   * Bounded on purpose. The failure is indistinguishable from a genuine
+   * authorization problem — a revoked firm token reads exactly the same — so
+   * this buys through a blip and then gets out of the way, rather than retrying
+   * a real refusal into a timeout.
+   *
+   * Never wrap a mutation in this. Confido offers no idempotency key anywhere,
+   * so a retry after a write that actually succeeded duplicates it, and their
+   * duplicates are permanent.
+   */
+  private async retryTransientAuth<T>(run: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await run();
+      } catch (err) {
+        const transient =
+          err instanceof ConfidoApiError && err.isTransientAuthFailure();
+        if (!transient || attempt >= TRANSIENT_AUTH_RETRIES) throw err;
+
+        // `occurredAt` because Confido asked for timestamps to investigate it.
+        // The attempt that finally succeeds logs nothing, so every record here
+        // is a real occurrence worth reporting to them.
+        log.warn(LogEvent.PAYMENT_SETTINGS_STATEMENTS_ACCESS_RETRIED, {
+          attempt: attempt + 1,
+          maxAttempts: TRANSIENT_AUTH_RETRIES + 1,
+          occurredAt: new Date().toISOString(),
+        });
+
+        await new Promise((resolve) =>
+          setTimeout(resolve, TRANSIENT_AUTH_BACKOFF_MS * (attempt + 1)),
+        );
+      }
+    }
+  }
+
   private async gql<T>(
     token: string,
     query: string,
@@ -761,4 +887,15 @@ export const isConfidoConfigured = (): boolean =>
 /** Test seam: drops the memoized client so a config change is picked up. */
 export const resetConfidoClient = (): void => {
   cached = null;
+};
+
+/**
+ * Test seam: install a stand-in client.
+ *
+ * Paired with `resetConfidoClient`, which callers must use to put the real one
+ * back. Nothing in `src/` should call this — it exists so a check can observe
+ * which mutations a code path issues without reaching the sandbox.
+ */
+export const setConfidoClient = (client: ConfidoClient): void => {
+  cached = client;
 };

@@ -14,6 +14,11 @@ import { documentAnalyses } from "../../src/db/schema/document-analyses";
 import { documents, documentVersions } from "../../src/db/schema/documents";
 import { leadDocumentLinks } from "../../src/db/schema/lead-document-links";
 import { leads } from "../../src/db/schema/leads";
+import {
+  notificationPreferences,
+  notificationSettings,
+} from "../../src/db/schema/notification-settings";
+import { notifications } from "../../src/db/schema/notifications";
 import { staff } from "../../src/db/schema/staff";
 import {
   initializeTenantContext,
@@ -140,6 +145,10 @@ export const silenceEmail = (): void => {
       throw new Error("No recipients defined");
     }
     captured.push({ to: options.to, subject: options.subject });
+    // Null rather than a synthetic id: nothing was handed to a provider, so
+    // there is no id a delivery callback could ever reference. The type is
+    // nullable for exactly this case.
+    return { providerMessageId: null };
   };
 };
 
@@ -483,6 +492,22 @@ const teardown = async (fixture: Fixture) => {
     if (fixture.staffId) {
       await systemDb.delete(staff).where(eq(staff.id, fixture.staffId));
     }
+    // Notification rows are written by the code under test rather than seeded,
+    // so nothing above tracks their ids — they are cleared by organization.
+    // Preferences go before settings (cascade would handle it, but the explicit
+    // order documents the dependency) and both before the organization they
+    // reference.
+    await systemDb
+      .delete(notifications)
+      .where(eq(notifications.organizationId, fixture.organizationId));
+    await systemDb
+      .delete(notificationPreferences)
+      .where(
+        eq(notificationPreferences.organizationId, fixture.organizationId),
+      );
+    await systemDb
+      .delete(notificationSettings)
+      .where(eq(notificationSettings.organizationId, fixture.organizationId));
     await systemDb
       .delete(organization)
       .where(eq(organization.id, fixture.organizationId));

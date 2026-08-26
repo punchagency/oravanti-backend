@@ -13,6 +13,7 @@ import {
   isNotNull,
   isNull,
   ne,
+  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -34,10 +35,14 @@ import { invoices } from "../../db/schema/invoices";
 import { systemAccess } from "../finance/account-access";
 import {
   consultationFee,
+  consultationFeeUnsettled,
+  consultationPaymentOutstanding,
+  rescheduleBalanceInstalment,
   raiseConsultationInvoice,
 } from "../finance/consultation-billing.service";
-import { sendInvoice } from "../finance/deliveries.service";
-import { voidInvoice } from "../finance/invoices.service";
+import { resendInvoice, sendInvoice } from "../finance/deliveries.service";
+import { invoiceDeliveries } from "../../db/schema/invoice-deliveries";
+import { issueInvoice, voidInvoice } from "../finance/invoices.service";
 import {
   netPaidOnInvoice,
   refundInvoiceInFull,
@@ -49,6 +54,7 @@ import {
 import { consultationLocations } from "../../db/schema/consultation-locations";
 import { consultationSettings } from "../../db/schema/consultation-settings";
 import {
+  LIVE_CONSULTATION_STATUSES,
   consultationParticipants,
   consultations,
 } from "../../db/schema/consultations";
@@ -86,6 +92,16 @@ import {
   mintPaymentLink,
   startCheckout,
 } from "../finance/payment-links.service";
+import {
+  cancelConsultationBalanceNotice,
+  scheduleConsultationBalanceNotice,
+} from "../../notifications/consultation-balance";
+import {
+  cancelConsultationReminders,
+  scheduleConsultationReminders,
+} from "../../notifications/consultation-reminders";
+import { notify } from "../../notifications/notification.service";
+import { staffRecipientsForFirm } from "../../notifications/recipients";
 import { emailService } from "../../utils/email/email.service";
 import {
   AuthorizationError,
@@ -104,7 +120,11 @@ import { generateCaseNumber } from "../cases/cases.service";
 import { materializeCaseTypeRequirements } from "../document-requirements/document-requirements.service";
 import { relinkLeadDocumentsToCase } from "../documents/document-ingest";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
-import { createModuleLogger } from "../../lib/logging/log";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
+// `hydrateCaseWorkflow` is deliberately not imported here any more. It is the
+// previous engine — `case_workflow_steps`, templates keyed by practice area —
+// which this branch replaces with per-case-type templates materialized into
+// `tasks`. The call site below already converts.
 import { materializeTasksForCase } from "../workflow/task-materialization.service";
 import { generateConsultationSlots } from "./consultation-slots.service";
 import { getESignatureProvider } from "./dropbox-sign.provider";
@@ -477,6 +497,7 @@ const createLead = async (
     lastName: string;
     email: string;
     phone?: string;
+    smsConsent?: boolean;
     entityType?: "individual" | "company";
     source: string;
     practiceAreaId?: string;
@@ -507,6 +528,13 @@ const createLead = async (
       intakeAdversePartyEmail: data.intakeAdversePartyEmail,
       language: data.language,
       timezone: data.timezone,
+      // Consent is only recorded when it was actually given. Absent means
+      // false, and false carries no timestamp — a consent date that does not
+      // correspond to an act of consenting is worse than no date at all.
+      smsConsent: data.smsConsent === true,
+      ...(data.smsConsent === true
+        ? { smsConsentAt: new Date(), smsConsentSource: "intake_form" }
+        : {}),
     })
     .returning();
 
@@ -530,6 +558,37 @@ const createLead = async (
   // immediately populated without requiring a manual init click.
   const wfSvc = new LeadWorkflowService();
   await wfSvc.initializePipelineSteps(lead.id, organizationId);
+
+  /**
+   * Tell the firm a lead arrived.
+   *
+   * Firm-wide rather than to one person, because a new lead belongs to nobody
+   * yet — `respondentId` is whoever happened to create the record, which for a
+   * web-form submission is a system actor rather than someone waiting to
+   * respond.
+   *
+   * Preference-gated under `new_lead_submitted`, so a firm drowning in leads
+   * can switch it off. Email and in-app only: no firm wants every intake
+   * arriving as a text.
+   */
+  void notify({
+    organizationId,
+    event: "new_lead_submitted",
+    recipients: await staffRecipientsForFirm(organizationId),
+    context: {
+      leadName: `${lead.firstName} ${lead.lastName}`.trim(),
+      source: data.source,
+      link: `${env.FRONTEND_APP_URL}/admin/leads/${lead.id}`,
+    },
+    scenario: { leadId: lead.id },
+    actorStaffId: creatorStaffId,
+    dedupeKey: `new-lead-${lead.id}`,
+  }).catch((err: unknown) =>
+    log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+      leadId: lead.id,
+      event: "new_lead_submitted",
+    }),
+  );
 
   return lead;
 };
@@ -817,6 +876,7 @@ const updateLead = async (
       caseTypeId: string;
       notes: string;
       noteContext: string;
+      smsConsent: boolean;
     }
   >,
   actorId?: string,
@@ -861,6 +921,27 @@ const updateLead = async (
 
     patch[column] = next;
     changes[column] = { from: prev ?? null, to: next };
+  }
+
+  // SMS consent is handled outside the generic allowlist: it needs its own
+  // timestamp and source, and it has a rule the other columns do not.
+  //
+  // Staff may GRANT consent but may never revoke an opt-out. Once smsOptOutAt
+  // is set the recipient has told us to stop, and that is their decision to
+  // reverse — by texting START — not the firm's to overwrite from an admin
+  // screen. The switch is rendered read-only in that state; this is the server
+  // side of the same rule, because a UI-only guard is not a guard.
+  if (data.smsConsent !== undefined && data.smsConsent !== existing.smsConsent) {
+    if (existing.smsOptOutAt && data.smsConsent === true) {
+      throw new BadRequestError(
+        "This contact opted out of SMS. They must text START to opt back in.",
+      );
+    }
+
+    patch.smsConsent = data.smsConsent;
+    patch.smsConsentAt = data.smsConsent ? new Date() : null;
+    patch.smsConsentSource = data.smsConsent ? "staff_manual" : null;
+    changes.smsConsent = { from: existing.smsConsent, to: data.smsConsent };
   }
 
   // Practice area and case type are plain columns, but the activity trail must
@@ -2285,23 +2366,27 @@ const sendQuestionnaire = async (
   const orgSlug = encodeURIComponent(organizationId);
   const clientLink = `${baseUrl}/questionnaire/${orgSlug}/${accessToken}`;
 
-  // Fire-and-forget delivery to lead via the configured channels.
-  if (deliveryChannels.includes("email")) {
-    emailService
-      .sendEmail({
-        to: lead.email,
-        subject: "Please complete your intake questionnaire",
-        html: `<p>Dear ${lead.firstName},</p>
-          <p>Please complete your intake questionnaire using the link below:</p>
-          <p><a href="${clientLink}">Complete Questionnaire</a></p>
-          <p>This link is unique to you. Please do not share it.</p>`,
-      })
-      .catch((err) => log.failure("questionnaire.send_failed", err, { leadId }));
-  }
-  if (deliveryChannels.includes("sms") && lead.phone) {
-    // SMS provider not yet wired — log the intent for now.
-    log.debug("sms.questionnaire_link_stub", { leadId, phone: lead.phone });
-  }
+  // Delivery via the configured channels. Still fire-and-forget from the
+  // caller's point of view, but every outcome — including a channel that was
+  // deliberately skipped — is now a row in `notifications` rather than a log
+  // line, so "did they get it?" has an answer.
+  void notify({
+    organizationId,
+    event: "questionnaire_sent",
+    recipients: [{ type: "lead", id: leadId }],
+    context: { link: clientLink },
+    channels: deliveryChannels as ("email" | "sms")[],
+    scenario: { leadId },
+    actorStaffId: sentById,
+    // Scoped to the send, not the lead: re-sending a questionnaire creates a
+    // new questionnaire_sends row and must be able to message the lead again.
+    dedupeKey: `questionnaire-sent-${send.id}`,
+  }).catch((err: unknown) =>
+    log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+      leadId,
+      event: "questionnaire_sent",
+    }),
+  );
 
   return { send: { ...send, accessToken }, clientLink, sentAt: send.sentAt };
 };
@@ -2355,6 +2440,33 @@ const getLeadQuestionnaire = async (leadId: string, organizationId: string) => {
 
 // ─── Consultation ──────────────────────────────────────────────────────────────
 
+/**
+ * How this consultation's fee is collected.
+ *
+ * `payment_timing` used to be written only for instant consultations, so every
+ * ordinary booking had none and the three behaviours below were unreachable
+ * outside "start now". The firm's `fee_schedule` now supplies one for the rest,
+ * which is what lets a normal booking be invoiced after the call.
+ *
+ * An instant consultation's dialog asks the question outright, and that answer
+ * wins over the firm default — it is a per-consultation decision made with the
+ * client in the room.
+ *
+ * `partial_upfront` maps to `pay_now` because the deposit genuinely is due now;
+ * what differs is how much, which is the instalment schedule's business, not
+ * this function's.
+ */
+type PaymentTiming = "pay_now" | "invoice_after" | "pay_in_person";
+
+const effectivePaymentTiming = (
+  startNow: boolean,
+  chosen: PaymentTiming | undefined,
+  schedule: "full_upfront" | "partial_upfront" | "after_consultation",
+): PaymentTiming => {
+  if (startNow && chosen) return chosen;
+  return schedule === "after_consultation" ? "invoice_after" : "pay_now";
+};
+
 const initiateConsultation = async (
   leadId: string,
   organizationId: string,
@@ -2375,6 +2487,7 @@ const initiateConsultation = async (
     urgent?: boolean;
     parentConsultationId?: string;
     startNow?: boolean;
+    balanceDueDays?: number;
     paymentTiming?: "pay_now" | "invoice_after" | "pay_in_person";
     isEmergency?: boolean;
     emergencyMultiplier?: number;
@@ -2481,18 +2594,35 @@ const initiateConsultation = async (
   // Kept so the invoice line can name the surcharge rather than presenting a
   // multiplied figure with no explanation.
   let baseFee: number | null = null;
+  // Honoured for any urgent booking, not just instant ones. An ordinary urgent
+  // consultation is exactly as much of an out-of-hours imposition as a
+  // "start now" one, and this pair is now the ONLY way to charge more than the
+  // firm's published fee (see the fee resolution below).
   const emergencyMultiplier =
-    startNow && data.isEmergency && data.emergencyMultiplier != null
+    urgent && data.isEmergency && data.emergencyMultiplier != null
       ? data.emergencyMultiplier
       : null;
 
   if (settings?.chargesFee) {
     const defaultAmount =
       settings.defaultAmount != null ? Number(settings.defaultAmount) : null;
-    // Urgent bookings let the admin override the amount (urgency surcharge)
-    // regardless of the firm's fee structure.
+    /**
+     * The firm's fee structure decides this, and nothing else.
+     *
+     * `urgent` used to share the disjunct, which quietly made a `flat` fee
+     * mutable: `startNow` forces `urgent` (see above), so EVERY instant
+     * consultation took the override branch and the firm's structure was never
+     * consulted at all. A caller could book a $300 flat-fee firm at $5, or bill
+     * an arbitrary amount upward — the floor was $5 and there was no ceiling —
+     * and the activity trail recorded the charged figure without recording that
+     * it differed from the firm default.
+     *
+     * Urgency is now priced through `isEmergency` + `emergencyMultiplier`,
+     * which is what that pair exists for and which leaves a trail: both columns
+     * are persisted and the invoice line names the arithmetic.
+     */
     const resolved =
-      urgent || settings.feeStructure === "custom_per_case_type"
+      settings.feeStructure === "custom_per_case_type"
         ? (data.feeAmount ?? defaultAmount)
         : defaultAmount;
     if (resolved != null && resolved < MINIMUM_CONSULTATION_FEE) {
@@ -2513,18 +2643,49 @@ const initiateConsultation = async (
     }
   }
 
+  // Resolved once and used for the due date, the send decision, and the stored
+  // column, so those three can never disagree about how this fee is collected.
+  const timing = effectivePaymentTiming(
+    startNow,
+    data.paymentTiming,
+    settings?.feeSchedule ?? "full_upfront",
+  );
+
+  /**
+   * Does this fee have to be settled before the lead may book?
+   *
+   * A fee that is not due yet is not a payment gate. `invoice_after` bills once
+   * the call is done, so the lead books first and pays later — parking them in
+   * `pending_payment` left them on a booking page with no slots, because slot
+   * generation tests for `awaiting_slot_selection` exactly, and left an urgent
+   * booking marked `scheduled` with no time on it.
+   *
+   * Derived from the resolved `timing` rather than re-reading the setting, so
+   * it cannot disagree with the due date or the send decision.
+   */
+  const feeGatesBooking = feeStatus === "unpaid" && timing !== "invoice_after";
+
+  // The scheduler's figure wins only when the firm said it could — `fixed`
+  // means the same wait for everyone, and honouring an override there would
+  // make the setting a suggestion. Null (a firm that has not set one) falls
+  // back to the standard invoice terms, as every firm had before this existed.
+  const resolvedBalanceDueDays =
+    settings?.balanceDueMode === "custom" && data.balanceDueDays != null
+      ? data.balanceDueDays
+      : settings?.balanceDueDays ?? null;
+
   // Instant consultations begin immediately, except pay_now with a fee, which
   // begins at payment time. A pay_now choice with no fee configured degrades
   // gracefully to begin-immediately.
   const beginsNow =
-    startNow && !(feeStatus === "unpaid" && data.paymentTiming === "pay_now");
+    startNow && !(feeStatus === "unpaid" && timing === "pay_now");
 
-  // Urgent bookings are auto-scheduled ASAP: immediately when no fee applies,
-  // otherwise at payment time. Lead-driven bookings leave scheduledAt null
-  // until the lead picks a slot.
+  // Urgent bookings are auto-scheduled ASAP: immediately when nothing is owed
+  // up front, otherwise at payment time. Lead-driven bookings leave scheduledAt
+  // null until the lead picks a slot.
   const scheduledAt = beginsNow
     ? new Date()
-    : urgent && feeStatus !== "unpaid" && !startNow
+    : urgent && !feeGatesBooking && !startNow
       ? nextAsapSlot()
       : null;
 
@@ -2537,7 +2698,7 @@ const initiateConsultation = async (
     ? beginsNow
       ? "scheduled"
       : "pending_payment"
-    : feeStatus === "unpaid"
+    : feeGatesBooking
       ? "pending_payment"
       : data.urgent
         ? "scheduled"
@@ -2552,10 +2713,16 @@ const initiateConsultation = async (
       scheduledAt,
       isUrgent: urgent,
       isInstant: startNow,
-      paymentTiming: startNow ? (data.paymentTiming ?? null) : null,
-      isEmergency: Boolean(startNow && data.isEmergency),
+      // Stored for every consultation now, not just instant ones: the
+      // completion and settlement paths both branch on it, and leaving it null
+      // is what made `invoice_after` unreachable for ordinary bookings.
+      paymentTiming: feeAmount != null ? timing : null,
+      balanceDueDays: resolvedBalanceDueDays,
+      // `urgent`, not `startNow`: an ordinary urgent booking can carry a
+      // surcharge too, and these columns are the audit trail for it.
+      isEmergency: Boolean(urgent && data.isEmergency),
       emergencyMultiplier:
-        startNow && data.isEmergency && data.emergencyMultiplier != null
+        urgent && data.isEmergency && data.emergencyMultiplier != null
           ? String(data.emergencyMultiplier)
           : null,
       autoSendQuestionnaire: Boolean(startNow && data.autoSendQuestionnaire),
@@ -2619,23 +2786,50 @@ const initiateConsultation = async (
         mode: data.mode,
         scheduledAt,
         // pay_now holds the consultation until the fee is settled, so it is
-        // due the moment it is raised.
-        dueImmediately: data.paymentTiming === "pay_now" || !startNow,
+        // due the moment it is raised. The other two are settled after the
+        // call and get the standard terms.
+        dueImmediately: timing === "pay_now",
+        // Only `partial_upfront` carries one; the column is null otherwise, so
+        // this is the setting speaking for itself rather than a second test.
+        upfrontPercent: settings?.upfrontPercent ?? null,
+        // Days after the consultation. The scheduler's figure wins only when
+        // the firm said it could — `fixed` means the same wait for everyone,
+        // and honouring an override there would make the setting a suggestion.
+        // Null (a firm that has not set one) falls back to the standard terms,
+        // which is what every firm had before this existed.
+        balanceDueDays: resolvedBalanceDueDays,
       });
 
-      // Sent, not left as a draft.
+      // Never left as a draft, but only emailed when the fee is actually due
+      // now. A draft is a dead end for this invoice in particular: it bills a
+      // LEAD, the invoice edit dialog is built around clients, so nobody can
+      // open it, finish it and send it by hand — and a draft is excluded from
+      // `countableInvoices`, so it would be missing from revenue too.
       //
-      // A draft is a dead end for this invoice in particular: it bills a LEAD,
-      // and the invoice edit dialog is built around clients, so nobody can open
-      // it, finish it and send it by hand. Leaving it a draft means the lead is
-      // never actually asked for the money.
-      //
-      // Delivering also mints the payment token, which is what puts a working
-      // pay link in the email — the whole point of raising it. A lead always
-      // has an address (`leads.email` is NOT NULL), so the missing-recipient
-      // guard in `deliver()` cannot fire here.
+      // The three timings diverge here, which they previously did not: this
+      // send was unconditional, so `pay_in_person` emailed a pay link the firm
+      // never meant to send and `invoice_after` billed twice — once here and
+      // again at completion.
       if (invoiceId) {
-        await sendInvoice(organizationId, invoiceId, scheduledById ?? null, systemAccess());
+        if (timing === "pay_now") {
+          // Delivering mints the payment token, which is what puts a working
+          // pay link in the email — the whole point of raising it now. A lead
+          // always has an address (`leads.email` is NOT NULL), so the
+          // missing-recipient guard in `deliver()` cannot fire here.
+          await sendInvoice(organizationId, invoiceId, scheduledById ?? null, systemAccess());
+        } else {
+          // On the books, not in the client's inbox. `invoice_after` is
+          // emailed when the consultation completes; `pay_in_person` never is,
+          // because the client settles it at the desk.
+          await issueInvoice(
+            organizationId,
+            invoiceId,
+            timing === "invoice_after"
+              ? "Consultation fee — invoiced after the consultation"
+              : "Consultation fee — payable in person",
+            scheduledById ?? null,
+          );
+        }
       }
     } catch (err) {
       log.failure("leads.consultation_invoice_failed", err, { leadId, consultationId: consultation!.id });
@@ -2784,9 +2978,11 @@ const initiateConsultation = async (
     return { consultation: finalized, bookingToken: accessToken };
   }
 
-  // Urgent + no fee: connect ASAP — finalize immediately (mints the Meet link
-  // and sends the confirmation). No lead action is required.
-  if (!startNow && data.urgent && feeStatus !== "unpaid") {
+  // Urgent with nothing owed up front: connect ASAP — finalize immediately
+  // (mints the Meet link and sends the confirmation). No lead action is
+  // required. `invoice_after` qualifies as much as a free consultation does;
+  // testing feeStatus alone left it `scheduled` with no time and no Meet link.
+  if (!startNow && data.urgent && !feeGatesBooking) {
     const finalized = await finalizeConsultation(consultation);
     return { consultation: finalized, bookingToken: accessToken };
   }
@@ -2799,40 +2995,35 @@ const initiateConsultation = async (
     ? data.notifyChannels
     : ["email"];
 
-  // Instant pay_now consultations can only begin once the client pays, so the
-  // payment link is always emailed regardless of the chosen channels.
-  if (notifyChannels.includes("email") || startNow) {
-    const needsPayment = feeStatus === "unpaid";
-    const urgent = Boolean(data.urgent);
-    const leadName = `${lead.firstName} ${lead.lastName}`;
-    emailService
-      .sendEmail({
-        to: lead.email,
-        subject: needsPayment
-          ? "Action needed: pay your consultation fee"
-          : "Pick a time for your consultation",
-        html: needsPayment
-          ? `<p>Dear ${leadName},</p>
-            <p>Please pay your consultation fee of <strong>$${feeAmount}</strong>${
-              urgent
-                ? " to be connected with an attorney as soon as possible"
-                : " and then choose a time that works for you"
-            }:</p>
-            <p><a href="${bookingLink}">${bookingLink}</a></p>${
-              urgent
-                ? "<p>You'll receive your confirmation with the scheduled time immediately after payment.</p>"
-                : ""
-            }`
-          : `<p>Dear ${leadName},</p>
-            <p>Please choose a time that works for your consultation:</p>
-            <p><a href="${bookingLink}">${bookingLink}</a></p>`,
-      })
-      .catch((err) => log.failure("email.send_failed", err, { leadId }));
-  }
+  const needsPayment = feeStatus === "unpaid";
 
-  if (notifyChannels.includes("sms") && lead.phone) {
-    log.debug("sms.booking_link_stub", { leadId, phone: lead.phone });
-  }
+  // Instant pay_now consultations cannot begin until the client pays, so the
+  // payment link is always emailed regardless of the chosen channels — a
+  // consultation nobody was told to pay for would simply never start.
+  const channels = startNow
+    ? Array.from(new Set([...notifyChannels, "email"]))
+    : notifyChannels;
+
+  void notify({
+    organizationId,
+    event: "consultation_booking_link",
+    recipients: [{ type: "lead", id: leadId }],
+    context: {
+      link: bookingLink,
+      requiresPayment: needsPayment,
+      amount: needsPayment ? `$${feeAmount}` : undefined,
+      urgent: Boolean(data.urgent),
+    },
+    channels: channels as ("email" | "sms")[],
+    scenario: { leadId, consultationId: consultation.id },
+    actorStaffId: scheduledById,
+    dedupeKey: `consultation-booking-${consultation.id}`,
+  }).catch((err: unknown) =>
+    log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+      leadId,
+      event: "consultation_booking_link",
+    }),
+  );
 
   return { consultation, bookingToken: accessToken };
 };
@@ -2888,7 +3079,194 @@ const getConsultation = async (leadId: string, organizationId: string) => {
   return { ...consultation, fee, participants, consultationHistory };
 };
 
-const updateConsultation = async (
+/**
+ * Is money still owed on this invoice, and has it never actually reached the
+ * client?
+ *
+ * Both halves matter. Delivery is asked rather than inferred from
+ * `paymentTiming`: `pay_in_person` is never emailed by design, and a `pay_now`
+ * invoice whose send failed is in the same position as an `invoice_after` one
+ * that was never due to be sent — the delivery log is the record of what left
+ * the building. And a settled invoice is not chased, so sending it would be a
+ * demand for money already received.
+ */
+const invoiceStillOwedAndUndelivered = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<boolean> => {
+  const [invoice] = await db
+    .select({ status: invoices.status, balanceDue: invoices.balanceDue })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.organizationId, organizationId),
+        eq(invoices.id, invoiceId),
+      ),
+    )
+    .limit(1);
+
+  if (!invoice || invoice.status === "void") return false;
+  if (Number(invoice.balanceDue) <= 0) return false;
+
+  const [delivered] = await db
+    .select({ id: invoiceDeliveries.id })
+    .from(invoiceDeliveries)
+    .where(
+      and(
+        eq(invoiceDeliveries.organizationId, organizationId),
+        eq(invoiceDeliveries.invoiceId, invoiceId),
+      ),
+    )
+    .limit(1);
+  return !delivered;
+};
+
+/**
+ * What happens to the fee when the lead does not turn up.
+ *
+ * Firms disagree about this and both positions are defensible — the attorney's
+ * time was reserved and is gone either way; the client received nothing — so it
+ * is configuration rather than a decision made here. `forfeit` is the default
+ * because it is what the code already did before anybody chose.
+ *
+ * Every branch is non-fatal. The consultation is already marked as a no-show
+ * and that must stand: losing the status change because a refund failed would
+ * leave the calendar wrong as well as the money.
+ */
+const applyNoShowPolicy = async (
+  organizationId: string,
+  leadId: string,
+  consultation: typeof consultations.$inferSelect,
+  actorId: string | undefined,
+  canRefund: boolean,
+): Promise<void> => {
+  if (!consultation.invoiceId) return;
+
+  const [settings] = await db
+    .select({ noShowPolicy: consultationSettings.noShowPolicy })
+    .from(consultationSettings)
+    .where(eq(consultationSettings.organizationId, organizationId))
+    .limit(1);
+
+  const policy = settings?.noShowPolicy ?? "forfeit";
+
+  // The firm keeps what it holds and is still owed what it does not.
+  //
+  // Not quite nothing, though: an `invoice_after` fee is ISSUED at booking and
+  // only EMAILED when the consultation completes, which a no-show never does.
+  // So the debt the firm is entitled to chase was one the client had never
+  // seen and had no working link to pay — it went overdue and into dunning
+  // regardless. Send it, then chase it.
+  if (policy === "forfeit") {
+    if (await invoiceStillOwedAndUndelivered(organizationId, consultation.invoiceId)) {
+      // `resendInvoice` for the same reason the completion path uses it: the
+      // invoice was issued at booking, so its status is already "sent" and
+      // `sendInvoice` would refuse it. `invoiceStillOwedAndUndelivered` has
+      // just established that nothing has actually been delivered.
+      await resendInvoice(
+        organizationId,
+        consultation.invoiceId,
+        actorId ?? null,
+        systemAccess(),
+      ).catch((err) =>
+        log.failure(LogEvent.CONSULTATION_NO_SHOW_INVOICE_SEND_FAILED, err, {
+          leadId,
+          invoiceId: consultation.invoiceId,
+        }),
+      );
+    }
+    return;
+  }
+
+  const held = await netPaidOnInvoice(organizationId, consultation.invoiceId);
+
+  if (policy === "decide") {
+    // Only worth a human's attention when there is money on the table. An
+    // unpaid no-show under "decide" is a normal receivable.
+    if (held > 0) {
+      await refundOwedTask({
+        organizationId,
+        leadId,
+        consultationId: consultation.id,
+        amount: held,
+        reason:
+          "The lead did not attend. The firm's no-show policy is to decide case by case, so someone needs to choose whether to refund this.",
+      });
+    }
+    return;
+  }
+
+  // policy === "refund"
+  if (held <= 0) {
+    // Nothing was paid, so there is nothing to send back — but the invoice is
+    // still asking for money for a consultation that did not happen. Void it,
+    // which also stops it going overdue and entering dunning.
+    await voidInvoiceForCancelledConsultation(
+      organizationId,
+      consultation.invoiceId,
+      actorId ?? null,
+    );
+    return;
+  }
+
+  if (!canRefund) {
+    // Same split as cancellation: marking a no-show is an intake action,
+    // refunding is a finance one. Anyone may do the first; the money waits for
+    // someone who can do the second, visibly rather than silently.
+    await refundOwedTask({
+      organizationId,
+      leadId,
+      consultationId: consultation.id,
+      amount: held,
+      reason:
+        "The lead did not attend and the firm refunds no-shows, but this was marked by someone without refund permission.",
+    });
+    return;
+  }
+
+  const summary = await refundInvoiceInFull(
+    organizationId,
+    consultation.invoiceId,
+    actorId ?? null,
+    systemAccess(),
+    "Consultation no-show",
+  );
+
+  // Whatever the refund could not reach — a failed leg, or money that never
+  // went through the processor and has to go back at the bank.
+  const stillOwed = await netPaidOnInvoice(
+    organizationId,
+    consultation.invoiceId,
+  );
+  if (stillOwed > 0) {
+    await refundOwedTask({
+      organizationId,
+      leadId,
+      consultationId: consultation.id,
+      amount: stillOwed,
+      reason:
+        summary.manualOutstanding > 0
+          ? "The lead did not attend. This much was paid outside the processor, so it has to be returned to the client directly."
+          : "The lead did not attend, but the refund could not be completed automatically.",
+      detail: summary.failures[0]?.reason ?? null,
+    });
+  }
+
+  log.action("leads.consultation_no_show_settled", {
+    leadId,
+    consultationId: consultation.id,
+    policy,
+    refunded: summary.refunded,
+    stillOwed,
+  });
+};
+
+/**
+ * Exported for the payment-policy check, which asserts the no-show branches
+ * through the real service path rather than reimplementing them. The controller
+ * remains the only production caller.
+ */
+export const updateConsultation = async (
   leadId: string,
   organizationId: string,
   data: Partial<{
@@ -2903,6 +3281,12 @@ const updateConsultation = async (
     feeStatus: "paid";
   }>,
   actorId?: string,
+  /**
+   * Whether the actor may send money back, for the `refund` no-show policy.
+   * Resolved in the controller for the same reason `cancelConsultation` does
+   * it there: that is the only layer holding the headers Better Auth needs.
+   */
+  canRefund = false,
 ) => {
   const [lead] = await db
     .select()
@@ -2984,6 +3368,50 @@ const updateConsultation = async (
     });
   }
 
+  /**
+   * Keep the reminders honest about whatever just changed.
+   *
+   * A reschedule re-arms them at the new time (the scheduler cancels before
+   * re-adding, so the old times cannot survive). A consultation that has
+   * completed, been cancelled or been marked no-show has no future to remind
+   * anyone about — and a "your consultation is in an hour" text after a no-show
+   * is the kind of thing a client remembers.
+   */
+  const becameTerminal =
+    data.status !== undefined &&
+    data.status !== existing.status &&
+    ["completed", "cancelled", "no_show"].includes(data.status);
+
+  if (becameTerminal) {
+    await cancelConsultationReminders(organizationId, updated.id).catch(
+      (err: unknown) =>
+        log.failure(LogEvent.CONSULTATION_REMINDERS_CANCEL_FAILED, err, {
+          consultationId: updated.id,
+        }),
+    );
+
+    // The deposit's balance is asked for once the call has happened — and only
+    // then. `scheduleConsultationBalanceNotice` refuses a cancelled or no-show
+    // consultation itself, so calling it on every terminal transition also
+    // clears a notice that a completion had already scheduled.
+    void scheduleConsultationBalanceNotice(organizationId, updated.id).catch(
+      (err: unknown) =>
+        log.failure(LogEvent.CONSULTATION_BALANCE_NOTICE_FAILED, err, {
+          consultationId: updated.id,
+        }),
+    );
+  } else if (
+    data.scheduledAt &&
+    existing.scheduledAt?.getTime() !== data.scheduledAt.getTime()
+  ) {
+    void scheduleConsultationReminders(organizationId, updated.id).catch(
+      (err: unknown) =>
+        log.failure(LogEvent.CONSULTATION_REMINDERS_SCHEDULE_FAILED, err, {
+          consultationId: updated.id,
+        }),
+    );
+  }
+
   if (data.feeStatus === "paid" && existing.feeStatus === "unpaid") {
     await logLeadEvent({
       organizationId,
@@ -3018,35 +3446,55 @@ const updateConsultation = async (
     actorId,
   });
 
+  // No-show side effects (once, on the transition in).
+  //
+  // This branch did not exist. Every side effect in this function gated on
+  // `completed`, so marking a no-show set the status and stopped: a paid fee
+  // was silently kept, and an unpaid one stayed on the books, went overdue and
+  // entered dunning — the firm chasing a lead for a consultation that never
+  // happened.
+  if (data.status === "no_show" && existing.status !== "no_show") {
+    await applyNoShowPolicy(organizationId, leadId, updated, actorId, canRefund);
+  }
+
   // Completion side effects (once — re-PATCHing a completed row is a no-op).
   if (data.status === "completed" && existing.status !== "completed") {
-    // Invoice-after: email the payment link now that the call has ended. The
-    // booking token is re-minted since only its hash is stored (this also
-    // gives the client a fresh 14-day window).
+    // Invoice-after: the call has ended, so now the fee is asked for.
+    //
+    // This sends the INVOICE rather than a hand-rolled email around a re-minted
+    // booking token. The old version rotated `bookingTokenHash`, which silently
+    // invalidated the link the lead already held, and pointed at the booking
+    // page rather than at the invoice actually recording the debt. Delivering
+    // the invoice mints a payment token as part of the same act and reuses the
+    // one email template the rest of finance sends.
+    //
+    // `resendInvoice`, not `sendInvoice`, and this is the whole reason the mail
+    // never arrived: a consultation invoice is ISSUED at booking, which sets
+    // its status to "sent", and `sendInvoice` refuses anything that is not a
+    // draft — "use resend to deliver it again". So every `invoice_after` fee
+    // threw here and the failure went into the log below. The guard is about
+    // status, not about delivery; `resendInvoice` skips it, and the invoice has
+    // in fact never been delivered once.
+    //
+    // Non-fatal: the consultation is complete and that must stand even if the
+    // mail fails. The invoice is already on the books either way, so the money
+    // is not lost — it just has not been asked for yet.
     if (
       updated.paymentTiming === "invoice_after" &&
-      updated.feeStatus === "unpaid"
+      updated.feeStatus === "unpaid" &&
+      updated.invoiceId
     ) {
-      const payToken = generateAccessToken();
-      await db
-        .update(consultations)
-        .set({
-          bookingTokenHash: tokenHash(payToken),
-          bookingExpiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
-          bookingStatus: "sent",
-          updatedAt: new Date(),
-        })
-        .where(eq(consultations.id, updated.id));
-      const payLink = `${env.FRONTEND_APP_URL}/consultation-booking/${payToken}`;
-      emailService
-        .sendEmail({
-          to: lead.email,
-          subject: "Your consultation is complete — payment link inside",
-          html: `<p>Dear ${lead.firstName} ${lead.lastName},</p>
-            <p>Thank you for your consultation. Please pay your consultation fee of <strong>$${updated.feeAmount}</strong>:</p>
-            <p><a href="${payLink}">${payLink}</a></p>`,
-        })
-        .catch((err) => log.failure("email.send_failed", err, { leadId }));
+      await resendInvoice(
+        organizationId,
+        updated.invoiceId,
+        actorId ?? null,
+        systemAccess(),
+      ).catch((err) =>
+        log.failure("leads.consultation_invoice_send_failed", err, {
+          leadId,
+          invoiceId: updated.invoiceId,
+        }),
+      );
     }
 
     // Auto-send the intake questionnaire when requested and the lead has never
@@ -3209,7 +3657,14 @@ const getConsultationBooking = async (token: string) => {
 
   const firmTimezone = await getFirmTimezone(consultation.organizationId);
 
-  const requiresPayment = consultation.feeStatus === "unpaid";
+  // Read from the ledger, not from `fee_status`. The stored enum could not tell
+  // "never paid" from "paid then refunded", and nothing cleared it when an
+  // invoice was voided — which left the lead on a slotless booking page with no
+  // way out. See `consultationPaymentOutstanding`.
+  const requiresPayment = await consultationPaymentOutstanding(
+    consultation.organizationId,
+    consultation,
+  );
 
   // Slots are only offered once any fee is settled and a time isn't yet chosen.
   // Gating on awaiting_slot_selection keeps instant consultations (paid after
@@ -3378,15 +3833,28 @@ const sendConsultationPaymentConfirmation = async (
     consultation.organizationId,
   );
 
+  /**
+   * The call is already behind us, so this mail is a receipt: nothing to
+   * announce, nothing to join.
+   *
+   * Keyed on the STATUS, not on `isInstant`. `isInstant` was only ever a proxy
+   * for "the call already happened" and it missed every other way of getting
+   * here — a completed `invoice_after` booking, a no-show settled afterwards, a
+   * cancelled consultation whose invoice is paid late.
+   */
+  const alreadyHappened =
+    !opts.startingNow &&
+    (["completed", "no_show", "cancelled"] as const).includes(
+      consultation.status as "completed" | "no_show" | "cancelled",
+    );
+
+  // Gated on `alreadyHappened` like everything else below it. It was not, which
+  // is how a receipt reading "nothing further is needed" went out with
+  // "Join here when it starts" stapled underneath it.
   const joinLine =
-    consultation.mode === "video" && consultation.videoLink
+    !alreadyHappened && consultation.mode === "video" && consultation.videoLink
       ? `<p>Join here when it starts: <a href="${consultation.videoLink}">${consultation.videoLink}</a></p>`
       : "";
-
-  // An instant consultation whose fee was settled AFTER the call has nothing to
-  // announce and nothing to join — it is a receipt, and saying "your
-  // consultation is starting" would be wrong.
-  const alreadyHappened = consultation.isInstant && !opts.startingNow;
 
   const whenLine =
     consultation.scheduledAt && !alreadyHappened
@@ -3439,6 +3907,62 @@ export const settleConsultationForInvoice = async (
     .limit(1);
 
   if (!consultation || consultation.feeStatus !== "unpaid") return;
+
+  // The SETTLEMENT question, not the booking gate. The two coincide on
+  // `full_upfront` and `partial_upfront` — a deposit that unlocks slot
+  // selection also settles the consultation, which is why this is not a
+  // `amount_paid >= total` test — but they part company on
+  // `after_consultation`, where the gate is open before any money exists.
+  // Asking the gate here would mark a $300 fee paid on a $1 payment.
+  if (await consultationFeeUnsettled(organizationId, consultation)) return;
+
+  /**
+   * The call is already over. Record the money and stop.
+   *
+   * Everything below this point moves a consultation FORWARD — re-finalizing,
+   * rewriting the status, minting a Meet link, inserting a calendar event,
+   * emailing "pick a time". Run against a consultation that has already
+   * happened and it does not advance anything, it resurrects it: a completed
+   * booking was rewritten to `awaiting_slot_selection` and the lead invited to
+   * choose a slot for a consultation they had already attended, while the
+   * urgent branch pushed it back to `scheduled` with a second calendar event
+   * and a fresh join link mailed to the lead and every staff member.
+   *
+   * That was mostly unreachable while `after_consultation` could not get past
+   * the booking gate. Now that it can, this is the ordinary path: the invoice
+   * is sent at completion and paid afterwards, by definition.
+   */
+  if (!(LIVE_CONSULTATION_STATUSES as readonly string[]).includes(consultation.status)) {
+    await db
+      .update(consultations)
+      .set({ feeStatus: "paid", updatedAt: new Date() })
+      .where(eq(consultations.id, consultation.id));
+
+    // A receipt, not an announcement — `sendConsultationPaymentConfirmation`
+    // reads the same terminal status and drops the time and the join link.
+    const [settled] = await db
+      .select()
+      .from(consultations)
+      .where(eq(consultations.id, consultation.id))
+      .limit(1);
+    if (settled) {
+      await sendConsultationPaymentConfirmation(settled, {
+        startingNow: false,
+      });
+    }
+
+    await logLeadEvent({
+      organizationId: consultation.organizationId,
+      leadId: consultation.leadId,
+      action: "lead.payment_received",
+      metadata: {
+        consultationId: consultation.id,
+        amount: Number(consultation.feeAmount),
+        afterConsultation: true,
+      },
+    });
+    return;
+  }
 
   // Instant consultations: pay_now begins the consultation at payment time;
   // invoice_after / pay_in_person fees paid after the call just get marked
@@ -3786,6 +4310,28 @@ const finalizeConsultation = async (
   }
 
   await sendConsultationConfirmation(updated);
+
+  /**
+   * Every scheduling path funnels through here — slot selection, urgent
+   * auto-schedule, instant start, and payment completion — so this is the one
+   * place reminders need to be armed.
+   *
+   * It reschedules rather than merely schedules: a lead who moves their
+   * appointment reaches this again, and scheduleConsultationReminders cancels
+   * before re-adding so the old times cannot survive.
+   *
+   * An instant consultation begins now, so both reminder times are already in
+   * the past and none are created — handled inside, not special-cased here.
+   */
+  void scheduleConsultationReminders(
+    updated.organizationId,
+    updated.id,
+  ).catch((err: unknown) =>
+    log.failure(LogEvent.CONSULTATION_REMINDERS_SCHEDULE_FAILED, err, {
+      consultationId: updated.id,
+    }),
+  );
+
   return updated;
 };
 
@@ -3822,6 +4368,20 @@ const selectConsultationSlot = async (token: string, startIso: string) => {
   consultation.scheduledAt = start;
   await finalizeConsultation(consultation);
 
+  // The deposit's balance was dated when the invoice was raised, before this
+  // consultation had a time — so it fell back to the standard terms. Now that
+  // there is a date to count from, move it. Non-fatal: the slot is booked and
+  // that must stand even if the ledger write fails.
+  await rescheduleBalanceInstalment(
+    consultation.organizationId,
+    consultation,
+    null,
+  ).catch((err) =>
+    log.failure(LogEvent.CONSULTATION_BALANCE_RESCHEDULE_FAILED, err, {
+      consultationId: consultation.id,
+    }),
+  );
+
   await logLeadEvent({
     organizationId: consultation.organizationId,
     leadId: consultation.leadId,
@@ -3849,6 +4409,132 @@ export type ConsultationCancellation = {
   awaitingAdmin: boolean;
   /** Paid by cheque or cash, so it has to go back the same way. */
   manualOutstanding: number;
+};
+
+/**
+ * Turn an owed refund into something a person will actually see.
+ *
+ * The cancellation response already carries `refundOwed` and `awaitingAdmin`,
+ * and the controller builds a good sentence out of them — but that sentence is
+ * a toast shown to whoever cancelled, who by definition lacks `finance:refund`
+ * and cannot act on it. The only durable trace was a `log.warn`, and a log line
+ * is not a work item. Money sat owed to a client with nothing tracking it.
+ *
+ * `lead_tasks` is the mechanism that exists on this branch: assignable,
+ * statused, and already rendered in the pipeline UI. (The `notify()` ledger is
+ * still unmerged on `feat/notifications-and-sms`.)
+ *
+ * Idempotent per consultation, so cancelling twice — or a no-show following a
+ * cancellation — cannot stack duplicate tasks demanding the same refund.
+ * Non-fatal: failing to raise the reminder must not fail the cancellation that
+ * prompted it.
+ */
+const refundOwedTask = async (opts: {
+  organizationId: string;
+  leadId: string;
+  consultationId: string;
+  amount: number;
+  reason: string;
+  /**
+   * What the processor actually said, when a leg failed.
+   *
+   * Without it the task reads "could not be completed automatically", which
+   * does not distinguish a timeout worth retrying from a hard refusal that has
+   * to be settled at the bank. The summary carried this all along and both
+   * callers discarded it.
+   */
+  detail?: string | null;
+}): Promise<void> => {
+  try {
+    // The marker the idempotency check matches on. `tasks` has no metadata
+    // column, so the consultation id rides in the description.
+    const marker = `[consultation:${opts.consultationId}]`;
+
+    const [existing] = await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.organizationId, opts.organizationId),
+          eq(tasks.leadId, opts.leadId),
+          ilike(tasks.description, `%${marker}%`),
+          // A completed one means somebody already refunded it; re-raising
+          // would ask them to do it twice.
+          notInArray(tasks.status, ["completed", "skipped"]),
+        ),
+      )
+      .limit(1);
+
+    if (existing) return;
+
+    const [lead] = await db
+      .select({ firstName: leads.firstName, lastName: leads.lastName })
+      .from(leads)
+      .where(eq(leads.id, opts.leadId))
+      .limit(1);
+
+    // Deliberately unassigned.
+    //
+    // This used to guess an assignee with `staff.role = 'admin'`. Since roles
+    // became dynamic, `staff.role` is free text and only a best-effort
+    // "primary role" projection of `member.role`, which can hold several roles
+    // and may name a role the firm invented. So the guess can find nobody at a
+    // firm that renamed its roles, find someone whose admin-named role no
+    // longer carries `finance:refund`, or miss everyone who holds it through a
+    // role group.
+    //
+    // A wrong assignee is worse than none: it parks the work on someone who
+    // cannot do it and makes the task look handled. Unassigned, it stays
+    // visible and filterable on the lead's consultation stage, and the title
+    // already names the amount and the permission needed.
+    //
+    // Assigning for real would mean resolving actual grants, and
+    // `resolveMemberGrants` needs request headers this background path does not
+    // have. That wants a headers-free variant, which belongs with the RBAC
+    // module rather than here.
+
+    // orderIndex is a per-stage ordinal, not a global one.
+    const [{ n }] = await db
+      .select({ n: count() })
+      .from(tasks)
+      .where(and(eq(tasks.leadId, opts.leadId), eq(tasks.phase, "consultation")));
+
+    const who = lead ? `${lead.firstName} ${lead.lastName}` : "the client";
+
+    await db.insert(tasks).values({
+      organizationId: opts.organizationId,
+      leadId: opts.leadId,
+      // `ad_hoc`, not `pipeline`: this is raised because a refund failed, not
+      // stamped from an intake checklist, so it has no template step behind it.
+      // `phase` still places it on the consultation stage so it appears where
+      // the work belongs rather than in a stageless list of its own.
+      source: "ad_hoc" as const,
+      phase: "consultation",
+      title: `Refund $${opts.amount.toFixed(2)} to ${who}`,
+      description: [
+        opts.reason,
+        opts.detail ? `The processor said: ${opts.detail}` : null,
+        "Requires the finance:refund permission.",
+        marker,
+      ]
+        .filter(Boolean)
+        .join(" "),
+      orderIndex: Number(n),
+      assignedToId: null,
+      assignedAt: null,
+    });
+
+    log.action("leads.consultation_refund_task_created", {
+      leadId: opts.leadId,
+      consultationId: opts.consultationId,
+      amount: opts.amount,
+    });
+  } catch (err) {
+    log.failure("leads.consultation_refund_task_failed", err, {
+      leadId: opts.leadId,
+      consultationId: opts.consultationId,
+    });
+  }
 };
 
 const cancelConsultation = async (
@@ -3919,6 +4605,24 @@ const cancelConsultation = async (
       ),
     );
 
+  // Awaited, unlike the scheduling side: a reminder telling someone to attend a
+  // consultation the firm has just cancelled is worse than a slow request.
+  await cancelConsultationReminders(organizationId, consultation.id).catch(
+    (err: unknown) =>
+      log.failure(LogEvent.CONSULTATION_REMINDERS_CANCEL_FAILED, err, {
+        consultationId: consultation.id,
+      }),
+  );
+
+  // Same reasoning, and more so: a demand for the balance of a consultation the
+  // firm has just cancelled and refunded is worse than a slow request.
+  await cancelConsultationBalanceNotice(organizationId, consultation.id).catch(
+    (err: unknown) =>
+      log.failure(LogEvent.CONSULTATION_BALANCE_NOTICE_CANCEL_FAILED, err, {
+        consultationId: consultation.id,
+      }),
+  );
+
   await logLeadEvent({
     organizationId,
     leadId,
@@ -3957,6 +4661,11 @@ const cancelConsultation = async (
     manualOutstanding: 0,
   };
 
+  // What the processor said when a leg failed, carried out to the task that
+  // reports the money as still owed. `summary` is scoped to the refund branch
+  // below, and this is read after it.
+  let cancellationFailure: string | null = null;
+
   if (consultation.invoiceId) {
     const held = await netPaidOnInvoice(organizationId, consultation.invoiceId);
 
@@ -3970,6 +4679,7 @@ const cancelConsultation = async (
       );
       cancellation.refunded = summary.refunded;
       cancellation.manualOutstanding = summary.manualOutstanding;
+      cancellationFailure = summary.failures[0]?.reason ?? null;
       // Whatever the refund could not reach — a failed leg, or money that never
       // went through Confido — is still the client's.
       cancellation.refundOwed = await netPaidOnInvoice(
@@ -4003,6 +4713,22 @@ const cancelConsultation = async (
       amount: cancellation.refundOwed,
       awaitingAdmin: cancellation.awaitingAdmin,
       manualOutstanding: cancellation.manualOutstanding,
+    });
+
+    // The toast that reports this goes to whoever cancelled, who is precisely
+    // the person without the permission to act on it. This is the part that
+    // survives them closing the tab.
+    await refundOwedTask({
+      organizationId,
+      leadId,
+      consultationId: consultation.id,
+      amount: cancellation.refundOwed,
+      reason: cancellation.awaitingAdmin
+        ? "Consultation cancelled by someone without refund permission, so the client's money was not returned."
+        : cancellation.manualOutstanding > 0
+          ? "Consultation cancelled. This much was paid outside the processor, so it has to be returned to the client directly."
+          : "Consultation cancelled, but the refund could not be completed automatically.",
+      detail: cancellationFailure,
     });
   }
 
@@ -4801,6 +5527,61 @@ type DropboxSignEvent = {
 // Authoritative completion signal. The controller parses the multipart `json`
 // field and passes the decoded event here. Must be idempotent — Dropbox Sign
 // retries and may deliver duplicates.
+/**
+ * Tell the firm what became of a fee agreement.
+ *
+ * Reached from the Dropbox Sign webhook, which has no request context — so the
+ * lead is re-read here rather than passed in, and the recipient is the staff
+ * member handling the lead rather than "whoever is logged in", because nobody
+ * is.
+ *
+ * Falls back to the whole firm when the lead has no respondent: a signed fee
+ * agreement is the moment a matter becomes real, and it is better for several
+ * people to hear about it than nobody.
+ */
+const notifyAgreementOutcome = async (
+  agreement: typeof feeAgreements.$inferSelect,
+  event: "fee_agreement_signed" | "fee_agreement_declined",
+  extra: Record<string, unknown> = {},
+) => {
+  try {
+    const [lead] = await db
+      .select({
+        firstName: leads.firstName,
+        lastName: leads.lastName,
+        respondentId: leads.respondentId,
+      })
+      .from(leads)
+      .where(eq(leads.id, agreement.leadId))
+      .limit(1);
+
+    if (!lead) return;
+
+    const recipients = lead.respondentId
+      ? [{ type: "staff" as const, id: lead.respondentId }]
+      : await staffRecipientsForFirm(agreement.organizationId);
+
+    await notify({
+      organizationId: agreement.organizationId,
+      event,
+      recipients,
+      context: {
+        leadName: `${lead.firstName} ${lead.lastName}`.trim(),
+        link: `${env.FRONTEND_APP_URL}/admin/leads/${agreement.leadId}`,
+        ...extra,
+      },
+      scenario: { leadId: agreement.leadId },
+      // Keyed on the agreement, so a redelivered webhook does not re-alert.
+      dedupeKey: `${event}-${agreement.id}`,
+    });
+  } catch (err) {
+    log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+      leadId: agreement.leadId,
+      event,
+    });
+  }
+};
+
 const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
   const event = payload?.event;
   if (!event?.event_time || !event?.event_type || !event?.event_hash) {
@@ -4912,6 +5693,12 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
       );
     }
 
+    // Both branches of this webhook used to end in silence: the lead signed,
+    // or refused to, and nobody at the firm was told. The signing itself is
+    // Dropbox Sign's own email to the lead; this is the half about the firm
+    // learning what happened.
+    void notifyAgreementOutcome(agreement, "fee_agreement_signed");
+
     return { processed: true, agreementId: agreement.id };
   }
 
@@ -4931,6 +5718,15 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
         action: "lead.fee_agreement_voided",
         actorId: null,
         metadata: { agreementId: agreement.id, reason: event.event_type },
+      });
+
+      // A declined fee agreement stalls the whole pipeline, and the firm has
+      // no other way to find out — the lead simply stops progressing.
+      void notifyAgreementOutcome(agreement, "fee_agreement_declined", {
+        reason:
+          event.event_type === "signature_request_declined"
+            ? "Declined by signer"
+            : "Cancelled",
       });
     }
     return { processed: true, agreementId: agreement.id, voided: true };
@@ -5234,31 +6030,40 @@ const openCase = async (
     }
 
     /**
-     * TODO: Notify assigned team lead of new case. This is commented out for now because the assigned team may not be set at the time of case opening, and we don't want to send notifications to the wrong person. We will revisit this logic once we have a clearer understanding of how team assignments will work in the future.
+     * Tell the staff member who owns this lead that it became a case.
+     *
+     * The previous attempt at this was commented out because the assigned team
+     * may not be set at case-opening time and nobody wanted to notify the wrong
+     * person — a sound worry, and the commented code had the bug that proves
+     * it: `data.assignedTeamId ?? lead.respondentId` passed a TEAM id where a
+     * staff id was expected, so it would have looked up a staff row that does
+     * not exist, or worse, one that coincidentally does.
+     *
+     * Resolved by notifying `respondentId` instead: the staff member who has
+     * actually been handling this lead through intake. That person is known,
+     * correct, and interested. Team-lead routing stays unresolved, which is the
+     * honest state — it depends on how team assignment ends up working.
      */
-    // 7. Notify
-    // const assignedStaffId = data.assignedTeamId ?? lead.respondentId;
-    //     if (assignedStaffId) {
-    //       const [assignedStaff] = await db
-    //         .select({ email: user.email, firstName: staff.firstName })
-    //         .from(staff)
-    //         .leftJoin(user, eq(staff.userId, user.id))
-    //         .where(eq(staff.id, assignedStaffId))
-    //         .limit(1);
-    //
-    //       if (assignedStaff) {
-    //         emailService
-    //           .sendEmail({
-    //             to: assignedStaff.email!,
-    //             subject: `New case opened: ${newCase.caseNumber}`,
-    //             html: `<p>Hi ${assignedStaff.firstName},</p>
-    //               <p>A new case has been opened for ${leadName}.</p>
-    //               <p><strong>Case Number:</strong> ${newCase.caseNumber}</p>
-    //               <p><strong>Case Type:</strong> ${caseType.name}</p>`,
-    //           })
-    //           .catch(console.error);
-    //       }
-    //     }
+    if (lead.respondentId) {
+      void notify({
+        organizationId,
+        event: "case_opened_staff",
+        recipients: [{ type: "staff", id: lead.respondentId }],
+        context: {
+          caseNumber: newCase.caseNumber,
+          clientName: leadName,
+          link: `${env.FRONTEND_APP_URL}/admin/cases/${newCase.id}`,
+        },
+        scenario: { leadId: lead.id, caseId: newCase.id },
+        actorStaffId: creatorStaffId,
+        dedupeKey: `case-opened-${newCase.id}`,
+      }).catch((err: unknown) =>
+        log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+          leadId: lead.id,
+          event: "case_opened_staff",
+        }),
+      );
+    }
 
     emailService
       .sendEmail({

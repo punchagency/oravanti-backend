@@ -5,6 +5,10 @@ import {
   createAiScanResultWorker,
   startAiScanReconciliation,
 } from "./workers/ai-scan-result.worker";
+import {
+  createNotificationWorker,
+  startNotificationSweep,
+} from "./workers/notification.worker";
 import { createConfidoWebhookWorker } from "./workers/confido-webhook.worker";
 import { reportStaleWebhookEvents } from "../modules/finance/confido/webhook-staleness";
 import { createReminderWorker } from "./workers/reminder.worker";
@@ -24,6 +28,7 @@ export const startWorkers = (): Worker[] => {
   const workers = [
     createReminderWorker(),
     createAiScanResultWorker(),
+    createNotificationWorker(),
     createConfidoWebhookWorker(),
   ];
 
@@ -33,6 +38,8 @@ export const startWorkers = (): Worker[] => {
   startAiScanReconciliation();
   startDeterministicSweep();
   startTaskDeadlineSweep();
+  // Recovers scheduled notifications whose delayed job was lost with Redis.
+  startNotificationSweep();
   startAuditRetention();
   startWebhookStalenessSweep();
   startVisaBulletinSweep();

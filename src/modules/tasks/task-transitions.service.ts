@@ -5,6 +5,7 @@ import { tasks } from "../../db/schema/tasks";
 import { createModuleLogger } from "../../lib/logging/log";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { logLeadEvent } from "../leads/lead-events.service";
+import { notifyTaskAssignee } from "./tasks.service";
 import {
   getTaskReviewEvents,
   recordTaskReviewEvent,
@@ -329,6 +330,17 @@ export async function assignTask(params: {
 }) {
   const task = await loadTask(params.taskId, params.organizationId);
 
+  /*
+    Whether this actually moves the work to someone new.
+
+    Read before the write, because both branches below overwrite it. Assignment
+    is the only place a task changes hands on this branch — `updateTaskBody`
+    deliberately refuses `assignedToId` so there is exactly one path with the
+    team-membership rule on it — which is why the notification hangs here rather
+    than off the generic patch.
+  */
+  const changedHands = task.assignedToId !== params.assignedToId;
+
   // A case's work stays on the case's team, whoever is doing the assigning. The
   // picker only offers team members, but the check belongs here too — the id
   // decides who gets the work, and nothing else on this path validates it. This
@@ -354,7 +366,9 @@ export async function assignTask(params: {
       params.overrideRationale,
       params.actorStaffId ?? undefined,
     );
-    return loadTask(params.taskId, params.organizationId);
+    const reloaded = await loadTask(params.taskId, params.organizationId);
+    if (changedHands) void notifyTaskAssignee(reloaded, params.actorStaffId ?? null);
+    return reloaded;
   }
 
   const [updated] = await db
@@ -388,6 +402,11 @@ export async function assignTask(params: {
       },
     });
   }
+
+  // Tell them it landed on them. Skipped when the task was already theirs —
+  // re-saving the same assignee is not news — and `notifyTaskAssignee` also
+  // declines to tell someone about their own action.
+  if (changedHands) void notifyTaskAssignee(updated, params.actorStaffId ?? null);
 
   log.action("task.assigned", { taskId: task.id, assignedToId: params.assignedToId });
 

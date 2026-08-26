@@ -28,6 +28,7 @@ import { cases } from "../../src/db/schema/cases";
 import { clients } from "../../src/db/schema/clients";
 import { auditEvents } from "../../src/db/schema/audit-events";
 import { invoiceFollowups } from "../../src/db/schema/invoice-followups";
+import { notifications } from "../../src/db/schema/notifications";
 import { invoiceNumberSequences } from "../../src/db/schema/invoice-number-sequences";
 import { invoicePayments } from "../../src/db/schema/invoice-payments";
 import { invoiceLinePresets } from "../../src/db/schema/invoice-line-presets";
@@ -3213,6 +3214,12 @@ const main = async () => {
         .delete(invoiceLineItems)
         .where(inArray(invoiceLineItems.invoiceId, invoiceIds));
     }
+    // Recording a payment now writes a receipt and a staff alert, and
+    // notifications.sent_by_id references staff — so these must go before the
+    // staff rows below, or the delete is blocked by the audit trail.
+    await systemDb
+      .delete(notifications)
+      .where(eq(notifications.organizationId, orgId));
     // Before the practice area, whose cascade would otherwise reach the scoped
     // ones and leave the unscoped shipped row behind.
     if (presetIdsToClean.length) {

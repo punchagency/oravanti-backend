@@ -2,8 +2,9 @@ import { and, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { tasks } from "../../db/schema/tasks";
-import { createModuleLogger } from "../../lib/logging/log";
-import { dispatchNotification } from "../notifications/notification.service";
+import { env } from "../../config/env";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
+import { notify } from "../../notifications/notification.service";
 
 const log = createModuleLogger("workflow.reminders");
 
@@ -188,19 +189,40 @@ export async function taskDeadlineSweep(): Promise<{ scanned: number; notified: 
     const threshold = pendingThreshold(task, today);
     if (!threshold || !task.assignedToId) continue;
 
-    await dispatchNotification({
-      organizationId: task.organizationId,
-      recipient: { type: "staff", staffId: task.assignedToId },
-      channel: "email",
-      category: threshold.category,
-      subject:
-        threshold.category === "task_overdue"
-          ? `Overdue: ${task.title}`
-          : `Due soon: ${task.title}`,
-      body: `<p>Task <strong>${task.title}</strong> is due ${task.dueDate}.</p>`,
-      relatedCaseId: task.caseId ?? undefined,
-      relatedTaskId: task.id,
-    });
+    /*
+      Awaited rather than fire-and-forget, unlike most `notify` call sites.
+
+      The stamp on the next line is what stops this task being reminded about
+      again, so writing it before the send is settled would let a failed
+      dispatch silently consume the only reminder that threshold ever gets.
+      `notify` already records a row per recipient per channel — including a
+      `skipped` one when a firm preference blocks it — so a throw here means
+      something genuinely went wrong, not that the message was suppressed.
+    */
+    try {
+      await notify({
+        organizationId: task.organizationId,
+        event: threshold.category,
+        recipients: [{ type: "staff", id: task.assignedToId }],
+        context: {
+          title: task.title,
+          dueDate: task.dueDate ?? undefined,
+          link: task.caseId
+            ? `${env.FRONTEND_APP_URL}/admin/cases/${task.caseId}`
+            : `${env.FRONTEND_APP_URL}/admin/my-tasks`,
+        },
+        scenario: { caseId: task.caseId ?? undefined },
+        // One per task per threshold, so a sweep that runs twice in a day —
+        // or a redeploy mid-sweep — cannot send the same reminder twice.
+        dedupeKey: `task-${threshold.category}-${task.id}`,
+      });
+    } catch (err) {
+      log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+        taskId: task.id,
+        event: threshold.category,
+      });
+      continue;
+    }
 
     await db.update(tasks).set({ [threshold.column]: new Date() }).where(eq(tasks.id, task.id));
     notified++;

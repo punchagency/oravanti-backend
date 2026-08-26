@@ -1,14 +1,16 @@
 import { and, asc, count, desc, eq, gte, lte, or } from "drizzle-orm";
+import { env } from "../../config/env";
 import { db } from "../../db/client";
 import type { UpdateTaskInput } from "./tasks.validation";
 import { admins, cases, clients, staff, tasks } from "../../db/schema";
+import { notify } from "../../notifications/notification.service";
 import { assertAssignableStaff } from "../../utils/assignable-staff";
 import { BadRequestError } from "../../utils/error/app-error";
 import { dayjs } from "../../utils/date";
 import { logLeadEvent } from "../leads/lead-events.service";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 import { recordAuditEvent } from "../shared/audit.service";
-import { createModuleLogger } from "../../lib/logging/log";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
 
 const log = createModuleLogger("tasks.service");
 
@@ -331,6 +333,7 @@ export class TasksService {
       })
       .returning();
 
+    void notifyTaskAssignee(newTask, data.assignedById);
     await recordAuditEvent({
       action: "case.task_created",
       entityId: newTask.id,
@@ -352,12 +355,16 @@ export class TasksService {
     data: UpdateTaskInput,
     actorStaffId?: string | null,
   ) => {
+    // One read, serving both callers below: the locked-step override check
+    // needs the lock flag and provenance, and telling a reassignment from an
+    // edit that merely mentions the same assignee needs the current assignee.
     const [existing] = await db
       .select({
         isLocked: tasks.isLocked,
         source: tasks.source,
         leadId: tasks.leadId,
         status: tasks.status,
+        assignedToId: tasks.assignedToId,
       })
       .from(tasks)
       .where(and(eq(tasks.id, id), eq(tasks.organizationId, organizationId)))
@@ -391,6 +398,18 @@ export class TasksService {
       })
       .where(and(eq(tasks.id, id), eq(tasks.organizationId, organizationId)))
       .returning();
+
+    /*
+      No assignee notification here.
+
+      `updateTaskBody` deliberately does not accept `assignedToId` — assignment
+      has its own endpoint with its own rules (a case task may only go to
+      someone on the case's team), and two ways to assign is the drift that
+      consolidating these tables was meant to end. This hook arrived on a branch
+      where a generic patch could still reassign; on this one it could never
+      fire, so it lives on the assignment path instead. See `assignTask` in
+      task-transitions.service.ts.
+    */
 
     if (updated) {
       await recordAuditEvent({
@@ -441,3 +460,65 @@ export class TasksService {
     log.action("task.deleted", { taskId: id });
   };
 }
+
+/**
+ * Tell someone a task landed on them.
+ *
+ * Nothing did this before: tasks were created and reassigned entirely
+ * silently, and the assignee found out by opening the app. Preference-gated
+ * under `case_stage_changed`, and email/in-app only — a task is not worth a
+ * text message.
+ *
+ * Never notifies someone about their own action: assigning yourself a task is
+ * not news to you.
+ *
+ * Module scope rather than a private method because assignment does not happen
+ * in this file. `assignTask` (task-transitions.service.ts) is the one endpoint
+ * that hands work to a person, and it needs to call this too.
+ */
+export const notifyTaskAssignee = async (
+  task: typeof tasks.$inferSelect,
+  assignedById: string | null,
+) => {
+  {
+    if (!task.assignedToId || task.assignedToId === assignedById) return;
+
+    try {
+      const assigner = assignedById
+        ? (
+            await db
+              .select({ firstName: staff.firstName, lastName: staff.lastName })
+              .from(staff)
+              .where(eq(staff.id, assignedById))
+              .limit(1)
+          )[0]
+        : undefined;
+
+      await notify({
+        organizationId: task.organizationId,
+        event: "task_assigned",
+        recipients: [{ type: "staff", id: task.assignedToId }],
+        context: {
+          taskTitle: task.title,
+          dueDate: task.dueDate,
+          ...(assigner
+            ? {
+                assignedBy: `${assigner.firstName} ${assigner.lastName}`.trim(),
+              }
+            : {}),
+          link: `${env.FRONTEND_APP_URL}/admin/tasks/${task.id}`,
+        },
+        scenario: { caseId: task.caseId ?? undefined },
+        actorStaffId: assignedById,
+        // Keyed on the assignee, so a reassignment back to someone who held it
+        // before still tells them.
+        dedupeKey: `task-assigned-${task.id}-${task.assignedToId}`,
+      });
+    } catch (err) {
+      log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+        taskId: task.id,
+        event: "task_assigned",
+      });
+    }
+  }
+};

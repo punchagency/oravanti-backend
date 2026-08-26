@@ -9,6 +9,10 @@ import {
   type EffectiveInvoiceStatus,
   type NewInvoiceLineItem,
 } from "../../db/schema/invoices";
+import {
+  LIVE_CONSULTATION_STATUSES,
+  consultations,
+} from "../../db/schema/consultations";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { leads } from "../../db/schema/leads";
 import { practiceAreas } from "../../db/schema/practice-areas";
@@ -48,7 +52,7 @@ import {
   writeSchedule,
 } from "./instalments.service";
 import { allocateInvoiceNumber, currentInvoiceYear } from "./invoice-number";
-import { money, num } from "./money";
+import { money, num, toMoney } from "./money";
 import {
   countableInvoices,
   effectiveStatusSql,
@@ -56,6 +60,8 @@ import {
   listableInvoices,
   statusFilter,
 } from "./status";
+import { LogEvent } from "../../lib/logging/events";
+import { retirePaymentLink } from "./payment-links.service";
 import { recalculateInvoiceTotals } from "./totals";
 import type {
   AccountAccess,
@@ -238,6 +244,7 @@ export const list = async (
       amountPaid: invoices.amountPaid,
       balanceDue: invoices.balanceDue,
       status: effectiveStatusSql(today),
+      consultationRefundBlocked: consultationRefundBlockedSql,
     })
     .from(invoices)
     .leftJoin(clients, onClient)
@@ -280,6 +287,7 @@ export const list = async (
     amountPaid: num(r.amountPaid),
     balanceDue: num(r.balanceDue),
     status: r.status as EffectiveInvoiceStatus,
+    consultationRefundBlocked: Boolean(r.consultationRefundBlocked),
     schedule: schedules.get(r.id) ?? null,
   }));
 
@@ -340,6 +348,28 @@ const listTotals = async (
 
 // ── Detail ───────────────────────────────────────────────────────────────────
 
+/**
+ * Will Finance refuse to refund or void this invoice?
+ *
+ * True while a LIVE consultation is billed by it. Cancelling that consultation
+ * is the one path that also releases the calendar slot and tells the client, so
+ * the UI needs to know before offering a button the API will refuse.
+ *
+ * Narrowed to live statuses deliberately, and it must stay in step with
+ * `hasLiveConsultation` — the server-side guard is the same rule, and a UI that
+ * hid the button for a CANCELLED consultation would leave a failed refund with
+ * a route the API allows and no human can reach.
+ *
+ * A correlated EXISTS rather than a join, so an invoice can never be duplicated
+ * by it.
+ */
+const consultationRefundBlockedSql = sql<boolean>`exists (
+  select 1 from ${consultations}
+  where ${consultations.invoiceId} = ${invoices.id}
+    and ${consultations.organizationId} = ${invoices.organizationId}
+    and ${inArray(consultations.status, [...LIVE_CONSULTATION_STATUSES])}
+)`;
+
 export const getById = async (
   organizationId: string,
   invoiceId: string,
@@ -352,6 +382,7 @@ export const getById = async (
       id: invoices.id,
       invoiceNumber: invoices.invoiceNumber,
       status: effectiveStatusSql(today),
+      consultationRefundBlocked: consultationRefundBlockedSql,
       storedStatus: invoices.status,
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
@@ -421,6 +452,22 @@ export const getById = async (
     )
     .orderBy(desc(invoicePayments.paymentDate));
 
+  /**
+   * How much has already been sent back against each payment.
+   *
+   * A fold over rows already in hand — every entry for this invoice is here,
+   * reversals included — so this costs no extra query. Reversal amounts are
+   * negative; the caller wants magnitudes.
+   */
+  const reversedAgainst = new Map<string, number>();
+  for (const p of paymentRows) {
+    if (!p.reversesPaymentId) continue;
+    reversedAgainst.set(
+      p.reversesPaymentId,
+      toMoney((reversedAgainst.get(p.reversesPaymentId) ?? 0) + Math.abs(num(p.amount))),
+    );
+  }
+
   const attorneyName = row.attorneyFirstName
     ? `${row.attorneyFirstName} ${row.attorneyLastName ?? ""}`.trim()
     : null;
@@ -452,6 +499,7 @@ export const getById = async (
     id: row.id,
     invoiceNumber: row.invoiceNumber,
     status: row.status as EffectiveInvoiceStatus,
+    consultationRefundBlocked: Boolean(row.consultationRefundBlocked),
     storedStatus: row.storedStatus,
     issueDate: row.issueDate,
     dueDate: row.dueDate,
@@ -507,8 +555,22 @@ export const getById = async (
       settledAt: p.settledAt,
       /** Confido's word for it, so HELD reads as HELD rather than "pending". */
       providerStatus: p.providerStatus,
-      /** Only a processor payment can be refunded through us. */
-      refundable: p.kind === "payment" && p.provider != null,
+      /**
+       * What is left to send back on this payment.
+       *
+       * Net of everything already reversed against it. Without that subtraction
+       * a fully refunded payment still offered a Refund button, and the server
+       * guard measured against the GROSS amount — so the same money could be
+       * sent back twice.
+       */
+      refundableAmount: toMoney(
+        Math.max(num(p.amount) - (reversedAgainst.get(p.id) ?? 0), 0),
+      ),
+      /** Only a processor payment with something left on it can be refunded. */
+      refundable:
+        p.kind === "payment" &&
+        p.provider != null &&
+        num(p.amount) - (reversedAgainst.get(p.id) ?? 0) > 0.005,
       paymentDate: p.paymentDate,
       method: p.method,
       reference: p.reference,
@@ -1009,6 +1071,62 @@ export const extendDueDate = async (
  * answer: the firm settles it out of band rather than through a number that
  * silently stops adding up.
  */
+/**
+ * Put an invoice on the books without emailing it.
+ *
+ * For money the firm collects face to face. `deliver()` flips `draft -> sent`
+ * only as a side effect of a successful send, so a fee that is deliberately
+ * never emailed would otherwise sit as a draft forever — excluded from
+ * `countableInvoices`, and therefore from every revenue report, despite the
+ * cash being in the till.
+ *
+ * Deliberately not a delivery: it writes no `invoice_deliveries` row and mints
+ * no payment token, because nothing was sent anywhere and claiming otherwise
+ * would put a delivery in the audit trail that never happened.
+ *
+ * A no-op on anything already past draft, so calling it twice is safe.
+ */
+export const issueInvoice = async (
+  organizationId: string,
+  invoiceId: string,
+  reason: string,
+  actorStaffId: string | null,
+): Promise<void> => {
+  const [existing] = await db
+    .select({ status: invoices.status, invoiceNumber: invoices.invoiceNumber })
+    .from(invoices)
+    .where(
+      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+    )
+    .limit(1);
+
+  if (!existing) throw new NotFoundError("Invoice not found");
+  if (existing.status !== "draft") return;
+
+  const now = new Date();
+  await db
+    .update(invoices)
+    .set({ status: "sent", sentAt: now, updatedAt: now })
+    .where(
+      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+    );
+
+  await logFinanceEvent({
+    organizationId,
+    action: "finance.invoice_sent",
+    title: `${existing.invoiceNumber} — issued without emailing`,
+    description: reason,
+    invoiceId,
+    actorId: actorStaffId,
+  });
+
+  log.action("invoice.issued_without_delivery", {
+    invoiceId,
+    invoiceNumber: existing.invoiceNumber,
+    reason,
+  });
+};
+
 export const voidInvoice = async (
   organizationId: string,
   invoiceId: string,
@@ -1044,7 +1162,7 @@ export const voidInvoice = async (
     );
   }
 
-  return withTransaction(db, async () => {
+  const result = await withTransaction(db, async () => {
     await db
       .update(invoices)
       .set({ status: "void", voidedAt: new Date(), updatedAt: new Date() })
@@ -1110,6 +1228,23 @@ export const voidInvoice = async (
 
     return getById(organizationId, invoiceId, access);
   });
+
+  // Withdraw the hosted payment link, AFTER the void has committed.
+  //
+  // Our own page refuses a voided invoice's token, but that only stops the URL
+  // being obtained — a client holding it already can still pay at Confido, and
+  // the webhook then refuses to record it. Money taken, nothing on the ledger.
+  //
+  // Non-fatal: a void must still void when Confido is unreachable. The link is
+  // then stale, which is exactly why the token check stays as the second line
+  // of defence rather than being replaced by this. Logged at `warn`, because
+  // "the invoice is withdrawn but its link may still charge" is a state someone
+  // needs to know about.
+  await retirePaymentLink(organizationId, invoiceId).catch((err) =>
+    log.failure(LogEvent.PAYMENT_LINK_RETIRE_FAILED, err, { invoiceId }),
+  );
+
+  return result;
 };
 
 export type UpdateInvoiceInput = {

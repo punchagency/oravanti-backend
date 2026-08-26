@@ -56,6 +56,76 @@ type AppEnv = Record<RequiredEnvKey, string> & {
   STRIPE_WEBHOOK_SECRET?: string;
   STRIPE_PUBLISHABLE_KEY?: string;
   /**
+   * Platform-owned Twilio account and Messaging Service, shared across every
+   * firm — the same arrangement as Dropbox Sign above. Unset everywhere today:
+   * the notification layer falls back to a stub SMS provider that logs and
+   * sends nothing, and `consultation_settings.sms_enabled` defaults to false on
+   * top of that.
+   *
+   * The SID and the auth token are required TOGETHER, and so is a sender.
+   * `isSmsProviderConfigured()` demands all three. The auth token is also what
+   * verifies the status and inbound webhooks, so a configured sender without it
+   * would leave two public endpoints unable to check what they are sent while
+   * the rest of the system believed SMS was live — the same reasoning as
+   * STRIPE_WEBHOOK_SECRET.
+   */
+  TWILIO_ACCOUNT_SID?: string;
+  TWILIO_AUTH_TOKEN?: string;
+  /** Preferred sender: gives sender pools, sticky sender and Advanced Opt-Out. */
+  TWILIO_MESSAGING_SERVICE_SID?: string;
+  /** Single-number fallback for local and trial use, when no Messaging Service is set. */
+  TWILIO_FROM_NUMBER?: string;
+  /**
+   * The EXACT public base URL Twilio is configured to call.
+   *
+   * Twilio's signature is an HMAC over the request URL plus its sorted form
+   * params, so the URL must be reproduced byte for byte. Rebuilding it from
+   * `req.protocol` fails behind a proxy — the app sees "http" while Twilio
+   * signed "https" — and every legitimate request is rejected as forged.
+   */
+  TWILIO_WEBHOOK_BASE_URL?: string;
+  /**
+   * Svix signing secret for Resend's delivery webhooks. Required alongside
+   * RESEND_API_KEY for `isEmailDeliveryTrackingConfigured()`; without it the
+   * webhook endpoint cannot verify anything and email rows simply stop at
+   * "sent" instead of reaching "delivered".
+   */
+  RESEND_WEBHOOK_SECRET?: string;
+  /**
+   * Optional ISO-3166 region ("US") used to parse bare national phone numbers.
+   * Left unset by default so an ambiguous number fails loudly as unsendable
+   * rather than being silently attributed to the wrong country.
+   */
+  PHONE_DEFAULT_REGION?: string;
+  /**
+   * Which SMS vendor sends. "twilio" | "telnyx", case-insensitive.
+   *
+   * Deliberately typed `string` and not narrowed here: everything validateEnv
+   * validates, it THROWS on, and an unrecognised provider must fall back to the
+   * stub rather than take the process down. Recognition happens in
+   * sms.provider.ts, which warns rather than throws.
+   *
+   * This is the rollback switch. A problem with one vendor is one env var and a
+   * restart — both webhook routes stay mounted whatever this says, so callbacks
+   * for messages already in flight are still accepted during a switchover.
+   */
+  SMS_PROVIDER?: string;
+  /**
+   * Platform-owned Telnyx account and Messaging Profile, shared across every
+   * firm — the same arrangement as Twilio above.
+   *
+   * TELNYX_PUBLIC_KEY is NOT optional when Telnyx is active. Telnyx verifies
+   * webhooks with a public key that is a different value from a different page
+   * of the portal than the API key, so it is the one credential that can be
+   * forgotten while sending still works — and its absence would mean every
+   * opt-out signal is rejected as forged.
+   */
+  TELNYX_API_KEY?: string;
+  TELNYX_MESSAGING_PROFILE_ID?: string;
+  TELNYX_FROM_NUMBER?: string;
+  TELNYX_PUBLIC_KEY?: string;
+  TELNYX_WEBHOOK_BASE_URL?: string;
+  /**
    * Confido Legal — the processor that replaces Stripe, chosen because it routes
    * a single client payment into separate trust (IOLTA) and operating bank
    * accounts, which Stripe cannot do.
@@ -144,6 +214,21 @@ const validateEnv = (): AppEnv => {
   const confidoOnboardingJsUrl = readEnv("CONFIDO_ONBOARDING_JS_URL");
   const dropboxSignApiKey = readEnv("DROPBOX_SIGN_API_KEY");
   const dropboxSignClientId = readEnv("DROPBOX_SIGN_CLIENT_ID");
+  const twilioAccountSid = readEnv("TWILIO_ACCOUNT_SID");
+  const twilioAuthToken = readEnv("TWILIO_AUTH_TOKEN");
+  const twilioMessagingServiceSid = readEnv("TWILIO_MESSAGING_SERVICE_SID");
+  const twilioFromNumber = readEnv("TWILIO_FROM_NUMBER");
+  const twilioWebhookBaseUrl = readEnv("TWILIO_WEBHOOK_BASE_URL");
+  const resendWebhookSecret = readEnv("RESEND_WEBHOOK_SECRET");
+  const phoneDefaultRegion = readEnv("PHONE_DEFAULT_REGION");
+  // Lowercased: SMS_PROVIDER=Twilio silently falling back to the stub would be
+  // a nasty production incident.
+  const smsProvider = readEnv("SMS_PROVIDER")?.toLowerCase();
+  const telnyxApiKey = readEnv("TELNYX_API_KEY");
+  const telnyxMessagingProfileId = readEnv("TELNYX_MESSAGING_PROFILE_ID");
+  const telnyxFromNumber = readEnv("TELNYX_FROM_NUMBER");
+  const telnyxPublicKey = readEnv("TELNYX_PUBLIC_KEY");
+  const telnyxWebhookBaseUrl = readEnv("TELNYX_WEBHOOK_BASE_URL");
   // Defaults to test mode everywhere except production so quota is never
   // consumed accidentally; set DROPBOX_SIGN_TEST_MODE=false to override.
   const dropboxSignTestMode = isProduction
@@ -179,6 +264,29 @@ const validateEnv = (): AppEnv => {
       : {}),
     ...(dropboxSignApiKey ? { DROPBOX_SIGN_API_KEY: dropboxSignApiKey } : {}),
     ...(dropboxSignClientId ? { DROPBOX_SIGN_CLIENT_ID: dropboxSignClientId } : {}),
+    ...(twilioAccountSid ? { TWILIO_ACCOUNT_SID: twilioAccountSid } : {}),
+    ...(twilioAuthToken ? { TWILIO_AUTH_TOKEN: twilioAuthToken } : {}),
+    ...(twilioMessagingServiceSid
+      ? { TWILIO_MESSAGING_SERVICE_SID: twilioMessagingServiceSid }
+      : {}),
+    ...(twilioFromNumber ? { TWILIO_FROM_NUMBER: twilioFromNumber } : {}),
+    ...(twilioWebhookBaseUrl
+      ? { TWILIO_WEBHOOK_BASE_URL: twilioWebhookBaseUrl }
+      : {}),
+    ...(resendWebhookSecret
+      ? { RESEND_WEBHOOK_SECRET: resendWebhookSecret }
+      : {}),
+    ...(phoneDefaultRegion ? { PHONE_DEFAULT_REGION: phoneDefaultRegion } : {}),
+    ...(smsProvider ? { SMS_PROVIDER: smsProvider } : {}),
+    ...(telnyxApiKey ? { TELNYX_API_KEY: telnyxApiKey } : {}),
+    ...(telnyxMessagingProfileId
+      ? { TELNYX_MESSAGING_PROFILE_ID: telnyxMessagingProfileId }
+      : {}),
+    ...(telnyxFromNumber ? { TELNYX_FROM_NUMBER: telnyxFromNumber } : {}),
+    ...(telnyxPublicKey ? { TELNYX_PUBLIC_KEY: telnyxPublicKey } : {}),
+    ...(telnyxWebhookBaseUrl
+      ? { TELNYX_WEBHOOK_BASE_URL: telnyxWebhookBaseUrl }
+      : {}),
     DROPBOX_SIGN_TEST_MODE: dropboxSignTestMode,
     FEE_PAYMENT_GATE_BYPASS: feePaymentGateBypass,
     databaseUrl: isProduction ? prodDatabaseUrl! : values.DATABASE_URL,

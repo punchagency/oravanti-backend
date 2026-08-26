@@ -19,10 +19,17 @@ import {
   PaymentPublicModule,
   TimeBillingModule,
 } from "./finance/finance.module";
+import {
+  NotificationsModule,
+  ResendWebhookModule,
+  TelnyxWebhookModule,
+  TwilioWebhookModule,
+} from "./notifications/notifications.module";
 import { RevenueAnalyticsModule } from "./revenue-analytics/revenue-analytics.module";
 import { RolesPermissionsModule } from "./settings/roles-permissions/roles-permissions.module";
 import { RoleGroupsModule } from "./settings/role-groups/role-groups.module";
 import { ConsultationSettingsModule } from "./settings/consultation/consultation-settings.module";
+import { NotificationSettingsModule } from "./settings/notifications/notification-settings.module";
 import { ConfidoWebhookModule } from "./finance/confido/confido-webhooks.routes";
 import { PaymentSettingsModule } from "./settings/payments/payment-settings.module";
 import { FinancialAccessModule } from "./settings/financial-access/financial-access.module";
@@ -33,7 +40,6 @@ import { SecurityModule } from "./settings/security/security.module";
 import { StaffAvailabilityModule } from "./staff-availability/staff-availability.module";
 import { StaffsModule } from "./staffs/staffs.module";
 import { TasksModule } from "./tasks/tasks.module";
-import { NotificationsModule } from "./notifications/notifications.module";
 import { WorkflowTemplateModule } from "./workflow/workflow-template.module";
 import { WorkflowModule } from "./workflow/workflow.module";
 import {
@@ -57,7 +63,6 @@ export const modules: Module[] = [
   new CaseReviewModule(),
   new DocumentRequirementsModule(),
   new TasksModule(),
-  new NotificationsModule(),
   new WorkflowModule(),
   new WorkflowTemplateModule(),
   new CalendarModule(),
@@ -71,12 +76,17 @@ export const modules: Module[] = [
   new FinanceReportsModule(),
   // Public: the token is the credential, no requireAuth.
   new PaymentPublicModule(),
+  new TwilioWebhookModule(),
+  new TelnyxWebhookModule(),
+  new ResendWebhookModule(),
+  new NotificationsModule(),
   // Public: the HMAC signature is the credential, no requireAuth.
   new ConfidoWebhookModule(),
   new PermissionAuditLogModule(),
   new FirmInfoModule(),
   new FirmProfileModule(),
   new ConsultationSettingsModule(),
+  new NotificationSettingsModule(),
   new PaymentSettingsModule(),
   new RolesPermissionsModule(),
   new RoleGroupsModule(),

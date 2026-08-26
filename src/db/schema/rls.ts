@@ -102,6 +102,11 @@ import { clients } from "./clients";
 import { invoiceDeliveries } from "./invoice-deliveries";
 import { invoiceFollowups } from "./invoice-followups";
 import { invoiceLinePresets } from "./invoice-line-presets";
+import {
+  notificationPreferences,
+  notificationSettings,
+} from "./notification-settings";
+import { notifications } from "./notifications";
 import { invoiceNumberSequences } from "./invoice-number-sequences";
 import { invoiceInstalments } from "./invoice-instalments";
 import { confidoFirms } from "./confido-firms";
@@ -698,6 +703,57 @@ export const rlsAuditEventsOrg = pgPolicy("rls_audit_events_org", {
   withCheck: sql`organization_id = ${currentOrgId}`,
 }).link(auditEvents);
 
+
+
+/**
+ * The notification ledger holds recipient names, addresses and message bodies
+ * for every firm — a cross-tenant read here would expose who each firm is
+ * talking to and about what.
+ */
+export const rlsNotificationsOrg = pgPolicy("rls_notifications_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(notifications);
+
+export const rlsNotificationSettingsOrg = pgPolicy(
+  "rls_notification_settings_org",
+  {
+    as: "permissive",
+    for: "all",
+    using: sql`organization_id = ${currentOrgId}`,
+    withCheck: sql`organization_id = ${currentOrgId}`,
+  },
+).link(notificationSettings);
+
+export const rlsNotificationPreferencesOrg = pgPolicy(
+  "rls_notification_preferences_org",
+  {
+    as: "permissive",
+    for: "all",
+    using: sql`organization_id = ${currentOrgId}`,
+    withCheck: sql`organization_id = ${currentOrgId}`,
+  },
+).link(notificationPreferences);
+
+
+// =============================================================================
+// sms_inbound_messages / email_suppressions — deliberately NOT covered
+// =============================================================================
+// Both are platform-wide rather than tenant-scoped, and their organization_id
+// is nullable, so there is no column to filter on.
+//
+// That is not an oversight, it is the subject matter. The platform sends SMS
+// from one shared number and email from one shared domain, so an opt-out or a
+// hard bounce is a fact about the recipient's phone or address, not about one
+// firm's relationship with them. A STOP means that number stops texting you,
+// and continuing to email a bounced address damages a sending reputation every
+// firm shares.
+//
+// Both are reached only through systemDb with an explicit predicate on the
+// normalised phone or lowercased email, from the webhook handlers and the
+// consent service. Neither is exposed on a tenant-facing read path.
 
 // =============================================================================
 // document_analyses / document_photo_comparisons — deliberately NOT covered

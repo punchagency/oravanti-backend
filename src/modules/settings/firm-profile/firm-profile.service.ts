@@ -341,8 +341,17 @@ export class FirmProfileService {
               consultation.defaultAmount != null
                 ? Number(consultation.defaultAmount)
                 : null,
-            feeStructure: consultation.feeStructure,
-            waiverWindowDays: consultation.waiverWindowDays,
+            // Normalised the same way the settings API normalises it on read.
+            // Exporting the raw column let a retired value the rest of the
+            // system cannot produce — `waived_if_retainer`, which never waived
+            // anything — leave the building in a firm's own data export.
+            feeStructure:
+              consultation.feeStructure === "custom_per_case_type"
+                ? consultation.feeStructure
+                : consultation.feeStructure == null
+                  ? null
+                  : "flat",
+            waiverWindowDays: null,
             timezone: consultation.timezone,
             smsEnabled: consultation.smsEnabled,
           }

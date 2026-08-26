@@ -32,6 +32,23 @@ export const consultationStatusEnum = pgEnum("consultation_status", [
   "no_show",
 ]);
 
+/**
+ * The statuses where the consultation has not happened and can still be
+ * cancelled — as opposed to `completed`, `cancelled` and `no_show`, which are
+ * terminal.
+ *
+ * Lives beside the enum rather than in a service because two services need it
+ * and importing between them is a cycle: `invoices.service` builds a SQL
+ * predicate from it at module scope, and `consultation-billing.service` already
+ * imports `invoices.service`.
+ */
+export const LIVE_CONSULTATION_STATUSES = [
+  "pending_payment",
+  "awaiting_slot_selection",
+  "scheduled",
+  "in_progress",
+] as const;
+
 export const consultationOutcomeEnum = pgEnum("consultation_outcome", [
   "proceed",
   "close_no_case",
@@ -89,6 +106,16 @@ export const consultations = pgTable("consultations", {
   isInstant: boolean("is_instant").notNull().default(false),
   // Only set for instant consultations.
   paymentTiming: consultationPaymentTimingEnum("payment_timing"),
+  /**
+   * When this consultation's deposit balance falls due, in days after the call.
+   *
+   * Snapshotted from `consultation_settings.balance_due_days` at booking — or
+   * from whoever scheduled it, when the firm's mode is `custom`. Stored rather
+   * than re-read because the balance date is recomputed when the lead picks a
+   * slot, by which point the firm's setting may have moved and a per-
+   * consultation choice would otherwise be silently discarded.
+   */
+  balanceDueDays: integer("balance_due_days"),
   // Emergency rate multiplier applied to the standard fee (display/audit; the
   // multiplied amount is persisted in feeAmount).
   isEmergency: boolean("is_emergency").notNull().default(false),
@@ -138,6 +165,19 @@ export const consultations = pgTable("consultations", {
   // which is who it is *with*.
   scheduledById: uuid("scheduled_by_id").references(() => staff.id),
   cancelledById: uuid("cancelled_by_id").references(() => staff.id),
+
+  // Reminder bookkeeping. The reminders themselves are `notifications` rows
+  // with a deterministic dedupeKey, so these columns are not the schedule — the
+  // ledger is. They record what actually went out, which is what the
+  // consultation card needs to display without joining across.
+  //
+  // remindersScheduledAt is the "we have queued these" marker: a reschedule
+  // cancels and re-queues, and a consultation that was never in a schedulable
+  // state has it null.
+  reminder24hSentAt: timestamp("reminder_24h_sent_at"),
+  reminder1hSentAt: timestamp("reminder_1h_sent_at"),
+  remindersScheduledAt: timestamp("reminders_scheduled_at"),
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

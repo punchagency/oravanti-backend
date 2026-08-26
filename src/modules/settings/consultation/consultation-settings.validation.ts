@@ -13,14 +13,31 @@ import { isValidTimezone } from "../../../utils/date";
  * `toSettingsDTO` normalises it to `flat` on read, so a firm that had chosen it
  * keeps that on record for whenever it is built.
  *
- * `custom_per_case_type` stays enabled. Unlike the waiver it is live behaviour
- * — it is what lets staff set a per-consultation amount (`leads.service.ts`,
- * fee resolution) — despite the name promising a case-type lookup that does not
- * exist.
+ * `custom_per_case_type` stays enabled and is live behaviour: it is what lets
+ * staff set the amount per consultation (`leads.service.ts`, fee resolution).
+ * The NAME is a leftover — it promises a case-type lookup that has never
+ * existed, and `practice_area_case_types` carries no money column to build one
+ * from. The UI calls it "Set per consultation", which is what it does; the enum
+ * value stays because Postgres cannot rename a member in place and the value is
+ * not worth a migration on its own.
  */
 export const enabledConsultationFeeStructures = [
   "flat",
   "custom_per_case_type",
+] as const;
+
+export const consultationFeeSchedules = [
+  "full_upfront",
+  "partial_upfront",
+  "after_consultation",
+] as const;
+
+export const consultationBalanceDueModes = ["fixed", "custom"] as const;
+
+export const consultationNoShowPolicies = [
+  "forfeit",
+  "refund",
+  "decide",
 ] as const;
 
 /** Reusable IANA timezone validator (e.g. "America/New_York"). */
@@ -49,11 +66,49 @@ export const upsertConsultationSettingsSchema = z
     // outright would 400 a save that changes something else entirely. The
     // service writes null regardless.
     waiverWindowDays: z.number().int().positive().nullish(),
+    feeSchedule: z.enum(consultationFeeSchedules).optional(),
+    upfrontPercent: z.number().int().min(1).max(99).nullish(),
+    balanceDueMode: z.enum(consultationBalanceDueModes).nullish(),
+    // Days after the consultation. Zero is meaningful — "due on the day" — so
+    // the floor is 0, not 1, unlike the deposit percentage.
+    balanceDueDays: z.number().int().min(0).max(90).nullish(),
+    noShowPolicy: z.enum(consultationNoShowPolicies).optional(),
     timezone: timezoneSchema.optional(),
     language: languageSchema.optional(),
     smsEnabled: z.boolean().optional(),
   })
   .superRefine((val, ctx) => {
+    // Checked before the `chargesFee` early return below: the deposit rules
+    // mirror CHECK constraints on the table, and a body that contradicts one
+    // should come back as a field error rather than a 500 from Postgres — a
+    // non-charging firm included.
+    if (val.feeSchedule === "partial_upfront" && val.upfrontPercent == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "A deposit percentage is required when the balance is paid after the consultation",
+        path: ["upfrontPercent"],
+      });
+    }
+
+    if ((val.balanceDueMode == null) !== (val.balanceDueDays == null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "Set both when the balance is due and how it is decided, or neither",
+        path: ["balanceDueDays"],
+      });
+    }
+
+    if (val.balanceDueMode != null && val.feeSchedule !== "partial_upfront") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "A balance due date only applies when the firm collects a deposit",
+        path: ["balanceDueMode"],
+      });
+    }
+
     if (!val.chargesFee) return;
 
     if (val.defaultAmount == null) {
