@@ -164,6 +164,11 @@ export const AUDIT_ACTIONS = {
 
   "case.workflow_initialized": { category: "business", actionType: "create", entityType: "case", label: "Workflow initialised" },
   "case.module_activated": { category: "business", actionType: "update", entityType: "workflow_module", label: "Module activated" },
+  // Ad-hoc case-attached tasks (`tasks.source = 'ad_hoc'`) — mirrors `lead.task_*`, distinct from the `case.step_*` family below which is workflow-sourced steps specifically.
+  "case.task_created": { category: "business", actionType: "create", entityType: "task", label: "Task created" },
+  "case.task_updated": { category: "business", actionType: "update", entityType: "task", label: "Task updated" },
+  "case.step_created": { category: "business", actionType: "create", entityType: "workflow_step", label: "Step added" },
+  "case.step_updated": { category: "business", actionType: "update", entityType: "workflow_step", label: "Step updated" },
   "case.step_assigned": { category: "business", actionType: "update", entityType: "workflow_step", label: "Step assigned" },
   "case.step_started": { category: "business", actionType: "update", entityType: "workflow_step", label: "Step started" },
   "case.step_completed": { category: "business", actionType: "update", entityType: "workflow_step", label: "Step completed" },
@@ -172,6 +177,17 @@ export const AUDIT_ACTIONS = {
   "case.step_rejected": { category: "business", actionType: "update", entityType: "workflow_step", label: "Step rejected" },
   "case.step_reopened": { category: "business", actionType: "update", entityType: "workflow_step", label: "Step reopened" },
   "case.step_skipped": { category: "business", actionType: "update", entityType: "workflow_step", label: "Step skipped" },
+  // Withdrawn is the engine's decision, skipped is a person's: a step is withdrawn when the condition that
+  // created it stops holding, and restored if it holds again. Neither ever deletes the task.
+  "case.step_withdrawn": { category: "business", actionType: "update", entityType: "workflow_step", label: "Step withdrawn" },
+  "case.step_restored": { category: "business", actionType: "update", entityType: "workflow_step", label: "Step restored" },
+
+  // Per-form tracking. A filing package is several forms, each with its own edition, fee, receipt number and
+  // adjudication — `case.filed` is the package, these are the paper it is made of.
+  "case.forms_initialized": { category: "business", actionType: "create", entityType: "case", label: "Filing package set up" },
+  "case.form_updated": { category: "business", actionType: "update", entityType: "case_form", label: "Form updated" },
+  "case.form_status_changed": { category: "business", actionType: "update", entityType: "case_form", label: "Form status changed" },
+  "case.form_removed": { category: "business", actionType: "delete", entityType: "case_form", label: "Form removed" },
 
   /** The billing bridge — deliberately these two only, so a matter timeline is not a ledger. */
   "case.invoice_created": { category: "business", actionType: "create", entityType: "invoice", label: "Invoice raised" },
@@ -187,15 +203,56 @@ export const AUDIT_ACTIONS = {
   "case_review.issue_superseded": { category: "system", actionType: "update", entityType: "case_issue", label: "Issue superseded" },
   "case_review.scan_completed": { category: "system", actionType: "create", entityType: "case", label: "Review scan completed" },
 
-  // ── Tasks ───────────────────────────────────────────────────────────────
-  "task.created": { category: "business", actionType: "create", entityType: "task", label: "Task created" },
-  "task.updated": { category: "business", actionType: "update", entityType: "task", label: "Task updated" },
-  "task.completed": { category: "business", actionType: "update", entityType: "task", label: "Task completed" },
-  "task.submitted": { category: "business", actionType: "update", entityType: "task", label: "Task submitted for review" },
-  "task.approved": { category: "business", actionType: "update", entityType: "task", label: "Task approved" },
-  "task.rejected": { category: "business", actionType: "update", entityType: "task", label: "Task rejected" },
-  "task.reopened": { category: "business", actionType: "update", entityType: "task", label: "Task reopened" },
-  "task.assigned": { category: "business", actionType: "update", entityType: "task", label: "Task assigned" },
+  // ── Task review thread ───────────────────────────────────────────────────
+  // `task-review-events.service.ts`'s append-only review conversation, shared
+  // verbatim by both `case_step` and `lead_task` entities (`entityType` is the
+  // `taskKind` the caller passes, not a fixed value) — one thread reader for
+  // both, so it needs one action namespace, not two. This is distinct from the
+  // per-domain `case.step_*`/`lead.task_*` events above: those describe what
+  // happened for an activity feed; these are the thread's own entries. The
+  // wider `task.*` family this used to include (created/updated/completed/
+  // assigned) is gone — the old generic `tasks` table it audited is replaced
+  // by the unified table, and case/lead-attached tasks now use `case.step_*`/
+  // `lead.task_*` for those verbs.
+  "task.submitted": { category: "business", actionType: "update", entityType: "task", label: "Submitted for review" },
+  "task.approved": { category: "business", actionType: "update", entityType: "task", label: "Approved" },
+  "task.rejected": { category: "business", actionType: "update", entityType: "task", label: "Rejected" },
+  "task.reopened": { category: "business", actionType: "update", entityType: "task", label: "Reopened" },
+
+  // ── Workflow templates ───────────────────────────────────────────────────
+  // A firm customizing their own copy of a system-default template (Decision 1,
+  // locked backbone + firm add-ons) — see workflow-template.service.ts.
+  "workflow_template.created": { category: "business", actionType: "create", entityType: "workflow_template", label: "Workflow template created" },
+  "workflow_template.updated": { category: "business", actionType: "update", entityType: "workflow_template", label: "Workflow template updated" },
+  "workflow_template.archived": { category: "business", actionType: "update", entityType: "workflow_template", label: "Workflow template archived" },
+
+  // ── Intake checklist ─────────────────────────────────────────────────────
+  // The lead-side twin of `workflow_template.*`: a firm editing the fixed
+  // checklist every new lead is stamped with. Its own domain rather than a
+  // `workflow_template` verb because it is a different table with a different
+  // editor — and because an intake lead is not a matter, so the two never
+  // belong in the same filtered feed.
+  "intake_pipeline.template_created": { category: "business", actionType: "create", entityType: "intake_pipeline_template", label: "Intake checklist created" },
+  "intake_pipeline.template_updated": { category: "business", actionType: "update", entityType: "intake_pipeline_template", label: "Intake checklist updated" },
+
+  // ── Case linking ─────────────────────────────────────────────────────────
+  // Mandamus/appeal/related-matter linking via `cases.parentCaseId`.
+  "case.linked": { category: "business", actionType: "update", entityType: "case", label: "Case linked" },
+  "case.unlinked": { category: "business", actionType: "update", entityType: "case", label: "Case unlinked" },
+
+  // ── Case milestones ──────────────────────────────────────────────────────
+  // What the agency did and when (a receipt notice, an appointment, a
+  // decision). The milestone row itself lives in `case_milestones`; these are
+  // the firm-side record of someone entering or correcting it.
+  "case.milestone_recorded": { category: "business", actionType: "create", entityType: "case", label: "Milestone recorded" },
+  "case.milestone_corrected": { category: "business", actionType: "update", entityType: "case", label: "Milestone corrected" },
+
+  // ── Notifications ────────────────────────────────────────────────────────
+  // Best-effort visibility into the notification service — not every routine
+  // reminder needs a row here, only ones tied to a case-facing event (see the
+  // call sites in notification.service.ts).
+  "notification.sent": { category: "business", actionType: "create", entityType: "notification", label: "Notification sent" },
+  "notification.failed": { category: "system", actionType: "create", entityType: "notification", label: "Notification failed" },
 
   // ── Clients ──────────────────────────────────────────────────────────────
   "client.created": { category: "business", actionType: "create", entityType: "client", label: "Client created" },
