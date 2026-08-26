@@ -104,7 +104,24 @@ export const leads = pgTable("leads", {
   practiceAreaId: uuid("practice_area_id")
     .notNull()
     .references(() => practiceAreas.id),
-  caseTypeId:     uuid("case_type_id").references(() => practiceAreaCaseTypes.id),
+  /**
+   * NOT NULL, like `cases.case_type_id` — which it becomes on conversion, and
+   * which has always been NOT NULL. The lead table was permitting exactly what
+   * the cases table forbids.
+   *
+   * Without one a lead is blocked at the questionnaire stage
+   * (`sendQuestionnaire` throws), silently absent from the questionnaire send
+   * wizard, shows zero eligible teams at case opening, renders "Not specified"
+   * as the matter type on a signed fee agreement, and is refused by `openCase`.
+   *
+   * The FK guarantees the case type exists, NOT that it belongs to this lead's
+   * practice area — that reaches its area only through its subcategory, so the
+   * two columns are independently satisfiable. `ensureCaseTypeIdBelongsToPracticeArea`
+   * is what enforces the pair.
+   */
+  caseTypeId:     uuid("case_type_id")
+    .notNull()
+    .references(() => practiceAreaCaseTypes.id),
 
   // Compliance / Risk Mitigation checks
   intakeAdversePartyName:  text("intake_adverse_party_name"),

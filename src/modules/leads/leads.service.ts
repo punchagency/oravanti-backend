@@ -42,6 +42,7 @@ import {
 } from "../finance/consultation-billing.service";
 import { resendInvoice, sendInvoice } from "../finance/deliveries.service";
 import { invoiceDeliveries } from "../../db/schema/invoice-deliveries";
+import { ensureCaseTypeIdBelongsToPracticeArea } from "../practice-areas/practice-areas.utils";
 import { issueInvoice, voidInvoice } from "../finance/invoices.service";
 import {
   netPaidOnInvoice,
@@ -487,7 +488,12 @@ const buildSchemaSnapshot = async (
 
 // ─── Leads CRUD ───────────────────────────────────────────────────────────────
 
-const createLead = async (
+/**
+ * Exported for the lead-classification check, which asserts that a mismatched
+ * practice-area/case-type pair is refused at creation. The controller remains
+ * the only production caller.
+ */
+export const createLead = async (
   organizationId: string,
   data: {
     firstName: string;
@@ -497,9 +503,9 @@ const createLead = async (
     smsConsent?: boolean;
     entityType?: "individual" | "company";
     source: string;
-    /** Required — the column is NOT NULL and the validator refuses it absent. */
+    /** Required — the columns are NOT NULL and the validator refuses them absent. */
     practiceAreaId: string;
-    caseTypeId?: string;
+    caseTypeId: string;
     situationSummary?: string;
     intakeAdversePartyName?: string;
     intakeAdversePartyEmail?: string;
@@ -508,6 +514,15 @@ const createLead = async (
   },
   creatorStaffId: string,
 ) => {
+  // The two ids are independent foreign keys, each satisfiable while describing
+  // a different practice area. Nothing in the database objects, and the
+  // mismatch surfaces at case opening — either as a throw at the last pipeline
+  // stage, or as a case numbered under one case type and typed as another.
+  await ensureCaseTypeIdBelongsToPracticeArea(
+    data.practiceAreaId,
+    data.caseTypeId,
+  );
+
   const [lead] = await db
     .insert(leads)
     .values({
@@ -520,7 +535,7 @@ const createLead = async (
       source: data.source as any,
       situationSummary: data.situationSummary,
       practiceAreaId: data.practiceAreaId,
-      caseTypeId: data.caseTypeId ?? null,
+      caseTypeId: data.caseTypeId,
       respondentId: creatorStaffId,
       intakeAdversePartyName: data.intakeAdversePartyName,
       intakeAdversePartyEmail: data.intakeAdversePartyEmail,
@@ -961,6 +976,23 @@ export const updateLead = async (
     nextId: data.caseTypeId,
     nameTable: practiceAreaCaseTypes,
   });
+
+  /**
+   * Whichever of the pair is moving, the OTHER side is whatever it will be
+   * after this patch — the incoming value when it is also changing, the stored
+   * one otherwise.
+   *
+   * Checked on either change rather than only when both are sent, because the
+   * one-sided move is the dangerous one: `PATCH { practiceAreaId }` alone used
+   * to relocate the lead and leave a case type belonging to the area it came
+   * from, silently, with no field in the request even mentioning it.
+   */
+  if (practiceAreaChange || caseTypeChange) {
+    await ensureCaseTypeIdBelongsToPracticeArea(
+      data.practiceAreaId ?? existing.practiceAreaId,
+      data.caseTypeId ?? existing.caseTypeId,
+    );
+  }
 
   if (practiceAreaChange) {
     patch.practiceAreaId = data.practiceAreaId;

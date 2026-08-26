@@ -31,7 +31,8 @@ import { organization } from "../src/db/schema/auth-schema";
 import { confidoFirms } from "../src/db/schema/confido-firms";
 import { invoiceLineItems, invoices } from "../src/db/schema/invoices";
 import { invoicePayments } from "../src/db/schema/invoice-payments";
-import { practiceAreas } from "../src/db/schema/practice-areas";
+import { practiceAreaCaseTypes } from "../src/db/schema/practice-area-case-types";
+import { practiceAreaSubcategories } from "../src/db/schema/practice-area-subcategories";
 import { leads } from "../src/db/schema/leads";
 import { encryptPaymentValue } from "../src/utils/payment-crypto";
 import { mintPaymentLink, startCheckout } from "../src/modules/finance/payment-links.service";
@@ -80,22 +81,39 @@ const setup = async () => {
 
   // A lead to bill, so this exercises the lead-billed path that consultation
   // invoices use — the harder of the two, since no client row exists.
-  const [area] = await systemDb.select({ id: practiceAreas.id }).from(practiceAreas).limit(1);
-  // `leads.practice_area_id` is NOT NULL, and an invoice raised against a lead
-  // with no practice area is refused by validation anyway — so an empty
-  // catalogue is a broken environment, not a case to paper over with a null.
-  if (!area) {
+  // Both columns are NOT NULL and must describe the SAME practice area, so the
+  // case type is chosen first and the area derived from it — picking an area
+  // and then hunting for a case type under it is the same query backwards, and
+  // gets the pair wrong if the area happens to have none.
+  //
+  // An empty catalogue is a broken environment, not a case to paper over with a
+  // null: this runs against a real deployment, so it fails loudly.
+  const [taxonomy] = await systemDb
+    .select({
+      caseTypeId: practiceAreaCaseTypes.id,
+      practiceAreaId: practiceAreaSubcategories.practiceAreaId,
+    })
+    .from(practiceAreaCaseTypes)
+    .innerJoin(
+      practiceAreaSubcategories,
+      eq(practiceAreaSubcategories.id, practiceAreaCaseTypes.subcategoryId),
+    )
+    .limit(1);
+
+  if (!taxonomy) {
     throw new Error(
-      "No practice areas in the catalogue — seed one before running the tunnel test",
+      "No case types in the catalogue — seed the practice-area taxonomy before running the tunnel test",
     );
   }
+
   const [lead] = await systemDb.insert(leads).values({
     organizationId: orgId,
     firstName: "Tunnel",
     lastName: `Test ${run}`,
     email: `tunnel+${run}@example.com`,
     source: "direct",
-    practiceAreaId: area.id,
+    practiceAreaId: taxonomy.practiceAreaId,
+    caseTypeId: taxonomy.caseTypeId,
   }).returning({ id: leads.id });
 
   // Split invoice: a filing fee to trust, attorney time to operating. This is
@@ -104,7 +122,7 @@ const setup = async () => {
     organizationId: orgId,
     invoiceNumber: `TUNNEL-${run}`,
     leadId: lead!.id,
-    practiceAreaId: area?.id ?? null,
+    practiceAreaId: taxonomy.practiceAreaId,
     issueDate: new Date().toISOString().slice(0, 10),
     dueDate: new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10),
     status: "sent",
