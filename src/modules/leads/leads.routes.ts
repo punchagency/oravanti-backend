@@ -438,10 +438,24 @@ export class LeadsRouter {
     );
 
     // Consultation
+    //
+    // Booking and editing a consultation advance the lead's pipeline stage and
+    // write to the lead row, so they sit under `leads:update` rather than a
+    // resource of their own. Reading stays open to anyone who can already see
+    // the lead.
+    //
+    // This is not cosmetic: `POST /:id/consultation` is the route that sets the
+    // fee. It carried `requireAuth` alone, so any authenticated member of the
+    // firm could book a consultation at an arbitrary amount — and the
+    // route-authorization ratchet could not see it, because `coverageOf` grades
+    // per module and this file's two other `requirePermission` calls already
+    // classified the whole module as partially gated.
+    const mayUpdateLead = requirePermission({ leads: ["update"] });
 
     this.router.post(
       "/:id/consultation",
       requireAuth,
+      mayUpdateLead,
       validateRequest({
         params: v.idParamsSchema,
         body: v.initiateConsultationBodySchema,
@@ -459,6 +473,7 @@ export class LeadsRouter {
     this.router.patch(
       "/:id/consultation",
       requireAuth,
+      mayUpdateLead,
       validateRequest({
         params: v.idParamsSchema,
         body: v.updateConsultationBodySchema,

@@ -106,6 +106,16 @@ export const consultations = pgTable("consultations", {
   isInstant: boolean("is_instant").notNull().default(false),
   // Only set for instant consultations.
   paymentTiming: consultationPaymentTimingEnum("payment_timing"),
+  /**
+   * When this consultation's deposit balance falls due, in days after the call.
+   *
+   * Snapshotted from `consultation_settings.balance_due_days` at booking — or
+   * from whoever scheduled it, when the firm's mode is `custom`. Stored rather
+   * than re-read because the balance date is recomputed when the lead picks a
+   * slot, by which point the firm's setting may have moved and a per-
+   * consultation choice would otherwise be silently discarded.
+   */
+  balanceDueDays: integer("balance_due_days"),
   // Emergency rate multiplier applied to the standard fee (display/audit; the
   // multiplied amount is persisted in feeAmount).
   isEmergency: boolean("is_emergency").notNull().default(false),

@@ -17,6 +17,7 @@ import { createHash, randomUUID } from "crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { closeDb, systemDb } from "../../src/db/client";
 import { organization, user } from "../../src/db/schema/auth-schema";
+import { auditEvents } from "../../src/db/schema/audit-events";
 import { consultationSettings } from "../../src/db/schema/consultation-settings";
 import { consultations } from "../../src/db/schema/consultations";
 import { invoiceInstalments } from "../../src/db/schema/invoice-instalments";
@@ -24,7 +25,10 @@ import { invoicePayments } from "../../src/db/schema/invoice-payments";
 import { invoices } from "../../src/db/schema/invoices";
 import { leads } from "../../src/db/schema/leads";
 import { staff } from "../../src/db/schema/staff";
-import { consultationPaymentOutstanding } from "../../src/modules/finance/consultation-billing.service";
+import {
+  consultationFeeUnsettled,
+  consultationPaymentOutstanding,
+} from "../../src/modules/finance/consultation-billing.service";
 import { systemAccess } from "../../src/modules/finance/account-access";
 import * as invoicesService from "../../src/modules/finance/invoices.service";
 import { isWholeTransaction } from "../../src/modules/finance/refunds.service";
@@ -37,7 +41,22 @@ import {
 import { encryptPaymentValue } from "../../src/utils/payment-crypto";
 import { confidoFirms } from "../../src/db/schema/confido-firms";
 import { invoiceByPaymentToken } from "../../src/modules/finance/payment-links.service";
-import { check, checkEqual, report, section } from "./_bootstrap";
+import { invoiceDeliveries } from "../../src/db/schema/invoice-deliveries";
+import { leadTasks } from "../../src/db/schema/lead-tasks";
+import {
+  settleConsultationForInvoice,
+  updateConsultation,
+} from "../../src/modules/leads/leads.service";
+import { netPaidOnInvoice } from "../../src/modules/finance/refunds.service";
+import {
+  capturedEmails,
+  check,
+  checkEqual,
+  report,
+  section,
+  silenceEmail,
+  withOrgContext,
+} from "./_bootstrap";
 
 const main = async () => {
   const suffix = randomUUID().slice(0, 8);
@@ -573,9 +592,299 @@ const main = async () => {
       outOfRange = true;
     }
     check("a 100% deposit is refused (that is full_upfront)", outOfRange);
+
+    // ── 7. Paid after the consultation ───────────────────────────────────────
+    section("After the consultation: nothing is owed before it happens");
+
+    // Section 6 left the row on `partial_upfront` only if its update succeeded;
+    // it did not (both were refused), so set the schedule explicitly.
+    await systemDb
+      .update(consultationSettings)
+      .set({ feeSchedule: "after_consultation", upfrontPercent: null })
+      .where(eq(consultationSettings.organizationId, orgId));
+
+    const invG = await makeInvoice(300);
+    const consG = await makeConsultation(invG);
+
+    // The regression this exists for: the gate read the instalment table and
+    // nothing else, so with no schedule it demanded the whole total and the
+    // lead was asked to pay before picking a time — for an invoice that is
+    // deliberately not emailed until the call is done.
+    check("nothing paid -> gate OPEN", !(await outstanding(consG)));
+
+    await pay(invG, 300);
+    check("paid -> still open", !(await outstanding(consG)));
+
+    // A refund cannot re-close this one: nothing was due up front to begin
+    // with. Distinguishes "the schedule says no" from "the ledger says paid".
+    const [gPayment] = await systemDb
+      .select({ id: invoicePayments.id })
+      .from(invoicePayments)
+      .where(
+        and(
+          eq(invoicePayments.invoiceId, invG),
+          eq(invoicePayments.kind, "payment"),
+        ),
+      )
+      .limit(1);
+    await reverse(invG, 300, gPayment!.id);
+    check("refunded -> STILL open, unlike every other schedule", !(await outstanding(consG)));
+
+    // And the schedule governs, not the absence of instalments: switching back
+    // to full_upfront closes the same consultation again.
+    await systemDb
+      .update(consultationSettings)
+      .set({ feeSchedule: "full_upfront" })
+      .where(eq(consultationSettings.organizationId, orgId));
+    check("same consultation on full_upfront -> closed", await outstanding(consG));
+
+    // The gate and the settlement threshold are different questions here, and
+    // conflating them would mark a $300 fee paid on a $1 payment.
+    await systemDb
+      .update(consultationSettings)
+      .set({ feeSchedule: "after_consultation" })
+      .where(eq(consultationSettings.organizationId, orgId));
+
+    const invGp = await makeInvoice(300);
+    const consGp = await makeConsultation(invGp);
+    check("gate open with nothing paid", !(await outstanding(consGp)));
+    check("but the fee is NOT settled", await consultationFeeUnsettled(orgId, consGp));
+    await pay(invGp, 1);
+    check("a token payment does not settle it", await consultationFeeUnsettled(orgId, consGp));
+    await pay(invGp, 299);
+    check("paid in full settles it", !(await consultationFeeUnsettled(orgId, consGp)));
+
+    // ── 8. Settling a consultation that already happened ─────────────────────
+    section("A paid post-consultation invoice must not resurrect the booking");
+
+    silenceEmail();
+
+    await systemDb
+      .update(consultationSettings)
+      .set({ feeSchedule: "after_consultation" })
+      .where(eq(consultationSettings.organizationId, orgId));
+
+    for (const status of ["completed", "no_show", "cancelled"] as const) {
+      const invH = await makeInvoice(300);
+      const consH = await makeConsultation(invH);
+      // The shape `invoice_after` leaves behind: the call happened, the invoice
+      // went out at completion, the lead pays afterwards.
+      await systemDb
+        .update(consultations)
+        .set({
+          status,
+          scheduledAt: new Date("2026-01-01T10:00:00Z"),
+          videoLink: "https://meet.example.test/abc-defg-hij",
+          paymentTiming: "invoice_after",
+        })
+        .where(eq(consultations.id, consH.id));
+      await pay(invH, 300);
+
+      const before = capturedEmails().length;
+      await withOrgContext(orgId, userId, () =>
+        settleConsultationForInvoice(orgId, invH),
+      );
+
+      const [after] = await systemDb
+        .select({
+          status: consultations.status,
+          feeStatus: consultations.feeStatus,
+          scheduledAt: consultations.scheduledAt,
+        })
+        .from(consultations)
+        .where(eq(consultations.id, consH.id))
+        .limit(1);
+
+      checkEqual(`${status}: status is left alone`, after!.status, status);
+      checkEqual(`${status}: the fee is recorded paid`, after!.feeStatus, "paid");
+      check(
+        `${status}: the scheduled time is not rewritten`,
+        after!.scheduledAt?.toISOString() === "2026-01-01T10:00:00.000Z",
+      );
+
+      // The receipt wording is the observable half of the join-link fix: the
+      // same branch that picks this subject drops the "Join here" line, so a
+      // "pick a time" or "confirmed" subject here means the link went too.
+      const sent = capturedEmails().slice(before);
+      checkEqual(`${status}: exactly one mail`, sent.length, 1);
+      checkEqual(
+        `${status}: it is a receipt, not an invitation`,
+        sent[0]?.subject,
+        "Payment received — thank you",
+      );
+    }
+
+    // ── 8b. The invoice-after fee is actually delivered ──────────────────────
+    section("Completing an invoice_after consultation delivers the invoice");
+
+    {
+      const invD = await makeInvoice(300);
+      const consD = await makeConsultation(invD);
+      await systemDb
+        .update(consultations)
+        .set({
+          status: "scheduled",
+          scheduledAt: new Date(Date.now() - 60 * 60 * 1000),
+          paymentTiming: "invoice_after",
+        })
+        .where(eq(consultations.id, consD.id));
+      await systemDb
+        .update(leads)
+        .set({ consultationId: consD.id })
+        .where(eq(leads.id, leadId));
+
+      const before = capturedEmails().length;
+      await withOrgContext(orgId, userId, () =>
+        updateConsultation(leadId, orgId, { status: "completed" }, staffId, true),
+      );
+
+      // The regression: a consultation invoice is ISSUED at booking, so its
+      // status is already "sent" — and `sendInvoice` refuses anything that is
+      // not a draft. Every invoice_after fee threw here and the failure was
+      // swallowed by the non-fatal catch, so the client was never asked to pay.
+      const deliveries = await systemDb
+        .select({ id: invoiceDeliveries.id })
+        .from(invoiceDeliveries)
+        .where(eq(invoiceDeliveries.invoiceId, invD));
+
+      checkEqual("the invoice is delivered exactly once", deliveries.length, 1);
+      check("and an email actually went out", capturedEmails().length > before);
+    }
+
+    // ── 9. No-show policy ────────────────────────────────────────────────────
+    section("No-show policy, against paid and unpaid fees");
+
+    await systemDb
+      .update(consultationSettings)
+      .set({ feeSchedule: "full_upfront" })
+      .where(eq(consultationSettings.organizationId, orgId));
+
+    /**
+     * Marks a no-show through the real service path and reports what moved.
+     *
+     * `canRefund` is passed explicitly because the controller resolves it from
+     * the caller's grant — a check has no session, and the split between "may
+     * mark a no-show" and "may send money back" is the thing being asserted.
+     */
+    const noShow = async (
+      policy: "forfeit" | "refund" | "decide",
+      paidAmount: number,
+      canRefund = true,
+    ) => {
+      await systemDb
+        .update(consultationSettings)
+        .set({ noShowPolicy: policy })
+        .where(eq(consultationSettings.organizationId, orgId));
+
+      const inv = await makeInvoice(300);
+      const cons = await makeConsultation(inv);
+      await systemDb
+        .update(consultations)
+        .set({
+          status: "scheduled",
+          scheduledAt: new Date(Date.now() - 60 * 60 * 1000),
+        })
+        .where(eq(consultations.id, cons.id));
+      await systemDb
+        .update(leads)
+        .set({ consultationId: cons.id })
+        .where(eq(leads.id, leadId));
+      if (paidAmount > 0) await pay(inv, paidAmount);
+
+      await withOrgContext(orgId, userId, () =>
+        updateConsultation(
+          leadId,
+          orgId,
+          { status: "no_show" },
+          staffId,
+          canRefund,
+        ),
+      );
+
+      const [row] = await systemDb
+        .select({ status: invoices.status })
+        .from(invoices)
+        .where(eq(invoices.id, inv))
+        .limit(1);
+      const [task] = await systemDb
+        .select({ id: leadTasks.id })
+        .from(leadTasks)
+        .where(
+          and(
+            eq(leadTasks.organizationId, orgId),
+            sql`${leadTasks.description} like ${`%[consultation:${cons.id}]%`}`,
+          ),
+        )
+        .limit(1);
+
+      return {
+        invoiceStatus: row!.status,
+        held: await netPaidOnInvoice(orgId, inv),
+        hasTask: Boolean(task),
+      };
+    };
+
+    // forfeit: the firm keeps what it holds and is still owed the rest.
+    const forfeitPaid = await noShow("forfeit", 300);
+    checkEqual("forfeit + paid: money stays", forfeitPaid.held, 300);
+    check("forfeit + paid: no task raised", !forfeitPaid.hasTask);
+
+    const forfeitUnpaid = await noShow("forfeit", 0);
+    checkEqual(
+      "forfeit + unpaid: the debt stands",
+      forfeitUnpaid.invoiceStatus,
+      "sent",
+    );
+
+    // refund + unpaid: voided, so it never goes overdue into dunning.
+    const refundUnpaid = await noShow("refund", 0);
+    checkEqual(
+      "refund + unpaid: the invoice is voided",
+      refundUnpaid.invoiceStatus,
+      "void",
+    );
+
+    // A manual payment cannot be sent back through the processor, so the money
+    // is still held and a human is told to return it.
+    const refundPaid = await noShow("refund", 300);
+    check(
+      "refund + paid outside the processor: a task is raised",
+      refundPaid.hasTask,
+    );
+
+    // Marking a no-show is an intake action; refunding is a finance one.
+    const refundNoGrant = await noShow("refund", 300, false);
+    check(
+      "refund + paid + no refund grant: task, not a silent refund",
+      refundNoGrant.hasTask,
+    );
+    checkEqual(
+      "refund + no grant: the money has not moved",
+      refundNoGrant.held,
+      300,
+    );
+
+    // decide: nothing moves either way; a human chooses.
+    const decidePaid = await noShow("decide", 300);
+    checkEqual("decide + paid: nothing moves", decidePaid.held, 300);
+    check("decide + paid: a task is raised", decidePaid.hasTask);
+
+    const decideUnpaid = await noShow("decide", 0);
+    checkEqual(
+      "decide + unpaid: an ordinary receivable, left alone",
+      decideUnpaid.invoiceStatus,
+      "sent",
+    );
+    check("decide + unpaid: no task", !decideUnpaid.hasTask);
   } finally {
     // Before the organization delete: confido_firms references it with no cascade.
     await systemDb.delete(confidoFirms).where(eq(confidoFirms.organizationId, orgId));
+    // settleConsultationForInvoice writes a lead event through recordAuditEvent.
+    await systemDb.delete(auditEvents).where(eq(auditEvents.organizationId, orgId));
+    await systemDb.delete(leadTasks).where(eq(leadTasks.organizationId, orgId));
+    await systemDb
+      .delete(invoiceDeliveries)
+      .where(eq(invoiceDeliveries.organizationId, orgId));
     await systemDb.delete(consultationSettings).where(eq(consultationSettings.organizationId, orgId));
     await systemDb.delete(invoicePayments).where(eq(invoicePayments.organizationId, orgId));
     await systemDb.delete(invoiceInstalments).where(eq(invoiceInstalments.organizationId, orgId));

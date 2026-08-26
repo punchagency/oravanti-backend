@@ -203,8 +203,9 @@ export const initiateConsultationBodySchema = z
     mode: z.enum(["video", "in_person", "phone_call"]),
     duration: z.number().int().positive(),
     locationId: optionalUuid,
-    // Used when the firm's fee structure is custom_per_case_type, or as an
-    // urgency surcharge/override when urgent.
+    // Honoured only when the firm's fee structure lets staff set the amount per
+    // consultation. Under a flat fee it is ignored — urgency is priced through
+    // `isEmergency`/`emergencyMultiplier`, not by overriding the figure.
     feeAmount: z.number().min(MINIMUM_CONSULTATION_FEE, `Minimum consultation fee amount is $${MINIMUM_CONSULTATION_FEE}.00`).optional(),
     preConsultationNotes: z.string().optional(),
     notifyChannels: z.array(z.enum(["email", "sms"])).optional(),
@@ -217,6 +218,10 @@ export const initiateConsultationBodySchema = z
     paymentTiming: z
       .enum(["pay_now", "invoice_after", "pay_in_person"])
       .optional(),
+    // Per-consultation override for when the deposit's balance falls due, in
+    // days after the call. Honoured only when the firm's balance mode is
+    // `custom`; the firm's own figure is the default and the fallback.
+    balanceDueDays: z.number().int().min(0).max(90).optional(),
     isEmergency: z.boolean().optional(),
     emergencyMultiplier: z.number().positive().max(10).optional(),
     autoSendQuestionnaire: z.boolean().optional(),
@@ -236,15 +241,25 @@ export const initiateConsultationBodySchema = z
         path: ["paymentTiming"],
       });
     }
-    if (
-      !val.startNow &&
-      (val.paymentTiming || val.isEmergency || val.autoSendQuestionnaire)
-    ) {
+    // Payment timing and the auto-questionnaire remain instant-only: both are
+    // decisions made with the client in the room.
+    if (!val.startNow && (val.paymentTiming || val.autoSendQuestionnaire)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          "Payment timing, emergency, and auto-questionnaire options are only allowed for instant consultations",
+          "Payment timing and auto-questionnaire options are only allowed for instant consultations",
         path: ["startNow"],
+      });
+    }
+    // The emergency surcharge is not. It is now the only way to charge above a
+    // firm's published fee, so an ordinary urgent booking needs it too —
+    // `startNow` implies `urgent`, so testing `urgent` covers both.
+    if (!val.startNow && !val.urgent && val.isEmergency) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "An emergency surcharge only applies to urgent or instant consultations",
+        path: ["isEmergency"],
       });
     }
     if (val.emergencyMultiplier != null && !val.isEmergency) {

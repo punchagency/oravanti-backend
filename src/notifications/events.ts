@@ -151,6 +151,20 @@ export const NOTIFICATION_EVENTS = {
     label: "Consultation reminder (1 hour)",
     producer: "wired",
   },
+  /**
+   * The second half of a deposit, asked for once the consultation has happened.
+   *
+   * Transactional: it carries a payment link for money the client has already
+   * agreed to owe, so it is not something they can decline while keeping the
+   * arrangement. Email only — a pay link is not a thing to fish out of a text.
+   */
+  consultation_balance_due: {
+    tier: "transactional",
+    audience: "recipient",
+    channels: ["email"],
+    label: "Consultation balance due",
+    producer: "wired",
+  },
 
   // ── Finance ────────────────────────────────────────────────────────────────
   payment_followup: {

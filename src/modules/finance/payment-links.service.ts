@@ -53,6 +53,15 @@ export const paymentLinkFor = (token: string) =>
 export const mintPaymentLink = async (
   organizationId: string,
   invoiceId: string,
+  /**
+   * How long the link stays good, when the default is not long enough.
+   *
+   * The consultation balance notice is the case this exists for: it is
+   * scheduled when the call ends and sent up to 90 days later, so a link minted
+   * on the 30-day default would be dead before the email that carries it is
+   * ever delivered. Callers sending immediately should leave this alone.
+   */
+  ttlDays: number = LINK_TTL_DAYS,
 ): Promise<string> => {
   const token = generateToken();
   await db
@@ -60,7 +69,7 @@ export const mintPaymentLink = async (
     .set({
       paymentTokenHash: tokenHash(token),
       paymentLinkExpiresAt: new Date(
-        Date.now() + LINK_TTL_DAYS * 24 * 60 * 60 * 1000,
+        Date.now() + Math.max(ttlDays, LINK_TTL_DAYS) * 24 * 60 * 60 * 1000,
       ),
       updatedAt: new Date(),
     })
@@ -145,7 +154,7 @@ export type PayableInvoice = {
  * two places that must agree (`instalments.ts` and the SQL in `dues.ts`). A
  * third copy here would be a third thing to keep in step.
  */
-const amountDueNow = async (
+export const amountDueNow = async (
   organizationId: string,
   invoiceId: string,
   amountPaid: number,
