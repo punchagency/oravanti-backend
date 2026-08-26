@@ -12,11 +12,9 @@
  * Two fixtures means two organizations; the test is always "org A's endpoint,
  * org B's staff id".
  */
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { systemDb } from "../../src/db/client";
-import { leadTasks } from "../../src/db/schema/lead-tasks";
 import { tasks } from "../../src/db/schema/tasks";
-import { caseWorkflowSteps } from "../../src/db/schema/workflow";
 import { LeadWorkflowService } from "../../src/modules/leads/lead-workflow.service";
 import { TasksService } from "../../src/modules/tasks/tasks.service";
 import { WorkflowService } from "../../src/modules/workflow/workflow.service";
@@ -70,8 +68,8 @@ const main = async () => {
             (
               await systemDb
                 .select()
-                .from(leadTasks)
-                .where(eq(leadTasks.leadId, a.leadId))
+                .from(tasks)
+                .where(and(eq(tasks.leadId, a.leadId), eq(tasks.source, "pipeline")))
             ).length === 0,
           );
 
@@ -95,8 +93,8 @@ const main = async () => {
 
           const [task] = await systemDb
             .select()
-            .from(leadTasks)
-            .where(eq(leadTasks.leadId, a.leadId));
+            .from(tasks)
+            .where(and(eq(tasks.leadId, a.leadId), eq(tasks.source, "pipeline")));
 
           check(
             "assignTask refuses another firm's staff",
@@ -107,8 +105,8 @@ const main = async () => {
 
           const [afterAssign] = await systemDb
             .select()
-            .from(leadTasks)
-            .where(eq(leadTasks.id, task.id));
+            .from(tasks)
+            .where(eq(tasks.id, task.id));
           check(
             "the existing assignee is untouched",
             afterAssign?.assignedToId === a.staffId,
@@ -137,17 +135,18 @@ const main = async () => {
               await systemDb
                 .select()
                 .from(tasks)
-                .where(eq(tasks.organizationId, a.organizationId))
+                .where(and(eq(tasks.organizationId, a.organizationId), eq(tasks.source, "ad_hoc")))
             ).length === 0,
           );
 
           section("case workflow steps");
 
           const [step] = await systemDb
-            .insert(caseWorkflowSteps)
+            .insert(tasks)
             .values({
               organizationId: a.organizationId,
               caseId: a.case!.caseId,
+              source: "workflow",
               title: "Check step",
               orderIndex: 0,
             })
@@ -167,8 +166,8 @@ const main = async () => {
 
           const [afterStep] = await systemDb
             .select()
-            .from(caseWorkflowSteps)
-            .where(eq(caseWorkflowSteps.id, step.id));
+            .from(tasks)
+            .where(eq(tasks.id, step.id));
           check(
             "the step was left unassigned",
             !afterStep?.assignedToId,
@@ -177,14 +176,8 @@ const main = async () => {
         });
       } finally {
         await systemDb
-          .delete(caseWorkflowSteps)
-          .where(eq(caseWorkflowSteps.organizationId, a.organizationId));
-        await systemDb
           .delete(tasks)
           .where(eq(tasks.organizationId, a.organizationId));
-        await systemDb
-          .delete(leadTasks)
-          .where(eq(leadTasks.organizationId, a.organizationId));
         // The case itself belongs to the fixture; withTempFixture tears it down.
       }
     });

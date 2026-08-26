@@ -17,9 +17,8 @@ import { team, teamMember, user } from "../../src/db/schema/auth-schema";
 import { cases } from "../../src/db/schema/cases";
 import { scenarioDocumentRequirements } from "../../src/db/schema/document-requirements";
 import { calendarEvents } from "../../src/db/schema/calendar-events";
-import { leadTasks } from "../../src/db/schema/lead-tasks";
 import { staff } from "../../src/db/schema/staff";
-import { caseWorkflowSteps } from "../../src/db/schema/workflow";
+import { tasks } from "../../src/db/schema/tasks";
 import type { DocumentRequestInput } from "../../src/modules/case-review/action-dispatch";
 import { CaseReviewService } from "../../src/modules/case-review/case-review.service";
 import { renderCsv, renderPdf } from "../../src/utils/report-export";
@@ -781,8 +780,8 @@ const main = async () => {
           (
             await systemDb
               .select()
-              .from(leadTasks)
-              .where(eq(leadTasks.leadId, fx.leadId))
+              .from(tasks)
+              .where(and(eq(tasks.leadId, fx.leadId), eq(tasks.source, "pipeline")))
           ).length,
           0,
         );
@@ -807,21 +806,21 @@ const main = async () => {
           "flag_for_attorney",
           { staffId: fx.staffId, deps },
         );
-        const tasks = await systemDb
+        const leadTasksRows = await systemDb
           .select()
-          .from(leadTasks)
-          .where(eq(leadTasks.leadId, fx.leadId));
-        check("a lead task was created", tasks.length === 1, tasks.length);
+          .from(tasks)
+          .where(and(eq(tasks.leadId, fx.leadId), eq(tasks.source, "pipeline")));
+        check("a lead task was created", leadTasksRows.length === 1, leadTasksRows.length);
         checkEqual(
           "a lone attorney is assigned without the caller choosing",
-          tasks[0]?.assignedToId,
+          leadTasksRows[0]?.assignedToId,
           attorney.id,
         );
         check(
           "the acting paralegal was not assigned their own task",
-          tasks[0]?.assignedToId !== fx.staffId,
+          leadTasksRows[0]?.assignedToId !== fx.staffId,
         );
-        check("assignedAt was stamped", !!tasks[0]?.assignedAt);
+        check("assignedAt was stamped", !!leadTasksRows[0]?.assignedAt);
 
         section("actions — a second attorney makes the choice explicit");
 
@@ -882,8 +881,8 @@ const main = async () => {
         );
         const chosen = await systemDb
           .select()
-          .from(leadTasks)
-          .where(eq(leadTasks.leadId, fx.leadId));
+          .from(tasks)
+          .where(and(eq(tasks.leadId, fx.leadId), eq(tasks.source, "pipeline")));
         check(
           "the chosen attorney gets the task",
           chosen.some((t) => t.assignedToId === attorneyTwo.id),
@@ -895,8 +894,8 @@ const main = async () => {
         // No requirement and no documents: falls back to the lead's stage.
         check(
           "an unattributable issue falls back to the lead's stage",
-          tasks[0]?.pipelineStage === "conflict_check",
-          tasks[0]?.pipelineStage,
+          leadTasksRows[0]?.phase === "conflict_check",
+          leadTasksRows[0]?.phase,
         );
 
         const [requirement] = await systemDb
@@ -929,15 +928,15 @@ const main = async () => {
         );
         const staged = await systemDb
           .select()
-          .from(leadTasks)
-          .where(eq(leadTasks.leadId, fx.leadId));
+          .from(tasks)
+          .where(and(eq(tasks.leadId, fx.leadId), eq(tasks.source, "pipeline")));
         const questionnaireTask = staged.find(
-          (t) => t.pipelineStage === "questionnaire",
+          (t) => t.phase === "questionnaire",
         );
         check(
           "a questionnaire-sourced requirement files the task on that stage",
           !!questionnaireTask,
-          staged.map((t) => t.pipelineStage),
+          staged.map((t) => t.phase),
         );
         checkEqual(
           "orderIndex restarts per stage",
@@ -948,10 +947,11 @@ const main = async () => {
         section("actions — attorney dispatch on a case assigns a workflow step");
 
         const [pendingStep] = await systemDb
-          .insert(caseWorkflowSteps)
+          .insert(tasks)
           .values({
             organizationId: fx.organizationId,
             caseId: c.caseId,
+            source: "workflow",
             title: "Prepare filing",
             orderIndex: 0,
           })
@@ -966,8 +966,8 @@ const main = async () => {
 
         const [assignedStep] = await systemDb
           .select()
-          .from(caseWorkflowSteps)
-          .where(eq(caseWorkflowSteps.id, pendingStep.id));
+          .from(tasks)
+          .where(eq(tasks.id, pendingStep.id));
         checkEqual(
           "the case's step went to the chosen attorney",
           assignedStep?.assignedToId,
@@ -983,8 +983,8 @@ const main = async () => {
           (
             await systemDb
               .select()
-              .from(leadTasks)
-              .where(eq(leadTasks.leadId, fx.leadId))
+              .from(tasks)
+              .where(and(eq(tasks.leadId, fx.leadId), eq(tasks.source, "pipeline")))
           ).length,
           staged.length,
         );
@@ -992,9 +992,9 @@ const main = async () => {
         section("actions — a case with no assignable step is refused");
 
         await systemDb
-          .update(caseWorkflowSteps)
+          .update(tasks)
           .set({ status: "completed" })
-          .where(eq(caseWorkflowSteps.id, pendingStep.id));
+          .where(eq(tasks.id, pendingStep.id));
 
         let noStep = false;
         try {
@@ -1135,9 +1135,6 @@ const main = async () => {
         .delete(calendarEvents)
         .where(eq(calendarEvents.organizationId, fx.organizationId));
       await systemDb
-        .delete(leadTasks)
-        .where(eq(leadTasks.organizationId, fx.organizationId));
-      await systemDb
         .delete(caseIssues)
         .where(eq(caseIssues.organizationId, fx.organizationId));
       // assignStep used to write a workflow_log row referencing the step.
@@ -1147,8 +1144,8 @@ const main = async () => {
         .delete(auditEvents)
         .where(eq(auditEvents.organizationId, fx.organizationId));
       await systemDb
-        .delete(caseWorkflowSteps)
-        .where(eq(caseWorkflowSteps.organizationId, fx.organizationId));
+        .delete(tasks)
+        .where(eq(tasks.organizationId, fx.organizationId));
       await systemDb
         .delete(scenarioDocumentRequirements)
         .where(
