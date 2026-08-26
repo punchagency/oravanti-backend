@@ -33,6 +33,9 @@ export const filingTypeEnum = pgEnum('filing_type', [
   'I-140',
   'N-400',
   'I-131',
+  // Types the mandamus case's own `cases` row (separate from the parent
+  // AOS/N-400 matter, see immigration-case-details.ts) can be filed as.
+  'MANDAMUS',
 ]);
 
 export const assignmentTypeEnum = pgEnum('assignment_type', ['internal_team', 'external_contractor']);

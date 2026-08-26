@@ -1,4 +1,5 @@
 import {
+  type AnyPgColumn,
   boolean,
   date,
   index,
@@ -75,6 +76,19 @@ export const certificationStatusEnum = pgEnum("certification_status", [
   "not_required",
 ]);
 
+/**
+ * How a case relates to its `parentCaseId`. Only `mandamus` is used by v1
+ * content (see `.claude/workflows/05-immigration-template.md`); `appeal` and
+ * `related_matter` are included now because they're the obvious next two and
+ * adding enum values later is exactly as cheap as adding them now, whereas a
+ * bare boolean "isLinkedCase" would need reshaping.
+ */
+export const caseRelationTypeEnum = pgEnum("case_relation_type", [
+  "mandamus",
+  "appeal",
+  "related_matter",
+]);
+
 // =========================================================================
 // CASES & CERTIFICATIONS TABLES
 // =========================================================================
@@ -101,6 +115,15 @@ export const cases = pgTable("cases", {
   }),
 
   leadId: uuid("lead_id").references(() => leads.id, { onDelete: "cascade" }),
+
+  // Mandamus/appeal/related-matter linking. `onDelete: 'set null'`, not
+  // `cascade`: a mandamus case is meaningful on its own even if the parent case
+  // row is later removed — unlike `leadId` above, where a case is the lead's
+  // continuation, not an independent record once it exists. `(): AnyPgColumn =>`
+  // is Drizzle's required typing form for a self-referential FK — a plain arrow
+  // function reference errors on circular type inference.
+  parentCaseId: uuid("parent_case_id").references((): AnyPgColumn => cases.id, { onDelete: "set null" }),
+  relationType: caseRelationTypeEnum("relation_type"),
 
   practiceAreaId: uuid("practice_area_id")
     .notNull()

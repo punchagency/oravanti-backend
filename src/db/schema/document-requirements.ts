@@ -31,15 +31,51 @@ export const documentRequirementSourceEnum = pgEnum(
 );
 
 /**
- * What a template requirement's due date is measured against. Lets a template
- * express "14 days before the interview" rather than a hardcoded calendar date,
- * so materialized rows get a date derived from the matter's own milestones.
+ * What a due date is measured against, instead of a hardcoded calendar date —
+ * lets a requirement or workflow step express "14 days before the interview"
+ * and get a date derived from the matter's own milestones.
+ *
+ * Originally `requirement_due_anchor`, scoped to document requirements only.
+ * Renamed and extended to `date_anchor` so `workflow_template_steps.due_date_anchor`
+ * (see workflow.ts) can reuse the same vocabulary and the same `resolveDueDate`
+ * function instead of maintaining two parallel anchor concepts. Every value below
+ * is cited by a specific step in `.claude/workflows/04-personal-injury-template.md`
+ * or `05-immigration-template.md` — extend by appending, never repurpose a value.
  */
-export const requirementDueAnchorEnum = pgEnum("requirement_due_anchor", [
+export const dateAnchorEnum = pgEnum("date_anchor", [
+  // pre-existing (document requirements)
   "uscis_interview",
   "filing_deadline",
   "next_court_date",
   "case_opened",
+  // immigration — AOS / N-400 / mandamus
+  "receipt_date",
+  "biometrics_appointment",
+  "card_valid_to",
+  "interview_scheduled_date",
+  "decision_date",
+  "green_card_expiration_date",
+  "eligibility_date",
+  "oath_ceremony_date",
+  "demand_letter_sent_date",
+  "service_completed_date",
+  "filed_date",
+  // Appended after the initial list in `.claude/workflows/01-data-model.md §3`:
+  // that list omits `ruling_date`, but §05's Mandamus Module M8 step 1 anchors on
+  // it and `immigrationCaseDetails.rulingDate` already exists — an append, which
+  // is exactly how §3 says the vocabulary grows.
+  "ruling_date",
+  // personal injury
+  "incident_date",
+  "statute_of_limitations_date",
+  "mmi_date",
+  "demand_sent_date",
+  "defendant_answer_date",
+  "msj_filed_date",
+  "mediation_scheduled_date",
+  "trial_date",
+  "verdict_date",
+  "funds_received_date",
 ]);
 
 /**
@@ -64,7 +100,7 @@ export const caseTypeDocumentRequirements = pgTable(
     isRequired: boolean("is_required").notNull().default(true),
     orderIndex: integer("order_index").notNull().default(0),
     dueDateOffsetDays: integer("due_date_offset_days"),
-    dueDateAnchor: requirementDueAnchorEnum("due_date_anchor"),
+    dueDateAnchor: dateAnchorEnum("due_date_anchor"),
     /** Retire a template row without touching already-materialized matters. */
     archivedAt: timestamp("archived_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -149,6 +185,8 @@ export const scenarioDocumentRequirements = pgTable(
     unique("sdr_lead_question_unique").on(table.leadId, table.questionnaireQuestionId),
   ],
 );
+
+export type DateAnchor = (typeof dateAnchorEnum.enumValues)[number];
 
 export type CaseTypeDocumentRequirement =
   typeof caseTypeDocumentRequirements.$inferSelect;
