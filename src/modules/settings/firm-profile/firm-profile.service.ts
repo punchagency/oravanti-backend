@@ -16,7 +16,6 @@ import {
   cases,
   caseNotes,
   caseTypeDocumentRequirements,
-  caseWorkflowSteps,
   clientCompanies,
   clientContacts,
   clientRequests,
@@ -40,7 +39,6 @@ import {
   firmQuestionnaireSections,
   leadDocumentLinks,
   leadNotes,
-  leadTasks,
   leads,
   leaveRequests,
   paralegalProfiles,
@@ -461,7 +459,8 @@ export class FirmProfileService {
 
 
       // ── Leads & consultations ──
-      await del(leadTasks, eq(leadTasks.organizationId, organizationId));
+      // Lead-attached tasks are deleted below with the rest of the unified
+      // `tasks` table (source = 'pipeline' rows included).
       // `lead_events` used to be deleted here. Its replacement, `audit_events`,
       // is deliberately NOT — the record of what a firm did survives the firm
       // erasing its data, which is the entire point of a retained audit trail.
@@ -498,7 +497,6 @@ export class FirmProfileService {
       await del(calendarEvents, eq(calendarEvents.organizationId, organizationId));
       await del(assignments, eq(assignments.organizationId, organizationId));
       await del(timeEntries, eq(timeEntries.organizationId, organizationId));
-      await del(caseWorkflowSteps, eq(caseWorkflowSteps.organizationId, organizationId));
       await del(caseNotes, eq(caseNotes.organizationId, organizationId));
       await del(tasks, eq(tasks.organizationId, organizationId));
       await del(financialAccessControls, eq(financialAccessControls.organizationId, organizationId));

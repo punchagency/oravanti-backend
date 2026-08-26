@@ -40,6 +40,7 @@ import { SecurityModule } from "./settings/security/security.module";
 import { StaffAvailabilityModule } from "./staff-availability/staff-availability.module";
 import { StaffsModule } from "./staffs/staffs.module";
 import { TasksModule } from "./tasks/tasks.module";
+import { WorkflowTemplateModule } from "./workflow/workflow-template.module";
 import { WorkflowModule } from "./workflow/workflow.module";
 import {
   AgreementSigningModule,
@@ -63,6 +64,7 @@ export const modules: Module[] = [
   new DocumentRequirementsModule(),
   new TasksModule(),
   new WorkflowModule(),
+  new WorkflowTemplateModule(),
   new CalendarModule(),
   new CasesModule(),
   new PracticeAreasModule(),

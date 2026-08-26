@@ -88,6 +88,7 @@ const UNGATED_BUDGET: Record<string, number> = {
   "access-control": 7,
   security: 7,
   "client-responsiveness": 6,
+  "consultation-settings": 6,
   tasks: 6,
   "firm-profile": 5,
   "practice-areas": 5,
@@ -98,6 +99,14 @@ const UNGATED_BUDGET: Record<string, number> = {
   "firm-info": 2,
   "revenue-analytics": 2,
   "confido-webhooks": 1,
+  // Not a gap. Both routes serve the caller their OWN notifications, scoped by
+  // the session in the controller rather than by a query parameter. A firm-level
+  // permission would be answering the wrong question — reading your own mail is
+  // not a privilege a firm grants — and gating it would mean a role could be
+  // configured such that a staff member cannot read notifications addressed to
+  // them. See `.claude/workflows/02-backend-architecture.md § Routes`, which
+  // specifies `requireAuth` for exactly these two.
+  notifications: 2,
   onboarding: 1,
   "permission-audit-log": 1,
 };

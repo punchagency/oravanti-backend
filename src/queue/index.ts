@@ -13,6 +13,8 @@ import { createConfidoWebhookWorker } from "./workers/confido-webhook.worker";
 import { reportStaleWebhookEvents } from "../modules/finance/confido/webhook-staleness";
 import { createReminderWorker } from "./workers/reminder.worker";
 import { runAuditRetention } from "../modules/shared/audit-retention.service";
+import { taskDeadlineSweep } from "../modules/workflow/reminder.service";
+import { visaBulletinSweep } from "../modules/uscis-reference/visa-bulletin.job";
 import { LogEvent } from "../lib/logging/events";
 import { createModuleLogger } from "../lib/logging/log";
 
@@ -35,10 +37,12 @@ export const startWorkers = (): Worker[] => {
   createAiScanQueueEvents();
   startAiScanReconciliation();
   startDeterministicSweep();
+  startTaskDeadlineSweep();
   // Recovers scheduled notifications whose delayed job was lost with Redis.
   startNotificationSweep();
   startAuditRetention();
   startWebhookStalenessSweep();
+  startVisaBulletinSweep();
 
   log.info(
     "queue.workers_started",
@@ -70,6 +74,65 @@ const startDeterministicSweep = (): NodeJS.Timeout => {
       })
       .catch((err) => log.failure("case_review.sweep_failed", err));
   }, SWEEP_INTERVAL_MS);
+  timer.unref?.();
+  return timer;
+};
+
+const TASK_DEADLINE_INTERVAL_MS = 60 * 60 * 1000; // hourly
+
+/**
+ * Remind assignees about tasks falling due, and about ones that have gone
+ * overdue.
+ *
+ * Hourly rather than the deterministic sweep's twice-daily: a task deadline is
+ * a date someone is accountable for, so a "due tomorrow" notice that arrives
+ * eleven hours late has lost most of its point. The per-task `*SentAt` columns
+ * make repeated runs cheap and idempotent, so the tighter interval costs
+ * little beyond the scan itself.
+ */
+const startTaskDeadlineSweep = (): NodeJS.Timeout => {
+  const timer = setInterval(() => {
+    void taskDeadlineSweep()
+      .then(({ scanned, notified }) => {
+        if (notified) log.info(LogEvent.TASK_DEADLINE_SWEEP_COMPLETED, { scanned, notified });
+      })
+      .catch((err) => log.failure(LogEvent.TASK_DEADLINE_SWEEP_FAILED, err));
+  }, TASK_DEADLINE_INTERVAL_MS);
+  timer.unref?.();
+  return timer;
+};
+
+const VISA_BULLETIN_INTERVAL_MS = 24 * 60 * 60 * 1000; // once a day
+
+/**
+ * Re-evaluate whether each open matter's priority date is current.
+ *
+ * Daily rather than monthly, even though the bulletin is monthly. A monthly
+ * timer in a process that restarts on every deploy is a timer that may never
+ * fire; a daily one converges within a day of a new bulletin landing and is
+ * idempotent — a sweep with no new bulletin changes nothing, because the verdict
+ * for each case comes out the same and equal verdicts are skipped before any
+ * write.
+ *
+ * The job itself never flips a flag off because something failed to load, and
+ * never touches a matter a person has taken manual control of. See
+ * `visa-bulletin.job.ts`.
+ */
+const startVisaBulletinSweep = (): NodeJS.Timeout => {
+  const run = () =>
+    void visaBulletinSweep()
+      .then(({ bulletinMonth, evaluated, changed }) => {
+        if (changed) {
+          log.info(LogEvent.USCIS_VISA_BULLETIN_SWEEP_COMPLETED, {
+            bulletinMonth,
+            evaluated,
+            changed,
+          });
+        }
+      })
+      .catch((err) => log.failure(LogEvent.USCIS_VISA_BULLETIN_SWEEP_FAILED, err));
+
+  const timer = setInterval(run, VISA_BULLETIN_INTERVAL_MS);
   timer.unref?.();
   return timer;
 };

@@ -45,7 +45,7 @@ import { encryptPaymentValue } from "../../src/utils/payment-crypto";
 import { confidoFirms } from "../../src/db/schema/confido-firms";
 import { invoiceByPaymentToken } from "../../src/modules/finance/payment-links.service";
 import { invoiceDeliveries } from "../../src/db/schema/invoice-deliveries";
-import { leadTasks } from "../../src/db/schema/lead-tasks";
+import { tasks } from "../../src/db/schema/tasks";
 import {
   settleConsultationForInvoice,
   updateConsultation,
@@ -847,12 +847,13 @@ const main = async () => {
         .where(eq(invoices.id, inv))
         .limit(1);
       const [task] = await systemDb
-        .select({ id: leadTasks.id })
-        .from(leadTasks)
+        .select({ id: tasks.id })
+        .from(tasks)
         .where(
           and(
-            eq(leadTasks.organizationId, orgId),
-            sql`${leadTasks.description} like ${`%[consultation:${cons.id}]%`}`,
+            eq(tasks.organizationId, orgId),
+            eq(tasks.source, "pipeline"),
+            sql`${tasks.description} like ${`%[consultation:${cons.id}]%`}`,
           ),
         )
         .limit(1);
@@ -921,7 +922,7 @@ const main = async () => {
     await systemDb.delete(confidoFirms).where(eq(confidoFirms.organizationId, orgId));
     // settleConsultationForInvoice writes a lead event through recordAuditEvent.
     await systemDb.delete(auditEvents).where(eq(auditEvents.organizationId, orgId));
-    await systemDb.delete(leadTasks).where(eq(leadTasks.organizationId, orgId));
+    await systemDb.delete(tasks).where(eq(tasks.organizationId, orgId));
     await systemDb
       .delete(invoiceDeliveries)
       .where(eq(invoiceDeliveries.organizationId, orgId));

@@ -19,7 +19,22 @@ interface StepDef {
   pipelineStage: Stage;
   orderIndex: number;
   isRequired?: boolean;
+  /** Who this step is auto-assigned to. Empty leaves it for a person to pick up. */
+  assignableRoles?: string[];
 }
+
+/**
+ * The baseline role pack, same names the case-workflow seed uses.
+ *
+ * `pickAssigneeForRoles` matches these case-insensitively against
+ * `member.role`, `staff.role`, or a substring of `staff.jobTitle`, so a firm
+ * whose intake person has the job title "Intake Coordinator" still matches
+ * `receptionist` only if their role column says so — the job-title clause is a
+ * fallback for specializations, not a replacement for the role.
+ */
+const ATTORNEY = "attorney";
+const PARALEGAL = "paralegal";
+const RECEPTIONIST = "receptionist";
 
 export const SYSTEM_INTAKE_TEMPLATE_NAME = "Default intake pipeline";
 
@@ -33,6 +48,12 @@ export const SYSTEM_INTAKE_TEMPLATE_NAME = "Default intake pipeline";
  * Conflict check is one step, not two — running the check and acting on its
  * result happen on the same screen, so splitting them left a second task that
  * was only ever ticked off as bookkeeping.
+ *
+ * Roles follow who actually does the work: reception schedules and chases
+ * paperwork, a paralegal handles substantive review and file opening, an
+ * attorney clears conflicts, runs the consultation, and sets the fee. Every
+ * step is still reassignable to a specific person from the board — the role is
+ * only the default.
  */
 export const DEFAULT_INTAKE_PIPELINE_STEPS: StepDef[] = [
   {
@@ -41,6 +62,8 @@ export const DEFAULT_INTAKE_PIPELINE_STEPS: StepDef[] = [
       "Check for conflicts of interest with existing clients and adverse parties, then clear or decline the lead",
     pipelineStage: "conflict_check",
     orderIndex: 0,
+    // Clearing a conflict is a professional-responsibility call, not clerical.
+    assignableRoles: [ATTORNEY],
   },
   {
     title: "Send intake questionnaire",
@@ -48,48 +71,58 @@ export const DEFAULT_INTAKE_PIPELINE_STEPS: StepDef[] = [
       "Send the intake questionnaire to the lead for detailed information",
     pipelineStage: "questionnaire",
     orderIndex: 0,
+    assignableRoles: [RECEPTIONIST, PARALEGAL],
   },
   {
     title: "Review questionnaire responses",
     description: "Review and analyze the completed intake questionnaire",
     pipelineStage: "questionnaire",
     orderIndex: 1,
+    assignableRoles: [PARALEGAL],
   },
   {
     title: "Schedule consultation",
     description: "Book initial consultation with the lead",
     pipelineStage: "consultation",
     orderIndex: 0,
+    assignableRoles: [RECEPTIONIST, PARALEGAL],
   },
   {
     title: "Conduct consultation",
     description: "Hold the initial consultation meeting",
     pipelineStage: "consultation",
     orderIndex: 1,
+    assignableRoles: [ATTORNEY],
   },
   {
     title: "Prepare fee agreement",
     description: "Draft the fee agreement for the lead",
     pipelineStage: "fee_agreement",
     orderIndex: 0,
+    // Drafted by a paralegal, but the terms are the attorney's on the
+    // consultation step immediately before it.
+    assignableRoles: [PARALEGAL],
   },
   {
     title: "Send fee agreement",
     description: "Send fee agreement to lead for signature",
     pipelineStage: "fee_agreement",
     orderIndex: 1,
+    assignableRoles: [RECEPTIONIST, PARALEGAL],
   },
   {
     title: "Receive signed fee agreement",
     description: "Confirm receipt of the signed fee agreement",
     pipelineStage: "fee_agreement",
     orderIndex: 2,
+    assignableRoles: [RECEPTIONIST, PARALEGAL],
   },
   {
     title: "Open case file",
     description: "Convert lead to active case and create case file",
     pipelineStage: "case_opening",
     orderIndex: 0,
+    assignableRoles: [PARALEGAL],
   },
 ];
 
@@ -151,6 +184,7 @@ export async function seedIntakePipeline(organizationId?: string) {
       pipelineStage: step.pipelineStage,
       orderIndex: step.orderIndex,
       isRequired: step.isRequired ?? true,
+      assignableRoles: step.assignableRoles ?? [],
     })),
   );
 

@@ -1,7 +1,8 @@
 import {
   boolean,
-  date,
+  index,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -10,23 +11,11 @@ import {
 } from 'drizzle-orm/pg-core';
 import { organization } from './auth-schema';
 import { cases } from './cases';
-import { practiceAreas } from './practice-areas';
-import { staff } from './staff';
+import { dateAnchorEnum } from './document-requirements';
+import { practiceAreaCaseTypes } from './practice-area-case-types';
+import { tasks } from './tasks';
 
 // ─── Enums ──────────────────────────────────────────────────────────────────────
-
-export const workflowStepStatusEnum = pgEnum('workflow_step_status', [
-  'pending',
-  'in_progress',
-  'in_review',
-  'completed',
-  'skipped',
-  // A rejected review used to drop the step back to `in_progress`, which told
-  // the assignee nothing. `rejected` is terminal until they reopen it, so it
-  // can be surfaced as its own state and filtered into its own tab. Mirrors
-  // `lead_task_status` — both loops are the same shape.
-  'rejected',
-]);
 
 export const noteCategoryEnum = pgEnum('note_category', [
   'client_communication',
@@ -56,15 +45,56 @@ export const moduleActivationTypeEnum = pgEnum('module_activation_type', [
   'manual',
 ]);
 
+// ─── Module activation condition ────────────────────────────────────────────────
+//
+// A small hand-rolled shape, not a general rules DSL — deliberately not
+// open-ended (no arbitrary-path JSON querying). Extending `ConditionField` is
+// how a future practice area adds its own branch point. See
+// `.claude/workflows/01-data-model.md §4` for the full rationale, and
+// `condition-evaluator.ts` (src/modules/workflow) for the interpreter.
+export type ConditionField =
+  | 'immigrationDetails.filingTrack'
+  | 'immigrationDetails.naturalizationTrack'
+  | 'immigrationDetails.isConditionalResidence'
+  | 'immigrationDetails.priorityDateIsCurrent'
+  | 'personalInjuryDetails.defendantType'
+  | 'personalInjuryDetails.isMinorPlaintiff'
+  | 'case.priority';
+
+export type Condition =
+  | { field: ConditionField; op: 'eq' | 'neq'; value: string | boolean }
+  | { field: ConditionField; op: 'in'; value: string[] }
+  | { allOf: Condition[] }
+  | { anyOf: Condition[] };
+
 // ─── Workflow Templates (The Blueprints) ─────────────────────────────────────────
 
-export const workflowTemplates = pgTable('workflow_templates', {
-  id:             uuid('id').primaryKey().defaultRandom(),
-  practiceAreaId: uuid('practice_area_id').notNull().unique().references(() => practiceAreas.id),
-  name:           text('name').notNull(),
-  createdAt:      timestamp('created_at').notNull().defaultNow(),
-  updatedAt:      timestamp('updated_at').notNull().defaultNow(),
-});
+/**
+ * Keyed on `caseTypeId` (the practice-area-taxonomy leaf), not `practiceAreaId` —
+ * lets a firm have a different template per case type instead of one global
+ * template per practice area. `organizationId` null = system default shipped by
+ * Oravanti; non-null = one firm's own copy (cloned on their first edit to a
+ * locked system default — see workflow-template.service.ts). No uniqueness
+ * constraint on (organizationId, caseTypeId): resolution picks the newest
+ * `isActive` row for the scope, mirroring `intake_pipeline_templates`, so
+ * publishing a revision is a plain insert rather than an in-place edit.
+ */
+export const workflowTemplates = pgTable(
+  'workflow_templates',
+  {
+    id:             uuid('id').primaryKey().defaultRandom(),
+    organizationId: text('organization_id').references(() => organization.id),
+    caseTypeId:     uuid('case_type_id').notNull().references(() => practiceAreaCaseTypes.id, { onDelete: 'cascade' }),
+    name:           text('name').notNull(),
+    isActive:       boolean('is_active').notNull().default(true),
+    createdAt:      timestamp('created_at').notNull().defaultNow(),
+    updatedAt:      timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => [
+    index('wt_organization_idx').on(table.organizationId),
+    index('wt_case_type_idx').on(table.caseTypeId),
+  ],
+);
 
 // ─── Workflow Modules ────────────────────────────────────────────────────────────
 
@@ -75,7 +105,8 @@ export const workflowModules = pgTable('workflow_modules', {
   description:         text('description'),
   phase:               text('phase').notNull().default('General'),
   activationType:      moduleActivationTypeEnum('activation_type').notNull().default('auto'),
-  activationCondition: text('activation_condition'),
+  /** Only meaningful when `activationType = 'conditional'`. Validated against the `ConditionField` union at template-save time, not just at evaluation time. */
+  activationCondition: jsonb('activation_condition').$type<Condition>(),
   orderIndex:          integer('order_index').notNull(),
   createdAt:           timestamp('created_at').notNull().defaultNow(),
 });
@@ -83,40 +114,33 @@ export const workflowModules = pgTable('workflow_modules', {
 // ─── Workflow Template Steps ─────────────────────────────────────────────────────
 
 export const workflowTemplateSteps = pgTable('workflow_template_steps', {
-  id:                    uuid('id').primaryKey().defaultRandom(),
-  moduleId:              uuid('module_id').notNull().references(() => workflowModules.id, { onDelete: 'cascade' }),
-  title:                 text('title').notNull(),
-  description:           text('description'),
-  orderIndex:            integer('order_index').notNull(),
-  dueInDays:             integer('due_in_days'),
-  isRequired:            boolean('is_required').notNull().default(true),
-  requiredCertification: text('required_certification'),
-  createdAt:             timestamp('created_at').notNull().defaultNow(),
-});
+  id:                      uuid('id').primaryKey().defaultRandom(),
+  moduleId:                uuid('module_id').notNull().references(() => workflowModules.id, { onDelete: 'cascade' }),
+  title:                   text('title').notNull(),
+  description:             text('description'),
+  orderIndex:              integer('order_index').notNull(),
 
-// ─── Case Workflow Steps (Live Execution) ────────────────────────────────────────
+  // due-date-anchor pattern, shared with `caseTypeDocumentRequirements` — see
+  // `dateAnchorEnum` (document-requirements.ts) and `resolveDueDate` (workflow module).
+  dueDateAnchor:           dateAnchorEnum('due_date_anchor'),
+  dueDateOffsetDays:       integer('due_date_offset_days'), // signed: negative = before anchor
 
-export const caseWorkflowSteps = pgTable('case_workflow_steps', {
-  id:                 uuid('id').primaryKey().defaultRandom(),
-  organizationId:     text('organization_id').notNull().references(() => organization.id),
-  caseId:             uuid('case_id').notNull().references(() => cases.id, { onDelete: 'cascade' }),
-  templateStepId:     uuid('template_step_id').references(() => workflowTemplateSteps.id),
-  title:              text('title').notNull(),
-  description:        text('description'),
-  orderIndex:         integer('order_index').notNull(),
-  dueDate:            date('due_date'),
-  status:             workflowStepStatusEnum('status').notNull().default('pending'),
-  assignedToId:       uuid('assigned_to_id').references(() => staff.id),
-  assignedAt:         timestamp('assigned_at'),
-  completedById:      uuid('completed_by_id').references(() => staff.id),
-  completedAt:        timestamp('completed_at'),
-  timeTakenMs:        integer('time_taken_ms'),
-  overrideRationale:  text('override_rationale'),
-  overrideById:       uuid('override_by_id').references(() => staff.id),
-  overrideAt:         timestamp('override_at'),
-  notes:              text('notes'),
-  createdAt:          timestamp('created_at').notNull().defaultNow(),
-  updatedAt:          timestamp('updated_at').notNull().defaultNow(),
+  isRequired:              boolean('is_required').notNull().default(true),
+  /**
+   * Locked-backbone-plus-firm-add-ons: a firm's own cloned template cannot
+   * delete or weaken a locked step's anchor/offset/certifications without an
+   * explicit override + rationale at the per-task level (`tasks.overrideRationale`,
+   * not here — this flag lives on the template so every task materialized from
+   * it inherits it).
+   */
+  isLocked:                boolean('is_locked').notNull().default(false),
+
+  requiredCertifications:  text('required_certifications').array().notNull().default([]),
+  /** Dynamic RBAC role names (`organization_role.role`), not a hardcoded enum. */
+  assignableRoles:         text('assignable_roles').array().notNull().default([]),
+
+  createdAt:               timestamp('created_at').notNull().defaultNow(),
+  updatedAt:               timestamp('updated_at').notNull().defaultNow(),
 });
 
 // ─── Case Notes (Decoupled from step lifecycle) ─────────────────────────────────
@@ -126,7 +150,7 @@ export const caseNotes = pgTable('case_notes', {
   organizationId:    text('organization_id').notNull().references(() => organization.id),
   caseId:            uuid('case_id').notNull().references(() => cases.id, { onDelete: 'cascade' }),
   workflowModuleId:  uuid('workflow_module_id').references(() => workflowModules.id, { onDelete: 'set null' }),
-  taskId:            uuid('task_id').references(() => caseWorkflowSteps.id, { onDelete: 'set null' }),
+  taskId:            uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
   category:          noteCategoryEnum('category').notNull().default('internal_strategy'),
   visibility:        noteVisibilityEnum('visibility').notNull().default('all_staff'),
   isPinned:          boolean('is_pinned').notNull().default(false),
@@ -143,5 +167,4 @@ export const caseNotes = pgTable('case_notes', {
 export type WorkflowTemplate      = typeof workflowTemplates.$inferSelect;
 export type WorkflowModule        = typeof workflowModules.$inferSelect;
 export type WorkflowTemplateStep  = typeof workflowTemplateSteps.$inferSelect;
-export type CaseWorkflowStep      = typeof caseWorkflowSteps.$inferSelect;
 export type CaseNote              = typeof caseNotes.$inferSelect;

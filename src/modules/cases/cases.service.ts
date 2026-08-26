@@ -1,7 +1,8 @@
 import { and, desc, eq, ilike, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { db } from "../../db/client";
 import { team } from "../../db/schema/auth-schema";
-import { caseWorkflowSteps } from "../../db/schema/workflow";
+import { tasks } from "../../db/schema/tasks";
 import { cases } from "../../db/schema/cases";
 import { clientContacts } from "../../db/schema/client-contacts";
 import { clients } from "../../db/schema/clients";
@@ -10,6 +11,10 @@ import { practiceAreaSubcategories } from "../../db/schema/practice-area-subcate
 import { practiceAreas } from "../../db/schema/practice-areas";
 import { staff } from "../../db/schema/staff";
 import { ensureCaseTypeBelongsToPracticeArea } from "../practice-areas/practice-areas.utils";
+import {
+  materializeTasksForCase,
+  reresolveDueDates,
+} from "../workflow/task-materialization.service";
 import { logCaseEvent } from "./case-events.service";
 import type { UpdateCaseInput } from "./cases.validation";
 import { createModuleLogger } from "../../lib/logging/log";
@@ -151,11 +156,12 @@ export const getAllCases = async (
 
   const currentStepSubquery = sql<string>`
     (
-      SELECT ${caseWorkflowSteps.title}
-      FROM ${caseWorkflowSteps}
-      WHERE ${caseWorkflowSteps.caseId} = ${cases.id}
-        AND ${caseWorkflowSteps.status} NOT IN ('completed', 'skipped')
-      ORDER BY ${caseWorkflowSteps.orderIndex}
+      SELECT ${tasks.title}
+      FROM ${tasks}
+      WHERE ${tasks.caseId} = ${cases.id}
+        AND ${tasks.source} = 'workflow'
+        AND ${tasks.status} NOT IN ('completed', 'skipped')
+      ORDER BY ${tasks.orderIndex}
       LIMIT 1
     )
   `;
@@ -246,11 +252,12 @@ export const getAllCases = async (
 export const getCaseById = async (id: string, organizationId: string) => {
   const currentStepSubquery = sql<string>`
     (
-      SELECT ${caseWorkflowSteps.title}
-      FROM ${caseWorkflowSteps}
-      WHERE ${caseWorkflowSteps.caseId} = ${cases.id}
-        AND ${caseWorkflowSteps.status} NOT IN ('completed', 'skipped')
-      ORDER BY ${caseWorkflowSteps.orderIndex}
+      SELECT ${tasks.title}
+      FROM ${tasks}
+      WHERE ${tasks.caseId} = ${cases.id}
+        AND ${tasks.source} = 'workflow'
+        AND ${tasks.status} NOT IN ('completed', 'skipped')
+      ORDER BY ${tasks.orderIndex}
       LIMIT 1
     )
   `;
@@ -272,6 +279,8 @@ export const getCaseById = async (id: string, organizationId: string) => {
       assignedTeamId: team.id,
       assignedTeamName: team.name,
       currentStep: currentStepSubquery,
+      parentCaseId: cases.parentCaseId,
+      relationType: cases.relationType,
     })
     .from(cases)
     .leftJoin(clients, eq(clients.id, cases.clientId))
@@ -286,6 +295,35 @@ export const getCaseById = async (id: string, organizationId: string) => {
 
   if (!row) return null;
 
+  /*
+    Linked matters, both directions.
+
+    A mandamus action is its own case that points at the AOS matter it is
+    chasing, so the AOS case needs to show its children and the mandamus case
+    needs to show its parent — the same relationship read from either end.
+    Chains are rejected at link time (see case-link.service.ts), so one level
+    each way is the whole picture, not a first page of one.
+  */
+  const parentAlias = alias(cases, "parent_case");
+
+  const [parent] = row.parentCaseId
+    ? await db
+        .select({ id: parentAlias.id, caseNumber: parentAlias.caseNumber, status: parentAlias.status })
+        .from(parentAlias)
+        .where(eq(parentAlias.id, row.parentCaseId))
+        .limit(1)
+    : [];
+
+  const children = await db
+    .select({
+      id: cases.id,
+      caseNumber: cases.caseNumber,
+      status: cases.status,
+      relationType: cases.relationType,
+    })
+    .from(cases)
+    .where(and(eq(cases.parentCaseId, id), eq(cases.organizationId, organizationId)));
+
   return {
     id: row.id,
     caseNumber: row.caseNumber,
@@ -299,6 +337,8 @@ export const getCaseById = async (id: string, organizationId: string) => {
     caseType: row.caseTypeName ? { id: row.caseTypeId, name: row.caseTypeName } : null,
     assignedTeam: row.assignedTeamName ? { id: row.assignedTeamId, name: row.assignedTeamName } : null,
     currentStep: row.currentStep ?? null,
+    parentCase: parent ? { ...parent, relationType: row.relationType } : null,
+    linkedCases: children,
   };
 };
 
@@ -476,6 +516,27 @@ export const updateCase = async (
       metadata: { previousTeam, newTeam },
       actorId,
     });
+
+    /*
+      Generate the workflow now that there is a team to assign it from.
+
+      `materializeTasksForCase` returns without doing anything when a case has
+      no team, because every step is assigned from the team and generating
+      early would produce a board of unassignable work. That is correct, but
+      nothing was picking the work back up once a team arrived: a case opened
+      unassigned — which is the normal way one gets opened — kept an empty
+      workflow tab forever, and the tab gave no reason for it.
+
+      Idempotent, so a reassignment costs one no-op pass rather than needing to
+      be distinguished from a first assignment. Same reasoning as the
+      `filingDate` hook below: this path writes a field the workflow engine
+      depends on without going through `upsertImmigrationDetails`, so it has to
+      run the hook itself.
+    */
+    if (data.assignedTeamId) {
+      await materializeTasksForCase(id);
+      log.action("workflow.materialized_on_team_assignment", { caseId: id });
+    }
   }
 
   // Generic update event for any other changes
@@ -489,6 +550,19 @@ export const updateCase = async (
       metadata: { changes: Object.keys(data).filter(k => k !== "updatedAt") },
       actorId,
     });
+  }
+
+  // `filingDate` is the `filed_date` due-date anchor, and it is the one anchor
+  // written through this path instead of `upsertImmigrationDetails` - so it
+  // misses the three write hooks that live there. Without this, a step anchored
+  // on `filed_date` that was materialized before the filing date was entered
+  // keeps its null due date forever.
+  //
+  // Only re-resolves; it cannot activate a module, because no condition
+  // branches on a filing date.
+  if (data.filingDate !== undefined && data.filingDate !== currentCase.filingDate) {
+    const reresolved = await reresolveDueDates(id);
+    log.action("workflow.due_dates_reresolved", { caseId: id, updated: reresolved });
   }
 
   log.action("case.updated", { caseId: id });

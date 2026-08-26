@@ -142,4 +142,46 @@ export const staffTemplates = {
       href: ctx.link,
     }),
   },
+
+  /*
+    Workflow task deadlines.
+
+    Each names the task and its date rather than saying "you have a task due",
+    because these arrive in a queue of their own and one that cannot be told
+    apart from the last is one nobody opens.
+  */
+  task_due_soon: {
+    email: (ctx: { title?: string; dueDate?: string; link?: string }, meta) => ({
+      subject: `Due soon${ctx.title ? ` — ${ctx.title}` : ""}`,
+      html: layout(
+        "A task is due soon",
+        html`<p><strong>${ctx.title ?? "A task"}</strong> is due ${ctx.dueDate ?? "shortly"}.</p>` +
+          link(ctx.link, "Open task"),
+        meta,
+      ),
+    }),
+    inApp: (ctx: { title?: string; dueDate?: string; link?: string }) => ({
+      title: "Task due soon",
+      body: `${ctx.title ?? "A task"}${ctx.dueDate ? ` — due ${ctx.dueDate}` : ""}`,
+      href: ctx.link,
+    }),
+  },
+
+  task_overdue: {
+    email: (ctx: { title?: string; dueDate?: string; link?: string }, meta) => ({
+      subject: `Overdue${ctx.title ? ` — ${ctx.title}` : ""}`,
+      html: layout(
+        "A task is overdue",
+        html`<p><strong>${ctx.title ?? "A task"}</strong> was due ${ctx.dueDate ?? "already"} and is still open.</p>` +
+          link(ctx.link, "Open task"),
+        meta,
+      ),
+    }),
+    inApp: (ctx: { title?: string; dueDate?: string; link?: string }) => ({
+      title: "Task overdue",
+      body: `${ctx.title ?? "A task"}${ctx.dueDate ? ` — was due ${ctx.dueDate}` : ""}`,
+      href: ctx.link,
+    }),
+  },
+
 } satisfies Partial<Record<string, TemplateDef>>;

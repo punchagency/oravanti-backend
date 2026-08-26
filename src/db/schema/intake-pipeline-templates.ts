@@ -59,6 +59,20 @@ export const intakePipelineTemplateSteps = pgTable(
     /** Position within the stage, matching `lead_tasks.order_index`. */
     orderIndex: integer("order_index").notNull(),
     isRequired: boolean("is_required").notNull().default(true),
+    /**
+     * Roles this step may be auto-assigned to, same vocabulary and same picker
+     * as `workflow_template_steps.assignable_roles`.
+     *
+     * Empty means "leave it unassigned for a person to pick up" — which is what
+     * every step did before this column existed, so an un-migrated or
+     * deliberately blank row keeps the old behaviour rather than assigning
+     * someone arbitrary.
+     *
+     * No `required_certifications` twin here: intake is qualification and
+     * scheduling work, and neither the default checklist nor anything a firm
+     * has asked for gates a step on a credential. Add it when something does.
+     */
+    assignableRoles: text("assignable_roles").array().notNull().default([]),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => [

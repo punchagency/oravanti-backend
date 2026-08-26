@@ -46,6 +46,8 @@ import { adverseParties } from "./adverse-parties";
 import { aiSystemConfig } from "./ai-system-config";
 import { assignments } from "./assignments";
 import { calendarEvents } from "./calendar-events";
+import { caseMilestones } from "./case-milestones";
+import { caseForms } from "./case-forms";
 import { caseAssignments, casesToCertifications, certifications } from "./cases";
 import { clientCompanies } from "./client-companies";
 import { clientContacts } from "./client-contacts";
@@ -77,8 +79,9 @@ import {
   intakePipelineTemplates,
 } from "./intake-pipeline-templates";
 import { leadDocumentLinks } from "./lead-document-links";
-import { leadTasks } from "./lead-tasks";
 import { leaveRequests } from "./leave-requests";
+import { immigrationCaseDetails } from "./immigration-case-details";
+import { personalInjuryCaseDetails } from "./personal-injury-case-details";
 import { paralegalProfiles } from "./paralegal-profiles";
 import { profiles } from "./profiles";
 import { roleAppearance } from "./role-appearance";
@@ -104,7 +107,7 @@ import { subscriptions } from "./subscriptions";
 import { tasks } from "./tasks";
 import { teamMembers } from "./team-members";
 import { teamPracticeAreaCaseTypes } from "./team-practice-area-case-types";
-import { caseNotes, caseWorkflowSteps } from "./workflow";
+import { caseNotes } from "./workflow";
 
 const currentOrgId = sql`get_current_organization_id()`;
 const currentUserId = sql`get_current_user_id()`;
@@ -179,6 +182,8 @@ export const [rlsAdversePartiesOrg, rlsAdversePartiesStaff] = orgScoped("adverse
 export const [rlsAiSystemConfigOrg, rlsAiSystemConfigStaff] = orgScoped("ai_system_config", aiSystemConfig);
 export const [rlsAssignmentsOrg, rlsAssignmentsStaff] = orgScoped("assignments", assignments);
 export const [rlsCalendarEventsOrg, rlsCalendarEventsStaff] = orgScoped("calendar_events", calendarEvents);
+export const [rlsCaseMilestonesOrg, rlsCaseMilestonesStaff] = orgScoped("case_milestones", caseMilestones);
+export const [rlsCaseFormsOrg, rlsCaseFormsStaff] = orgScoped("case_forms", caseForms);
 export const [rlsCertificationsOrg, rlsCertificationsStaff] = orgScoped("certifications", certifications);
 export const [rlsClientCompaniesOrg, rlsClientCompaniesStaff] = orgScoped("client_companies", clientCompanies);
 export const [rlsClientContactsOrg, rlsClientContactsStaff] = orgScoped("client_contacts", clientContacts);
@@ -197,8 +202,9 @@ export const [rlsFeeAgreementsOrg, rlsFeeAgreementsStaff] = orgScoped("fee_agree
 export const [rlsFinancialAccessControlsOrg, rlsFinancialAccessControlsStaff] = orgScoped("financial_access_controls", financialAccessControls);
 export const [rlsFirmPracticeAreasOrg, rlsFirmPracticeAreasStaff] = orgScoped("firm_practice_areas", firmPracticeAreas);
 export const [rlsIntakePipelineTemplatesOrg, rlsIntakePipelineTemplatesStaff] = orgScoped("intake_pipeline_templates", intakePipelineTemplates);
-export const [rlsLeadTasksOrg, rlsLeadTasksStaff] = orgScoped("lead_tasks", leadTasks);
 export const [rlsLeaveRequestsOrg, rlsLeaveRequestsStaff] = orgScoped("leave_requests", leaveRequests);
+export const [rlsImmigrationCaseDetailsOrg, rlsImmigrationCaseDetailsStaff] = orgScoped("immigration_case_details", immigrationCaseDetails);
+export const [rlsPersonalInjuryCaseDetailsOrg, rlsPersonalInjuryCaseDetailsStaff] = orgScoped("personal_injury_case_details", personalInjuryCaseDetails);
 export const [rlsParalegalProfilesOrg, rlsParalegalProfilesStaff] = orgScoped("paralegal_profiles", paralegalProfiles);
 export const [rlsRoleAppearanceOrg, rlsRoleAppearanceStaff] = orgScoped("role_appearance", roleAppearance);
 export const [rlsRoleGroupOrg, rlsRoleGroupStaff] = orgScoped("role_group", roleGroup);
@@ -215,7 +221,6 @@ export const [rlsStaffAvailabilityOverridesOrg, rlsStaffAvailabilityOverridesSta
 export const [rlsStaffOrg, rlsStaffStaff] = orgScoped("staff", staff);
 export const [rlsSubscriptionsOrg, rlsSubscriptionsStaff] = orgScoped("subscriptions", subscriptions);
 export const [rlsTasksOrg, rlsTasksStaff] = orgScoped("tasks", tasks);
-export const [rlsCaseWorkflowStepsOrg, rlsCaseWorkflowStepsStaff] = orgScoped("case_workflow_steps", caseWorkflowSteps);
 export const [rlsCaseNotesOrg, rlsCaseNotesStaff] = orgScoped("case_notes", caseNotes);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -388,16 +393,32 @@ export const RLS_EXEMPTIONS: Record<string, string> = {
   case_type_questionnaire_sections: "platform-authored template, not firm data",
   case_type_questionnaire_questions: "platform-authored template, not firm data",
   case_type_questionnaire_logic_rules: "platform-authored template, not firm data",
-  // The workflow BLUEPRINTS, not a firm's workflows. `workflow_templates` hangs
-  // off `practice_areas` — which is itself exempt as global taxonomy — with a
-  // UNIQUE practice_area_id, so there is exactly one template per practice area
-  // for the whole platform. Modules and steps hang off that in turn. None of
-  // the three has an organization_id to scope by, and giving them one would
-  // mean duplicating the taxonomy per firm. A firm's actual workflow state is
-  // `case_workflow_steps`, which IS org-scoped and covered above.
-  workflow_templates: "platform-authored blueprint, keyed to the global practice-area taxonomy",
-  workflow_modules: "platform-authored blueprint, hangs off workflow_templates",
-  workflow_template_steps: "platform-authored blueprint, hangs off workflow_modules",
+  // USCIS-published reference data (mandamus candidacy denominator) — global,
+  // platform-maintained, identical for every firm. See uscis-processing-time-reference.ts.
+  uscis_processing_time_reference: "global reference data, identical for every firm",
+  // USCIS form-edition register — which edition of a form is acceptable on a
+  // given filing date. Global, platform-maintained, identical for every firm,
+  // same category as uscis_processing_time_reference above. See form-editions.ts.
+  form_editions: "global reference data, identical for every firm",
+  // The State Department's monthly Visa Bulletin, snapshotted. Published to the
+  // world and identical for every firm — same category as the two above.
+  visa_bulletin_cutoffs: "global reference data, identical for every firm",
+  // USCIS fee schedule and the HHS poverty guidelines behind the I-864 income
+  // threshold. Both are the government's published figures — same category again.
+  filing_fee_schedule: "global reference data, identical for every firm",
+  poverty_guidelines: "global reference data, identical for every firm",
+  // NOTE: workflow_templates / workflow_modules / workflow_template_steps used to
+  // be exempt here as pure platform blueprints. `workflow_templates` now carries a
+  // nullable `organization_id` (null = system default, non-null = one firm's own
+  // cloned copy — Decision 1, locked backbone + firm add-ons), so all three moved
+  // to bespoke policies in rls.ts alongside `invoice_line_presets`, which already
+  // solves the same "some rows are everyone's, some are one firm's" shape. See the
+  // comment above `rlsWorkflowTemplatesOrg` in rls.ts for why the generic
+  // `orgScoped`/`parentScoped` factories here don't fit: both would make the
+  // null-org system-default rows invisible under RLS (`organization_id = current_org_id`
+  // is never true for a NULL column), the same latent gap `intake_pipeline_templates`
+  // and `intake_pipeline_template_steps` have above — not fixed here (out of scope
+  // for this change), but not copied into the new tables either.
 
   // ── Content-addressed caches ─────────────────────────────────────────────
   // Keyed on a checksum: identical bytes resolve to one row whoever uploaded

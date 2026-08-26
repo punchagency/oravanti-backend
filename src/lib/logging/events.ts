@@ -372,6 +372,9 @@ export const LogEvent = {
   TASK_UPDATED: "task.updated",
   TASK_COMPLETED: "task.completed",
   TASK_DELETED: "task.deleted",
+  TASK_ASSIGNED: "task.assigned",
+  TASK_TRANSITIONED: "task.transitioned",
+  TASK_TRANSITION_REFUSED: "task.transition_refused",
   TIME_ENTRY_CREATED: "time_entry.created",
   TIME_ENTRY_UPDATED: "time_entry.updated",
   TIME_ENTRY_DELETED: "time_entry.deleted",
@@ -692,7 +695,47 @@ export const LogEvent = {
   WORKFLOW_SUBMIT_REJECTED: "workflow.submit_rejected",
   WORKFLOW_APPROVE_REJECTED: "workflow.approve_rejected",
   WORKFLOW_REJECT_REJECTED: "workflow.reject_rejected",
+  WORKFLOW_START_REJECTED: "workflow.start_rejected",
   WORKFLOW_REOPEN_REJECTED: "workflow.reopen_rejected",
+
+  // ── Case workflow engine (task materialization) ─────────────────────────────
+  WORKFLOW_TEMPLATE_MISSING: "workflow.template_missing",
+  /** Materialization skipped: the case has no team, so its steps have nobody to be assigned from. */
+  WORKFLOW_TEAM_MISSING: "workflow.team_missing",
+  WORKFLOW_MATERIALIZED_ON_TEAM_ASSIGNMENT: "workflow.materialized_on_team_assignment",
+  WORKFLOW_MATERIALIZED: "workflow.materialized",
+  /** One module's steps created on demand — a `manual` module being activated. */
+  WORKFLOW_MODULE_MATERIALIZED: "workflow.module_materialized",
+  WORKFLOW_TASKS_WITHDRAWN: "workflow.tasks_withdrawn",
+  WORKFLOW_TASK_RESTORED: "workflow.task_restored",
+  WORKFLOW_CASE_FORMS_INITIALIZED: "workflow.case_forms_initialized",
+  WORKFLOW_RFE_REMINDERS_SCHEDULED: "workflow.rfe_reminders_scheduled",
+  /** A practice-area condition field was written, so materialization re-ran. */
+  WORKFLOW_REMATERIALIZED_ON_CONDITION_CHANGE: "workflow.rematerialized_on_condition_change",
+  /** An anchor date was written, so open tasks' due dates moved with it. */
+  WORKFLOW_DUE_DATES_RERESOLVED: "workflow.due_dates_reresolved",
+  WORKFLOW_MILESTONE_RECORDED: "workflow.milestone_recorded",
+
+  /** One month of Visa Bulletin cut-offs was written. */
+  USCIS_VISA_BULLETIN_SAVED: "uscis.visa_bulletin_saved",
+  /** The monthly re-evaluation finished; `changed` counts flags that moved. */
+  USCIS_VISA_BULLETIN_SWEEP_COMPLETED: "uscis.visa_bulletin_sweep_completed",
+  /**
+   * No bulletin on record, so the sweep touched nothing. Deliberately a warning
+   * and not an error: the safe outcome, but one that needs looking at.
+   */
+  USCIS_VISA_BULLETIN_ABSENT: "uscis.visa_bulletin_absent",
+  /** The newest month on record has no cut-off rows — a partial or failed ingest. */
+  USCIS_VISA_BULLETIN_EMPTY: "uscis.visa_bulletin_empty",
+  USCIS_VISA_BULLETIN_SWEEP_FAILED: "uscis.visa_bulletin_sweep_failed",
+  TASK_DEADLINE_SWEEP_COMPLETED: "task.deadline_sweep_completed",
+  TASK_DEADLINE_SWEEP_FAILED: "task.deadline_sweep_failed",
+
+  // ── Notifications ───────────────────────────────────────────────────────────
+  NOTIFICATION_DISPATCHED: "notification.dispatched",
+  NOTIFICATION_FAILED: "notification.failed",
+  /** SMS is deliberately stubbed — logged and left `pending`, never faked as sent. */
+  NOTIFICATION_SMS_NOT_IMPLEMENTED: "notification.sms_not_implemented",
 
   // ── Settings ──────────────────────────────────────────────────────────────
   SETTINGS_DATA_ACCESS_UPDATED: "settings.data_access_updated",

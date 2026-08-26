@@ -695,12 +695,12 @@ const main = async () => {
     (event) => !wiredPrefKeys.has(event),
   );
   checkEqual(
-    "four of the ten firm toggles have a producer",
+    "five of the ten firm toggles have a producer",
     FIRM_PREFERENCE_EVENTS.length - unwired.length,
-    4,
+    5,
   );
   /**
-   * The six with no producer, and why — so this list is a record rather than a
+   * The five with no producer, and why — so this list is a record rather than a
    * mystery. Four describe things the product does not detect at all (RFEs,
    * certification expiry, leave decisions, inbound client messages).
    *
@@ -712,15 +712,18 @@ const main = async () => {
    * `staff_leave_request` has a leave_requests table with a pending/approved
    * status and no notification on either transition.
    *
+   * `deadline_approaching` left this list when the task deadline sweep
+   * (`workflow/reminder.service.ts`) started emitting `task_due_soon` and
+   * `task_overdue` off the toggle.
+   *
    * Update this list when one gets wired — it should only ever shrink.
    */
   checkEqual(
-    "the unwired six are the ones with no producer",
+    "the unwired five are the ones with no producer",
     unwired.slice().sort().join(","),
     [
       "certification_expiring",
       "client_message_received",
-      "deadline_approaching",
       "invoice_due",
       "rfe_noid_received",
       "staff_leave_request",

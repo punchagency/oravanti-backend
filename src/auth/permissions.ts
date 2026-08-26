@@ -33,6 +33,36 @@ const statement = {
     "delete",
     "view_assigned", // staff: only cases assigned to them, not the whole firm
   ],
+  // Tasks: the unified work item — workflow steps materialized from a case's
+  // template, intake-pipeline steps on a lead, and ad-hoc to-dos alike.
+  //
+  // Its own resource rather than riding on `cases`, because the two grants
+  // answer different questions. `cases:update` is "may edit the matter
+  // itself"; a paralegal holds only `cases:view_assigned` yet performs most of
+  // the workflow steps on it, so gating task writes on `cases:update` would
+  // lock the engine's primary user out of their own queue. Reading the
+  // workflow *template* behind those tasks is `tasks:read` too — same surface,
+  // one level up — while editing one is `firm_settings:update`, because a
+  // template is firm configuration rather than case work.
+  tasks: ["read", "create", "update", "delete"],
+  // Workflow templates: the per-case-type blueprint a matter's tasks are
+  // materialized from.
+  //
+  // Separate from `tasks` because the two are different objects at different
+  // levels — a task is case work, a template is the firm's standard operating
+  // procedure for a whole practice area, and editing one silently changes every
+  // future matter of that type. It previously rode on `firm_settings:update`,
+  // which conflated "may reshape the firm's workflows" with "may change the
+  // firm's billing and compliance settings"; a firm that wants a senior
+  // attorney curating templates had to hand over the whole settings surface.
+  //
+  //   read   — resolve the template behind a case, see which steps are locked
+  //   update — clone the system default into the firm's own copy and edit it
+  //
+  // `update` covers cloning: a firm's first edit to a shared default clones it
+  // rather than mutating the row every other firm reads, so the clone is not a
+  // separate privilege, it is the mechanics of the first edit.
+  workflow: ["read", "update"],
   clients: ["read", "create", "update", "delete"],
   staffs: ["read", "create", "update", "delete", "view_performance"],
   invitations: ["read", "create", "update", "delete"],
@@ -96,6 +126,25 @@ const statement = {
 
 export const ac = createAccessControl(statement);
 
+/**
+ * Every action of every resource — the grant Super admin and Admin hold.
+ *
+ * Derived from `statement` rather than hand-listed, because the hand-listed
+ * version silently rotted: adding the `tasks` resource left `owner` and `admin`
+ * without a `tasks` key at all, which meant the two roles that are supposed to
+ * have full access were the only ones getting a 403 on every task route. A
+ * resource added tomorrow is covered here the moment it is declared above.
+ *
+ * `defaultStatements` (better-auth's own `organization`/`member`/`invitation`/
+ * `team`/`ac` resources) is spread into `statement`, so those appear here too —
+ * but both roles below re-spread `ownerAc`/`adminAc` afterwards, which is what
+ * preserves the one real difference between them: an admin cannot delete the
+ * organization or transfer ownership.
+ */
+const FULL_ACCESS = Object.fromEntries(
+  Object.entries(statement).map(([resource, actions]) => [resource, [...actions]]),
+) as { [Resource in keyof typeof statement]: (typeof statement)[Resource][number][] };
+
 // The four default roles a firm actually assigns day to day. Deliberately
 // NOT registered in the org plugin's static `roles` map (see auth/index.ts)
 // — a name in that map can never get a real `organizationRole` DB row of
@@ -125,8 +174,18 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleName, Record<string, re
     dashboard: ["read"],
     leads: ["read", "update"],
     cases: ["read", "create", "update"],
+    tasks: ["read", "create", "update", "delete"],
+    // Reads the blueprint behind a matter and sees which steps are locked.
+    // Editing a template changes every future matter of that type, so it
+    // stays an owner/admin act.
+    workflow: ["read"],
     clients: ["read"],
     staffs: ["read"],
+    // Empty, not absent. Inviting a colleague into the firm is an owner/admin
+    // act — but the key has to be here to say so, because an absent key is
+    // indistinguishable from an oversight and is the one thing
+    // `backfillDefaultRolePermissions` cannot fill in later.
+    invitations: [],
     portal: [],
     conflicts: ["review"],
     documents: ["read", "download"],
@@ -150,8 +209,15 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleName, Record<string, re
     dashboard: ["read"],
     leads: ["read"],
     cases: ["view_assigned"],
+    // Creates and completes workflow steps on assigned matters; never deletes
+    // one, which is how a locked compliance step would disappear.
+    tasks: ["read", "create", "update"],
+    // The paralegal works the steps, so they need to see what the template
+    // says a matter of this type involves.
+    workflow: ["read"],
     clients: [],
     staffs: ["read"],
+    invitations: [],
     portal: [],
     conflicts: [],
     documents: ["read"],
@@ -174,8 +240,12 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleName, Record<string, re
     dashboard: ["read"],
     leads: ["read"],
     cases: ["view_assigned"],
+    // Support-only: works the tasks it is assigned, never opens or removes one.
+    tasks: ["read", "update"],
+    workflow: ["read"],
     clients: [],
     staffs: [],
+    invitations: [],
     portal: [],
     conflicts: [],
     documents: ["read"],
@@ -198,8 +268,14 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleName, Record<string, re
     dashboard: ["read"],
     leads: ["read", "create"],
     cases: ["read"],
+    // Sees what is outstanding to answer the phone with; changes none of it.
+    tasks: ["read"],
+    // Reads the outstanding work to answer the phone with; has no reason to
+    // read the firm's standard operating procedure.
+    workflow: [],
     clients: ["read"],
     staffs: [],
+    invitations: [],
     portal: [],
     conflicts: [],
     documents: [],
@@ -230,8 +306,11 @@ export const client = ac.newRole({
   dashboard: [],
   leads: [],
   cases: [],
+  tasks: [],
+  workflow: [],
   clients: [],
   staffs: [],
+  invitations: [],
   portal: [],
   conflicts: [],
   documents: [],
@@ -249,75 +328,15 @@ export const client = ac.newRole({
   ...memberAc.statements,
 });
 
-export const owner = ac.newRole({
-  dashboard: ["read"],
-  leads: ["create", "read", "update", "delete"],
-  clients: ["read", "create", "update", "delete"],
-  cases: ["read", "create", "update", "delete", "view_assigned"],
-  staffs: ["read", "create", "update", "delete", "view_performance"],
-  invitations: ["read", "create", "update", "delete"],
-  portal: ["update"],
-  conflicts: ["review"],
-  documents: ["read", "download", "create", "update", "delete"],
-  case_review: ["read", "resolve", "configure"],
-  calendar: ["read", "create", "update", "delete"],
-  ai_review: ["read", "resolve", "configure"],
-  analytics: ["read"],
-  firm_settings: ["read", "update"],
-  email_accounts: ["read", "update", "connect", "disconnect"],
-  add_ons: ["read", "activate", "deactivate"],
-  integrations: ["read", "configure"],
-  training: ["read", "configure"],
-  audit: ["read", "export"],
-  finance: [
-    "read",
-    "create",
-    "update",
-    "record_payment",
-    "refund",
-    "approve_time",
-    "log_time",
-    "trust",
-    "configure",
-    "record_consultation_fee",
-  ],
-  ...ownerAc.statements,
-});
+/** Super admin. Full access to everything, plus better-auth's owner-only org operations. */
+export const owner = ac.newRole({ ...FULL_ACCESS, ...ownerAc.statements });
 
-export const admin = ac.newRole({
-  dashboard: ["read"],
-  leads: ["create", "read", "update", "delete"],
-  clients: ["read", "create", "update", "delete"],
-  cases: ["read", "create", "update", "delete", "view_assigned"],
-  staffs: ["read", "create", "update", "delete", "view_performance"],
-  invitations: ["read", "create", "update", "delete"],
-  portal: ["update"],
-  conflicts: ["review"],
-  documents: ["read", "download", "create", "update", "delete"],
-  case_review: ["read", "resolve", "configure"],
-  calendar: ["read", "create", "update", "delete"],
-  ai_review: ["read", "resolve", "configure"],
-  analytics: ["read"],
-  firm_settings: ["read", "update"],
-  email_accounts: ["read", "update", "connect", "disconnect"],
-  add_ons: ["read", "activate", "deactivate"],
-  integrations: ["read", "configure"],
-  training: ["read", "configure"],
-  audit: ["read", "export"],
-  finance: [
-    "read",
-    "create",
-    "update",
-    "record_payment",
-    "refund",
-    "approve_time",
-    "log_time",
-    "trust",
-    "configure",
-    "record_consultation_fee",
-  ],
-  ...adminAc.statements,
-});
+/**
+ * Admin. The same full application access as Super admin — the difference is
+ * `adminAc` rather than `ownerAc`, i.e. an admin cannot delete the organization
+ * or transfer ownership.
+ */
+export const admin = ac.newRole({ ...FULL_ACCESS, ...adminAc.statements });
 
 // Display metadata for the default roster. better-auth roles carry no label
 // of their own; `locked` roles cannot be edited or deleted (enforced in the

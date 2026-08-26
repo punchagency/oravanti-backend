@@ -1,16 +1,90 @@
-import { and, count, desc, eq, gte, lte, or } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, lte, or } from "drizzle-orm";
 import { env } from "../../config/env";
 import { db } from "../../db/client";
 import type { UpdateTaskInput } from "./tasks.validation";
 import { admins, cases, clients, staff, tasks } from "../../db/schema";
 import { notify } from "../../notifications/notification.service";
 import { assertAssignableStaff } from "../../utils/assignable-staff";
+import { BadRequestError } from "../../utils/error/app-error";
 import { dayjs } from "../../utils/date";
+import { logLeadEvent } from "../leads/lead-events.service";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 import { recordAuditEvent } from "../shared/audit.service";
 import { createModuleLogger, LogEvent } from "../../lib/logging/log";
 
 const log = createModuleLogger("tasks.service");
+
+/**
+ * Fields on a locked step that a firm cannot change without saying why.
+ *
+ * The locked backbone exists so a firm's own edits can't quietly remove a
+ * deadline the practice depends on — so it is the *deadline-bearing* fields
+ * that are protected, not the whole row. Renaming a locked step or reassigning
+ * it is ordinary case work and needs no ceremony.
+ */
+const LOCKED_PROTECTED_FIELDS = ["dueDate", "requiredCertifications"] as const;
+
+/** Statuses that end a locked step without the work having been done. */
+const LOCKED_PROTECTED_STATUSES = ["skipped", "cancelled"] as const;
+
+/**
+ * The reason this patch needs an `overrideRationale`, or `null` if it doesn't.
+ *
+ * Returns the message rather than a boolean so the 400 can say which field
+ * triggered it — "Task is locked" alone leaves the caller guessing which part
+ * of their patch to drop.
+ *
+ * Pure and exported for its own test: this predicate is the whole locked-
+ * backbone guarantee, and it is worth pinning down without a database.
+ */
+export function lockedOverrideViolation(
+  task: { isLocked: boolean },
+  patch: UpdateTaskInput,
+): string | null {
+  if (!task.isLocked || patch.overrideRationale) return null;
+
+  const field = LOCKED_PROTECTED_FIELDS.find((f) => patch[f] !== undefined);
+  if (field) {
+    return `${field} is locked on this step — provide an overrideRationale to change it`;
+  }
+
+  if (patch.status && (LOCKED_PROTECTED_STATUSES as readonly string[]).includes(patch.status)) {
+    return `This step is locked — provide an overrideRationale to mark it ${patch.status}`;
+  }
+
+  return null;
+}
+
+/**
+ * Which audit action a task update belongs under.
+ *
+ * A workflow-sourced task IS a case step, and its lifecycle belongs in the
+ * matter's timeline under the `case.step_*` vocabulary — `case.task_*` is for
+ * ad-hoc work. Same row in the same table; different thing to someone reading
+ * the timeline. See the note above `case.task_created` in lib/audit/actions.ts.
+ */
+function auditActionFor(source: string, status: string | undefined) {
+  if (source !== "workflow") return "case.task_updated" as const;
+
+  switch (status) {
+    case "completed":
+      return "case.step_completed" as const;
+    case "skipped":
+      return "case.step_skipped" as const;
+    default:
+      return "case.step_updated" as const;
+  }
+}
+
+/**
+ * Which lead-timeline verb a patch on a lead-attached task belongs under.
+ *
+ * A lead's timeline is read by intake staff who never see the audit table, so a
+ * status change has to say it changed status. Anything else is an edit.
+ */
+function leadActionFor(status: string | undefined) {
+  return status ? ("lead.task_status_changed" as const) : ("lead.task_updated" as const);
+}
 
 export class TasksService {
   // ─── Stats ───────────────────────────────────────────────────────────────────
@@ -87,8 +161,22 @@ export class TasksService {
     dueDate: tasks.dueDate,
     priority: tasks.priority,
     status: tasks.status,
-    progress: tasks.progress,
     requiredCertifications: tasks.requiredCertifications,
+    // Workflow-engine fields. `phase` is the denormalized display grouping (a
+    // module is template-time, phase survives even for ad-hoc tasks with no
+    // module at all); `isLocked` drives the override-with-rationale path.
+    source: tasks.source,
+    phase: tasks.phase,
+    orderIndex: tasks.orderIndex,
+    isRequired: tasks.isRequired,
+    isLocked: tasks.isLocked,
+    // Lets a client map a materialized task back to the template step it came
+    // from — which is how the workflow tab knows a module's steps are present
+    // and, by their absence, that a conditional module hasn't activated yet.
+    workflowTemplateStepId: tasks.workflowTemplateStepId,
+    leadId: tasks.leadId,
+    notes: tasks.notes,
+    overrideRationale: tasks.overrideRationale,
     createdAt: tasks.createdAt,
     updatedAt: tasks.updatedAt,
     caseId: cases.id,
@@ -119,8 +207,16 @@ export class TasksService {
     dueDate: r.dueDate,
     priority: r.priority,
     status: r.status,
-    progress: r.progress,
     requiredCertifications: r.requiredCertifications,
+    source: r.source,
+    phase: r.phase,
+    orderIndex: r.orderIndex,
+    isRequired: r.isRequired,
+    isLocked: r.isLocked,
+    workflowTemplateStepId: r.workflowTemplateStepId,
+    leadId: r.leadId,
+    notes: r.notes,
+    overrideRationale: r.overrideRationale,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
     case: {
@@ -153,11 +249,29 @@ export class TasksService {
       status?: string;
       priority?: string;
       assignedToId?: string;
+      /** Scope to one matter — the case workflow tab's access path. */
+      caseId?: string;
+      /** Scope to one lead — the intake pipeline board's access path. */
+      leadId?: string;
+      /** `workflow` | `pipeline` | `ad_hoc`; omit for every source. */
+      source?: "workflow" | "pipeline" | "ad_hoc";
     },
   ) => {
+    // Scoping filters go in SQL, not the in-memory pass below: a case's
+    // workflow is ~135 tasks out of a firm's tens of thousands, and fetching
+    // the firm to filter down to one matter does not stay viable.
+    const scope = [
+      eq(tasks.organizationId, organizationId),
+      ...(filters?.caseId ? [eq(tasks.caseId, filters.caseId)] : []),
+      ...(filters?.leadId ? [eq(tasks.leadId, filters.leadId)] : []),
+      ...(filters?.source ? [eq(tasks.source, filters.source)] : []),
+    ];
+
     const rows = await this.withJoins(db.select(this.taskSelect).from(tasks))
-      .where(eq(tasks.organizationId, organizationId))
-      .orderBy(desc(tasks.createdAt));
+      .where(and(...scope))
+      // Workflow steps run in template order; ad-hoc tasks have no orderIndex,
+      // so Postgres sorts those NULLs last and they fall back to newest-first.
+      .orderBy(asc(tasks.orderIndex), desc(tasks.createdAt));
 
     return rows
       .filter((r: any) => {
@@ -206,6 +320,7 @@ export class TasksService {
       .insert(tasks)
       .values({
         organizationId: data.organizationId,
+        source: "ad_hoc",
         title: data.title,
         description: data.description,
         caseId: data.caseId,
@@ -218,10 +333,12 @@ export class TasksService {
       })
       .returning();
 
-    void this.notifyAssignee(newTask, data.assignedById);
+    void notifyTaskAssignee(newTask, data.assignedById);
     await recordAuditEvent({
-      action: "task.created",
+      action: "case.task_created",
       entityId: newTask.id,
+      parentEntityType: "case",
+      parentEntityId: data.caseId,
       summary: `Task created: ${newTask.title}`,
       after: { title: newTask.title, status: newTask.status, priority: newTask.priority },
       onWriteFailure: "log",
@@ -236,59 +353,134 @@ export class TasksService {
     id: string,
     organizationId: string,
     data: UpdateTaskInput,
+    actorStaffId?: string | null,
   ) => {
-    // Read first, so a reassignment can be distinguished from an edit that
-    // happens to mention the same assignee.
-    const [before] = await db
-      .select({ assignedToId: tasks.assignedToId })
+    // One read, serving both callers below: the locked-step override check
+    // needs the lock flag and provenance, and telling a reassignment from an
+    // edit that merely mentions the same assignee needs the current assignee.
+    const [existing] = await db
+      .select({
+        isLocked: tasks.isLocked,
+        source: tasks.source,
+        leadId: tasks.leadId,
+        status: tasks.status,
+        assignedToId: tasks.assignedToId,
+      })
       .from(tasks)
       .where(and(eq(tasks.id, id), eq(tasks.organizationId, organizationId)))
       .limit(1);
 
+    if (!existing) return null;
+
+    const violation = lockedOverrideViolation(existing, data);
+    if (violation) throw new BadRequestError(violation);
+
+    const { overrideRationale, ...patch } = data;
+
+    // Stamp the override trail only when there was something to override. A
+    // rationale sent alongside an unprotected edit is accepted but not recorded
+    // as one — an override trail full of entries that overrode nothing is worse
+    // than no trail.
+    const overriding = existing.isLocked && overrideRationale !== undefined;
+
     const [updated] = await db
       .update(tasks)
-      .set({ ...data, updatedAt: new Date() })
+      .set({
+        ...patch,
+        updatedAt: new Date(),
+        ...(overriding
+          ? {
+              overrideRationale,
+              overrideById: actorStaffId ?? null,
+              overrideAt: new Date(),
+            }
+          : {}),
+      })
       .where(and(eq(tasks.id, id), eq(tasks.organizationId, organizationId)))
       .returning();
 
-    if (
-      updated &&
-      data.assignedToId &&
-      data.assignedToId !== before?.assignedToId
-    ) {
-      void this.notifyAssignee(updated, updated.assignedById);
-    }
+    /*
+      No assignee notification here.
+
+      `updateTaskBody` deliberately does not accept `assignedToId` — assignment
+      has its own endpoint with its own rules (a case task may only go to
+      someone on the case's team), and two ways to assign is the drift that
+      consolidating these tables was meant to end. This hook arrived on a branch
+      where a generic patch could still reassign; on this one it could never
+      fire, so it lives on the assignment path instead. See `assignTask` in
+      task-transitions.service.ts.
+    */
 
     if (updated) {
       await recordAuditEvent({
-        action: "task.updated",
+        action: auditActionFor(existing.source, patch.status),
         entityId: updated.id,
-        summary: `Task updated: ${updated.title}`,
+        // A lead-attached task has no case to parent onto. Sending one anyway
+        // filed intake work under a null matter, where nothing could find it.
+        parentEntityType: updated.caseId ? "case" : updated.leadId ? "lead" : undefined,
+        parentEntityId: updated.caseId ?? updated.leadId ?? undefined,
+        organizationId,
+        actor: actorStaffId ? { staffId: actorStaffId } : undefined,
+        summary: overriding
+          ? `Locked step overridden: ${updated.title} — ${overrideRationale}`
+          : `Task updated: ${updated.title}`,
         after: { title: updated.title, status: updated.status, priority: updated.priority },
+        metadata: overriding ? { overrideRationale } : undefined,
         onWriteFailure: "log",
       });
+
+      // The lead's own timeline, which intake staff read instead of the audit
+      // table. Only for tasks that hang off a lead — a case step has the case
+      // timeline, written by the workflow service.
+      if (updated.leadId) {
+        await logLeadEvent({
+          organizationId,
+          leadId: updated.leadId,
+          action: leadActionFor(patch.status),
+          actorId: actorStaffId,
+          metadata: {
+            taskId: updated.id,
+            title: updated.title,
+            ...(patch.status ? { from: existing.status, to: patch.status } : { changes: patch }),
+          },
+        });
+      }
     }
 
-    log.action("task.updated", { taskId: id });
+    log.action("task.updated", { taskId: id, overriding });
 
     return updated ?? null;
   };
 
-  /**
-   * Tell someone a task landed on them.
-   *
-   * Nothing did this before: tasks were created and reassigned entirely
-   * silently, and the assignee found out by opening the app. Preference-gated
-   * under `case_stage_changed`, and email/in-app only — a task is not worth a
-   * text message.
-   *
-   * Never notifies someone about their own action: assigning yourself a task is
-   * not news to you.
-   */
-  private notifyAssignee = async (
-    task: typeof tasks.$inferSelect,
-    assignedById: string | null,
-  ) => {
+  deleteTask = async (id: string, organizationId: string) => {
+    await db
+      .delete(tasks)
+      .where(and(eq(tasks.id, id), eq(tasks.organizationId, organizationId)));
+
+    log.action("task.deleted", { taskId: id });
+  };
+}
+
+/**
+ * Tell someone a task landed on them.
+ *
+ * Nothing did this before: tasks were created and reassigned entirely
+ * silently, and the assignee found out by opening the app. Preference-gated
+ * under `case_stage_changed`, and email/in-app only — a task is not worth a
+ * text message.
+ *
+ * Never notifies someone about their own action: assigning yourself a task is
+ * not news to you.
+ *
+ * Module scope rather than a private method because assignment does not happen
+ * in this file. `assignTask` (task-transitions.service.ts) is the one endpoint
+ * that hands work to a person, and it needs to call this too.
+ */
+export const notifyTaskAssignee = async (
+  task: typeof tasks.$inferSelect,
+  assignedById: string | null,
+) => {
+  {
     if (!task.assignedToId || task.assignedToId === assignedById) return;
 
     try {
@@ -328,13 +520,5 @@ export class TasksService {
         event: "task_assigned",
       });
     }
-  };
-
-  deleteTask = async (id: string, organizationId: string) => {
-    await db
-      .delete(tasks)
-      .where(and(eq(tasks.id, id), eq(tasks.organizationId, organizationId)));
-
-    log.action("task.deleted", { taskId: id });
-  };
-}
+  }
+};

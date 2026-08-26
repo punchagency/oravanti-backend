@@ -30,137 +30,43 @@ export class LeadWorkflowRouter {
     this.router.use(requireAuth);
     this.router.use(resolveActorContext);
 
-    // My Tasks (must be before /:leadId routes)
+    // Both cross-lead lists moved to /tasks:
+    //   GET /tasks/my-tasks?source=pipeline
+    //   GET /tasks/review-queue?source=pipeline
+    // One pair of endpoints serves intake steps and case workflow steps from the
+    // one table, in one row shape.
+
+    // Intake checklist — the firm-editable template every new lead is stamped
+    // from. Static paths, so they must be declared before the /:leadId routes.
+    // Gated on `workflow` rather than `leads`: this is the intake twin of the
+    // case workflow template editor, and editing it changes every future lead.
 
     this.router.get(
-      "/my-tasks",
-      requireAuth,
-      ctrl.getMyLeadTasks,
+      "/intake-pipeline/template",
+      requirePermission("workflow", "read"),
+      ctrl.getIntakePipelineTemplate,
     );
 
-    // Review Queue (must be before /:leadId routes)
-
-    this.router.get(
-      "/review-queue",
-      requireAuth,
-      ctrl.getLeadReviewQueue,
+    this.router.put(
+      "/intake-pipeline/template/steps",
+      requirePermission("workflow", "update"),
+      validateRequest({ body: v.saveIntakePipelineStepsSchema }),
+      ctrl.saveIntakePipelineSteps,
     );
 
-    // Tasks
+    // Pipeline
+    //
+    // Stamping a lead with the firm's checklist is a lead-level operation, so it
+    // lives here. Everything that happens to an individual step afterwards —
+    // reading, assigning, completing, the whole review loop — is on `/tasks`,
+    // which serves intake steps, case workflow steps and ad-hoc to-dos from the
+    // one table they all live in. There is no lead-scoped task surface.
 
     this.router.post(
       "/:leadId/initialize-pipeline",
       requireAuth,
       validateRequest({ params: v.leadIdParamsSchema }),
       ctrl.initializePipeline,
-    );
-
-    this.router.get(
-      "/:leadId/tasks",
-      requireAuth,
-      validateRequest({ params: v.leadIdParamsSchema }),
-      ctrl.getLeadTasks,
-    );
-
-    this.router.post(
-      "/:leadId/tasks",
-      requireAuth,
-      validateRequest({
-        params: v.leadIdParamsSchema,
-        body: v.createLeadTaskBodySchema,
-      }),
-      ctrl.createLeadTask,
-    );
-
-    this.router.patch(
-      "/:leadId/tasks/:taskId",
-      requireAuth,
-      validateRequest({
-        params: v.leadTaskIdParamsSchema,
-        body: v.updateLeadTaskBodySchema,
-      }),
-      ctrl.updateLeadTask,
-    );
-
-    this.router.patch(
-      "/:leadId/tasks/:taskId/status",
-      requireAuth,
-      validateRequest({
-        params: v.leadTaskIdParamsSchema,
-        body: v.updateLeadTaskStatusBodySchema,
-      }),
-      ctrl.updateLeadTaskStatus,
-    );
-
-    this.router.patch(
-      "/:leadId/tasks/:taskId/assign",
-      requireAuth,
-      validateRequest({
-        params: v.leadTaskIdParamsSchema,
-        body: v.assignLeadTaskBodySchema,
-      }),
-      ctrl.assignLeadTask,
-    );
-
-    this.router.post(
-      "/:leadId/tasks/:taskId/complete",
-      requireAuth,
-      validateRequest({ params: v.leadTaskIdParamsSchema }),
-      ctrl.completeLeadTask,
-    );
-
-    this.router.post(
-      "/:leadId/tasks/:taskId/submit-review",
-      requireAuth,
-      validateRequest({
-        params: v.leadTaskIdParamsSchema,
-        body: v.submitReviewBodySchema,
-      }),
-      ctrl.submitLeadTaskForReview,
-    );
-
-    this.router.post(
-      "/:leadId/tasks/:taskId/approve",
-      requireAuth,
-      validateRequest({
-        params: v.leadTaskIdParamsSchema,
-        body: v.reviewActionBodySchema,
-      }),
-      ctrl.approveLeadTask,
-    );
-
-    this.router.post(
-      "/:leadId/tasks/:taskId/reject",
-      requireAuth,
-      validateRequest({
-        params: v.leadTaskIdParamsSchema,
-        body: v.rejectReviewBodySchema,
-      }),
-      ctrl.rejectLeadTask,
-    );
-
-    this.router.post(
-      "/:leadId/tasks/:taskId/reopen",
-      requireAuth,
-      validateRequest({
-        params: v.leadTaskIdParamsSchema,
-        body: v.submitReviewBodySchema,
-      }),
-      ctrl.reopenLeadTask,
-    );
-
-    this.router.get(
-      "/:leadId/tasks/:taskId/review-thread",
-      requireAuth,
-      validateRequest({ params: v.leadTaskIdParamsSchema }),
-      ctrl.getLeadTaskReviewThread,
-    );
-
-    this.router.delete(
-      "/:leadId/tasks/:taskId",
-      requireAuth,
-      validateRequest({ params: v.leadTaskIdParamsSchema }),
-      ctrl.deleteLeadTask,
     );
 
     // Timeline

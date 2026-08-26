@@ -1,19 +1,16 @@
-import { and, asc, count, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import { auditEvents } from "../../db/schema/audit-events";
 import { cases } from "../../db/schema/cases";
-import { leaveRequests } from "../../db/schema/leave-requests";
 import { staff } from "../../db/schema/staff";
 import { createModuleLogger } from "../../lib/logging/log";
 import { assertAssignableStaff } from "../../utils/assignable-staff";
-import { certifications } from "../../db/schema/cases";
-import { staffCertifications } from "../../db/schema/staff-certifications";
+import { tasks } from "../../db/schema/tasks";
 import {
   caseNotes,
-  caseWorkflowSteps,
   workflowModules,
   workflowTemplateSteps,
-  workflowTemplates,
+  type Condition,
 } from "../../db/schema/workflow";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { recordTaskReviewEvent } from "../shared/task-review-events.service";
@@ -21,8 +18,21 @@ import { logCaseEvent } from "../cases/case-events.service";
 import { recordAuditEvent } from "../shared/audit.service";
 import { labelFor } from "../../lib/audit/actions";
 import type { AuditActionName } from "../../lib/audit/actions";
+import { getCaseTeamId, pickBestAssignee } from "./assignment.service";
+import { materializeModule, materializeTasksForCase } from "./task-materialization.service";
 
 const log = createModuleLogger("workflow.service");
+
+/**
+ * A case-attached task materialized from a workflow template:
+ * `source = 'workflow'`. Every query below adds this filter — a case's
+ * `tasks` rows can also be `ad_hoc` (see `tasks.service.ts`), and this
+ * service only owns the workflow-sourced ones.
+ */
+const isWorkflowTask = eq(tasks.source, "workflow");
+
+/** Statuses a step can be brought back from. Mirrors `TRANSITIONS.reopen`. */
+const REOPENABLE_STATUSES = new Set(["rejected", "completed", "skipped"]);
 
 // ─── Metadata helpers ──────────────────────────────────────────────────────────
 
@@ -62,32 +72,20 @@ export class WorkflowService {
   // ─── Get workflow for a case (read-only) ────────────────────────────────────────
 
   async getWorkflow(caseId: string, organizationId: string) {
-    const caseRecord = await this.getCase(caseId, organizationId);
+    await this.getCase(caseId, organizationId);
 
     const existingSteps = await db
-      .select()
-      .from(caseWorkflowSteps)
-      .where(
-        and(
-          eq(caseWorkflowSteps.caseId, caseId),
-          eq(caseWorkflowSteps.organizationId, organizationId),
-        ),
-      )
-      .orderBy(asc(caseWorkflowSteps.orderIndex));
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.caseId, caseId), eq(tasks.organizationId, organizationId), isWorkflowTask))
+      .limit(1);
 
-    if (existingSteps.length > 0) {
-      return this.buildWorkflowResponse(caseId, organizationId);
+    // No-ops when the case has no team yet — its steps would have nobody to be
+    // assigned from. The case detail already carries `assignedTeam`, so the
+    // workflow tab says so without needing a flag on this response.
+    if (existingSteps.length === 0) {
+      await materializeTasksForCase(caseId);
     }
-
-    if (!caseRecord.practiceAreaId) {
-      return { caseId, modules: [], startedAt: null };
-    }
-
-    await hydrateCaseWorkflow({
-      organizationId,
-      caseId,
-      practiceAreaId: caseRecord.practiceAreaId,
-    });
 
     return this.buildWorkflowResponse(caseId, organizationId);
   }
@@ -105,13 +103,14 @@ export class WorkflowService {
         eq(workflowTemplateSteps.moduleId, workflowModules.id),
       )
       .innerJoin(
-        caseWorkflowSteps,
-        eq(caseWorkflowSteps.templateStepId, workflowTemplateSteps.id),
+        tasks,
+        eq(tasks.workflowTemplateStepId, workflowTemplateSteps.id),
       )
       .where(
         and(
-          eq(caseWorkflowSteps.caseId, caseId),
-          eq(caseWorkflowSteps.organizationId, organizationId),
+          eq(tasks.caseId, caseId),
+          eq(tasks.organizationId, organizationId),
+          isWorkflowTask,
         ),
       )
       .orderBy(
@@ -125,10 +124,10 @@ export class WorkflowService {
 
     const stepStaffIds = new Set<string>();
     for (const row of modules) {
-      if (row.case_workflow_steps.assignedToId)
-        stepStaffIds.add(row.case_workflow_steps.assignedToId);
-      if (row.case_workflow_steps.completedById)
-        stepStaffIds.add(row.case_workflow_steps.completedById);
+      if (row.tasks.assignedToId)
+        stepStaffIds.add(row.tasks.assignedToId);
+      if (row.tasks.completedById)
+        stepStaffIds.add(row.tasks.completedById);
     }
 
     const staffMap = new Map<
@@ -157,7 +156,7 @@ export class WorkflowService {
         phase: string;
         orderIndex: number;
         activationType: string;
-        activationCondition: string | null;
+        activationCondition: Condition | null;
         status: "locked" | "active" | "completed";
         steps: {
           stepId: string;
@@ -173,7 +172,7 @@ export class WorkflowService {
 
     for (const row of modules) {
       const mod = row.workflow_modules;
-      const cs = row.case_workflow_steps;
+      const cs = row.tasks;
       const stepId = cs.id;
 
       if (!moduleMap.has(mod.id)) {
@@ -249,11 +248,11 @@ export class WorkflowService {
     });
 
     const startedSteps = modules.filter(
-      (r) => r.case_workflow_steps.status !== "pending",
+      (r) => r.tasks.status !== "pending",
     );
     const startedAt =
       startedSteps.length > 0
-        ? startedSteps[0].case_workflow_steps.createdAt.toISOString()
+        ? startedSteps[0].tasks.createdAt.toISOString()
         : null;
 
     return {
@@ -268,16 +267,22 @@ export class WorkflowService {
   async getWorkflowSummary(caseId: string, organizationId: string) {
     const steps = await db
       .select()
-      .from(caseWorkflowSteps)
+      .from(tasks)
       .where(
         and(
-          eq(caseWorkflowSteps.caseId, caseId),
-          eq(caseWorkflowSteps.organizationId, organizationId),
+          eq(tasks.caseId, caseId),
+          eq(tasks.organizationId, organizationId),
+          isWorkflowTask,
         ),
       );
 
-    const totalSteps = steps.length;
-    const completedSteps = steps.filter((s) => s.status === "completed").length;
+    // Withdrawn steps leave the denominator. A step whose condition stopped
+    // holding is not outstanding work, and counting it would hold the matter
+    // permanently short of 100% for work nobody is ever going to do.
+    const applicableSteps = steps.filter((s) => s.status !== "cancelled");
+
+    const totalSteps = applicableSteps.length;
+    const completedSteps = applicableSteps.filter((s) => s.status === "completed").length;
     const percentage =
       totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
 
@@ -289,11 +294,11 @@ export class WorkflowService {
     let currentModuleName: string | null = null;
     let currentModuleId: string | null = null;
 
-    if (inProgressStep?.templateStepId) {
+    if (inProgressStep?.workflowTemplateStepId) {
       const [templateStep] = await db
         .select()
         .from(workflowTemplateSteps)
-        .where(eq(workflowTemplateSteps.id, inProgressStep.templateStepId))
+        .where(eq(workflowTemplateSteps.id, inProgressStep.workflowTemplateStepId))
         .limit(1);
       if (templateStep) {
         const [mod] = await db
@@ -316,6 +321,69 @@ export class WorkflowService {
       currentModuleName,
       currentModuleId,
     };
+  }
+
+  // ─── Start a step ───────────────────────────────────────────────────────────────
+
+  /**
+   * The assignee saying they have picked the step up.
+   *
+   * Kept in step with `TRANSITIONS.start` in tasks/task-transitions.service.ts,
+   * which is the one place the lifecycle is defined — this method is what that
+   * dispatches to for a case step.
+   *
+   * Materialization used to stamp `in_progress` the moment a step was
+   * auto-assigned, so every step on a freshly opened matter claimed to be
+   * underway and the status carried no information. Assignment now leaves the
+   * step `pending` and this is the only way it advances, which is what makes
+   * "in progress" mean a person is actually working on it.
+   *
+   * `case.step_started` was already in the audit registry and already mapped in
+   * `logStepAction`; nothing had ever been able to emit it.
+   */
+  async startStep(
+    caseId: string,
+    stepId: string,
+    organizationId: string,
+    performedById?: string,
+    notes?: string,
+  ) {
+    const [step] = await db
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.id, stepId),
+          eq(tasks.caseId, caseId),
+          eq(tasks.organizationId, organizationId),
+          isWorkflowTask,
+        ),
+      )
+      .limit(1);
+
+    if (!step) throw new NotFoundError("Step not found");
+
+    if (step.status !== "pending") {
+      log.warn("workflow.start_rejected", { stepId, status: step.status });
+      throw new BadRequestError("Only a step that has not been started yet can be started");
+    }
+
+    await db
+      .update(tasks)
+      .set({ status: "in_progress", updatedAt: new Date() })
+      .where(and(eq(tasks.id, stepId), eq(tasks.organizationId, organizationId)));
+
+    await logStepAction({
+      organizationId,
+      caseId,
+      stepId,
+      action: "STARTED",
+      title: `Step started: ${step.title}`,
+      actorId: performedById,
+      note: notes?.trim() || null,
+    });
+
+    return this.getWorkflowSummary(caseId, organizationId);
   }
 
   // ─── Complete a step ────────────────────────────────────────────────────────────
@@ -346,12 +414,13 @@ export class WorkflowService {
   ) {
     const [step] = await db
       .select()
-      .from(caseWorkflowSteps)
+      .from(tasks)
       .where(
         and(
-          eq(caseWorkflowSteps.id, stepId),
-          eq(caseWorkflowSteps.caseId, caseId),
-          eq(caseWorkflowSteps.organizationId, organizationId),
+          eq(tasks.id, stepId),
+          eq(tasks.caseId, caseId),
+          eq(tasks.organizationId, organizationId),
+          isWorkflowTask,
         ),
       )
       .limit(1);
@@ -367,7 +436,7 @@ export class WorkflowService {
     }
 
     await db
-      .update(caseWorkflowSteps)
+      .update(tasks)
       .set({
         status: "completed",
         completedAt: now,
@@ -375,10 +444,10 @@ export class WorkflowService {
         timeTakenMs,
         updatedAt: now,
       })
-      .where(and(eq(caseWorkflowSteps.id, stepId), eq(caseWorkflowSteps.organizationId, organizationId)));
+      .where(and(eq(tasks.id, stepId), eq(tasks.organizationId, organizationId)));
 
     const [moduleName, staffMap] = await Promise.all([
-      resolveModuleName(step.templateStepId),
+      resolveModuleName(step.workflowTemplateStepId),
       resolveStaffNames(performedById),
     ]);
     const completedByName = performedById ? (staffMap.get(performedById) ?? null) : null;
@@ -446,12 +515,13 @@ export class WorkflowService {
   ) {
     const [step] = await db
       .select()
-      .from(caseWorkflowSteps)
+      .from(tasks)
       .where(
         and(
-          eq(caseWorkflowSteps.id, stepId),
-          eq(caseWorkflowSteps.caseId, caseId),
-          eq(caseWorkflowSteps.organizationId, organizationId),
+          eq(tasks.id, stepId),
+          eq(tasks.caseId, caseId),
+          eq(tasks.organizationId, organizationId),
+          isWorkflowTask,
         ),
       )
       .limit(1);
@@ -474,7 +544,7 @@ export class WorkflowService {
     if (!staffMember) throw new NotFoundError("Staff not found");
 
     const now = new Date();
-    const updateData: Partial<typeof caseWorkflowSteps.$inferInsert> = {
+    const updateData: Partial<typeof tasks.$inferInsert> = {
       assignedToId: staffId,
       assignedAt: now,
       status: "in_progress",
@@ -488,9 +558,9 @@ export class WorkflowService {
     }
 
     await db
-      .update(caseWorkflowSteps)
+      .update(tasks)
       .set(updateData)
-      .where(eq(caseWorkflowSteps.id, stepId));
+      .where(eq(tasks.id, stepId));
 
     await logStepAction({
       organizationId,
@@ -504,7 +574,7 @@ export class WorkflowService {
     });
 
     const [moduleName2, assignerMap] = await Promise.all([
-      resolveModuleName(step.templateStepId),
+      resolveModuleName(step.workflowTemplateStepId),
       resolveStaffNames(performedById),
     ]);
     const assignerName = performedById ? (assignerMap.get(performedById) ?? null) : null;
@@ -543,32 +613,47 @@ export class WorkflowService {
     moduleId: string,
     organizationId: string,
   ) {
+    /*
+      Create the module's tasks if they don't exist yet.
+
+      A `manual` module is skipped by whole-case materialization by design —
+      "manual" means someone decides when the stage starts, and this is that
+      decision. Without this call the lookup below found nothing and threw,
+      which made every manual module (eleven of the twenty Personal Injury
+      ones, the whole litigation half) impossible to open. Idempotent, so
+      re-activating an already-open module is a no-op rather than a duplicate.
+    */
+    await materializeModule(caseId, moduleId);
+
     const moduleSteps = await db
       .select()
-      .from(caseWorkflowSteps)
+      .from(tasks)
       .innerJoin(
         workflowTemplateSteps,
-        eq(caseWorkflowSteps.templateStepId, workflowTemplateSteps.id),
+        eq(tasks.workflowTemplateStepId, workflowTemplateSteps.id),
       )
       .where(
         and(
-          eq(caseWorkflowSteps.caseId, caseId),
-          eq(caseWorkflowSteps.organizationId, organizationId),
+          eq(tasks.caseId, caseId),
+          eq(tasks.organizationId, organizationId),
+          isWorkflowTask,
           eq(workflowTemplateSteps.moduleId, moduleId),
         ),
       )
-      .orderBy(asc(caseWorkflowSteps.orderIndex))
+      .orderBy(asc(tasks.orderIndex))
       .limit(1);
 
+    // Now only reachable when the module genuinely has no template steps, or
+    // belongs to another firm's template.
     if (moduleSteps.length === 0)
       throw new NotFoundError("No steps found for this module in the case");
 
-    const firstStep = moduleSteps[0].case_workflow_steps;
+    const firstStep = moduleSteps[0].tasks;
     if (firstStep.status === "pending") {
       await db
-        .update(caseWorkflowSteps)
+        .update(tasks)
         .set({ status: "in_progress", updatedAt: new Date() })
-        .where(eq(caseWorkflowSteps.id, firstStep.id));
+        .where(eq(tasks.id, firstStep.id));
     }
 
     const [mod] = await db
@@ -628,9 +713,9 @@ export class WorkflowService {
     const stepTitleMap = new Map<string, string>();
     if (stepIdSet.size > 0) {
       const stepRows = await db
-        .select({ id: caseWorkflowSteps.id, title: caseWorkflowSteps.title })
-        .from(caseWorkflowSteps)
-        .where(inArray(caseWorkflowSteps.id, [...stepIdSet]));
+        .select({ id: tasks.id, title: tasks.title })
+        .from(tasks)
+        .where(inArray(tasks.id, [...stepIdSet]));
       for (const s of stepRows) stepTitleMap.set(s.id, s.title);
     }
 
@@ -729,12 +814,13 @@ export class WorkflowService {
   ) {
     const [step] = await db
       .select()
-      .from(caseWorkflowSteps)
+      .from(tasks)
       .where(
         and(
-          eq(caseWorkflowSteps.id, stepId),
-          eq(caseWorkflowSteps.caseId, caseId),
-          eq(caseWorkflowSteps.organizationId, organizationId),
+          eq(tasks.id, stepId),
+          eq(tasks.caseId, caseId),
+          eq(tasks.organizationId, organizationId),
+          isWorkflowTask,
         ),
       )
       .limit(1);
@@ -756,9 +842,9 @@ export class WorkflowService {
     }
 
     await db
-      .update(caseWorkflowSteps)
+      .update(tasks)
       .set({ status: "in_review", updatedAt: now })
-      .where(and(eq(caseWorkflowSteps.id, stepId), eq(caseWorkflowSteps.organizationId, organizationId)));
+      .where(and(eq(tasks.id, stepId), eq(tasks.organizationId, organizationId)));
 
     await logStepAction({
       organizationId,
@@ -782,7 +868,7 @@ export class WorkflowService {
     });
 
     const [subModName, subActorMap] = await Promise.all([
-      resolveModuleName(step.templateStepId),
+      resolveModuleName(step.workflowTemplateStepId),
       resolveStaffNames(performedById),
     ]);
     const submittedByName = performedById ? (subActorMap.get(performedById) ?? null) : null;
@@ -828,12 +914,13 @@ export class WorkflowService {
   ) {
     const [step] = await db
       .select()
-      .from(caseWorkflowSteps)
+      .from(tasks)
       .where(
         and(
-          eq(caseWorkflowSteps.id, stepId),
-          eq(caseWorkflowSteps.caseId, caseId),
-          eq(caseWorkflowSteps.organizationId, organizationId),
+          eq(tasks.id, stepId),
+          eq(tasks.caseId, caseId),
+          eq(tasks.organizationId, organizationId),
+          isWorkflowTask,
         ),
       )
       .limit(1);
@@ -851,7 +938,7 @@ export class WorkflowService {
     }
 
     await db
-      .update(caseWorkflowSteps)
+      .update(tasks)
       .set({
         status: "completed",
         completedAt: now,
@@ -859,7 +946,7 @@ export class WorkflowService {
         timeTakenMs,
         updatedAt: now,
       })
-      .where(and(eq(caseWorkflowSteps.id, stepId), eq(caseWorkflowSteps.organizationId, organizationId)));
+      .where(and(eq(tasks.id, stepId), eq(tasks.organizationId, organizationId)));
 
     await logStepAction({
       organizationId,
@@ -884,7 +971,7 @@ export class WorkflowService {
     });
 
     const [apprModName, apprActorMap] = await Promise.all([
-      resolveModuleName(step.templateStepId),
+      resolveModuleName(step.workflowTemplateStepId),
       resolveStaffNames(performedById, step.assignedToId),
     ]);
     const reviewerName = performedById ? (apprActorMap.get(performedById) ?? null) : null;
@@ -941,12 +1028,13 @@ export class WorkflowService {
   ) {
     const [step] = await db
       .select()
-      .from(caseWorkflowSteps)
+      .from(tasks)
       .where(
         and(
-          eq(caseWorkflowSteps.id, stepId),
-          eq(caseWorkflowSteps.caseId, caseId),
-          eq(caseWorkflowSteps.organizationId, organizationId),
+          eq(tasks.id, stepId),
+          eq(tasks.caseId, caseId),
+          eq(tasks.organizationId, organizationId),
+          isWorkflowTask,
         ),
       )
       .limit(1);
@@ -964,14 +1052,14 @@ export class WorkflowService {
     }
 
     await db
-      .update(caseWorkflowSteps)
+      .update(tasks)
       .set({
         // Terminal until the assignee reopens it: dropping straight back to
         // `in_progress` gave them no signal that anything had been rejected.
         status: "rejected",
         updatedAt: now,
       })
-      .where(and(eq(caseWorkflowSteps.id, stepId), eq(caseWorkflowSteps.organizationId, organizationId)));
+      .where(and(eq(tasks.id, stepId), eq(tasks.organizationId, organizationId)));
 
     await logStepAction({
       organizationId,
@@ -995,7 +1083,7 @@ export class WorkflowService {
     });
 
     const [rejModName, rejActorMap] = await Promise.all([
-      resolveModuleName(step.templateStepId),
+      resolveModuleName(step.workflowTemplateStepId),
       resolveStaffNames(performedById, step.assignedToId),
     ]);
     const rejReviewerName = performedById ? (rejActorMap.get(performedById) ?? null) : null;
@@ -1052,26 +1140,35 @@ export class WorkflowService {
   ) {
     const [step] = await db
       .select()
-      .from(caseWorkflowSteps)
+      .from(tasks)
       .where(
         and(
-          eq(caseWorkflowSteps.id, stepId),
-          eq(caseWorkflowSteps.caseId, caseId),
-          eq(caseWorkflowSteps.organizationId, organizationId),
+          eq(tasks.id, stepId),
+          eq(tasks.caseId, caseId),
+          eq(tasks.organizationId, organizationId),
+          isWorkflowTask,
         ),
       )
       .limit(1);
 
     if (!step) throw new NotFoundError("Step not found");
-    if (step.status !== "rejected") {
+    // Kept in step with `TRANSITIONS.reopen` in tasks/task-transitions.service.ts,
+    // which is the one place the lifecycle is defined — this method is what that
+    // dispatches to for a case step. A step that was completed in error, or
+    // skipped and later turns out to matter, must have a way back; otherwise the
+    // firm's only options are a wrong record or a duplicate task beside it.
+    if (!REOPENABLE_STATUSES.has(step.status)) {
       log.warn("workflow.reopen_rejected", { stepId, status: step.status });
-      throw new BadRequestError("Only rejected steps can be reopened");
+      throw new BadRequestError(
+        "Only rejected, completed or skipped steps can be reopened",
+      );
     }
 
+    const previousStatus = step.status;
     const now = new Date();
 
     await db
-      .update(caseWorkflowSteps)
+      .update(tasks)
       .set({
         status: "in_progress",
         completedAt: null,
@@ -1080,8 +1177,8 @@ export class WorkflowService {
       })
       .where(
         and(
-          eq(caseWorkflowSteps.id, stepId),
-          eq(caseWorkflowSteps.organizationId, organizationId),
+          eq(tasks.id, stepId),
+          eq(tasks.organizationId, organizationId),
         ),
       );
 
@@ -1111,9 +1208,9 @@ export class WorkflowService {
       stepId,
       eventType: "STEP_REOPENED",
       title: `Step reopened: ${step.title}`,
-      description: `Step "${step.title}" reopened after rejection`,
+      description: `Step "${step.title}" reopened from ${previousStatus.replace("_", " ")}`,
       metadata: {
-        previousStatus: "rejected",
+        previousStatus,
         newStatus: "in_progress",
         stepTitle: step.title,
         note: notes?.trim() || null,
@@ -1137,10 +1234,10 @@ export class WorkflowService {
   ) {
     const allSteps = await db
       .select()
-      .from(caseWorkflowSteps)
+      .from(tasks)
       .innerJoin(
         workflowTemplateSteps,
-        eq(caseWorkflowSteps.templateStepId, workflowTemplateSteps.id),
+        eq(tasks.workflowTemplateStepId, workflowTemplateSteps.id),
       )
       .innerJoin(
         workflowModules,
@@ -1148,8 +1245,9 @@ export class WorkflowService {
       )
       .where(
         and(
-          eq(caseWorkflowSteps.caseId, caseId),
-          eq(caseWorkflowSteps.organizationId, organizationId),
+          eq(tasks.caseId, caseId),
+          eq(tasks.organizationId, organizationId),
+          isWorkflowTask,
         ),
       )
       .orderBy(
@@ -1158,13 +1256,13 @@ export class WorkflowService {
       );
 
     const stepIndex = allSteps.findIndex(
-      (row) => row.case_workflow_steps.id === currentStepId,
+      (row) => row.tasks.id === currentStepId,
     );
     if (stepIndex === -1 || stepIndex >= allSteps.length - 1) return;
 
-    const nextStep = allSteps[stepIndex + 1].case_workflow_steps;
-    const nextModuleId =
-      allSteps[stepIndex + 1].workflow_template_steps.moduleId;
+    const nextStep = allSteps[stepIndex + 1].tasks;
+    const nextStepTemplate = allSteps[stepIndex + 1].workflow_template_steps;
+    const nextModuleId = nextStepTemplate.moduleId;
     const currentModuleId =
       allSteps[stepIndex].workflow_template_steps.moduleId;
 
@@ -1172,11 +1270,21 @@ export class WorkflowService {
     if (nextModuleId !== currentModuleId || nextStep.status !== "pending")
       return;
 
-    const picked = await pickBestStaff(
-      organizationId,
-      nextStep.templateStepId,
-      performedById,
-    );
+    // Team-only, like every other assignment on a case. A case with steps has a
+    // team by construction — materialization refuses to run without one — but if
+    // the team were cleared afterwards the next step simply stays unassigned.
+    const teamId = await getCaseTeamId(organizationId, caseId);
+    const pickedId = teamId
+      ? await pickBestAssignee({
+          organizationId,
+          teamId,
+          requiredCertifications: nextStepTemplate.requiredCertifications,
+          assignableRoles: nextStepTemplate.assignableRoles,
+          excludeStaffId: performedById,
+        })
+      : null;
+    const picked = pickedId ? await resolveStaffNames(pickedId) : null;
+    const pickedStaff = picked && pickedId ? picked.get(pickedId) : null;
 
     const now = new Date();
     const updateData: Record<string, unknown> = {
@@ -1184,11 +1292,11 @@ export class WorkflowService {
       updatedAt: now,
     };
 
-    if (picked) {
-      updateData.assignedToId = picked.id;
+    if (pickedId) {
+      updateData.assignedToId = pickedId;
       updateData.assignedAt = now;
 
-      const autoNextModName = await resolveModuleName(nextStep.templateStepId);
+      const autoNextModName = await resolveModuleName(nextStep.workflowTemplateStepId);
       const autoNextActorMap = await resolveStaffNames(performedById);
       const autoAssignerName = performedById ? (autoNextActorMap.get(performedById) ?? null) : null;
 
@@ -1198,7 +1306,7 @@ export class WorkflowService {
         stepId: nextStep.id,
         action: "ASSIGNED",
         title: `Step auto-assigned: ${nextStep.title}`,
-        assigneeId: picked.id,
+        assigneeId: pickedId,
       });
 
       await logEvent({
@@ -1208,12 +1316,12 @@ export class WorkflowService {
         eventType: "STEP_ASSIGNED",
         title: `Step auto-assigned: ${nextStep.title}`,
         description: autoAssignerName
-          ? `${autoAssignerName} assigned "${nextStep.title}" to ${picked.firstName} ${picked.lastName}`
-          : `Assigned to ${picked.firstName} ${picked.lastName}`,
+          ? `${autoAssignerName} assigned "${nextStep.title}" to ${pickedStaff ?? "a team member"}`
+          : `Assigned to ${pickedStaff ?? "a team member"}`,
         metadata: {
           assignmentStrategy: "workload_balanced",
-          staffId: picked.id,
-          staffName: `${picked.firstName} ${picked.lastName}`,
+          staffId: pickedId,
+          staffName: pickedStaff ?? null,
           assignerId: performedById ?? null,
           assignerName: autoAssignerName,
           moduleName: autoNextModName,
@@ -1225,9 +1333,9 @@ export class WorkflowService {
     }
 
     await db
-      .update(caseWorkflowSteps)
+      .update(tasks)
       .set(updateData)
-      .where(eq(caseWorkflowSteps.id, nextStep.id));
+      .where(eq(tasks.id, nextStep.id));
   }
 
   // ─── Case Notes ─────────────────────────────────────────────────────────────────
@@ -1561,302 +1669,6 @@ export class WorkflowService {
     await db.delete(caseNotes).where(eq(caseNotes.id, noteId));
   }
 
-  // ─── Get my assigned tasks (for current staff member) ────────────────────────────
-
-  async getMyTasks(
-    staffId: string,
-    organizationId: string,
-    status?: string,
-    page: number = 1,
-    limit: number = 10,
-  ) {
-    const statuses = (
-      status
-        ? status.split(",")
-        : [
-            "in_progress",
-            "in_review",
-            "completed",
-            "pending",
-            "skipped",
-            "rejected",
-          ]
-    ) as (
-      | "completed"
-      | "pending"
-      | "in_progress"
-      | "in_review"
-      | "skipped"
-      | "rejected"
-    )[];
-
-    const baseConditions = and(
-      eq(caseWorkflowSteps.assignedToId, staffId),
-      eq(caseWorkflowSteps.organizationId, organizationId),
-    );
-
-    const countRows = await db
-      .select({
-        status: caseWorkflowSteps.status,
-        count: sql<number>`COUNT(*)::int`,
-      })
-      .from(caseWorkflowSteps)
-      .where(baseConditions)
-      .groupBy(caseWorkflowSteps.status);
-
-    const counts: Record<string, number> = {
-      in_progress: 0,
-      in_review: 0,
-      completed: 0,
-      pending: 0,
-      skipped: 0,
-      rejected: 0,
-    };
-    for (const r of countRows) {
-      counts[r.status] = r.count;
-    }
-
-    const [{ count }] = await db
-      .select({ count: sql<number>`COUNT(*)` })
-      .from(caseWorkflowSteps)
-      .where(and(baseConditions, inArray(caseWorkflowSteps.status, statuses)));
-    const total = Number(count);
-
-    const filteredConditions = and(
-      baseConditions,
-      inArray(caseWorkflowSteps.status, statuses),
-    );
-
-    const offset = (page - 1) * limit;
-
-    const rows = await db
-      .select({
-        stepId: caseWorkflowSteps.id,
-        stepTitle: caseWorkflowSteps.title,
-        stepStatus: caseWorkflowSteps.status,
-        stepAssignedAt: caseWorkflowSteps.assignedAt,
-        stepDueDate: caseWorkflowSteps.dueDate,
-        stepCreatedAt: caseWorkflowSteps.createdAt,
-        stepNotes: caseWorkflowSteps.notes,
-        stepUpdatedAt: caseWorkflowSteps.updatedAt,
-        caseTitle: cases.caseNumber,
-        caseId: cases.id,
-        moduleName: workflowModules.name,
-        moduleId: workflowModules.id,
-        phaseName: workflowModules.phase,
-      })
-      .from(caseWorkflowSteps)
-      .innerJoin(cases, eq(caseWorkflowSteps.caseId, cases.id))
-      .innerJoin(
-        workflowTemplateSteps,
-        eq(caseWorkflowSteps.templateStepId, workflowTemplateSteps.id),
-      )
-      .innerJoin(
-        workflowModules,
-        eq(workflowTemplateSteps.moduleId, workflowModules.id),
-      )
-      .where(filteredConditions)
-      .orderBy(asc(caseWorkflowSteps.dueDate), asc(caseWorkflowSteps.createdAt))
-      .limit(limit)
-      .offset(offset);
-
-    // Fetch step audit events for these steps
-    const stepIds = rows.map((r) => r.stepId);
-    const actionLogs =
-      stepIds.length > 0
-        ? await db
-            .select({
-              id: auditEvents.id,
-              action: auditEvents.action,
-              summary: auditEvents.summary,
-              metadata: auditEvents.metadata,
-              actorStaffId: auditEvents.actorStaffId,
-              actorName: auditEvents.actorName,
-              occurredAt: auditEvents.occurredAt,
-            })
-            .from(auditEvents)
-            .where(
-              and(
-                inArray(auditEvents.entityId, stepIds),
-                sql`${auditEvents.metadata}->>'stepId' IS NOT NULL`,
-              ),
-            )
-            .orderBy(asc(auditEvents.occurredAt))
-        : [];
-    const logsByStep = new Map<string, typeof actionLogs>();
-    for (const log of actionLogs) {
-      const logStepId = (log.metadata as Record<string, unknown>)?.stepId as string | undefined;
-      if (!logStepId) continue;
-      const list = logsByStep.get(logStepId) ?? [];
-      list.push(log);
-      logsByStep.set(logStepId, list);
-    }
-
-    const data = rows.map((r) => ({
-      stepId: r.stepId,
-      caseId: r.caseId,
-      caseTitle: r.caseTitle,
-      title: r.stepTitle,
-      status: r.stepStatus,
-      moduleId: r.moduleId,
-      moduleName: r.moduleName,
-      phaseName: r.phaseName,
-      assignedAt: r.stepAssignedAt?.toISOString() ?? null,
-      dueDate: r.stepDueDate,
-      createdAt: r.stepCreatedAt.toISOString(),
-      updatedAt: r.stepUpdatedAt.toISOString(),
-      auditLog: logsByStep.get(r.stepId) ?? [],
-    }));
-
-    return { data, counts, pagination: { total, limit, offset } };
-  }
-
-  // ─── Get review queue (all in_review steps across all cases) ────────────────────
-
-  async getReviewQueue(
-    organizationId: string,
-    status?: string,
-    page: number = 1,
-    limit: number = 10,
-  ) {
-    const statuses = (status ? status.split(",") : ["in_review"]) as (
-      "completed" | "pending" | "in_progress" | "in_review" | "skipped" | "rejected"
-    )[];
-
-    const baseOrgCondition = eq(
-      caseWorkflowSteps.organizationId,
-      organizationId,
-    );
-
-    const countRows = await db
-      .select({
-        status: caseWorkflowSteps.status,
-        count: sql<number>`COUNT(*)::int`,
-      })
-      .from(caseWorkflowSteps)
-      .where(baseOrgCondition)
-      .groupBy(caseWorkflowSteps.status);
-
-    const counts: Record<string, number> = {
-      in_progress: 0,
-      in_review: 0,
-      completed: 0,
-      pending: 0,
-      skipped: 0,
-      rejected: 0,
-    };
-    for (const r of countRows) {
-      counts[r.status] = r.count;
-    }
-
-    const baseConditions = and(
-      baseOrgCondition,
-      inArray(caseWorkflowSteps.status, statuses),
-    );
-
-    const [{ count }] = await db
-      .select({ count: sql<number>`COUNT(*)` })
-      .from(caseWorkflowSteps)
-      .innerJoin(cases, eq(caseWorkflowSteps.caseId, cases.id))
-      .innerJoin(
-        workflowTemplateSteps,
-        eq(caseWorkflowSteps.templateStepId, workflowTemplateSteps.id),
-      )
-      .innerJoin(
-        workflowModules,
-        eq(workflowTemplateSteps.moduleId, workflowModules.id),
-      )
-      .leftJoin(staff, eq(caseWorkflowSteps.assignedToId, staff.id))
-      .where(baseConditions);
-    const total = Number(count);
-
-    const offset = (page - 1) * limit;
-
-    const rows = await db
-      .select({
-        stepId: caseWorkflowSteps.id,
-        stepTitle: caseWorkflowSteps.title,
-        stepStatus: caseWorkflowSteps.status,
-        stepUpdatedAt: caseWorkflowSteps.updatedAt,
-        stepDueDate: caseWorkflowSteps.dueDate,
-        stepNotes: caseWorkflowSteps.notes,
-        caseTitle: cases.caseNumber,
-        caseId: cases.id,
-        moduleName: workflowModules.name,
-        moduleId: workflowModules.id,
-        phaseName: workflowModules.phase,
-        assigneeFirstName: staff.firstName,
-        assigneeLastName: staff.lastName,
-      })
-      .from(caseWorkflowSteps)
-      .innerJoin(cases, eq(caseWorkflowSteps.caseId, cases.id))
-      .innerJoin(
-        workflowTemplateSteps,
-        eq(caseWorkflowSteps.templateStepId, workflowTemplateSteps.id),
-      )
-      .innerJoin(
-        workflowModules,
-        eq(workflowTemplateSteps.moduleId, workflowModules.id),
-      )
-      .leftJoin(staff, eq(caseWorkflowSteps.assignedToId, staff.id))
-      .where(baseConditions)
-      .orderBy(asc(caseWorkflowSteps.updatedAt))
-      .limit(limit)
-      .offset(offset);
-
-    // Fetch step audit events for these steps
-    const stepIds = rows.map((r) => r.stepId);
-    const actionLogs =
-      stepIds.length > 0
-        ? await db
-            .select({
-              id: auditEvents.id,
-              action: auditEvents.action,
-              summary: auditEvents.summary,
-              metadata: auditEvents.metadata,
-              actorStaffId: auditEvents.actorStaffId,
-              actorName: auditEvents.actorName,
-              occurredAt: auditEvents.occurredAt,
-            })
-            .from(auditEvents)
-            .where(
-              and(
-                inArray(auditEvents.entityId, stepIds),
-                sql`${auditEvents.metadata}->>'stepId' IS NOT NULL`,
-              ),
-            )
-            .orderBy(asc(auditEvents.occurredAt))
-        : [];
-    const logsByStep = new Map<string, typeof actionLogs>();
-    for (const log of actionLogs) {
-      const logStepId = (log.metadata as Record<string, unknown>)?.stepId as string | undefined;
-      if (!logStepId) continue;
-      const list = logsByStep.get(logStepId) ?? [];
-      list.push(log);
-      logsByStep.set(logStepId, list);
-    }
-
-    const data = rows.map((r) => ({
-      stepId: r.stepId,
-      caseId: r.caseId,
-      caseTitle: r.caseTitle,
-      title: r.stepTitle,
-      status: r.stepStatus,
-      moduleId: r.moduleId,
-      moduleName: r.moduleName,
-      phaseName: r.phaseName,
-      assignedToName:
-        r.assigneeFirstName && r.assigneeLastName
-          ? `${r.assigneeFirstName} ${r.assigneeLastName}`
-          : null,
-      submittedAt: r.stepUpdatedAt?.toISOString() ?? null,
-      dueDate: r.stepDueDate,
-      auditLog: logsByStep.get(r.stepId) ?? [],
-    }));
-
-    return { data, counts, pagination: { total, limit, offset } };
-  }
-
   // ─── Helpers ────────────────────────────────────────────────────────────────────
 
   private async getCase(caseId: string, organizationId: string) {
@@ -1870,300 +1682,9 @@ export class WorkflowService {
     if (!caseRecord) throw new NotFoundError("Case not found");
     return caseRecord;
   }
-
 }
 
 // ─── Standalone exported functions ──────────────────────────────────────────────
-
-export async function pickBestStaff(
-  organizationId: string,
-  templateStepId?: string | null,
-  excludeStaffId?: string,
-): Promise<{ id: string; firstName: string; lastName: string } | null> {
-
-  let candidates = await db
-    .select()
-    .from(staff)
-    .where(
-      and(
-        eq(staff.organizationId, organizationId),
-        eq(staff.status, "active"),
-        excludeStaffId ? ne(staff.id, excludeStaffId) : undefined,
-      ),
-    );
-
-  if (candidates.length === 0) {
-    candidates = await db
-      .select()
-      .from(staff)
-      .where(
-        and(
-          eq(staff.organizationId, organizationId),
-          ne(staff.status, "inactive"),
-          excludeStaffId ? ne(staff.id, excludeStaffId) : undefined,
-        ),
-      );
-  }
-
-  if (candidates.length === 0) return null;
-
-  if (templateStepId) {
-    const [templateStep] = await db
-      .select()
-      .from(workflowTemplateSteps)
-      .where(eq(workflowTemplateSteps.id, templateStepId))
-      .limit(1);
-
-    const requiredCert = templateStep?.requiredCertification;
-    if (requiredCert) {
-      const certifiedStaffIds = await db
-        .select({ staffId: staffCertifications.staffId })
-        .from(staffCertifications)
-        .innerJoin(certifications, eq(certifications.id, staffCertifications.certificationId))
-        .where(eq(certifications.name, requiredCert));
-
-      const certSet = new Set(certifiedStaffIds.map((r) => r.staffId));
-      candidates = candidates.filter((s) => certSet.has(s.id));
-    }
-  }
-
-  if (candidates.length === 0) return null;
-  if (candidates.length === 1) {
-    return {
-      id: candidates[0].id,
-      firstName: candidates[0].firstName,
-      lastName: candidates[0].lastName,
-    };
-  }
-
-  const todayStr = new Date().toISOString().split("T")[0];
-  const staffOnLeave = await db
-    .select({ staffId: leaveRequests.staffId })
-    .from(leaveRequests)
-    .where(
-      and(
-        eq(leaveRequests.organizationId, organizationId),
-        eq(leaveRequests.status, "approved"),
-        lte(leaveRequests.startDate, todayStr),
-        gte(leaveRequests.endDate, todayStr),
-      ),
-    );
-
-  const leaveSet = new Set(staffOnLeave.map((r) => r.staffId));
-  const availableStaff = candidates.filter((s) => !leaveSet.has(s.id));
-  const pool = availableStaff.length > 0 ? availableStaff : candidates;
-
-  const staffIds = pool.map((s) => s.id);
-  const loadRows = await db
-    .select({
-      staffId: caseWorkflowSteps.assignedToId,
-      taskCount: count(),
-    })
-    .from(caseWorkflowSteps)
-    .where(
-      and(
-        inArray(caseWorkflowSteps.assignedToId, staffIds),
-        inArray(caseWorkflowSteps.status, ["in_progress", "in_review"]),
-      ),
-    )
-    .groupBy(caseWorkflowSteps.assignedToId);
-
-  const loadMap = new Map<string, number>();
-  for (const row of loadRows) {
-    if (row.staffId) loadMap.set(row.staffId, row.taskCount);
-  }
-
-  const recentAssignments = await db
-    .select({
-      staffId: caseWorkflowSteps.assignedToId,
-      lastAssigned: sql<string>`MAX(${caseWorkflowSteps.assignedAt})`.as("last_assigned"),
-    })
-    .from(caseWorkflowSteps)
-    .where(
-      and(
-        inArray(caseWorkflowSteps.assignedToId, staffIds),
-        sql`${caseWorkflowSteps.assignedAt} IS NOT NULL`,
-      ),
-    )
-    .groupBy(caseWorkflowSteps.assignedToId);
-
-  const lastAssignedMap = new Map<string, Date>();
-  for (const row of recentAssignments) {
-    if (row.staffId) lastAssignedMap.set(row.staffId, new Date(row.lastAssigned));
-  }
-
-  const scored = pool.map((s) => ({
-    staff: s,
-    load: loadMap.get(s.id) ?? 0,
-    lastAssigned: lastAssignedMap.get(s.id) ?? null,
-  }));
-
-  scored.sort((a, b) => {
-    if (a.load !== b.load) return a.load - b.load;
-    if (a.lastAssigned && b.lastAssigned) {
-      return a.lastAssigned.getTime() - b.lastAssigned.getTime();
-    }
-    if (!a.lastAssigned && b.lastAssigned) return -1;
-    if (a.lastAssigned && !b.lastAssigned) return 1;
-    return 0;
-  });
-
-  const picked = scored[0];
-  return {
-    id: picked.staff.id,
-    firstName: picked.staff.firstName,
-    lastName: picked.staff.lastName,
-  };
-}
-
-// ─── Hydrate case workflow from template ──────────────────────────────────────
-
-export async function hydrateCaseWorkflow(data: {
-  organizationId: string;
-  caseId: string;
-  practiceAreaId: string;
-}): Promise<{
-  workflowSteps: (typeof caseWorkflowSteps.$inferSelect)[];
-  template: (typeof workflowTemplates.$inferSelect) | null;
-}> {
-  const [template] = await db
-    .select()
-    .from(workflowTemplates)
-    .where(eq(workflowTemplates.practiceAreaId, data.practiceAreaId))
-    .limit(1);
-
-  if (!template) return { workflowSteps: [], template: null };
-
-  const modules = await db
-    .select()
-    .from(workflowModules)
-    .where(eq(workflowModules.templateId, template.id))
-    .orderBy(asc(workflowModules.orderIndex));
-
-  const allTemplateSteps = await db
-    .select()
-    .from(workflowTemplateSteps)
-    .where(
-      inArray(
-        workflowTemplateSteps.moduleId,
-        modules.map((m) => m.id),
-      ),
-    )
-    .orderBy(asc(workflowTemplateSteps.orderIndex));
-
-  const moduleStepMap = new Map<string, typeof allTemplateSteps>();
-  for (const step of allTemplateSteps) {
-    const list = moduleStepMap.get(step.moduleId) ?? [];
-    list.push(step);
-    moduleStepMap.set(step.moduleId, list);
-  }
-
-  const stepInserts: (typeof caseWorkflowSteps.$inferInsert)[] = [];
-  let isFirstStep = true;
-
-  for (const mod of modules) {
-    const templateSteps = moduleStepMap.get(mod.id) ?? [];
-    for (const ts of templateSteps) {
-      stepInserts.push({
-        organizationId: data.organizationId,
-        caseId: data.caseId,
-        templateStepId: ts.id,
-        title: ts.title,
-        description: ts.description,
-        orderIndex: mod.orderIndex * 100 + ts.orderIndex,
-        dueDate: ts.dueInDays
-          ? new Date(Date.now() + ts.dueInDays * 86400000)
-              .toISOString()
-              .split("T")[0]
-          : null,
-        status: isFirstStep ? "in_progress" : "pending",
-        assignedToId: null,
-      });
-      isFirstStep = false;
-    }
-  }
-
-  if (stepInserts.length === 0) return { workflowSteps: [], template };
-
-  const workflowSteps = await db
-    .insert(caseWorkflowSteps)
-    .values(stepInserts)
-    .returning();
-
-  const [firstStep] = workflowSteps;
-  if (firstStep) {
-    const picked = await pickBestStaff(
-      data.organizationId,
-      firstStep.templateStepId,
-      undefined,
-    );
-
-    if (picked) {
-      const now = new Date();
-      await db
-        .update(caseWorkflowSteps)
-        .set({
-          assignedToId: picked.id,
-          assignedAt: now,
-          updatedAt: now,
-        })
-        .where(eq(caseWorkflowSteps.id, firstStep.id));
-
-      firstStep.assignedToId = picked.id;
-      firstStep.assignedAt = now;
-
-      const autoModuleName = await resolveModuleName(firstStep.templateStepId);
-
-      await logStepAction({
-        organizationId: data.organizationId,
-        caseId: data.caseId,
-        stepId: firstStep.id,
-        action: "ASSIGNED",
-        title: `Step auto-assigned: ${firstStep.title}`,
-        assigneeId: picked.id,
-      });
-
-      await logEvent({
-        organizationId: data.organizationId,
-        caseId: data.caseId,
-        stepId: firstStep.id,
-        eventType: "STEP_ASSIGNED",
-        title: `Step auto-assigned: ${firstStep.title}`,
-        description: `System assigned "${firstStep.title}" to ${picked.firstName} ${picked.lastName}`,
-        metadata: {
-          assignmentStrategy: "workload_balanced",
-          staffId: picked.id,
-          staffName: `${picked.firstName} ${picked.lastName}`,
-          moduleName: autoModuleName,
-          stepTitle: firstStep.title,
-          assignerId: null,
-          assignerName: "System",
-          timestamp: now.toISOString(),
-        },
-        performedById: null,
-      });
-    }
-  }
-
-  await logEvent({
-    organizationId: data.organizationId,
-    caseId: data.caseId,
-    eventType: "WORKFLOW_INITIALIZED",
-    title: "Workflow initialized",
-    description: "Hydrated from template",
-    metadata: {
-      stepCount: stepInserts.length,
-      moduleCount: modules.length,
-      templateId: template.id,
-      timestamp: new Date().toISOString(),
-    },
-    performedById: null,
-  });
-
-  log.action("workflow.triggered", { caseId: data.caseId, stepCount: stepInserts.length });
-
-  return { workflowSteps, template };
-}
 
 export async function logEvent(data: {
   organizationId: string;

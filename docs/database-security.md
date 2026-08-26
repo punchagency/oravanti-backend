@@ -548,7 +548,7 @@ npm run cli -- seed-taxonomy               # practice areas â†’ subcategories â†
 npm run cli -- seed-line-presets           # invoice line presets (needs the taxonomy)
 npm run cli -- seed-questionnaires         # one system questionnaire per case type
 npm run cli -- seed-master-questionnaires  # case-type questionnaires from the master library
-npm run cli -- seed-workflow-template      # the Personal Injury workflow template
+npm run cli -- seed-workflows              # 4 workflow templates + the reference data they read
 npm run cli -- seed-intake-pipeline        # the default pipeline new leads are stamped with
 ```
 
@@ -625,7 +625,7 @@ npm run cli -- seed-taxonomy
 npm run cli -- seed-line-presets
 npm run cli -- seed-questionnaires
 npm run cli -- seed-master-questionnaires
-npm run cli -- seed-workflow-template
+npm run cli -- seed-workflows
 npm run cli -- seed-intake-pipeline
 npm run dev
 

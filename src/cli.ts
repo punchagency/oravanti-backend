@@ -97,7 +97,6 @@ import { teamMembers } from "./db/schema/team-members";
 
 import { timeEntries } from "./db/schema/time-entries";
 import {
-  caseWorkflowSteps,
   workflowModules,
   workflowTemplates,
   workflowTemplateSteps,
@@ -111,7 +110,11 @@ import { seedMasterQuestionnaires } from "./db/seeds/master-questionnaires.seed"
 import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
 import { seedStaffAndTeams } from "./db/seeds/staff-and-teams.seed";
 import { seedSystemQuestionnaires } from "./db/seeds/system-questionnaires.seed";
-import { seedWorkflowTemplate } from "./db/seeds/workflow-template.seed";
+import { seedWorkflowTemplate, seedWorkflows } from "./db/seeds/workflow-template.seed";
+import { seedFormEditions } from "./db/seeds/form-editions.seed";
+import { seedVisaBulletin } from "./db/seeds/visa-bulletin.seed";
+import { seedFilingFees } from "./db/seeds/filing-fees.seed";
+import { backfillDefaultRolePermissions } from "./auth/seed-default-roles";
 import { seedIntakePipeline } from "./db/seeds/intake-pipeline.seed";
 import { seedPICases } from "./db/seeds/seed-pi-cases";
 import { StaffAvailabilityService } from "./modules/staff-availability/staff-availability.service";
@@ -2041,6 +2044,7 @@ const seedDemoData = async (organizationId?: string) => {
 
     const taskValues: NewTaskRow[] = range(DEMO_TARGETS.tasks).map((index) => ({
       organizationId: firm.id,
+      source: "ad_hoc",
       title: `Demo task ${pad(index + 1)}`,
       description: `Complete demo workflow task ${pad(index + 1)}.`,
       caseId: pick(createdCases, index).id,
@@ -2050,7 +2054,6 @@ const seedDemoData = async (organizationId?: string) => {
       dueDate: isoDateFromNow(1 + (index % 45)),
       priority: pick(casePriorities, index),
       status: pick(taskStatuses, index),
-      progress: (index * 9) % 100,
       requiredCertifications: [pick(certificationRows, index).name],
     }));
     const createdTasks = await tx.insert(tasks).values(taskValues).returning();
@@ -3172,7 +3175,7 @@ const deletePracticeAreas = async (ids: readonly string[]) => {
       ? await tx
           .select({ id: workflowTemplates.id })
           .from(workflowTemplates)
-          .where(inArray(workflowTemplates.practiceAreaId, caseTypeIds))
+          .where(inArray(workflowTemplates.caseTypeId, caseTypeIds))
       : [];
     const templateIds = templateRows.map((r) => r.id);
 
@@ -3239,13 +3242,13 @@ const deletePracticeAreas = async (ids: readonly string[]) => {
         .where(inArray(caseTypeQuestionnaires.id, ctqIds));
     }
     const caseStepConditions = [
-      ...(caseIds.length ? [inArray(caseWorkflowSteps.caseId, caseIds)] : []),
+      ...(caseIds.length ? [inArray(tasks.caseId, caseIds)] : []),
       ...(templateStepIds.length
-        ? [inArray(caseWorkflowSteps.templateStepId, templateStepIds)]
+        ? [inArray(tasks.workflowTemplateStepId, templateStepIds)]
         : []),
     ];
     if (caseStepConditions.length) {
-      await tx.delete(caseWorkflowSteps).where(or(...caseStepConditions));
+      await tx.delete(tasks).where(and(eq(tasks.source, "workflow"), or(...caseStepConditions)));
     }
     if (templateStepIds.length) {
       await tx
@@ -4167,8 +4170,24 @@ const runInteractive = async () => {
           label: "Seed staff & teams for an organization",
         },
         {
-          value: "seed-workflow-template",
-          label: "Seed Personal Injury workflow template (20 modules)",
+          value: "seed-workflows",
+          label: "Seed workflows (form editions, Visa Bulletin, fees + 4 templates)",
+        },
+        {
+          value: "seed-workflow-templates",
+          label: "  ↳ workflow templates only (PI + 3 Immigration; fresh dbs only)",
+        },
+        {
+          value: "seed-form-editions",
+          label: "  ↳ USCIS form editions only",
+        },
+        {
+          value: "seed-visa-bulletin",
+          label: "  ↳ Visa Bulletin only (run monthly, replaces that month)",
+        },
+        {
+          value: "seed-filing-fees",
+          label: "  ↳ filing fees & I-864 poverty guidelines only",
         },
         {
           value: "seed-pi-cases",
@@ -4286,8 +4305,24 @@ const runInteractive = async () => {
         if (firm) await seedStaffAndTeams(firm.id);
       }
 
-      if (action === "seed-workflow-template") {
+      if (action === "seed-workflows") {
+        await seedWorkflows();
+      }
+
+      if (action === "seed-workflow-templates") {
         await seedWorkflowTemplate();
+      }
+
+      if (action === "seed-form-editions") {
+        await seedFormEditions();
+      }
+
+      if (action === "seed-visa-bulletin") {
+        await seedVisaBulletin();
+      }
+
+      if (action === "seed-filing-fees") {
+        await seedFilingFees();
       }
 
       if (action === "seed-pi-cases") {
@@ -4476,9 +4511,39 @@ program
   .action(async (organizationId?: string) => { await seedStaffAndTeams(organizationId); });
 
 program
-  .command("seed-workflow-template")
-  .description("Seed the Personal Injury workflow template (20 modules, idempotent)")
+  .command("seed-workflows")
+  .description(
+    "Seed the whole workflow system: form editions, Visa Bulletin, fee schedule, then the 4 system templates",
+  )
+  .action(async () => { await seedWorkflows(); });
+
+program
+  .command("seed-workflow-templates")
+  .description("Seed only the four system-default workflow templates (PI + 3 Immigration; rebuilds, so fresh dbs only)")
   .action(seedWorkflowTemplate);
+
+program
+  .command("seed-form-editions")
+  .description("Seed the USCIS form-edition register (global reference data, idempotent)")
+  .action(async () => { await seedFormEditions(); });
+
+program
+  .command("seed-visa-bulletin")
+  .description("Seed the latest Visa Bulletin month (global reference data, replaces that month)")
+  .action(async () => { await seedVisaBulletin(); });
+
+program
+  .command("seed-filing-fees")
+  .description("Seed the USCIS fee schedule and I-864 poverty guidelines (global reference data, idempotent)")
+  .action(async () => { await seedFilingFees(); });
+
+program
+  .command("backfill-role-permissions")
+  .description("Grant existing default roles any resource added to the statement since they were seeded (additive, idempotent)")
+  .action(async () => {
+    const { scanned, updated } = await backfillDefaultRolePermissions();
+    console.log(`Scanned ${scanned} default-role rows; updated ${updated}.`);
+  });
 
 program
   .command("seed-pi-cases")

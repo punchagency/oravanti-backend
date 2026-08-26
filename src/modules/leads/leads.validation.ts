@@ -501,14 +501,43 @@ export const updateAdversePartyBodySchema = z.object({
 
 export const leadIdParamsSchema = z.object({ leadId: uuid });
 
+/**
+ * The firm's intake checklist, sent whole.
+ *
+ * No `orderIndex` and no step ids: the array's own order is the order, derived
+ * per stage server-side, and the save replaces every step. That keeps the editor
+ * from having to track indexes it would only get wrong after a drag.
+ *
+ * `min(1)` because an empty checklist is indistinguishable from a mis-serialized
+ * form, and would silently give every future lead an empty pipeline.
+ */
+export const saveIntakePipelineStepsSchema = z.object({
+  steps: z
+    .array(
+      z.object({
+        title: z.string().trim().min(1).max(200),
+        description: z.string().trim().max(1_000).nullish(),
+        pipelineStage: z.enum([
+          "lead_inbox",
+          "conflict_check",
+          "questionnaire",
+          "consultation",
+          "fee_agreement",
+          "case_opening",
+        ]),
+        isRequired: z.boolean().optional(),
+        // Free text, not an enum: firms name their own roles, and the picker
+        // matches case-insensitively against role or job title.
+        assignableRoles: z.array(z.string().trim().min(1)).max(10).optional(),
+      }),
+    )
+    .min(1)
+    .max(50),
+});
+
 export const paginationQuerySchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-});
-
-export const leadTaskIdParamsSchema = z.object({
-  leadId: uuid,
-  taskId: uuid,
 });
 
 export const leadDocumentLinkIdParamsSchema = z.object({
@@ -516,50 +545,9 @@ export const leadDocumentLinkIdParamsSchema = z.object({
   linkId: uuid,
 });
 
-export const createLeadTaskBodySchema = z.object({
-  title: z.string().min(1),
-  description: z.string().optional(),
-  orderIndex: z.number().int().min(0),
-  pipelineStage: z.enum([
-    "conflict_check",
-    "questionnaire",
-    "consultation",
-    "fee_agreement",
-    "case_opening",
-  ]),
-  isRequired: z.boolean().optional(),
-  assignedToId: optionalUuid,
-  dueDate: z.string().optional(),
-});
-
-export const updateLeadTaskBodySchema = z.object({
-  title: z.string().min(1).optional(),
-  description: z.string().optional(),
-  orderIndex: z.number().int().min(0).optional(),
-  isRequired: z.boolean().optional(),
-  dueDate: z.string().optional(),
-  notes: z.string().optional(),
-});
-
-export const updateLeadTaskStatusBodySchema = z.object({
-  status: z.enum(["pending", "in_progress", "in_review", "completed", "skipped"]),
-});
-
-export const submitReviewBodySchema = z.object({
-  notes: z.string().optional(),
-});
-
-export const reviewActionBodySchema = z.object({
-  notes: z.string().optional(),
-});
-
-export const rejectReviewBodySchema = z.object({
-  feedback: z.string().trim().min(1, "Feedback is required"),
-});
-
-export const assignLeadTaskBodySchema = z.object({
-  assignedToId: uuid,
-});
+// The lead-task body schemas that used to live here went with the routes they
+// validated. A task is created, edited, assigned and reviewed through `/tasks`
+// now, whatever it hangs off — see `tasks.validation.ts`.
 
 export const linkDocumentBodySchema = z.object({
   documentId: uuid,

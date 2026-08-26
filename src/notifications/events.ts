@@ -246,6 +246,40 @@ export const NOTIFICATION_EVENTS = {
     label: "Fee agreement declined",
     producer: "wired",
   },
+
+  /*
+    ── Workflow task deadlines ────────────────────────────────────────────────
+
+    Emitted by the task-deadline sweep (`workflow/reminder.service.ts`), which
+    walks open tasks with a due date and sends at most one message per
+    threshold — 3 days out, 1 day out, then overdue — stamping the task so a
+    reminder is never repeated.
+
+    Due-soon and overdue are separate events rather than one with a flag,
+    because they are different messages about different situations and a firm
+    that wants the overdue alert may well not want two warnings before it.
+    Both sit under `deadline_approaching`, which is the toggle a firm reads as
+    covering exactly this — and both are distinct from `task_assigned` above,
+    which is work landing on someone rather than a deadline approaching.
+
+    Email and in-app only — a task is not worth a text message.
+  */
+  task_due_soon: {
+    tier: "preference",
+    prefKey: "deadline_approaching",
+    audience: "staff",
+    channels: ["email", "in_app"],
+    label: "Task due soon",
+    producer: "wired",
+  },
+  task_overdue: {
+    tier: "preference",
+    prefKey: "deadline_approaching",
+    audience: "staff",
+    channels: ["email", "in_app"],
+    label: "Task overdue",
+    producer: "wired",
+  },
 } as const satisfies Record<string, NotificationEventDef>;
 
 export type NotificationEventKey = keyof typeof NOTIFICATION_EVENTS;
