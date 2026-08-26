@@ -156,6 +156,11 @@ async function taskQueue(
         source: tasks.source,
         title: tasks.title,
         description: tasks.description,
+        purpose: tasks.purpose,
+        guidance: tasks.guidance,
+        doneWhen: tasks.doneWhen,
+        pitfalls: tasks.pitfalls,
+        authority: tasks.authority,
         status: tasks.status,
         phase: tasks.phase,
         orderIndex: tasks.orderIndex,
@@ -219,6 +224,13 @@ async function taskQueue(
       source: r.source,
       title: r.title,
       description: r.description,
+      // Same five fields the task list sends, so a step read from someone's own
+      // queue carries the guidance it carries on the case board.
+      purpose: r.purpose ?? null,
+      guidance: r.guidance ?? [],
+      doneWhen: r.doneWhen ?? null,
+      pitfalls: r.pitfalls ?? null,
+      authority: r.authority ?? null,
       status: r.status,
       /** Intake stage or workflow phase — the display grouping, whichever side it came from. */
       phase: r.phase,
