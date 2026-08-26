@@ -107,7 +107,7 @@ import { subscriptions } from "./subscriptions";
 import { tasks } from "./tasks";
 import { teamMembers } from "./team-members";
 import { teamPracticeAreaCaseTypes } from "./team-practice-area-case-types";
-import { caseNotes } from "./workflow";
+import { caseNotes, workflowModuleActivations } from "./workflow";
 
 const currentOrgId = sql`get_current_organization_id()`;
 const currentUserId = sql`get_current_user_id()`;
@@ -222,6 +222,10 @@ export const [rlsStaffOrg, rlsStaffStaff] = orgScoped("staff", staff);
 export const [rlsSubscriptionsOrg, rlsSubscriptionsStaff] = orgScoped("subscriptions", subscriptions);
 export const [rlsTasksOrg, rlsTasksStaff] = orgScoped("tasks", tasks);
 export const [rlsCaseNotesOrg, rlsCaseNotesStaff] = orgScoped("case_notes", caseNotes);
+// Unlike the three template tables above, this one is per-matter and carries a
+// NOT NULL organization_id, so the generic factory fits with no caveat.
+export const [rlsWorkflowModuleActivationsOrg, rlsWorkflowModuleActivationsStaff] =
+  orgScoped("workflow_module_activations", workflowModuleActivations);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Parent-scoped tables
