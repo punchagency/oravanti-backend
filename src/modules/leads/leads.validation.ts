@@ -47,7 +47,13 @@ export const createLeadBodySchema = z.object({
    * is NOT NULL behind it.
    */
   practiceAreaId: uuid,
-  caseTypeId: optionalUuid,
+  /**
+   * Required on the same terms, and validated against the practice area rather
+   * than only for its own existence — the two are independent columns and
+   * nothing else stops them disagreeing. `cases.case_type_id` is already NOT
+   * NULL, so the lead table was permitting what the cases table forbids.
+   */
+  caseTypeId: uuid,
   source: z.enum([
     "education_flywheel",
     "referral",
