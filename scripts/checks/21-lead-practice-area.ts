@@ -1,5 +1,5 @@
 /**
- * A lead always has a practice area.
+ * A lead always has a practice area AND a case type, and the two agree.
  *
  * The column was nullable, `createLeadBodySchema` marked it optional, and the
  * Add Lead dialog sent `|| undefined` on a blank select — so a lead could reach
@@ -25,10 +25,19 @@ import { eq } from "drizzle-orm";
 import { closeDb, systemDb } from "../../src/db/client";
 import { organization, user } from "../../src/db/schema/auth-schema";
 import { leads } from "../../src/db/schema/leads";
+import { practiceAreaCaseTypes } from "../../src/db/schema/practice-area-case-types";
+import { practiceAreaSubcategories } from "../../src/db/schema/practice-area-subcategories";
 import { practiceAreas } from "../../src/db/schema/practice-areas";
 import { staff } from "../../src/db/schema/staff";
+import { ensureCaseTypeIdBelongsToPracticeArea } from "../../src/modules/practice-areas/practice-areas.utils";
 import * as v from "../../src/modules/leads/leads.validation";
-import { check, checkEqual, report, section } from "./_bootstrap";
+import {
+  check,
+  checkEqual,
+  report,
+  section,
+  withOrgContext,
+} from "./_bootstrap";
 
 const main = async () => {
   const suffix = randomUUID().slice(0, 8);
@@ -41,7 +50,11 @@ const main = async () => {
   // Assigned from the catalogue rows seeded below; no meaningful initial value.
   let areaId: string;
   let otherAreaId: string;
+  let caseTypeId: string;
+  let foreignCaseTypeId: string;
   const createdAreas: string[] = [];
+  const createdSubs: string[] = [];
+  const createdTypes: string[] = [];
 
   try {
     await systemDb.insert(user).values({
@@ -85,8 +98,43 @@ const main = async () => {
     otherAreaId = areas[1]!.id;
     createdAreas.push(...areas.map((a) => a.id));
 
+    // A case type under each, so the cross-field assertions have a genuinely
+    // foreign one to offer. A case type reaches its practice area only through
+    // a subcategory, which is exactly why the two lead columns can disagree.
+    const subs = await systemDb
+      .insert(practiceAreaSubcategories)
+      .values([
+        { practiceAreaId: areaId, code: `sub-a-${suffix}`, name: "Sub A" },
+        { practiceAreaId: otherAreaId, code: `sub-b-${suffix}`, name: "Sub B" },
+      ])
+      .returning();
+    createdSubs.push(...subs.map((x) => x.id));
+
+    const types = await systemDb
+      .insert(practiceAreaCaseTypes)
+      .values([
+        {
+          subcategoryId: subs[0]!.id,
+          code: `type-a-${suffix}`,
+          name: "Type A",
+          caseNumberPrefix: "AAA",
+          jurisdiction: "federal",
+        },
+        {
+          subcategoryId: subs[1]!.id,
+          code: `type-b-${suffix}`,
+          name: "Type B",
+          caseNumberPrefix: "BBB",
+          jurisdiction: "federal",
+        },
+      ])
+      .returning();
+    caseTypeId = types[0]!.id;
+    foreignCaseTypeId = types[1]!.id;
+    createdTypes.push(...types.map((x) => x.id));
+
     // ── 1. Creating ──────────────────────────────────────────────────────────
-    section("A lead cannot be created without a practice area");
+    section("A lead cannot be created without both classifiers");
 
     const body = {
       firstName: "Check",
@@ -95,34 +143,65 @@ const main = async () => {
       source: "direct" as const,
     };
 
-    const missing = v.createLeadBodySchema.safeParse(body);
-    check("no practiceAreaId -> refused", !missing.success);
+    // Each id asserted on its own, with the other supplied — otherwise a single
+    // "both missing" case would pass for the wrong reason the moment one of the
+    // two rules was removed.
+    const noArea = v.createLeadBodySchema.safeParse({ ...body, caseTypeId });
+    check("no practiceAreaId -> refused", !noArea.success);
     checkEqual(
       "and the error names the field",
-      missing.success ? null : (missing.error.issues[0]?.path.join(".") ?? null),
+      noArea.success ? null : (noArea.error.issues[0]?.path.join(".") ?? null),
       "practiceAreaId",
+    );
+
+    const noType = v.createLeadBodySchema.safeParse({
+      ...body,
+      practiceAreaId: areaId,
+    });
+    check("no caseTypeId -> refused", !noType.success);
+    checkEqual(
+      "and the error names that field",
+      noType.success ? null : (noType.error.issues[0]?.path.join(".") ?? null),
+      "caseTypeId",
     );
 
     check(
       "an empty string is not a practice area either",
-      !v.createLeadBodySchema.safeParse({ ...body, practiceAreaId: "" }).success,
+      !v.createLeadBodySchema.safeParse({ ...body, practiceAreaId: "", caseTypeId })
+        .success,
     );
     check(
       "nor is null",
-      !v.createLeadBodySchema.safeParse({ ...body, practiceAreaId: null }).success,
+      !v.createLeadBodySchema.safeParse({
+        ...body,
+        practiceAreaId: null,
+        caseTypeId,
+      }).success,
     );
     check(
-      "a uuid is accepted",
-      v.createLeadBodySchema.safeParse({ ...body, practiceAreaId: areaId })
+      "an empty string is not a case type either",
+      !v.createLeadBodySchema.safeParse({
+        ...body,
+        practiceAreaId: areaId,
+        caseTypeId: "",
+      }).success,
+    );
+    check(
+      "a complete pair of uuids is accepted",
+      v.createLeadBodySchema.safeParse({ ...body, practiceAreaId: areaId, caseTypeId })
         .success,
     );
 
     // ── 2. Updating ──────────────────────────────────────────────────────────
-    section("An existing practice area cannot be cleared");
+    section("Neither classifier can be cleared once set");
 
     check(
-      "PATCH with null -> refused",
+      "PATCH with a null practice area -> refused",
       !v.updateLeadBodySchema.safeParse({ practiceAreaId: null }).success,
+    );
+    check(
+      "PATCH with a null case type -> refused",
+      !v.updateLeadBodySchema.safeParse({ caseTypeId: null }).success,
     );
     check(
       "PATCH omitting it -> accepted (absent means unchanged)",
@@ -142,6 +221,7 @@ const main = async () => {
         email: `lead-${suffix}@example.test`,
         source: "direct",
         practiceAreaId: areaId,
+        caseTypeId,
       })
       .returning();
     leadId = leadRow!.id;
@@ -149,7 +229,9 @@ const main = async () => {
     // The regression guard for `diffNamedRef`'s falsy short-circuit: it reads as
     // change detection, and it is also the only thing between an absent field
     // and a write. Revert `if (!args.nextId) return null` and this goes red.
-    const { updateLead } = await import("../../src/modules/leads/leads.service");
+    const { createLead, updateLead } = await import(
+      "../../src/modules/leads/leads.service"
+    );
     await updateLead(leadId, orgId, { firstName: "Renamed" }, staffId);
 
     const [afterOmit] = await systemDb
@@ -163,7 +245,109 @@ const main = async () => {
       areaId,
     );
 
-    // ── 3. The column itself ─────────────────────────────────────────────────
+    // ── 3. The two must describe the same practice area ──────────────────────
+    section("A case type from another practice area is refused");
+
+    // Neither foreign key can object: a case type reaches its practice area
+    // only through its subcategory, so both columns are individually valid
+    // while describing different areas. This is the only thing that notices.
+    let crossRefused = false;
+    try {
+      await ensureCaseTypeIdBelongsToPracticeArea(areaId, foreignCaseTypeId);
+    } catch {
+      crossRefused = true;
+    }
+    check("a foreign case type is rejected", crossRefused);
+
+    let matchedOk = true;
+    try {
+      await ensureCaseTypeIdBelongsToPracticeArea(areaId, caseTypeId);
+    } catch {
+      matchedOk = false;
+    }
+    check("a matching pair is accepted", matchedOk);
+
+    let createRefused = false;
+    try {
+      await withOrgContext(orgId, userId, () =>
+        createLead(
+          orgId,
+          {
+            firstName: "Cross",
+            lastName: `Check ${suffix}`,
+            email: `cross-${suffix}@example.test`,
+            source: "direct",
+            practiceAreaId: areaId,
+            caseTypeId: foreignCaseTypeId,
+          },
+          staffId,
+        ),
+      );
+    } catch {
+      createRefused = true;
+    }
+    check("createLead refuses a mismatched pair", createRefused);
+
+    // The dangerous shape: nothing in the request even mentions the case type,
+    // and moving the practice area alone would strand it under the old one.
+    let orphanRefused = false;
+    try {
+      await withOrgContext(orgId, userId, () =>
+        updateLead(leadId, orgId, { practiceAreaId: otherAreaId }, staffId),
+      );
+    } catch {
+      orphanRefused = true;
+    }
+    check(
+      "moving the practice area alone, orphaning the case type, is refused",
+      orphanRefused,
+    );
+
+    const [stillA] = await systemDb
+      .select({
+        practiceAreaId: leads.practiceAreaId,
+        caseTypeId: leads.caseTypeId,
+      })
+      .from(leads)
+      .where(eq(leads.id, leadId))
+      .limit(1);
+    checkEqual("and nothing moved", stillA!.practiceAreaId, areaId);
+    checkEqual("case type intact", stillA!.caseTypeId, caseTypeId);
+
+    // Moving both together is the supported way to relocate a lead.
+    let pairMoveOk = true;
+    try {
+      await withOrgContext(orgId, userId, () =>
+        updateLead(
+          leadId,
+          orgId,
+          { practiceAreaId: otherAreaId, caseTypeId: foreignCaseTypeId },
+          staffId,
+        ),
+      );
+    } catch {
+      pairMoveOk = false;
+    }
+    check("moving both together is accepted", pairMoveOk);
+
+    const [movedRow] = await systemDb
+      .select({
+        practiceAreaId: leads.practiceAreaId,
+        caseTypeId: leads.caseTypeId,
+      })
+      .from(leads)
+      .where(eq(leads.id, leadId))
+      .limit(1);
+    checkEqual("the pair moved together", movedRow!.practiceAreaId, otherAreaId);
+    checkEqual("both sides agree", movedRow!.caseTypeId, foreignCaseTypeId);
+
+    // Put it back so the null assertions below act on a known row.
+    await systemDb
+      .update(leads)
+      .set({ practiceAreaId: areaId, caseTypeId })
+      .where(eq(leads.id, leadId));
+
+    // ── 4. The column itself ─────────────────────────────────────────────────
     section("The database refuses a null regardless of who asks");
 
     let refused = false;
@@ -190,6 +374,7 @@ const main = async () => {
         email: `nulled-${suffix}@example.test`,
         source: "direct",
         practiceAreaId: null as unknown as string,
+        caseTypeId,
       });
     } catch {
       insertRefused = true;
@@ -200,6 +385,14 @@ const main = async () => {
     if (staffId) await systemDb.delete(staff).where(eq(staff.organizationId, orgId));
     await systemDb.delete(organization).where(eq(organization.id, orgId));
     await systemDb.delete(user).where(eq(user.id, userId));
+    for (const id of createdTypes)
+      await systemDb
+        .delete(practiceAreaCaseTypes)
+        .where(eq(practiceAreaCaseTypes.id, id));
+    for (const id of createdSubs)
+      await systemDb
+        .delete(practiceAreaSubcategories)
+        .where(eq(practiceAreaSubcategories.id, id));
     for (const id of createdAreas)
       await systemDb.delete(practiceAreas).where(eq(practiceAreas.id, id));
   }
