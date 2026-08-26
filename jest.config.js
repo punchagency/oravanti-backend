@@ -53,8 +53,22 @@ const baseConfig = {
   testEnvironment: "node",
   clearMocks: true,
   restoreMocks: true,
-  moduleFileExtensions: ["ts", "js", "json"],
-  transform: { "^.+\\.(t|j)s$": swcTransform },
+  moduleFileExtensions: ["ts", "js", "mjs", "json"],
+  // `.mjs` is in the pattern for the ESM-only dependencies allowed through
+  // `transformIgnorePatterns` below — without it those files match no
+  // transform and reach node as raw ESM.
+  transform: { "^.+\\.(m?[tj]s)$": swcTransform },
+  /*
+    node_modules is untransformed by default, which breaks on a dependency
+    that ships ESM only — better-auth's `plugins/access` is `.mjs`, so any
+    suite reaching `src/auth/permissions.ts` died on "Cannot use import
+    statement outside a module" before running a single test.
+
+    Listed rather than blanket-disabled: transforming all of node_modules
+    would slow every run for the sake of one package. Add a package here when
+    it fails this way, not pre-emptively.
+  */
+  transformIgnorePatterns: ["/node_modules/(?!(better-auth|@better-auth)/)"],
 };
 
 module.exports = {
