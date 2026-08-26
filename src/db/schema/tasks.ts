@@ -87,6 +87,26 @@ export const tasks = pgTable(
 
     title: text("title").notNull(),
     description: text("description"),
+
+    /**
+     * Staff-facing guidance, snapshotted from the template step at
+     * materialization time — same five fields, same meanings, as
+     * `workflowTemplateSteps`.
+     *
+     * Copied rather than joined for the reason `phase` and `isLocked` are: the
+     * task is the record of work as it was handed out. A template edited a year
+     * later must not silently rewrite the instructions someone already worked
+     * to, and a step deleted from a revised template must not blank the
+     * guidance on a task still in someone's queue.
+     *
+     * Null/empty on `ad_hoc` and `pipeline` tasks, which have no template step
+     * behind them.
+     */
+    purpose: text("purpose"),
+    guidance: text("guidance").array().notNull().default([]),
+    doneWhen: text("done_when"),
+    pitfalls: text("pitfalls"),
+    authority: text("authority"),
     /** Denormalized snapshot of the owning module's `phase` at materialization time — the stable display grouping, unlike `moduleId` which is a template-time concept. */
     phase: text("phase"),
     orderIndex: integer("order_index"),
