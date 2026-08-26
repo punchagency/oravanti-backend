@@ -6,7 +6,10 @@ import { hasPermission } from "../../middleware/permission.middleware";
 import { getRequestContext } from "../../middleware/request-context";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { sendSuccess } from "../../utils/send-success";
-import { getTaskReviewEvents } from "../shared/task-review-events.service";
+import {
+  getIntakePipelineTemplate,
+  saveIntakePipelineSteps,
+} from "./intake-pipeline-template.service";
 import { logLeadView } from "./lead-events.service";
 import { LeadWorkflowService } from "./lead-workflow.service";
 import type { ConsultationCancellation } from "./leads.service";
@@ -741,16 +744,22 @@ export class LeadsController {
     sendSuccess(res, null, "Adverse party deleted successfully");
   };
 
-  // Lead Workflow Tasks
+  // Intake checklist — the firm-editable template new leads are stamped from.
 
-  getMyLeadTasks = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const tasks = await this.wfSvc.getMyTasks(
-      staffId!,
+  getIntakePipelineTemplate = async (_req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const template = await getIntakePipelineTemplate(organizationId!);
+    sendSuccess(res, template, "Intake checklist retrieved successfully");
+  };
+
+  saveIntakePipelineSteps = async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    const template = await saveIntakePipelineSteps(
       organizationId!,
+      req.body.steps,
+      staffId ?? null,
     );
-    sendSuccess(res, tasks, "My tasks retrieved successfully");
+    sendSuccess(res, template, "Intake checklist saved successfully");
   };
 
   initializePipeline = async (req: Request, res: Response) => {
@@ -763,168 +772,9 @@ export class LeadsController {
     sendSuccess(res, steps, "Pipeline steps initialized successfully");
   };
 
-  getLeadTasks = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const tasks = await this.wfSvc.getTasks(
-      req.params.leadId as string,
-      organizationId!,
-    );
-    logLeadView(
-      organizationId!,
-      req.params.leadId as string,
-      staffId,
-      "intake-pipeline",
-    ).catch(() => {});
-    sendSuccess(res, tasks, "Lead tasks retrieved successfully");
-  };
-
-  createLeadTask = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const task = await this.wfSvc.createTask(
-      { ...req.body, leadId: req.params.leadId },
-      organizationId!,
-      staffId,
-    );
-    sendSuccess(res, task, "Task created successfully", 201);
-  };
-
-  updateLeadTask = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const task = await this.wfSvc.updateTask(
-      req.params.taskId as string,
-      req.body,
-      organizationId!,
-      staffId,
-    );
-    sendSuccess(res, task, "Task updated successfully");
-  };
-
-  updateLeadTaskStatus = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const task = await this.wfSvc.updateTaskStatus(
-      req.params.taskId as string,
-      req.body.status,
-      organizationId!,
-      staffId,
-    );
-    sendSuccess(res, task, "Task status updated successfully");
-  };
-
-  assignLeadTask = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const task = await this.wfSvc.assignTask(
-      req.params.taskId as string,
-      req.body.assignedToId,
-      organizationId!,
-      staffId,
-    );
-    sendSuccess(res, task, "Task assigned successfully");
-  };
-
-  completeLeadTask = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const task = await this.wfSvc.completeTask(
-      req.params.taskId as string,
-      staffId!,
-      organizationId!,
-    );
-    sendSuccess(res, task, "Task completed successfully");
-  };
-
-  submitLeadTaskForReview = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const task = await this.wfSvc.submitTaskForReview(
-      req.params.taskId as string,
-      staffId!,
-      req.body.notes,
-      organizationId!,
-    );
-    sendSuccess(res, task, "Task submitted for review");
-  };
-
-  approveLeadTask = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const task = await this.wfSvc.approveTask(
-      req.params.taskId as string,
-      staffId!,
-      req.body.notes,
-      organizationId!,
-    );
-    sendSuccess(res, task, "Task approved");
-  };
-
-  rejectLeadTask = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const task = await this.wfSvc.rejectTask(
-      req.params.taskId as string,
-      staffId!,
-      req.body.feedback,
-      organizationId!,
-    );
-    sendSuccess(res, task, "Task rejected");
-  };
-
-  reopenLeadTask = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    const task = await this.wfSvc.reopenTask(
-      req.params.taskId as string,
-      staffId!,
-      req.body.notes,
-      organizationId!,
-    );
-    sendSuccess(res, task, "Task reopened");
-  };
-
-  /** The task's full submit/approve/reject/reopen note thread. */
-  getLeadTaskReviewThread = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
-    const events = await getTaskReviewEvents(
-      "lead_task",
-      req.params.taskId as string,
-      organizationId!,
-    );
-    sendSuccess(res, events, "Task review thread retrieved");
-  };
-
-  getLeadReviewQueue = async (req: Request, res: Response) => {
-    const { organizationId } = getRequestContext();
-
-    const status = req.query.status as string | undefined;
-    const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
-    const limit = req.query.limit
-      ? parseInt(req.query.limit as string, 10)
-      : 20;
-    const result = await this.wfSvc.getReviewQueue(
-      organizationId!,
-      status,
-      page,
-      limit,
-    );
-    sendSuccess(res, result.items, "Review queue retrieved", 200, {
-      pagination: result.pagination,
-    });
-  };
-
-  deleteLeadTask = async (req: Request, res: Response) => {
-    const { staffId: _staffId, organizationId } = getRequestContext();
-    const staffId = _staffId ?? undefined;
-    await this.wfSvc.deleteTask(
-      req.params.taskId as string,
-      organizationId!,
-      staffId,
-    );
-    sendSuccess(res, null, "Task deleted successfully");
-  };
+  // Everything that happens to an individual intake step now lives on
+  // `/tasks/:id/*` — see tasks.routes.ts. Only the two lead-level list views
+  // remain here, because both join the lead so a person can read the rows.
 
   // Lead Timeline
 

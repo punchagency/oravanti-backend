@@ -57,7 +57,6 @@ import {
   feeAgreements,
   type FeeAgreementDetails,
 } from "../../db/schema/fee-agreements";
-import { leadTasks } from "../../db/schema/lead-tasks";
 import { auditEvents } from "../../db/schema/audit-events";
 import { leads } from "../../db/schema/leads";
 import { labelFor } from "../../lib/audit/actions";
@@ -77,7 +76,7 @@ import {
 import { staff } from "../../db/schema/staff";
 import { calendarEvents } from "../../db/schema/calendar-events";
 import { teamPracticeAreaCaseTypes } from "../../db/schema/team-practice-area-case-types";
-import { caseWorkflowSteps } from "../../db/schema/workflow";
+import { tasks } from "../../db/schema/tasks";
 import {
   cancelQuestionnaireReminder,
   scheduleQuestionnaireReminder,
@@ -106,7 +105,7 @@ import { materializeCaseTypeRequirements } from "../document-requirements/docume
 import { relinkLeadDocumentsToCase } from "../documents/document-ingest";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 import { createModuleLogger } from "../../lib/logging/log";
-import { hydrateCaseWorkflow } from "../workflow/workflow.service";
+import { materializeTasksForCase } from "../workflow/task-materialization.service";
 import { generateConsultationSlots } from "./consultation-slots.service";
 import { getESignatureProvider } from "./dropbox-sign.provider";
 import { assembleFeeAgreementDocument } from "./fee-agreement-document";
@@ -2660,14 +2659,19 @@ const initiateConsultation = async (
   // 1. Mark "Schedule consultation" as completed
   // 2. Assign "Conduct consultation" to the selected attorney (pending)
   if (!data.parentConsultationId) {
+    // `phase` on the unified `tasks` table is a denormalized snapshot of the
+    // pipeline stage a task was materialized under (see
+    // `lead-workflow.service.ts`'s materialization) — replaces the old
+    // `lead_tasks.pipelineStage` enum column filter.
     const consultTasks = await db
       .select()
-      .from(leadTasks)
+      .from(tasks)
       .where(
         and(
-          eq(leadTasks.leadId, leadId),
-          eq(leadTasks.organizationId, organizationId),
-          eq(leadTasks.pipelineStage, "consultation"),
+          eq(tasks.leadId, leadId),
+          eq(tasks.organizationId, organizationId),
+          eq(tasks.source, "pipeline"),
+          eq(tasks.phase, "consultation"),
         ),
       );
 
@@ -2676,14 +2680,14 @@ const initiateConsultation = async (
     );
     if (scheduleTask && scheduleTask.status !== "completed") {
       await db
-        .update(leadTasks)
+        .update(tasks)
         .set({
           status: "completed",
           completedById: scheduledById ?? null,
           completedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(leadTasks.id, scheduleTask.id));
+        .where(eq(tasks.id, scheduleTask.id));
     }
 
     const conductTask = consultTasks.find(
@@ -2691,13 +2695,13 @@ const initiateConsultation = async (
     );
     if (conductTask && data.leadAttorneyId) {
       await db
-        .update(leadTasks)
+        .update(tasks)
         .set({
           assignedToId: data.leadAttorneyId,
           assignedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(leadTasks.id, conductTask.id));
+        .where(eq(tasks.id, conductTask.id));
     }
   }
 
@@ -5110,12 +5114,12 @@ const openCase = async (
       })
       .returning();
 
-    // 4. Instantiate workflow steps from template (proper hydration)
-    const { workflowSteps } = await hydrateCaseWorkflow({
-      organizationId,
-      caseId: newCase.id,
-      practiceAreaId: resolvedPracticeAreaId,
-    });
+    // 4. Instantiate workflow tasks from template (proper hydration)
+    await materializeTasksForCase(newCase.id);
+    const workflowSteps = await db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.caseId, newCase.id), eq(tasks.source, "workflow")));
 
     // 5. Update lead with conversion data
     const now = new Date();
@@ -5281,11 +5285,12 @@ const openCase = async (
 const getCaseWorkflowSteps = async (caseId: string, organizationId: string) => {
   return db
     .select()
-    .from(caseWorkflowSteps)
+    .from(tasks)
     .where(
       and(
-        eq(caseWorkflowSteps.caseId, caseId),
-        eq(caseWorkflowSteps.organizationId, organizationId),
+        eq(tasks.caseId, caseId),
+        eq(tasks.organizationId, organizationId),
+        eq(tasks.source, "workflow"),
       ),
     );
 };
@@ -5307,13 +5312,14 @@ const updateCaseWorkflowStep = async (
   }
 
   const [updated] = await db
-    .update(caseWorkflowSteps)
+    .update(tasks)
     .set(set)
     .where(
       and(
-        eq(caseWorkflowSteps.id, stepId),
-        eq(caseWorkflowSteps.caseId, caseId),
-        eq(caseWorkflowSteps.organizationId, organizationId),
+        eq(tasks.id, stepId),
+        eq(tasks.caseId, caseId),
+        eq(tasks.organizationId, organizationId),
+        eq(tasks.source, "workflow"),
       ),
     )
     .returning();
