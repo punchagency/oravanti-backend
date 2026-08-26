@@ -93,8 +93,35 @@ export const leads = pgTable("leads", {
   // wrote the first row (.limit(1)), and the junctions could not be projected
   // onto the scalar fields the clients read — so the practice-area and matter
   // type silently rendered empty everywhere. Back to plain columns.
-  practiceAreaId: uuid("practice_area_id").references(() => practiceAreas.id),
-  caseTypeId:     uuid("case_type_id").references(() => practiceAreaCaseTypes.id),
+  /**
+   * NOT NULL. A lead without a practice area cannot be invoiced at either
+   * pipeline stage that raises one — `raiseConsultationInvoice` and
+   * `raiseFeeAgreementInvoice` both return null and the callers swallow it,
+   * leaving a consultation gated on a payment with no invoice behind it — is
+   * excluded from conversion metrics by an inner join, and is refused by
+   * `openCase` two stages later, which was the only place that ever checked.
+   */
+  practiceAreaId: uuid("practice_area_id")
+    .notNull()
+    .references(() => practiceAreas.id),
+  /**
+   * NOT NULL, like `cases.case_type_id` — which it becomes on conversion, and
+   * which has always been NOT NULL. The lead table was permitting exactly what
+   * the cases table forbids.
+   *
+   * Without one a lead is blocked at the questionnaire stage
+   * (`sendQuestionnaire` throws), silently absent from the questionnaire send
+   * wizard, shows zero eligible teams at case opening, renders "Not specified"
+   * as the matter type on a signed fee agreement, and is refused by `openCase`.
+   *
+   * The FK guarantees the case type exists, NOT that it belongs to this lead's
+   * practice area — that reaches its area only through its subcategory, so the
+   * two columns are independently satisfiable. `ensureCaseTypeIdBelongsToPracticeArea`
+   * is what enforces the pair.
+   */
+  caseTypeId:     uuid("case_type_id")
+    .notNull()
+    .references(() => practiceAreaCaseTypes.id),
 
   // Compliance / Risk Mitigation checks
   intakeAdversePartyName:  text("intake_adverse_party_name"),

@@ -24,6 +24,9 @@ import { invoiceInstalments } from "../../src/db/schema/invoice-instalments";
 import { invoicePayments } from "../../src/db/schema/invoice-payments";
 import { invoices } from "../../src/db/schema/invoices";
 import { leads } from "../../src/db/schema/leads";
+import { practiceAreaCaseTypes } from "../../src/db/schema/practice-area-case-types";
+import { practiceAreaSubcategories } from "../../src/db/schema/practice-area-subcategories";
+import { practiceAreas } from "../../src/db/schema/practice-areas";
 import { staff } from "../../src/db/schema/staff";
 import {
   consultationFeeUnsettled,
@@ -66,6 +69,9 @@ const main = async () => {
 
   let leadId = "";
   let staffId = "";
+  let practiceAreaId = "";
+  let subcategoryId = "";
+  let caseTypeId = "";
 
   try {
     await systemDb.insert(user).values({
@@ -94,6 +100,38 @@ const main = async () => {
       })
       .returning();
     staffId = staffRow!.id;
+    // `leads.practice_area_id` is NOT NULL, and every consultation invoice needs
+    // one anyway — `raiseConsultationInvoice` returns null without it.
+    const [areaRow] = await systemDb
+      .insert(practiceAreas)
+      .values({ name: `Check Area ${suffix}` })
+      .returning();
+    practiceAreaId = areaRow!.id;
+
+    // `leads.case_type_id` is NOT NULL too, and a case type hangs off a
+    // subcategory rather than off the practice area directly.
+    const [subRow] = await systemDb
+      .insert(practiceAreaSubcategories)
+      .values({
+        practiceAreaId,
+        code: `check-sub-${suffix}`,
+        name: `Check Subcategory ${suffix}`,
+      })
+      .returning();
+    subcategoryId = subRow!.id;
+
+    const [caseTypeRow] = await systemDb
+      .insert(practiceAreaCaseTypes)
+      .values({
+        subcategoryId,
+        code: `check-type-${suffix}`,
+        name: "Check Case Type",
+        caseNumberPrefix: "CHK",
+        jurisdiction: "federal",
+      })
+      .returning();
+    caseTypeId = caseTypeRow!.id;
+
     const [leadRow] = await systemDb
       .insert(leads)
       .values({
@@ -102,6 +140,8 @@ const main = async () => {
         lastName: `Lead ${suffix}`,
         email: `lead-${suffix}@example.test`,
         source: "direct",
+        practiceAreaId,
+        caseTypeId,
       })
       .returning();
     leadId = leadRow!.id;
@@ -891,6 +931,18 @@ const main = async () => {
     await systemDb.delete(consultations).where(eq(consultations.organizationId, orgId));
     await systemDb.delete(invoices).where(eq(invoices.organizationId, orgId));
     if (leadId) await systemDb.delete(leads).where(eq(leads.organizationId, orgId));
+    // After the lead that references them, innermost first; these are rows in
+    // the global catalogue tables.
+    if (caseTypeId)
+      await systemDb
+        .delete(practiceAreaCaseTypes)
+        .where(eq(practiceAreaCaseTypes.id, caseTypeId));
+    if (subcategoryId)
+      await systemDb
+        .delete(practiceAreaSubcategories)
+        .where(eq(practiceAreaSubcategories.id, subcategoryId));
+    if (practiceAreaId)
+      await systemDb.delete(practiceAreas).where(eq(practiceAreas.id, practiceAreaId));
     if (staffId) await systemDb.delete(staff).where(eq(staff.organizationId, orgId));
     await systemDb.delete(organization).where(eq(organization.id, orgId));
     await systemDb.delete(user).where(eq(user.id, userId));

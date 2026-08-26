@@ -35,8 +35,25 @@ export const createLeadBodySchema = z.object({
   // absent: a phone number on file is not permission to text it.
   smsConsent: z.boolean().optional(),
   entityType: z.enum(["individual", "company"]).optional(),
-  practiceAreaId: optionalUuid,
-  caseTypeId: optionalUuid,
+  /**
+   * Required. A lead without one cannot be invoiced — `raiseConsultationInvoice`
+   * and its fee-agreement twin both return null and swallow it, leaving a
+   * consultation gated on a payment with no invoice behind it — is dropped from
+   * conversion metrics by an inner join, and cannot be converted to a case
+   * (`openCase` refuses it, two stages later and far too late).
+   *
+   * Optional on UPDATE, where absent means "not being changed". Note that
+   * neither is `.nullable()`: null is rejected at this boundary, and the column
+   * is NOT NULL behind it.
+   */
+  practiceAreaId: uuid,
+  /**
+   * Required on the same terms, and validated against the practice area rather
+   * than only for its own existence — the two are independent columns and
+   * nothing else stops them disagreeing. `cases.case_type_id` is already NOT
+   * NULL, so the lead table was permitting what the cases table forbids.
+   */
+  caseTypeId: uuid,
   source: z.enum([
     "education_flywheel",
     "referral",
@@ -63,6 +80,13 @@ export const updateLeadBodySchema = z.object({
   // the recipient's decision, not the firm's. The service enforces that; this
   // only carries the intent.
   smsConsent: z.boolean().optional(),
+  /**
+   * Optional here means "not being changed", never "clear it". `optionalUuid` is
+   * `.optional()` and deliberately not `.nullable()`, so a literal null is
+   * refused at this boundary; `diffNamedRef` refuses a falsy value behind it;
+   * and the column is NOT NULL behind that. All three, because the first two
+   * read as convenience rather than as constraints.
+   */
   practiceAreaId: optionalUuid,
   caseTypeId: optionalUuid,
   source: z

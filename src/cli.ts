@@ -2178,6 +2178,14 @@ const seedDemoData = async (organizationId?: string) => {
           phone: `+1-555-${pad(4100 + index, 4)}`,
           entityType: "individual",
           source: pick(leadSources, index),
+          // Required now — `leads.practice_area_id` is NOT NULL. The seed
+          // already resolved it above to write the summary line; it just never
+          // stored it, so every demo lead was one no consultation fee could be
+          // invoiced against.
+          practiceAreaId: practiceArea.id,
+          // Consistent by construction: `practiceArea` was resolved FROM this
+          // case type just above, so the pair can never disagree.
+          caseTypeId: caseType.id,
           situationSummary: `Demo intake for ${practiceArea.name.toLowerCase()} matters.`,
           status: pick(["new", "new", "reviewed", "archived"] as const, index),
           pipelineStage,
