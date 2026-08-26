@@ -497,7 +497,8 @@ const createLead = async (
     smsConsent?: boolean;
     entityType?: "individual" | "company";
     source: string;
-    practiceAreaId?: string;
+    /** Required — the column is NOT NULL and the validator refuses it absent. */
+    practiceAreaId: string;
     caseTypeId?: string;
     situationSummary?: string;
     intakeAdversePartyName?: string;
@@ -518,7 +519,7 @@ const createLead = async (
       entityType: (data.entityType ?? "individual") as any,
       source: data.source as any,
       situationSummary: data.situationSummary,
-      practiceAreaId: data.practiceAreaId ?? null,
+      practiceAreaId: data.practiceAreaId,
       caseTypeId: data.caseTypeId ?? null,
       respondentId: creatorStaffId,
       intakeAdversePartyName: data.intakeAdversePartyName,
@@ -864,7 +865,12 @@ const EDITABLE_LEAD_COLUMNS = [
 
 type EditableColumn = (typeof EDITABLE_LEAD_COLUMNS)[number];
 
-const updateLead = async (
+/**
+ * Exported for the practice-area check, which asserts that an edit omitting
+ * `practiceAreaId` leaves the existing value alone. The controller remains the
+ * only production caller.
+ */
+export const updateLead = async (
   id: string,
   organizationId: string,
   data: Partial<
@@ -1005,6 +1011,16 @@ const diffNamedRef = async (args: {
   nextId?: string;
   nameTable: typeof practiceAreas | typeof practiceAreaCaseTypes;
 }) => {
+  /**
+   * Load-bearing for `leads.practice_area_id`, which is NOT NULL.
+   *
+   * This reads as change detection — "the caller sent nothing, so nothing
+   * differs" — and it is, but it is also the only thing between an absent field
+   * and a write. The caller below sets the column ONLY when this returns a
+   * change, so a body omitting `practiceAreaId` cannot blank it. Do not
+   * "simplify" this into an early `patch[column] = nextId`, and do not widen
+   * `optionalUuid` to `.nullable()` without putting a real guard here first.
+   */
   if (!args.nextId) return null;
   if (args.prevId === args.nextId) return null;
 
