@@ -81,13 +81,21 @@ const setup = async () => {
   // A lead to bill, so this exercises the lead-billed path that consultation
   // invoices use — the harder of the two, since no client row exists.
   const [area] = await systemDb.select({ id: practiceAreas.id }).from(practiceAreas).limit(1);
+  // `leads.practice_area_id` is NOT NULL, and an invoice raised against a lead
+  // with no practice area is refused by validation anyway — so an empty
+  // catalogue is a broken environment, not a case to paper over with a null.
+  if (!area) {
+    throw new Error(
+      "No practice areas in the catalogue — seed one before running the tunnel test",
+    );
+  }
   const [lead] = await systemDb.insert(leads).values({
     organizationId: orgId,
     firstName: "Tunnel",
     lastName: `Test ${run}`,
     email: `tunnel+${run}@example.com`,
     source: "direct",
-    practiceAreaId: area?.id ?? null,
+    practiceAreaId: area.id,
   }).returning({ id: leads.id });
 
   // Split invoice: a filing fee to trust, attorney time to operating. This is
