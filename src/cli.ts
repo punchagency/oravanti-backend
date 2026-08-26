@@ -2180,6 +2180,9 @@ const seedDemoData = async (organizationId?: string) => {
           // stored it, so every demo lead was one no consultation fee could be
           // invoiced against.
           practiceAreaId: practiceArea.id,
+          // Consistent by construction: `practiceArea` was resolved FROM this
+          // case type just above, so the pair can never disagree.
+          caseTypeId: caseType.id,
           situationSummary: `Demo intake for ${practiceArea.name.toLowerCase()} matters.`,
           status: pick(["new", "new", "reviewed", "archived"] as const, index),
           pipelineStage,

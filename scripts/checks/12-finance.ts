@@ -198,6 +198,8 @@ const main = async () => {
       phone: "+15550111",
       source: "direct",
       practiceAreaId,
+      // From the chain built above, so the pair is consistent.
+      caseTypeId: caseType!.id,
     })
     .returning();
   leadId = lead!.id;

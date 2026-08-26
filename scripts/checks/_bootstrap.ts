@@ -232,11 +232,14 @@ export type Fixture = {
   staffId: string;
   staffName: string;
   /**
-   * The catalogue row the lead points at. Always seeded —
-   * `leads.practice_area_id` is NOT NULL — and reused by the case chain when
-   * the spec asks for one.
+   * The catalogue chain the lead points at. Always seeded — both
+   * `leads.practice_area_id` and `leads.case_type_id` are NOT NULL, and a case
+   * type reaches its practice area only through a subcategory — and reused by
+   * the case chain when the spec asks for one.
    */
   practiceAreaId: string;
+  subcategoryId: string;
+  caseTypeId: string;
   /** documentId + versionId + checksum, in the order given by the spec. */
   docs: { id: string; versionId: string; checksum: string; title: string }[];
   /** Present only when the spec asked for a case. */
@@ -268,6 +271,8 @@ export const withTempFixture = async <T>(
     staffId: "",
     staffName: "",
     practiceAreaId: "",
+    subcategoryId: "",
+    caseTypeId: "",
     docs: [],
   };
 
@@ -316,6 +321,33 @@ export const withTempFixture = async <T>(
       .returning();
     fixture.practiceAreaId = area.id;
 
+    // The rest of the chain, for the same reason and now on the same terms:
+    // `leads.case_type_id` is NOT NULL too, and a case type reaches its
+    // practice area only through a subcategory — so the lead cannot be seeded
+    // until all three rows exist. Built here rather than inside `withCase`,
+    // which is where they used to live.
+    const [subcategory] = await systemDb
+      .insert(practiceAreaSubcategories)
+      .values({
+        practiceAreaId: area.id,
+        code: `check-sub-${suffix}`,
+        name: `Check Subcategory ${suffix}`,
+      })
+      .returning();
+    fixture.subcategoryId = subcategory.id;
+
+    const [caseType] = await systemDb
+      .insert(practiceAreaCaseTypes)
+      .values({
+        subcategoryId: subcategory.id,
+        code: `check-type-${suffix}`,
+        name: "Immigration",
+        caseNumberPrefix: "ORV",
+        jurisdiction: "federal",
+      })
+      .returning();
+    fixture.caseTypeId = caseType.id;
+
     const [lead] = await systemDb
       .insert(leads)
       .values({
@@ -325,30 +357,12 @@ export const withTempFixture = async <T>(
         email: `lead-${suffix}@example.test`,
         source: "direct",
         practiceAreaId: area.id,
+        caseTypeId: caseType.id,
       })
       .returning();
     fixture.leadId = lead.id;
 
     if (spec.withCase) {
-      const [subcategory] = await systemDb
-        .insert(practiceAreaSubcategories)
-        .values({
-          practiceAreaId: area.id,
-          code: `check-sub-${suffix}`,
-          name: `Check Subcategory ${suffix}`,
-        })
-        .returning();
-
-      const [caseType] = await systemDb
-        .insert(practiceAreaCaseTypes)
-        .values({
-          subcategoryId: subcategory.id,
-          code: `check-type-${suffix}`,
-          name: "Immigration",
-          caseNumberPrefix: "ORV",
-          jurisdiction: "federal",
-        })
-        .returning();
 
       const [client] = await systemDb
         .insert(clients)
@@ -491,18 +505,24 @@ const teardown = async (fixture: Fixture) => {
       const c = fixture.case;
       await systemDb.delete(cases).where(eq(cases.id, c.caseId));
       await systemDb.delete(clients).where(eq(clients.id, c.clientId));
-      await systemDb
-        .delete(practiceAreaCaseTypes)
-        .where(eq(practiceAreaCaseTypes.id, c.caseTypeId));
-      await systemDb
-        .delete(practiceAreaSubcategories)
-        .where(eq(practiceAreaSubcategories.id, c.subcategoryId));
     }
     if (fixture.leadId) {
       await systemDb.delete(leads).where(eq(leads.id, fixture.leadId));
     }
-    // After the lead, which references it, and after the case chain above.
-    // Unconditional now that every fixture lead has one.
+    // The taxonomy chain unwinds after everything referencing it, innermost
+    // first. Unconditional now that every fixture lead points at all three —
+    // it used to be torn down only alongside a case, which was where it used
+    // to be created.
+    if (fixture.caseTypeId) {
+      await systemDb
+        .delete(practiceAreaCaseTypes)
+        .where(eq(practiceAreaCaseTypes.id, fixture.caseTypeId));
+    }
+    if (fixture.subcategoryId) {
+      await systemDb
+        .delete(practiceAreaSubcategories)
+        .where(eq(practiceAreaSubcategories.id, fixture.subcategoryId));
+    }
     if (fixture.practiceAreaId) {
       await systemDb
         .delete(practiceAreas)
