@@ -18,10 +18,9 @@ import { calendarEvents } from "../../db/schema/calendar-events";
 import { caseIssueDocuments, caseIssues } from "../../db/schema/case-issues";
 import { clients } from "../../db/schema/clients";
 import { scenarioDocumentRequirements } from "../../db/schema/document-requirements";
-import { leadTasks } from "../../db/schema/lead-tasks";
 import { leads } from "../../db/schema/leads";
 import { questionnaireResponseFiles } from "../../db/schema/questionnaires";
-import { caseWorkflowSteps } from "../../db/schema/workflow";
+import { tasks } from "../../db/schema/tasks";
 import { BadRequestError } from "../../utils/error/app-error";
 import { emailService } from "../../utils/email/email.service";
 import { generateDocumentRequestEmailTemplate } from "../../utils/email/email.types";
@@ -298,13 +297,13 @@ const assignCaseWorkflowStep = async (
 ) => {
   const steps = await db
     .select({
-      id: caseWorkflowSteps.id,
-      status: caseWorkflowSteps.status,
-      orderIndex: caseWorkflowSteps.orderIndex,
+      id: tasks.id,
+      status: tasks.status,
+      orderIndex: tasks.orderIndex,
     })
-    .from(caseWorkflowSteps)
-    .where(eq(caseWorkflowSteps.caseId, issue.caseId!))
-    .orderBy(caseWorkflowSteps.orderIndex);
+    .from(tasks)
+    .where(and(eq(tasks.caseId, issue.caseId!), eq(tasks.source, "workflow")))
+    .orderBy(tasks.orderIndex);
 
   const target =
     steps.find((s) => s.status === "in_progress") ??
@@ -349,21 +348,23 @@ const createLeadTask = async (
   // one (initializePipelineSteps restarts it at 0 for each stage).
   const [{ n }] = await db
     .select({ n: count() })
-    .from(leadTasks)
+    .from(tasks)
     .where(
       and(
-        eq(leadTasks.leadId, issue.leadId),
-        eq(leadTasks.pipelineStage, pipelineStage),
+        eq(tasks.leadId, issue.leadId),
+        eq(tasks.source, "pipeline"),
+        eq(tasks.phase, pipelineStage),
       ),
     );
 
-  await db.insert(leadTasks).values({
+  await db.insert(tasks).values({
     organizationId: issue.organizationId,
     leadId: issue.leadId,
+    source: "pipeline",
     title,
     description: "Raised by AI case review.",
     orderIndex: Number(n),
-    pipelineStage,
+    phase: pipelineStage,
     assignedToId: assigneeStaffId ?? null,
     assignedAt: assigneeStaffId ? new Date() : null,
   });
