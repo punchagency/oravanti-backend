@@ -157,6 +157,16 @@ export class TasksService {
     id: tasks.id,
     title: tasks.title,
     description: tasks.description,
+    // Staff-facing guidance, snapshotted from the template step. Sent with the
+    // task itself rather than fetched from the template on demand: the point of
+    // snapshotting is that the person doing the work reads what was written for
+    // the work as handed out, and a second round-trip invites a client to
+    // render the current template's wording instead.
+    purpose: tasks.purpose,
+    guidance: tasks.guidance,
+    doneWhen: tasks.doneWhen,
+    pitfalls: tasks.pitfalls,
+    authority: tasks.authority,
     teamId: tasks.teamId,
     dueDate: tasks.dueDate,
     priority: tasks.priority,
@@ -203,6 +213,14 @@ export class TasksService {
     id: r.id,
     title: r.title,
     description: r.description,
+    // Guidance travels with the task. `guidance` is coalesced to an array
+    // because a task predating these columns reads back null, and the client
+    // treats this as a list it can measure and map without checking first.
+    purpose: r.purpose ?? null,
+    guidance: r.guidance ?? [],
+    doneWhen: r.doneWhen ?? null,
+    pitfalls: r.pitfalls ?? null,
+    authority: r.authority ?? null,
     teamId: r.teamId,
     dueDate: r.dueDate,
     priority: r.priority,
