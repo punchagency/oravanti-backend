@@ -23,7 +23,7 @@ describe("lockedOverrideViolation", () => {
     // Locking protects the deadline, not the row. Working the step is the point.
     expect(lockedOverrideViolation(locked, { status: "in_progress" })).toBeNull();
     expect(lockedOverrideViolation(locked, { status: "completed" })).toBeNull();
-    expect(lockedOverrideViolation(locked, { assignedToId: crypto.randomUUID() })).toBeNull();
+    expect(lockedOverrideViolation(locked, { assignedToId: crypto.randomUUID() } as any)).toBeNull();
     expect(lockedOverrideViolation(locked, { notes: "Records requested 3 Mar" })).toBeNull();
   });
 

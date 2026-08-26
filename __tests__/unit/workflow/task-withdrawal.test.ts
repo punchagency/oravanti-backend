@@ -64,7 +64,11 @@ const MODULE = {
   activationCondition: { field: "immigrationDetails.isConditionalResidence", op: "eq", value: true },
 };
 
-const templateStep = (id: string, title: string, orderIndex: number) => ({
+const templateStep = (id: string, title: string, orderIndex: number): {
+  id: string; moduleId: string; title: string; description: null; orderIndex: number;
+  dueDateAnchor: string; dueDateOffsetDays: number; isLocked: boolean;
+  requiredCertifications: never[]; assignableRoles: string[];
+} => ({
   id,
   moduleId: "mod-i751",
   title,

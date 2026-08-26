@@ -106,7 +106,7 @@ describe("due-date anchors", () => {
     const unknown = new Set(
       allSteps()
         .map((s) => s.dueDateAnchor)
-        .filter((a): a is string => Boolean(a) && !VALID_ANCHORS.has(a as string)),
+        .filter((a): a is (typeof dateAnchorEnum.enumValues)[number] => Boolean(a) && !VALID_ANCHORS.has(a as string)),
     );
 
     expect([...unknown]).toEqual([]);

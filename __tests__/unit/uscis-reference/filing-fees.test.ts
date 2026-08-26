@@ -138,7 +138,7 @@ describe("evaluateI864Income", () => {
     const result = ask({ sponsorIncomeCents: 3_415_000 });
 
     expect(result.verdict).toBe("meets");
-    expect(result.thresholdCents === undefined ? null : result.thresholdCents).toBe(3_415_000);
+    expect(result.verdict === "unknown" ? null : result.thresholdCents).toBe(3_415_000);
   });
 
   it("measures an active-duty military sponsor against the 100% column", () => {
