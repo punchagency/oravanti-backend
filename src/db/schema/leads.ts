@@ -93,7 +93,17 @@ export const leads = pgTable("leads", {
   // wrote the first row (.limit(1)), and the junctions could not be projected
   // onto the scalar fields the clients read — so the practice-area and matter
   // type silently rendered empty everywhere. Back to plain columns.
-  practiceAreaId: uuid("practice_area_id").references(() => practiceAreas.id),
+  /**
+   * NOT NULL. A lead without a practice area cannot be invoiced at either
+   * pipeline stage that raises one — `raiseConsultationInvoice` and
+   * `raiseFeeAgreementInvoice` both return null and the callers swallow it,
+   * leaving a consultation gated on a payment with no invoice behind it — is
+   * excluded from conversion metrics by an inner join, and is refused by
+   * `openCase` two stages later, which was the only place that ever checked.
+   */
+  practiceAreaId: uuid("practice_area_id")
+    .notNull()
+    .references(() => practiceAreas.id),
   caseTypeId:     uuid("case_type_id").references(() => practiceAreaCaseTypes.id),
 
   // Compliance / Risk Mitigation checks

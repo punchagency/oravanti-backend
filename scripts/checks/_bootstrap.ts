@@ -231,6 +231,12 @@ export type Fixture = {
   /** Staff member used as actor for case opening and issue resolution. */
   staffId: string;
   staffName: string;
+  /**
+   * The catalogue row the lead points at. Always seeded —
+   * `leads.practice_area_id` is NOT NULL — and reused by the case chain when
+   * the spec asks for one.
+   */
+  practiceAreaId: string;
   /** documentId + versionId + checksum, in the order given by the spec. */
   docs: { id: string; versionId: string; checksum: string; title: string }[];
   /** Present only when the spec asked for a case. */
@@ -261,6 +267,7 @@ export const withTempFixture = async <T>(
     leadId: "",
     staffId: "",
     staffName: "",
+    practiceAreaId: "",
     docs: [],
   };
 
@@ -297,6 +304,18 @@ export const withTempFixture = async <T>(
     fixture.staffId = staffRow.id;
     fixture.staffName = `Check Staff ${suffix}`;
 
+    // Created before the lead, and unconditionally: `leads.practice_area_id` is
+    // NOT NULL. It used to be raised only for `withCase` fixtures, which was
+    // enough while a lead could exist without one.
+    //
+    // `practice_areas` is a GLOBAL catalogue rather than org-scoped, so this is
+    // a real row in the shared table and the teardown below removes it.
+    const [area] = await systemDb
+      .insert(practiceAreas)
+      .values({ name: `Check Immigration ${suffix}` })
+      .returning();
+    fixture.practiceAreaId = area.id;
+
     const [lead] = await systemDb
       .insert(leads)
       .values({
@@ -305,16 +324,12 @@ export const withTempFixture = async <T>(
         lastName: `Lead ${suffix}`,
         email: `lead-${suffix}@example.test`,
         source: "direct",
+        practiceAreaId: area.id,
       })
       .returning();
     fixture.leadId = lead.id;
 
     if (spec.withCase) {
-      const [area] = await systemDb
-        .insert(practiceAreas)
-        .values({ name: `Check Immigration ${suffix}` })
-        .returning();
-
       const [subcategory] = await systemDb
         .insert(practiceAreaSubcategories)
         .values({
@@ -482,12 +497,16 @@ const teardown = async (fixture: Fixture) => {
       await systemDb
         .delete(practiceAreaSubcategories)
         .where(eq(practiceAreaSubcategories.id, c.subcategoryId));
-      await systemDb
-        .delete(practiceAreas)
-        .where(eq(practiceAreas.id, c.practiceAreaId));
     }
     if (fixture.leadId) {
       await systemDb.delete(leads).where(eq(leads.id, fixture.leadId));
+    }
+    // After the lead, which references it, and after the case chain above.
+    // Unconditional now that every fixture lead has one.
+    if (fixture.practiceAreaId) {
+      await systemDb
+        .delete(practiceAreas)
+        .where(eq(practiceAreas.id, fixture.practiceAreaId));
     }
     if (fixture.staffId) {
       await systemDb.delete(staff).where(eq(staff.id, fixture.staffId));

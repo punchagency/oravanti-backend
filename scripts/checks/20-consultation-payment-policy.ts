@@ -24,6 +24,7 @@ import { invoiceInstalments } from "../../src/db/schema/invoice-instalments";
 import { invoicePayments } from "../../src/db/schema/invoice-payments";
 import { invoices } from "../../src/db/schema/invoices";
 import { leads } from "../../src/db/schema/leads";
+import { practiceAreas } from "../../src/db/schema/practice-areas";
 import { staff } from "../../src/db/schema/staff";
 import {
   consultationFeeUnsettled,
@@ -66,6 +67,7 @@ const main = async () => {
 
   let leadId = "";
   let staffId = "";
+  let practiceAreaId = "";
 
   try {
     await systemDb.insert(user).values({
@@ -94,6 +96,14 @@ const main = async () => {
       })
       .returning();
     staffId = staffRow!.id;
+    // `leads.practice_area_id` is NOT NULL, and every consultation invoice needs
+    // one anyway — `raiseConsultationInvoice` returns null without it.
+    const [areaRow] = await systemDb
+      .insert(practiceAreas)
+      .values({ name: `Check Area ${suffix}` })
+      .returning();
+    practiceAreaId = areaRow!.id;
+
     const [leadRow] = await systemDb
       .insert(leads)
       .values({
@@ -102,6 +112,7 @@ const main = async () => {
         lastName: `Lead ${suffix}`,
         email: `lead-${suffix}@example.test`,
         source: "direct",
+        practiceAreaId,
       })
       .returning();
     leadId = leadRow!.id;
@@ -891,6 +902,9 @@ const main = async () => {
     await systemDb.delete(consultations).where(eq(consultations.organizationId, orgId));
     await systemDb.delete(invoices).where(eq(invoices.organizationId, orgId));
     if (leadId) await systemDb.delete(leads).where(eq(leads.organizationId, orgId));
+    // After the lead that references it; `practice_areas` is a global catalogue.
+    if (practiceAreaId)
+      await systemDb.delete(practiceAreas).where(eq(practiceAreas.id, practiceAreaId));
     if (staffId) await systemDb.delete(staff).where(eq(staff.organizationId, orgId));
     await systemDb.delete(organization).where(eq(organization.id, orgId));
     await systemDb.delete(user).where(eq(user.id, userId));
