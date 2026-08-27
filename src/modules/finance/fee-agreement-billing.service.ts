@@ -10,6 +10,7 @@ import { systemAccess } from "./account-access";
 import { clearingPolicyFor, countsTowardCaseOpening } from "./clearing-policy";
 import { deliveryEvidence, sendSystemInvoice } from "./deliveries.service";
 import type { ScheduleRow } from "./instalments";
+import { agingOverDues } from "./dues";
 import { create, issueInvoice, type CreateInvoiceLine } from "./invoices.service";
 import { num, toMoney } from "./money";
 import { amountDueNow } from "./payment-links.service";
@@ -491,7 +492,21 @@ export const feeInvoiceSatisfied = async (
   // Half a cent, matching `consultationFeeUnsettled`, so an instalment that
   // divides badly cannot hold a case shut over a rounding artefact the client
   // has no way to pay off.
-  return counted >= required - 0.005;
+  if (counted < required - 0.005) return false;
+
+  // Cleared the threshold, and still nothing late.
+  //
+  // Both conditions, not either. The threshold alone would open a case for a
+  // client who paid a deposit and then went delinquent before anyone got round
+  // to opening it — this is only consulted at open time, so "they are behind
+  // right now" is exactly the question being asked. The past-due test alone was
+  // the previous behaviour and had the `pay_in_full` hole above.
+  const overdue = await agingOverDues(
+    organizationId,
+    await firmToday(organizationId),
+    eq(invoices.id, invoiceId),
+  );
+  return num(overdue.pastDue) <= 0;
 };
 
 /**
