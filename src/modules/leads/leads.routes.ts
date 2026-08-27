@@ -567,6 +567,14 @@ export class AgreementSigningRouter {
       validateRequest({ params: v.agreementSigningTokenParamsSchema }),
       ctrl.getEmbeddedSignSession,
     );
+
+    // Polled by the signing page after the client signs: the invoice is raised
+    // by the Dropbox Sign webhook, which is not synchronous with the signature.
+    this.router.post(
+      "/:token/payment-session",
+      validateRequest({ params: v.agreementSigningTokenParamsSchema }),
+      ctrl.getAgreementPaymentSession,
+    );
   }
 }
 

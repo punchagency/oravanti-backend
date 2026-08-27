@@ -93,6 +93,7 @@ import {
 } from "../../queue/queues";
 import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
 import {
+  invoiceByPaymentToken,
   mintPaymentLink,
   startCheckout,
 } from "../finance/payment-links.service";
@@ -5716,6 +5717,102 @@ const getEmbeddedSignSession = async (signingToken: string) => {
   return { signUrl, clientId: env.DROPBOX_SIGN_CLIENT_ID ?? null, expiresAt };
 };
 
+/**
+ * Take payment on the signing page, right after the client signs.
+ *
+ * The client is never more willing to pay than in the seconds after signing, and
+ * until now the page thanked them and stopped. The emailed invoice is still the
+ * durable record — it is what instalments and reminders hang off, and what
+ * catches anyone who closes the tab — but making them wait for it loses the
+ * moment.
+ *
+ * ## Why this polls
+ *
+ * The invoice is raised by the Dropbox Sign webhook, which is not synchronous
+ * with the signature: the embedded client fires `sign` locally while the webhook
+ * is still in flight. So `pending` is a normal, expected state and the page
+ * renders it as "preparing your invoice" rather than an error.
+ *
+ * ## Scope
+ *
+ * Only `pay_at_signing`. The other two timings are firm decisions to collect
+ * elsewhere, and offering a card anyway would contradict what the attorney
+ * agreed with the client.
+ *
+ * The signing token is the credential here, and it is a plaintext `randomUUID()`
+ * with no expiry — a weaker secret than `invoices.payment_token_hash`, which is
+ * hashed and rotated precisely because it takes money. What that buys an
+ * attacker holding a signing link is bounded: they can only ever reach this one
+ * agreement's own invoice, they cannot read it, and `startCheckout` refuses a
+ * draft or a settled invoice. Rotating `signing_token` onto the hash-only
+ * pattern is worth doing, and is deliberately not bundled into this change.
+ */
+const getAgreementPaymentSession = async (signingToken: string) => {
+  const [agreement] = await db
+    .select({
+      status: feeAgreements.status,
+      invoiceId: feeAgreements.invoiceId,
+      details: feeAgreements.details,
+      organizationId: feeAgreements.organizationId,
+    })
+    .from(feeAgreements)
+    .where(eq(feeAgreements.signingToken, signingToken))
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Signing session not found");
+
+  const unavailable = (reason: string) => ({
+    state: "unavailable" as const,
+    reason,
+    url: null,
+    amountDueNow: null,
+  });
+
+  if (agreement.status !== "signed") {
+    return unavailable("This agreement has not been signed yet");
+  }
+
+  const timing = agreement.details?.paymentTiming ?? "pay_at_signing";
+  if (timing !== "pay_at_signing") {
+    return unavailable(
+      timing === "pay_in_person"
+        ? "Your firm will collect this payment directly."
+        : "Your firm will send an invoice for this shortly.",
+    );
+  }
+
+  // The webhook has not raised it yet. Not an error — the page polls.
+  if (!agreement.invoiceId) {
+    return { state: "pending" as const, reason: null, url: null, amountDueNow: null };
+  }
+
+  const token = await mintPaymentLink(
+    agreement.organizationId,
+    agreement.invoiceId,
+  );
+
+  // Reuses the public payment link path wholesale, so the amount asked for,
+  // the trust/operating split and the settled/void refusals are all decided in
+  // exactly one place — the same one the emailed link goes through.
+  const invoice = await invoiceByPaymentToken(token);
+  if (invoice.settled) {
+    return { state: "settled" as const, reason: null, url: null, amountDueNow: 0 };
+  }
+  if (!invoice.paymentsEnabled) {
+    return unavailable(
+      "Online payment is not available yet. Please contact the firm to arrange payment.",
+    );
+  }
+
+  const session = await startCheckout(token);
+  return {
+    state: "ready" as const,
+    reason: null,
+    url: session.url,
+    amountDueNow: invoice.amountDueNow,
+  };
+};
+
 // ─── Dropbox Sign Webhook ───────────────────────────────────────────────────
 
 type DropboxSignEvent = {
@@ -6615,6 +6712,7 @@ export class LeadsService {
   getFeeAgreement = getFeeAgreement;
   nudgeClient = nudgeClient;
   getEmbeddedSignSession = getEmbeddedSignSession;
+  getAgreementPaymentSession = getAgreementPaymentSession;
   handleDropboxSignWebhook = handleDropboxSignWebhook;
   openCase = openCase;
   getEligibleTeamsForLead = getEligibleTeamsForLead;
