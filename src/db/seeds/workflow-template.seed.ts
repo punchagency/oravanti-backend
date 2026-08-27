@@ -19,6 +19,23 @@ import { seedFilingFees } from "./filing-fees.seed";
  * without changing the plan doc first; every one of them traces back to a
  * cited line in the two source legal documents.
  *
+ * ─── Step prose is the one deliberate exception ─────────────────────────────
+ *
+ * The AOS template's step *titles* and the five guidance fields below
+ * (`purpose`, `guidance`, `doneWhen`, `pitfalls`, `authority`) are written for
+ * the staff member holding the task, not transcribed. The source docs' titles
+ * are compressed planning notes — "Screen risk flags → attorney-review flag" —
+ * which are fine in a spec and useless on a queue at 4pm.
+ *
+ * What did NOT change in that pass: module order, phase, activation type and
+ * condition, every `dueDateAnchor`/`dueDateOffsetDays`, every `isLocked`, and
+ * every `assignableRoles`. The structure still traces to the source docs line
+ * for line; only the words a human reads were rewritten.
+ *
+ * `authority` cites a statute, regulation or form instruction that actually
+ * says the thing, or it is omitted. An invented-but-plausible citation is worse
+ * than none, because a paralegal will rely on it.
+ *
  * ─── Roles ──────────────────────────────────────────────────────────────────
  *
  * Both plan files take `assignableRoles` from each workflow's "Responsible
@@ -60,6 +77,24 @@ const LEGAL_ASSISTANT = "legal_assistant";
 interface StepDef {
   title: string;
   description?: string;
+  /**
+   * ─── Staff-facing guidance ────────────────────────────────────────────────
+   *
+   * See `workflowTemplateSteps` for what each field means and why they are five
+   * columns rather than one. Optional everywhere: a step with nothing worth
+   * saying under a heading should carry no heading, not filler. Every one of
+   * them is copied onto the materialized task.
+   *
+   * `authority` is the one field with a hard rule — it cites a statute,
+   * regulation or form instruction that actually says the thing, or it is
+   * omitted. A plausible-looking invented citation is worse than none, because
+   * a paralegal will rely on it.
+   */
+  purpose?: string;
+  guidance?: string[];
+  doneWhen?: string;
+  pitfalls?: string;
+  authority?: string;
   orderIndex: number;
   /** Null anchor = genuinely event-triggered or standing; see 04 § Governing conventions. */
   dueDateAnchor?: DateAnchor;
@@ -438,13 +473,114 @@ const AOS_TEMPLATE: TemplateDef = {
       phase: "Intake",
       orderIndex: 1,
       activationType: "auto",
+      description:
+        "Establishes who the parties are, proves the family relationship the whole petition rests on, and surfaces anything that would make adjustment the wrong path before the firm commits to it.",
       assignableRoles: [ATTORNEY, PARALEGAL],
       steps: [
-        { title: "Capture petitioner identity, citizenship/LPR basis", orderIndex: 1, dueDateAnchor: "case_opened", dueDateOffsetDays: 3 },
-        { title: "Capture beneficiary identity, aliases, entry/status history", orderIndex: 2, dueDateAnchor: "case_opened", dueDateOffsetDays: 3 },
-        { title: "Collect relationship evidence", description: "Marriage cert + prior-divorce decrees, or birth cert + bona fide marriage evidence.", orderIndex: 3, dueDateAnchor: "case_opened", dueDateOffsetDays: 7 },
-        { title: "Screen risk flags → attorney-review flag", description: "Prior marriages, immigration violations, unlawful presence, removal history, criminal history.", orderIndex: 4, dueDateAnchor: "case_opened", dueDateOffsetDays: 5, isLocked: true },
-        { title: "Determine the filing track from the relationship category and the petitioner's status", description: "An immediate relative of a U.S. citizen files concurrently; every other preference category files sequentially.", orderIndex: 5, dueDateAnchor: "case_opened", dueDateOffsetDays: 5, isLocked: true },
+        {
+          title: "Record the petitioner's identity and basis of citizenship or LPR status",
+          description: "Full legal name, date of birth, prior names, and the primary evidence of the petitioner's status.",
+          purpose:
+            "The petitioner's status decides the shape of the entire case. A U.S. citizen petitioning an immediate relative can file everything at once; a lawful permanent resident puts the beneficiary in a numerically limited preference category that waits for a visa number, often for years.",
+          guidance: [
+            "Record the petitioner's full legal name, date of birth, and every prior name used.",
+            "Establish the basis of status: birth in the United States, naturalization, or lawful permanent residence.",
+            "Collect primary evidence of that status — birth certificate, U.S. passport, certificate of naturalization, or permanent resident card.",
+            "Ask whether a naturalization application is pending, and record the answer.",
+          ],
+          doneWhen:
+            "Petitioner identity and basis of status are recorded on the matter, with primary evidence of status in the file.",
+          pitfalls:
+            "A petitioner who naturalizes after filing changes the beneficiary's category — an F2A spouse of an LPR becomes an immediate relative, which removes the visa-number wait entirely. Catch a pending naturalization at intake rather than discovering it a year into a preference-track wait.",
+          authority: "INA 201(b), 203(a); 8 CFR 204.1",
+          orderIndex: 1,
+          dueDateAnchor: "case_opened",
+          dueDateOffsetDays: 3,
+        },
+        {
+          title: "Record the beneficiary's identity, aliases, and full entry and status history",
+          description: "Every name used, every entry to the U.S., and a mapped chronology of time in and out of status.",
+          purpose:
+            "Adjustment under INA 245 requires a lawful admission or parole and turns on the beneficiary's history of status. Gaps, unlawful entries, or prior proceedings can bar adjustment outright — and they change the strategy before a single form is drafted.",
+          guidance: [
+            "Record every name the beneficiary has used, including maiden names and transliteration variants.",
+            "Document each entry to the United States: date, place, manner of entry, and the I-94 record.",
+            "Map the periods in status and out of status across the entire history, not just the most recent stay.",
+            "Note any prior petitions or applications filed for or by the beneficiary, and any contact with immigration court.",
+          ],
+          doneWhen:
+            "A complete chronology from first entry to today is in the file, with I-94 or equivalent records supporting each entry.",
+          pitfalls:
+            "An entry without inspection generally bars adjustment under INA 245(a), and the matter may need consular processing with a waiver instead. Finding this at the drafting stage rather than at intake wastes the entire packet.",
+          authority: "INA 245(a), 245(c); 8 CFR 245.1",
+          orderIndex: 2,
+          dueDateAnchor: "case_opened",
+          dueDateOffsetDays: 3,
+        },
+        {
+          title: "Collect the evidence that proves the qualifying relationship",
+          description: "Marriage certificate plus prior-divorce decrees, or birth certificate — plus bona fide marriage evidence where the case is marriage-based.",
+          purpose:
+            "The I-130 stands or falls on proof that the claimed family relationship is both real and legally valid. This is the evidentiary core of the petition, and everything downstream assumes it holds.",
+          guidance: [
+            "For a marriage: a certified marriage certificate, plus certified divorce decrees or death certificates terminating every prior marriage of both parties.",
+            "For a parent or child: a certified birth certificate showing the relationship.",
+            "For a marriage-based matter, gather bona fides across categories — joint finances, shared residence, insurance and beneficiary designations, photographs spanning time, correspondence.",
+            "Obtain certified English translations of every document not already in English.",
+          ],
+          doneWhen:
+            "The qualifying relationship is documented with certified primary evidence, every prior marriage is shown terminated, and a marriage-based file carries bona fide evidence from several independent categories.",
+          pitfalls:
+            "A prior marriage that was never legally terminated makes the current marriage void and the petition unapprovable. Separately, thin bona fide evidence is the single most common cause of a marriage-based RFE — volume from one category does not substitute for breadth across several.",
+          authority: "8 CFR 204.2(a); 8 CFR 103.2(b)(3) (translations)",
+          orderIndex: 3,
+          dueDateAnchor: "case_opened",
+          dueDateOffsetDays: 7,
+        },
+        {
+          title: "Screen the file for risk flags and route it to attorney review",
+          description: "Prior marriages, immigration violations, unlawful presence, removal history, criminal history.",
+          purpose:
+            "Some facts change whether adjustment is viable at all — not the paperwork, the strategy. They have to reach an attorney before the firm puts the client on this path, because several of them are permanent bars that no amount of good drafting cures.",
+          guidance: [
+            "Prior marriages, and in particular any prior marriage-based petition ever filed for or by either party.",
+            "Immigration violations: unlawful presence, unauthorized employment, overstay, prior removal, or voluntary departure.",
+            "Any criminal history at all — including arrests that produced no conviction, and matters the client believes were expunged or sealed.",
+            "Prior findings of fraud or wilful misrepresentation.",
+            "Removal proceedings, whether past, pending, or administratively closed.",
+            "Document each flag found and hand the file to an attorney for a strategy decision.",
+          ],
+          doneWhen:
+            "Every flag is documented on the matter and an attorney has reviewed and recorded a decision on the adjustment strategy.",
+          pitfalls:
+            "A prior marriage-based petition found fraudulent permanently bars approval of any future family petition under INA 204(c) — there is no waiver for it. Clients routinely do not volunteer arrests they were told would not matter, so ask specifically rather than generally.",
+          authority: "INA 204(c), 212(a)(2), 212(a)(6)(C), 212(a)(9)(B)",
+          orderIndex: 4,
+          dueDateAnchor: "case_opened",
+          dueDateOffsetDays: 5,
+          isLocked: true,
+        },
+        {
+          title: "Determine the filing track from the relationship category and the petitioner's status",
+          description: "An immediate relative of a U.S. citizen files concurrently; every other preference category files sequentially.",
+          purpose:
+            "This is the decision the rest of the workflow branches on. It determines whether the I-485 package can be assembled now or must wait for a visa number, and recording it is literally what unlocks the AOS Package Assembly and EAD/Advance Parole modules on this matter.",
+          guidance: [
+            "Identify the relationship category from the petitioner's status and the relationship claimed.",
+            "An immediate relative of a U.S. citizen — spouse, unmarried child under 21, or parent of a citizen aged 21 or over — is not numerically limited, so a visa number is always available: the track is concurrent.",
+            "Every other relationship falls into a numbered preference category (F1 through F4) and must wait for its priority date to become current: the track is sequential.",
+            "Record the result on the case's immigration details. The workflow reads that field — an answer left only in a note activates nothing.",
+          ],
+          doneWhen:
+            "The filing track is recorded as concurrent or sequential on the case's immigration details, and the dependent modules have unlocked accordingly.",
+          pitfalls:
+            "Wrong in either direction is expensive. A premature I-485 on a preference matter is rejected outright and the fee is not returned; a sequential track wrongly set on an immediate relative delays the client's work authorization by months for no reason at all.",
+          authority: "INA 201(b), 203(a); 8 CFR 245.2(a)(2)(i)(B)",
+          orderIndex: 5,
+          dueDateAnchor: "case_opened",
+          dueDateOffsetDays: 5,
+          isLocked: true,
+        },
       ],
     },
     {
@@ -452,11 +588,71 @@ const AOS_TEMPLATE: TemplateDef = {
       phase: "Petition Assembly",
       orderIndex: 2,
       activationType: "auto",
+      description:
+        "Builds the I-130 itself — the petition that establishes the family relationship. It is the foundation filing: the I-485 cannot be approved until this is.",
       assignableRoles: [ATTORNEY, PARALEGAL],
       steps: [
-        { title: "Draft I-130", description: "Relationship type, petitioner/beneficiary info, prior petitions filed.", orderIndex: 1, dueDateAnchor: "case_opened", dueDateOffsetDays: 14 },
-        { title: "Capture signatures (wet or e-sign per current USCIS policy)", orderIndex: 2, dueDateAnchor: "case_opened", dueDateOffsetDays: 18 },
-        { title: "Reconcile I-130 filing fee", description: "Petitioner pays; no fee waiver is available. Check the current figure on uscis.gov — filing fees change often, so no amount is stated here.", orderIndex: 3, dueDateAnchor: "case_opened", dueDateOffsetDays: 18, isLocked: true },
+        {
+          title: "Draft the I-130 Petition for Alien Relative",
+          description: "Relationship type, petitioner and beneficiary information, and every prior petition either party has filed.",
+          purpose:
+            "The I-130 is what asks USCIS to recognise the family relationship. Its approval is a prerequisite for the green card, and on a sequential matter its filing date sets the priority date that governs how long the beneficiary waits.",
+          guidance: [
+            "Select the relationship type that matches the evidence collected at intake — not the one the client describes.",
+            "Complete petitioner and beneficiary information exactly as it appears on their identity documents, including the address history the form requests.",
+            "Disclose every prior petition either party has filed. USCIS already has these records.",
+            "Answer every question; use 'N/A' or 'None' rather than leaving a field blank.",
+          ],
+          doneWhen:
+            "The I-130 is drafted in full, matches the identity documents and intake record, and has been reviewed against the evidence in the file.",
+          pitfalls:
+            "Blank fields are treated as unanswered and draw an RFE or a rejection — a deliberate 'None' is not the same as an omission. Undisclosed prior petitions read as concealment even when the omission was careless.",
+          authority: "INA 204; 8 CFR 204.1, 204.2",
+          orderIndex: 1,
+          dueDateAnchor: "case_opened",
+          dueDateOffsetDays: 14,
+        },
+        {
+          title: "Obtain the petitioner's signature in the form USCIS currently accepts",
+          description: "Wet or electronic signature, per the policy in force on the filing date.",
+          purpose:
+            "An unsigned or improperly signed petition is rejected without adjudication. The signature is what makes the filing an act of the petitioner rather than of the firm.",
+          guidance: [
+            "Confirm the signature format USCIS accepts for this form and filing channel on the date it will actually be filed.",
+            "Have the petitioner sign personally — a representative cannot sign the petition on their behalf.",
+            "Check that the signature falls inside the signature block and is dated.",
+            "Keep the executed original in the file.",
+          ],
+          doneWhen:
+            "A properly executed, dated signature is on the petition in a format USCIS accepts for the filing channel being used.",
+          pitfalls:
+            "A typed name, a photocopied signature, or a signature that strays outside the block are each grounds for rejection. Rejection returns the whole package and costs the filing date.",
+          authority: "8 CFR 103.2(a)(2)",
+          orderIndex: 2,
+          dueDateAnchor: "case_opened",
+          dueDateOffsetDays: 18,
+        },
+        {
+          title: "Reconcile the I-130 filing fee against the current USCIS fee schedule",
+          description: "The petitioner pays; no fee waiver is available for the I-130. Take the figure from the current schedule — fees change, so no amount is recorded here.",
+          purpose:
+            "An incorrect fee causes rejection of the entire package, not a request to top it up. On a sequential matter that also destroys the priority date the filing would have secured.",
+          guidance: [
+            "Take the fee from the USCIS fee schedule current on the date of filing — never from an amount printed in an older form, a precedent file, or a note.",
+            "Confirm the payment method the receiving lockbox or online channel accepts.",
+            "Where several forms are filed together, check whether each requires a separate payment instrument.",
+            "Record the amount and the payment reference against the matter.",
+          ],
+          doneWhen:
+            "The fee is verified against the current published schedule, paid by an accepted method, and the amount and reference are recorded on the matter.",
+          pitfalls:
+            "Fee schedules change on USCIS's timetable and there is frequently no grace period. A cheque for last year's amount comes back with the whole package.",
+          authority: "8 CFR 103.7; 8 CFR 106",
+          orderIndex: 3,
+          dueDateAnchor: "case_opened",
+          dueDateOffsetDays: 18,
+          isLocked: true,
+        },
       ],
     },
     {
@@ -478,6 +674,20 @@ const AOS_TEMPLATE: TemplateDef = {
        * Gating on the track alone was the bug — it left every sequential matter
        * with no I-485 package steps at all, at any point in its life, including
        * the month the priority date finally became current.
+       *
+       * ─── Why these seven anchor on `module_activated` ───────────────────
+       *
+       * Every other step in this template anchors on `case_opened`, and for an
+       * auto module that is right: the work is available from day one. These
+       * seven are not. On a concurrent filing the module opens immediately and
+       * `module_activated` and `case_opened` are the same day, so nothing
+       * changes. On a *sequential* filing the module opens when the priority
+       * date becomes current — years later — and `case_opened + 14 days` would
+       * land the first task's deadline years in the past the instant it was
+       * created, firing an overdue alert for all seven at the moment the work
+       * legitimately became possible.
+       *
+       * The offsets are unchanged. Only what they count from moved.
        */
       activationCondition: {
         anyOf: [
@@ -487,13 +697,153 @@ const AOS_TEMPLATE: TemplateDef = {
       },
       assignableRoles: [ATTORNEY, PARALEGAL],
       steps: [
-        { title: "Draft I-485", description: "Immigrant category code, priority date, admission record, criminal-history & public-charge questions.", orderIndex: 1, dueDateAnchor: "case_opened", dueDateOffsetDays: 14 },
-        { title: "Draft I-765", description: "EAD eligibility category (c)(9), prior EAD numbers.", orderIndex: 2, dueDateAnchor: "case_opened", dueDateOffsetDays: 14 },
-        { title: "Draft I-131", description: "Advance parole — intended travel dates, trip purpose, prior AP.", orderIndex: 3, dueDateAnchor: "case_opened", dueDateOffsetDays: 14 },
-        { title: "Assemble I-864 Affidavit of Support", description: "Sponsor income against the 125% poverty guideline; add a joint sponsor if it falls short. Locked: insufficient sponsor income is a common RFE trigger.", orderIndex: 4, dueDateAnchor: "case_opened", dueDateOffsetDays: 18, isLocked: true },
-        { title: "Schedule I-693 civil surgeon exam; track sealed-envelope tracking ID", description: "An opened sealed envelope is rejected evidence outright. The exam does not expire on a clock, but it is tied to the application it is filed with - if that application is withdrawn or denied, a new exam is needed for any new filing.", orderIndex: 5, dueDateAnchor: "case_opened", dueDateOffsetDays: 21, isLocked: true },
-        { title: "Check every form is the edition USCIS will accept on the filing date", description: "USCIS rejects a package built on a superseded edition, sometimes with no grace period at all. Check against the edition current on the day it will be postmarked, not today's.", orderIndex: 6, dueDateAnchor: "case_opened", dueDateOffsetDays: 24, isLocked: true },
-        { title: "Confirm the packet is complete: all six components check out and fees are reconciled", description: "Fees change on USCIS's schedule - take the current figures from the fee schedule rather than from any amount written into a form or a précis.", orderIndex: 7, dueDateAnchor: "case_opened", dueDateOffsetDays: 25, isLocked: true },
+        {
+          title: "Draft the I-485 Application to Register Permanent Residence",
+          description: "Immigrant category code, priority date, admission record, and the criminal-history and public-charge questions.",
+          purpose:
+            "The I-485 is the application for the green card itself. Everything else in this package exists to support it.",
+          guidance: [
+            "Enter the immigrant category code that matches the I-130 relationship — not a code carried over from a similar matter.",
+            "Enter the priority date from the I-130 receipt where one has been issued.",
+            "Complete the admission record from the I-94 chronology gathered at intake.",
+            "Answer the criminal-history and public-charge questions from the intake screening, disclosing everything found.",
+            "Answer every question; use 'None' rather than leaving anything blank.",
+          ],
+          doneWhen:
+            "The I-485 is drafted in full, its category code and priority date match the I-130, and its disclosures match the intake screening record.",
+          pitfalls:
+            "The disclosure questions are where adjustment applications fail. An arrest omitted here that USCIS finds in the background check is treated as misrepresentation — materially worse than the arrest itself would have been.",
+          authority: "INA 245; 8 CFR 245.2; INA 212(a)(4) (public charge)",
+          orderIndex: 1,
+          dueDateAnchor: "module_activated",
+          dueDateOffsetDays: 14,
+        },
+        {
+          title: "Draft the I-765 Application for Employment Authorization",
+          description: "EAD eligibility category (c)(9), and any prior EAD numbers.",
+          purpose:
+            "This is what lets the beneficiary work lawfully while the adjustment is pending — often the single change the client feels most immediately, and typically the first tangible result of the filing.",
+          guidance: [
+            "Use eligibility category (c)(9) — employment authorization for a pending adjustment applicant.",
+            "Record any prior EAD numbers; omitting them slows adjudication.",
+            "Confirm the biographic details match the I-485 exactly.",
+            "Include the photographs and identity evidence the form instructions require.",
+          ],
+          doneWhen:
+            "The I-765 is drafted under category (c)(9), is consistent with the I-485, and carries the required photographs and identity evidence.",
+          pitfalls:
+            "The wrong eligibility category is the usual defect here, and it produces a denial of the I-765 rather than an RFE — the client waits months more for work authorization while the adjustment itself proceeds normally.",
+          authority: "8 CFR 274a.12(c)(9); 8 CFR 274a.13",
+          orderIndex: 2,
+          dueDateAnchor: "module_activated",
+          dueDateOffsetDays: 14,
+        },
+        {
+          title: "Draft the I-131 Application for Advance Parole",
+          description: "Intended travel dates, purpose of travel, and any prior advance parole.",
+          purpose:
+            "Advance parole is what allows the beneficiary to leave the United States and return while the I-485 is pending. Without it, departure abandons the adjustment application.",
+          guidance: [
+            "State the intended travel dates and purpose. An applicant with no specific plans should still file — the document is protection against an emergency, not a booking.",
+            "Record any prior advance parole granted.",
+            "Confirm the biographic details match the I-485 and I-765.",
+            "Counsel the client in writing that they must not depart until the document is in hand.",
+          ],
+          doneWhen:
+            "The I-131 is drafted and consistent with the rest of the package, and the client has been advised in writing about travel while the application is pending.",
+          pitfalls:
+            "Departing the U.S. while the I-485 is pending, without advance parole in hand, is treated as abandonment of the application. Clients do this for family emergencies believing a pending application protects them — it does not.",
+          authority: "8 CFR 212.5(f); 8 CFR 245.2(a)(4)(ii)",
+          orderIndex: 3,
+          dueDateAnchor: "module_activated",
+          dueDateOffsetDays: 14,
+        },
+        {
+          title: "Assemble the I-864 Affidavit of Support and verify the sponsor qualifies",
+          description: "Measure sponsor income against the 125% federal poverty guideline; add a joint sponsor if it falls short.",
+          purpose:
+            "The I-864 is a legally enforceable contract in which the sponsor accepts financial responsibility for the beneficiary. Without a qualifying one the beneficiary is inadmissible as a likely public charge, and the adjustment cannot be approved.",
+          guidance: [
+            "Determine household size using the form's definition — it includes the sponsor's dependants and the beneficiary, and is not simply the number of people living in the house.",
+            "Compare the sponsor's income to 125% of the federal poverty guideline for that household size, using the guidelines current at filing.",
+            "Where income falls short, add a joint sponsor who independently meets the threshold for their own household plus the beneficiary. A joint sponsor's income is not added to the petitioner's.",
+            "Collect the supporting evidence the form requires — tax return or transcript for the most recent year, and proof of current employment and income.",
+            "An active-duty member of the U.S. armed forces sponsoring a spouse or child qualifies at 100%, not 125%.",
+          ],
+          doneWhen:
+            "The sponsor's qualifying income is documented against the correct threshold for the correct household size, or a qualifying joint sponsor's I-864 is in the packet with its own supporting evidence.",
+          pitfalls:
+            "Insufficient sponsor income is among the most common RFE triggers on a family-based adjustment. Two specific errors recur: undercounting household size, and assuming a joint sponsor's income can be added to a deficient petitioner's rather than having to qualify on its own.",
+          authority: "INA 213A (8 U.S.C. 1183a); 8 CFR 213a.2; 8 U.S.C. 1183a(f)(3) (military 100%)",
+          orderIndex: 4,
+          dueDateAnchor: "module_activated",
+          dueDateOffsetDays: 18,
+          isLocked: true,
+        },
+        {
+          title: "Schedule the I-693 civil surgeon examination and track the sealed envelope",
+          description: "Record the sealed-envelope tracking ID. An opened envelope is rejected evidence outright.",
+          purpose:
+            "The medical examination establishes that the beneficiary is not inadmissible on health grounds. It must be performed by a USCIS-designated civil surgeon — an ordinary physician's examination, however thorough, is not acceptable.",
+          guidance: [
+            "Refer the beneficiary to a USCIS-designated civil surgeon; verify the designation rather than relying on the practice's own description.",
+            "Instruct the beneficiary to bring their vaccination records — missing vaccinations are the usual cause of a repeat visit.",
+            "Record the sealed-envelope tracking identifier against the matter on receipt.",
+            "Warn the client in writing, and confirm the file note, that the envelope must not be opened by anyone.",
+          ],
+          doneWhen:
+            "The examination is completed by a designated civil surgeon and the sealed envelope is in the file, unopened, with its tracking identifier recorded.",
+          pitfalls:
+            "An opened envelope is rejected outright and the examination must be repeated at the client's cost. The form does not expire on a clock, but it is tied to the application it is filed with — if that application is withdrawn or denied, any new filing needs a new examination.",
+          authority: "INA 212(a)(1); 8 CFR 232.1; 8 CFR 245.5",
+          orderIndex: 5,
+          dueDateAnchor: "module_activated",
+          dueDateOffsetDays: 21,
+          isLocked: true,
+        },
+        {
+          title: "Verify every form is the edition USCIS will accept on the filing date",
+          description: "Check against the edition current on the day the package will be postmarked, not today's.",
+          purpose:
+            "USCIS rejects a package built on a superseded form edition, sometimes with no grace period at all. The check is cheap; the rejection costs the filing date and, on a sequential matter, the priority date.",
+          guidance: [
+            "Check the edition date printed on every form in the package against the currently accepted edition.",
+            "Check against the edition that will be current on the intended filing date — not the one current on the day the drafting began.",
+            "Where an edition changes mid-assembly, rebuild the affected form rather than filing the old one.",
+            "Record the verified edition dates against the matter.",
+          ],
+          doneWhen:
+            "Every form in the package is confirmed to be an edition USCIS accepts as of the intended filing date, and the check is recorded.",
+          pitfalls:
+            "USCIS sometimes accepts only the new edition from the day it publishes it. A package assembled over several weeks can go stale between drafting and postmark, which is exactly why this check sits immediately before filing rather than at drafting.",
+          authority: "8 CFR 103.2(a)(1)",
+          orderIndex: 6,
+          dueDateAnchor: "module_activated",
+          dueDateOffsetDays: 24,
+          isLocked: true,
+        },
+        {
+          title: "Confirm the package is complete and every fee is reconciled before filing",
+          description: "All components present, all signatures executed, all fees taken from the current schedule.",
+          purpose:
+            "The last gate before the package leaves the firm. Everything caught here is cheap to fix; the same defect caught by the lockbox returns the entire filing.",
+          guidance: [
+            "Confirm each component is present: I-485, I-765, I-131, I-864 with supporting evidence, the sealed I-693, and the relationship evidence.",
+            "Confirm every form carries a properly executed signature.",
+            "Take every fee from the current USCIS fee schedule rather than from an amount written into a form or an earlier note.",
+            "Confirm the biographic details agree across all forms — a name or date that differs between two forms draws an RFE.",
+            "Make a complete copy of the package as filed before it goes.",
+          ],
+          doneWhen:
+            "Every component is present and signed, fees are reconciled against the current schedule, details agree across all forms, and a complete copy of the package as filed is in the file.",
+          pitfalls:
+            "A rejected package is returned in full and the filing date is lost. On a sequential matter that also forfeits the priority date the filing would have secured, which can mean years.",
+          authority: "8 CFR 103.2(a); 8 CFR 103.7, 8 CFR 106 (fees)",
+          orderIndex: 7,
+          dueDateAnchor: "module_activated",
+          dueDateOffsetDays: 25,
+          isLocked: true,
+        },
       ],
     },
     {
@@ -501,12 +851,91 @@ const AOS_TEMPLATE: TemplateDef = {
       phase: "Filing & Receipt",
       orderIndex: 4,
       activationType: "auto",
+      description:
+        "Gets the package to the right place and captures what comes back. The receipt notices are what convert a filing into a tracked matter with a priority date and a service centre.",
       assignableRoles: [ATTORNEY, PARALEGAL],
       steps: [
-        { title: "File to correct USCIS lockbox (by beneficiary state) or online via org account", orderIndex: 1, dueDateAnchor: "case_opened", dueDateOffsetDays: 28, isLocked: true },
-        { title: "Capture each form's receipt number (I-797C) as it arrives", description: "Records each receipt number against the matter as it arrives.", orderIndex: 2, dueDateAnchor: "filed_date", dueDateOffsetDays: 14, isLocked: true },
-        { title: "Lock the priority date at receipt", orderIndex: 3, dueDateAnchor: "receipt_date", dueDateOffsetDays: 0, isLocked: true },
-        { title: "Work out the expected biometrics and combo-card windows from the service centre's past timings", orderIndex: 4, dueDateAnchor: "receipt_date", dueDateOffsetDays: 1 },
+        {
+          title: "File the package to the correct USCIS lockbox or online through the organization account",
+          description: "Lockbox is determined by the beneficiary's state of residence.",
+          purpose:
+            "Filing to the wrong location delays the matter by weeks and can cause outright rejection. The filing date is what establishes the priority date and starts every clock in the rest of this workflow.",
+          guidance: [
+            "Determine the correct lockbox from the beneficiary's state of residence and the forms being filed together.",
+            "Confirm the filing address on the day of filing — USCIS moves intake locations with little notice.",
+            "Use a trackable delivery method and record the tracking number against the matter.",
+            "Record the filing date on the matter. Later deadlines in this workflow are measured from it.",
+          ],
+          doneWhen:
+            "The package is filed to the correct location by a trackable method, and the filing date and tracking number are recorded on the matter.",
+          pitfalls:
+            "Lockbox addresses change and the published address for a form filed alone often differs from the one for the same form filed concurrently. Verify for this filing, not from memory.",
+          authority: "8 CFR 103.2(a)(7)",
+          orderIndex: 1,
+          dueDateAnchor: "case_opened",
+          dueDateOffsetDays: 28,
+          isLocked: true,
+        },
+        {
+          title: "Record each form's receipt number from the I-797C notices as they arrive",
+          description: "Each form in the package generates its own receipt notice, and they do not arrive together.",
+          purpose:
+            "The receipt number is how every form is tracked from here on. Without it there is no way to check status, respond to a notice, or prove the filing was made.",
+          guidance: [
+            "Expect a separate I-797C for each form filed — the I-485, I-765 and I-131 each generate their own.",
+            "Record each receipt number against the matter as it arrives rather than waiting for the set.",
+            "Note the service centre named on each notice; processing times vary by centre.",
+            "Where a receipt has not arrived several weeks after filing, treat that as a signal to check delivery rather than as normal delay.",
+          ],
+          doneWhen:
+            "A receipt number is recorded on the matter for every form filed, along with the service centre handling each.",
+          pitfalls:
+            "The notices arrive separately over weeks. Filing them away as they come and only reconciling at the end is how a missing receipt goes unnoticed until the client asks about work authorization.",
+          authority: "8 CFR 103.2(b)",
+          orderIndex: 2,
+          dueDateAnchor: "filed_date",
+          dueDateOffsetDays: 14,
+          isLocked: true,
+        },
+        {
+          title: "Lock the priority date from the I-797C receipt notice",
+          description: "Records the priority date on the matter as the receipt establishes it.",
+          purpose:
+            "The priority date is the beneficiary's place in the queue. On a preference-category matter it governs how long they wait for a visa number, and it is the value the sequential filing track is measured against.",
+          guidance: [
+            "Take the priority date from the I-130 receipt notice.",
+            "Record it on the case's immigration details, where the visa-bulletin sweep reads it.",
+            "Confirm it matches the date the petition was received, not the date the notice was issued.",
+          ],
+          doneWhen:
+            "The priority date is recorded on the case's immigration details and matches the I-797C.",
+          pitfalls:
+            "The priority date and the notice date are different dates printed on the same notice. Recording the notice date silently puts the beneficiary later in the queue than they actually are.",
+          authority: "8 CFR 204.1(c); INA 203(e)",
+          orderIndex: 3,
+          dueDateAnchor: "receipt_date",
+          dueDateOffsetDays: 0,
+          isLocked: true,
+        },
+        {
+          title: "Project the expected biometrics and combo-card windows from the service centre's timings",
+          description: "Sets client expectations from the receiving centre's recent processing history.",
+          purpose:
+            "Most client anxiety on a pending adjustment is about silence. A projected window, clearly caveated, converts an indefinite wait into an expected one and heads off the status-check calls.",
+          guidance: [
+            "Take the current published processing times for the service centre named on the receipt notices.",
+            "Project the likely biometrics appointment and combo-card windows from them.",
+            "Communicate the projection to the client as an estimate, explicitly not a commitment.",
+            "Record the projection so a later delay can be measured against something.",
+          ],
+          doneWhen:
+            "Expected windows are projected from the correct service centre's current times, recorded on the matter, and communicated to the client as estimates.",
+          pitfalls:
+            "Processing times differ substantially between centres and move over the life of a matter. A projection stated as a promise becomes a complaint when the centre slows down.",
+          orderIndex: 4,
+          dueDateAnchor: "receipt_date",
+          dueDateOffsetDays: 1,
+        },
       ],
     },
     {
@@ -514,11 +943,70 @@ const AOS_TEMPLATE: TemplateDef = {
       phase: "Biometrics",
       orderIndex: 5,
       activationType: "auto",
+      description:
+        "Tracks the Application Support Center appointment. Short, but it is the stage where a matter is most commonly lost to simple non-attendance.",
       assignableRoles: [PARALEGAL],
       steps: [
-        { title: "Track ASC appointment notice (I-797C): date, location", orderIndex: 1, dueDateAnchor: "receipt_date", dueDateOffsetDays: 21 },
-        { title: "Confirm appointment attended; update status", orderIndex: 2, dueDateAnchor: "biometrics_appointment", dueDateOffsetDays: 0, isLocked: true },
-        { title: "If missed with no reschedule within 90 days: escalate to attorney queue", description: "An unaddressed no-show risks administrative case closure.", orderIndex: 3, dueDateAnchor: "biometrics_appointment", dueDateOffsetDays: 90, isLocked: true },
+        {
+          title: "Track the ASC biometrics appointment notice and confirm the client has it",
+          description: "Record the date and location from the I-797C appointment notice.",
+          purpose:
+            "The appointment notice is sent to the beneficiary and is easily missed or misread. USCIS treats non-attendance as abandonment, so confirming receipt is the substance of this step.",
+          guidance: [
+            "Record the appointment date and the Application Support Center location from the notice.",
+            "Contact the client to confirm they have received it and can attend.",
+            "Tell the client what to bring: the appointment notice itself and photo identification.",
+            "Where the date is impossible, follow the reschedule instructions on the notice before the appointment date, not after.",
+          ],
+          doneWhen:
+            "The appointment date and location are recorded, and the client has confirmed they have the notice and will attend.",
+          pitfalls:
+            "The notice goes to the beneficiary, not the firm. A client who has moved, or who does not recognise what the notice is, misses the appointment without ever telling anyone.",
+          authority: "8 CFR 103.2(b)(9)",
+          orderIndex: 1,
+          dueDateAnchor: "receipt_date",
+          dueDateOffsetDays: 21,
+        },
+        {
+          title: "Confirm the appointment was attended and update the matter",
+          description: "Verify attendance rather than assuming it.",
+          purpose:
+            "Attendance is the fact the rest of the adjudication depends on. An unverified assumption here surfaces months later as an unexplained denial.",
+          guidance: [
+            "Contact the client on or immediately after the appointment date to confirm attendance.",
+            "Record the confirmation on the matter.",
+            "Where the appointment was missed, move immediately to reschedule — the position is far better before USCIS treats it as abandonment than after.",
+          ],
+          doneWhen:
+            "Attendance is confirmed with the client and recorded on the matter, or a missed appointment has been identified and a reschedule started.",
+          pitfalls:
+            "Silence from a client is not confirmation. This step exists because the cost of assuming attendance and being wrong is the whole application.",
+          authority: "8 CFR 103.2(b)(9), (b)(13)",
+          orderIndex: 2,
+          dueDateAnchor: "biometrics_appointment",
+          dueDateOffsetDays: 0,
+          isLocked: true,
+        },
+        {
+          title: "Escalate to the attorney queue if the appointment was missed and not rescheduled within 90 days",
+          description: "An unaddressed no-show risks administrative closure of the application.",
+          purpose:
+            "A missed biometrics appointment left unaddressed leads USCIS to deem the application abandoned and deny it. Ninety days is the point at which this stops being an administrative loose end and becomes a matter requiring an attorney's decision.",
+          guidance: [
+            "Confirm whether the appointment was in fact missed and whether any reschedule was requested.",
+            "Assemble the history: the notice date, appointment date, any contact with the client, and any reschedule attempt.",
+            "Hand the matter to an attorney with that history attached rather than as a bare flag.",
+          ],
+          doneWhen:
+            "An attorney has the full history and has recorded a decision on how to proceed, or the appointment has been rescheduled and the escalation is moot.",
+          pitfalls:
+            "Denial for abandonment is far harder to undo than a late reschedule request is to make. The 90-day mark is a backstop, not a target — act on a known no-show immediately.",
+          authority: "8 CFR 103.2(b)(13)",
+          orderIndex: 3,
+          dueDateAnchor: "biometrics_appointment",
+          dueDateOffsetDays: 90,
+          isLocked: true,
+        },
       ],
     },
     {
@@ -538,9 +1026,63 @@ const AOS_TEMPLATE: TemplateDef = {
       },
       assignableRoles: [PARALEGAL, ATTORNEY],
       steps: [
-        { title: "Track EAD/AP receipt number and approval", orderIndex: 1, dueDateAnchor: "receipt_date", dueDateOffsetDays: 60 },
-        { title: "Record the card's valid-from and valid-to dates and the date it arrived", description: "Event-triggered — set when the card actually arrives.", orderIndex: 2 },
-        { title: "File the EAD/AP renewal if the I-485 is still pending", description: "Combo cards for a pending adjustment now run 18 months rather than five years, and the 540-day automatic extension has ended - so a renewal filed late is a real gap in work authorisation, not a paperwork delay. 120 days is the window to start.", orderIndex: 3, dueDateAnchor: "card_valid_to", dueDateOffsetDays: -120, isLocked: true },
+        {
+          title: "Track the EAD and advance parole receipt numbers through to approval",
+          description: "The combo card is usually the first tangible result the client sees.",
+          purpose:
+            "Employment authorization is what lets the client work lawfully while the adjustment is pending. It typically arrives long before the green card and is the outcome the client is waiting on most immediately.",
+          guidance: [
+            "Record the receipt numbers for the I-765 and I-131 separately — they are adjudicated separately even when a single combo card is issued.",
+            "Check status periodically against the projected window rather than waiting for the client to ask.",
+            "Where either falls well outside the service centre's published time, treat that as a signal to enquire.",
+          ],
+          doneWhen:
+            "Both applications are tracked to a decision and the outcome is recorded on the matter.",
+          pitfalls:
+            "The I-765 and I-131 can be adjudicated at different times. Treating a single card as proof both were approved hides a denied component.",
+          authority: "8 CFR 274a.13; 8 CFR 212.5(f)",
+          orderIndex: 1,
+          dueDateAnchor: "receipt_date",
+          dueDateOffsetDays: 60,
+        },
+        {
+          title: "Record the combo card's validity dates and the date it arrived",
+          description: "Event-triggered — set when the card actually reaches the client.",
+          purpose:
+            "The card's valid-to date is what the renewal deadline is measured from. Recording it is what schedules the renewal step; without it, that step has no anchor and never becomes due.",
+          guidance: [
+            "Record the valid-from and valid-to dates exactly as printed on the card.",
+            "Record the date the client actually received it.",
+            "Confirm the client has the physical card in hand — not that it was reported as mailed.",
+            "Check the printed details for errors; a card issued with a wrong name or date needs correcting immediately.",
+          ],
+          doneWhen:
+            "Both validity dates and the arrival date are recorded on the matter, and the client confirms they hold the card.",
+          pitfalls:
+            "This step has no due date because nothing predicts when a card arrives. That also means nothing chases it — if the valid-to date is never recorded, the renewal step below never acquires a deadline and the gap in work authorization arrives unannounced.",
+          orderIndex: 2,
+        },
+        {
+          title: "File the EAD and advance parole renewal while the I-485 is still pending",
+          description: "Start 120 days before the card expires.",
+          purpose:
+            "A lapse in work authorization is a real consequence in the client's life — lost employment, not a paperwork delay. Combo cards issued for a pending adjustment run substantially shorter than the five years once typical, so renewal comes round sooner than clients expect.",
+          guidance: [
+            "Confirm the I-485 is still pending; a decided application changes the position entirely.",
+            "Start the renewal 120 days before the card expires, which is what this step's due date reflects.",
+            "Do not rely on an automatic extension carrying the client through — the extension position has changed and should be verified for the filing rather than assumed.",
+            "Tell the client's employer nothing without instruction, but make sure the client understands the timing.",
+          ],
+          doneWhen:
+            "The renewal is filed with a receipt recorded, comfortably before the current card expires.",
+          pitfalls:
+            "A renewal filed late produces an actual gap in work authorization. The automatic-extension rules that once absorbed such delays have changed, so the margin that used to exist should not be assumed.",
+          authority: "8 CFR 274a.13(d)",
+          orderIndex: 3,
+          dueDateAnchor: "card_valid_to",
+          dueDateOffsetDays: -120,
+          isLocked: true,
+        },
       ],
     },
     {
@@ -551,9 +1093,61 @@ const AOS_TEMPLATE: TemplateDef = {
       description: "I-130 adjudication runs 4–14 months, so the steps here carry no fixed deadlines. The only dated element is the response to an RFE.",
       assignableRoles: [ATTORNEY, PARALEGAL],
       steps: [
-        { title: "Monitor I-130 status independently", description: "Prerequisite for I-485 approval even when filed concurrently.", orderIndex: 1 },
-        { title: "If RFE/NOID issued: log issue date, type, subject", description: "Logging the issue date and the deadline schedules the reminders. They fire at 50%, 75% and 90% of whatever response window the notice itself states.", orderIndex: 2 },
-        { title: "Submit RFE/NOID response", orderIndex: 3, isLocked: true },
+        {
+          title: "Monitor the I-130 status independently of the I-485",
+          description: "The I-130 must be approved before the I-485 can be, even on a concurrent filing.",
+          purpose:
+            "The two applications travel together on a concurrent filing but are adjudicated separately. The I-130's approval is a prerequisite for the I-485's, so its status has to be watched on its own rather than inferred from the adjustment.",
+          guidance: [
+            "Check the I-130 receipt number's status on its own schedule, not only when something happens on the I-485.",
+            "Record any change of status or transfer between service centres.",
+            "Where the I-130 falls well outside published processing times, raise it — the delay blocks the adjustment regardless of how the I-485 is progressing.",
+          ],
+          doneWhen:
+            "The I-130 is tracked to a decision and the outcome is recorded on the matter.",
+          pitfalls:
+            "Adjudication commonly runs many months, so this step carries no fixed deadline. That makes it easy to leave unattended for far longer than intended — it needs a standing habit rather than a due date.",
+          authority: "INA 204(b); 8 CFR 204.2",
+          orderIndex: 1,
+        },
+        {
+          title: "Log the issue date, type and subject of any RFE or NOID received",
+          description: "Logging the issue date and deadline is what schedules the response reminders.",
+          purpose:
+            "An RFE or NOID carries a hard response deadline, and missing it means denial. Logging the notice is what puts it under the reminder system — the reminders fire at 50%, 75% and 90% of whatever window the notice itself states.",
+          guidance: [
+            "Record whether it is a Request for Evidence or a Notice of Intent to Deny — the response strategies differ, and a NOID is the more serious.",
+            "Record the issue date and the response deadline exactly as the notice states them. Windows vary by notice; do not assume a standard period.",
+            "Record precisely what is being asked for, item by item.",
+            "Get it in front of an attorney early — a NOID in particular signals USCIS is disposed to refuse.",
+          ],
+          doneWhen:
+            "The notice type, issue date, stated deadline and each item requested are recorded on the matter, and the reminders are scheduled.",
+          pitfalls:
+            "The deadline runs from the notice date, not from the day it arrives in the office. Post can consume a meaningful part of a short window before anyone has read the notice.",
+          authority: "8 CFR 103.2(b)(8); 8 CFR 103.2(b)(11)",
+          orderIndex: 2,
+        },
+        {
+          title: "Submit the RFE or NOID response before the stated deadline",
+          description: "Respond to every item in one complete submission.",
+          purpose:
+            "This is the firm's opportunity to save the petition. USCIS decides on the record as it stands at the deadline — there is no second request, and no extension.",
+          guidance: [
+            "Respond to every item raised. A partial response is adjudicated as filed and the unanswered items simply fail.",
+            "Return the original notice with the response where the notice instructs it.",
+            "Send by a trackable method and record proof of timely dispatch.",
+            "Submit once and completely — supplements sent after the fact may not reach the adjudicator in time.",
+            "File the complete response as submitted.",
+          ],
+          doneWhen:
+            "A complete response to every item is submitted before the deadline, by a trackable method, with proof of dispatch and a full copy in the file.",
+          pitfalls:
+            "There is no extension available and no second request. An incomplete response is worse than it appears at the time, because the missing item is not flagged — it is simply decided against.",
+          authority: "8 CFR 103.2(b)(8), (b)(11), (b)(13)",
+          orderIndex: 3,
+          isLocked: true,
+        },
       ],
     },
     {
@@ -561,12 +1155,95 @@ const AOS_TEMPLATE: TemplateDef = {
       phase: "Interview",
       orderIndex: 8,
       activationType: "auto",
+      description:
+        "The adjustment interview and everything that has to be true before the client walks in. On a marriage-based matter this is where the bona fides are actually tested.",
       assignableRoles: [ATTORNEY, PARALEGAL],
       steps: [
-        { title: "Track interview notice (I-797C), issued ~30-60 days pre-interview", orderIndex: 1, dueDateAnchor: "interview_scheduled_date", dueDateOffsetDays: -45 },
-        { title: "Generate merged document checklist", description: "Original evidence + updated bona-fides evidence.", orderIndex: 2, dueDateAnchor: "interview_scheduled_date", dueDateOffsetDays: -14, isLocked: true },
-        { title: "Confirm prep checklist complete", orderIndex: 3, dueDateAnchor: "interview_scheduled_date", dueDateOffsetDays: -3, isLocked: true },
-        { title: "Attend interview", orderIndex: 4, dueDateAnchor: "interview_scheduled_date", dueDateOffsetDays: 0, isLocked: true },
+        {
+          title: "Track the interview notice and confirm the client can attend",
+          description: "The I-797C interview notice is typically issued 30 to 60 days ahead.",
+          purpose:
+            "The interview date sets the deadline for every preparation step below it. Recording it is what schedules them; a date left unrecorded leaves the whole preparation sequence undated.",
+          guidance: [
+            "Record the interview date, time and field office as soon as the notice arrives.",
+            "Confirm with the client that they can attend, and that any required party can attend with them.",
+            "Note everyone the notice requires to appear — a marriage-based interview generally requires both spouses.",
+            "Record the date on the matter so the preparation steps acquire their deadlines.",
+          ],
+          doneWhen:
+            "The interview date, time and location are recorded on the matter and the client has confirmed attendance.",
+          pitfalls:
+            "Rescheduling an adjustment interview typically adds months and is not granted lightly. Confirm attendance as soon as the notice arrives, while a reschedule request is still realistic.",
+          authority: "8 CFR 245.6",
+          orderIndex: 1,
+          dueDateAnchor: "interview_scheduled_date",
+          dueDateOffsetDays: -45,
+        },
+        {
+          title: "Assemble the merged interview document checklist",
+          description: "Original filed evidence plus bona fide evidence updated to the present.",
+          purpose:
+            "The officer tests whether the relationship is genuine now, not only whether it was when the petition was filed. The gap between filing and interview is often more than a year, and evidence from that gap is what carries the interview.",
+          guidance: [
+            "Assemble originals of every document filed in copy, for inspection at the interview.",
+            "Update the bona fide evidence to cover the period since filing — joint finances, shared residence, photographs, correspondence.",
+            "Include current identity documents and any document whose validity has changed since filing.",
+            "Include evidence of anything that has changed: a move, a new job, a birth.",
+            "Produce the checklist for the client in a form they can actually work from.",
+          ],
+          doneWhen:
+            "A complete checklist is prepared covering originals, updated bona fides through to the present, and current identity documents — and the client has it.",
+          pitfalls:
+            "A file that stops at the filing date is the classic interview weakness. An officer reading eighteen months of nothing draws the obvious inference, whatever the original evidence showed.",
+          authority: "8 CFR 245.6; 8 CFR 103.2(b)(5)",
+          orderIndex: 2,
+          dueDateAnchor: "interview_scheduled_date",
+          dueDateOffsetDays: -14,
+          isLocked: true,
+        },
+        {
+          title: "Confirm the client's interview preparation is complete",
+          description: "The last check before the interview, three days out.",
+          purpose:
+            "The final gate while there is still time to fix something. A missing document identified three days out is recoverable; the same gap found on the morning is not.",
+          guidance: [
+            "Confirm the client has every document on the checklist, in original where required.",
+            "Confirm the client knows the date, time, location and who must attend.",
+            "Walk the client through what the interview will involve and the kind of questions asked.",
+            "Confirm attorney attendance where the matter calls for it.",
+            "Record the confirmation on the matter.",
+          ],
+          doneWhen:
+            "The client confirms they hold every document and understand the logistics, and the confirmation is recorded.",
+          pitfalls:
+            "Clients say they have everything without having checked. Ask about specific documents rather than asking whether they are ready.",
+          orderIndex: 3,
+          dueDateAnchor: "interview_scheduled_date",
+          dueDateOffsetDays: -3,
+          isLocked: true,
+        },
+        {
+          title: "Attend the interview and record what happened",
+          description: "Record the outcome and anything the officer asked to be sent afterwards.",
+          purpose:
+            "The interview is where the adjustment is usually decided. What the officer said, and anything they asked for, determines what happens next — and is often the only record of it.",
+          guidance: [
+            "Attend with the client where the matter calls for representation.",
+            "Record the outcome: approved, continued pending further evidence, or held for review.",
+            "Record precisely anything the officer asked to be submitted afterwards, and the deadline given.",
+            "Note any concern the officer raised, in their words rather than paraphrased.",
+            "Where anything was requested, act on it immediately — post-interview requests carry short deadlines.",
+          ],
+          doneWhen:
+            "The interview is attended, the outcome is recorded, and any post-interview request is recorded with its deadline and actioned.",
+          pitfalls:
+            "A request made verbally at the interview is as binding as a written one and is easily lost. Write it down in the room.",
+          authority: "8 CFR 245.6; INA 245",
+          orderIndex: 4,
+          dueDateAnchor: "interview_scheduled_date",
+          dueDateOffsetDays: 0,
+          isLocked: true,
+        },
       ],
     },
     {
@@ -574,12 +1251,92 @@ const AOS_TEMPLATE: TemplateDef = {
       phase: "Decision & Card Production",
       orderIndex: 9,
       activationType: "auto",
+      description:
+        "Records the decision and gets the card into the client's hands. The expiry date captured here is what determines whether this matter ends or continues into removal of conditions.",
       assignableRoles: [ATTORNEY, PARALEGAL],
       steps: [
-        { title: "Log decision date, type, denial reason if applicable", orderIndex: 1, dueDateAnchor: "decision_date", dueDateOffsetDays: 0, isLocked: true },
-        { title: "If denied: evaluate next steps", orderIndex: 2, dueDateAnchor: "decision_date", dueDateOffsetDays: 5 },
-        { title: "Track card production and mailing dates", orderIndex: 3, dueDateAnchor: "decision_date", dueDateOffsetDays: 21 },
-        { title: "Record the green card's expiry date", description: "10 years, or 2 years where residence is conditional. A conditional card opens the I-751 stage.", orderIndex: 4, dueDateAnchor: "decision_date", dueDateOffsetDays: 0, isLocked: true },
+        {
+          title: "Log the decision date, decision type, and any denial reason",
+          description: "The decision is the fact everything after it depends on.",
+          purpose:
+            "Every route available after a decision runs on a deadline measured from the decision date. Recording it accurately is what makes an appeal or a motion possible at all.",
+          guidance: [
+            "Record the decision date exactly as the notice states it — not the date the notice arrived.",
+            "Record the decision type: approved, denied, or administratively closed.",
+            "Where denied, record the stated reason in full and in the notice's own words.",
+            "Where denied, get the notice in front of an attorney immediately; the response windows are short.",
+          ],
+          doneWhen:
+            "The decision date, type and any stated reason are recorded verbatim on the matter.",
+          pitfalls:
+            "Appeal and motion deadlines run from the decision date, not from receipt. Paraphrasing a denial reason loses the detail that determines which remedy is actually available.",
+          authority: "8 CFR 103.3; 8 CFR 103.5",
+          orderIndex: 1,
+          dueDateAnchor: "decision_date",
+          dueDateOffsetDays: 0,
+          isLocked: true,
+        },
+        {
+          title: "Evaluate the available next steps if the application was denied",
+          description: "Appeal, motion to reopen or reconsider, refiling, or another path entirely.",
+          purpose:
+            "A denial is not necessarily the end of the matter, but the remedies carry short deadlines and the choice between them turns on the stated reason. Five days leaves room to decide while every option is still open.",
+          guidance: [
+            "Read the stated reason closely — it determines which remedies are available.",
+            "Consider each: appeal, motion to reopen on new facts, motion to reconsider on legal error, or refiling.",
+            "Note the deadline for each option and work back from the earliest.",
+            "Check whether the denial affects the beneficiary's status or exposes them to proceedings; that may matter more urgently than the remedy itself.",
+            "Advise the client in writing, and record the decision taken.",
+          ],
+          doneWhen:
+            "The options are evaluated against the stated reason, the client is advised in writing, and the chosen route is recorded with its deadline.",
+          pitfalls:
+            "A denial can leave the beneficiary without status and exposed to removal proceedings. The status consequence is sometimes more urgent than the remedy, and it is easy to miss while focused on the appeal.",
+          authority: "8 CFR 103.3 (appeals); 8 CFR 103.5 (motions)",
+          orderIndex: 2,
+          dueDateAnchor: "decision_date",
+          dueDateOffsetDays: 5,
+        },
+        {
+          title: "Track card production and mailing through to delivery",
+          description: "Approval is not delivery — follow it until the card is in hand.",
+          purpose:
+            "A card that is produced but never delivered leaves the client without proof of the status they hold. Cards are lost in the post often enough that this needs following rather than assuming.",
+          guidance: [
+            "Track the status through card production and mailing.",
+            "Confirm with the client that the card physically arrived.",
+            "Check the printed details — name, date of birth, category, dates — against the record.",
+            "Where the card does not arrive in a reasonable period, or arrives with an error, start the correction process promptly.",
+          ],
+          doneWhen:
+            "The client confirms the card has arrived and its printed details have been checked against the record.",
+          pitfalls:
+            "An error on the printed card is far easier to correct soon after issue than years later, and a client who does not know to check will not report it.",
+          orderIndex: 3,
+          dueDateAnchor: "decision_date",
+          dueDateOffsetDays: 21,
+        },
+        {
+          title: "Record the green card's expiry date and whether residence is conditional",
+          description: "Ten years, or two years where residence is conditional. A two-year card opens the I-751 stage.",
+          purpose:
+            "This is the branch point at the end of the matter. A ten-year card ends it; a two-year conditional card means a further filing with an absolute deadline, and recording the expiry is what activates that module and schedules its dates.",
+          guidance: [
+            "Record the expiry date exactly as printed on the card.",
+            "Determine whether residence is conditional — it is where the marriage was less than two years old at approval, and the card runs two years rather than ten.",
+            "Record the conditional-residence status on the case's immigration details. That field is what unlocks the I-751 module.",
+            "Where conditional, tell the client now that a further filing will be required and when.",
+          ],
+          doneWhen:
+            "The expiry date and conditional-residence status are recorded on the case's immigration details, and the I-751 module has unlocked where applicable.",
+          pitfalls:
+            "If conditional residence is never recorded, the I-751 module never unlocks and nothing in the system will raise the filing window. The client loses their status automatically when the card expires, with no warning from the firm.",
+          authority: "INA 216 (8 U.S.C. 1186a); 8 CFR 216.1",
+          orderIndex: 4,
+          dueDateAnchor: "decision_date",
+          dueDateOffsetDays: 0,
+          isLocked: true,
+        },
       ],
     },
     {
@@ -591,8 +1348,48 @@ const AOS_TEMPLATE: TemplateDef = {
       activationCondition: { field: "immigrationDetails.isConditionalResidence", op: "eq", value: true },
       assignableRoles: [ATTORNEY, PARALEGAL],
       steps: [
-        { title: "Begin I-751 preparation — filing window opens", description: "The joint-filing window opens exactly 90 days before the conditional card expires. USCIS rejects an I-751 filed before this date.", orderIndex: 1, dueDateAnchor: "green_card_expiration_date", dueDateOffsetDays: -90, isLocked: true },
-        { title: "File I-751 — final day of the filing window", description: "The window closes on the card's expiration date. Miss it and conditional resident status terminates automatically and removal proceedings follow; there is no grace period, and a late filing needs documented extraordinary circumstances.", orderIndex: 2, dueDateAnchor: "green_card_expiration_date", dueDateOffsetDays: 0, isLocked: true },
+        {
+          title: "Begin I-751 preparation as the filing window opens",
+          description: "The joint-filing window opens exactly 90 days before the conditional card expires. USCIS rejects an I-751 filed before this date.",
+          purpose:
+            "The filing window is 90 days and both ends are hard: USCIS rejects a petition filed early, and status terminates automatically if it is filed late. Starting as the window opens is what leaves room to gather evidence without running at the closing date.",
+          guidance: [
+            "Confirm the exact window from the card's expiry date — it opens 90 days before, and closes on the expiry date itself.",
+            "Gather evidence of the marriage covering the two years since conditional residence was granted, not the period before it.",
+            "Establish whether this is a joint filing or needs a waiver — divorce, the petitioner's death, or abuse each change the filing and the evidence required.",
+            "Confirm the client's current address and marital status before assuming a joint filing.",
+          ],
+          doneWhen:
+            "The window dates are confirmed, the filing basis is established, and evidence covering the conditional period is being assembled.",
+          pitfalls:
+            "Filing before the window opens gets the petition rejected and returned, which burns time out of a 90-day window. Assuming a joint filing without checking the marriage is still intact is the other common error.",
+          authority: "INA 216(d)(2) (8 U.S.C. 1186a(d)(2)); 8 CFR 216.4",
+          orderIndex: 1,
+          dueDateAnchor: "green_card_expiration_date",
+          dueDateOffsetDays: -90,
+          isLocked: true,
+        },
+        {
+          title: "File the I-751 — this is the final day of the filing window",
+          description: "The window closes on the card's expiration date. There is no grace period.",
+          purpose:
+            "This is the hardest deadline in the entire workflow. Conditional resident status terminates automatically when the card expires with no petition filed, and removal proceedings follow. It does not require any action by USCIS to happen.",
+          guidance: [
+            "File before the card's expiration date. This step's due date is the last possible day, not the target.",
+            "File by a trackable method and keep proof of timely dispatch.",
+            "Record the receipt notice — it extends the client's status while the petition is pending, and they will need it as proof.",
+            "Where the deadline has already passed, a late filing must document extraordinary circumstances and their cause; get an attorney onto it immediately.",
+          ],
+          doneWhen:
+            "The I-751 is filed before the expiration date with proof of dispatch, and the receipt notice extending status is recorded and given to the client.",
+          pitfalls:
+            "Missing this terminates status automatically — no notice, no grace period, and removal proceedings follow. A late filing is accepted only on documented extraordinary circumstances, which is a discretionary remedy and not a fallback to rely on.",
+          authority: "INA 216(c)(1), 216(c)(2) (8 U.S.C. 1186a); 8 CFR 216.4(a)(6)",
+          orderIndex: 2,
+          dueDateAnchor: "green_card_expiration_date",
+          dueDateOffsetDays: 0,
+          isLocked: true,
+        },
       ],
     },
   ],
@@ -891,6 +1688,11 @@ async function upsertSystemTemplate(caseTypeId: string, caseTypeName: string, te
           moduleId: insertedModule.id,
           title: s.title,
           description: s.description ?? null,
+          purpose: s.purpose ?? null,
+          guidance: s.guidance ?? [],
+          doneWhen: s.doneWhen ?? null,
+          pitfalls: s.pitfalls ?? null,
+          authority: s.authority ?? null,
           orderIndex: s.orderIndex,
           dueDateAnchor: s.dueDateAnchor ?? null,
           dueDateOffsetDays: s.dueDateOffsetDays ?? null,

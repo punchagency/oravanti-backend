@@ -91,6 +91,16 @@ let updates: { values: Record<string, unknown> }[] = [];
 let inserted: Record<string, unknown>[] = [];
 
 /**
+ * The task rows out of `inserted`.
+ *
+ * Materialization also writes a `workflow_module_activations` row per active
+ * module, which lands in the same capture array and comes first. Selecting on
+ * `source` rather than indexing keeps these assertions about the task instead
+ * of about the order the engine happens to insert in.
+ */
+const insertedTasks = () => inserted.filter((row) => row.source === "workflow");
+
+/**
  * Wires one run.
  *
  * `existingTasks` is what is already on the board; `conditionHolds` drives the
@@ -151,6 +161,10 @@ function arrange(opts: {
         return chain;
       }),
       returning: jest.fn(() => Promise.resolve([{ id: "new-task" }])),
+      // The module-activation stamp ends the chain here rather than at
+      // `returning` — it is written once per case+module and its result is
+      // never read. Thenable so `await` on the chain resolves.
+      onConflictDoNothing: jest.fn(() => Promise.resolve(undefined)),
     };
     return chain;
   });
@@ -333,7 +347,7 @@ describe("assignment does not start the work", () => {
 
     await run();
 
-    expect(inserted[0]?.status).toBe("pending");
+    expect(insertedTasks()[0]?.status).toBe("pending");
 
     const assignment = updates.find((u) => "assignedToId" in u.values);
     expect(assignment).toBeDefined();
@@ -348,7 +362,7 @@ describe("assignment does not start the work", () => {
 
     await run();
 
-    expect(inserted[0]?.status).toBe("pending");
+    expect(insertedTasks()[0]?.status).toBe("pending");
     expect(updates.find((u) => "assignedToId" in u.values)).toBeUndefined();
   });
 });

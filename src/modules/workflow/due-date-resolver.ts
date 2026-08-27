@@ -5,6 +5,7 @@ import { cases } from "../../db/schema/cases";
 import type { DateAnchor } from "../../db/schema/document-requirements";
 import { immigrationCaseDetails } from "../../db/schema/immigration-case-details";
 import { personalInjuryCaseDetails } from "../../db/schema/personal-injury-case-details";
+import { workflowModuleActivations } from "../../db/schema/workflow";
 
 /**
  * Resolves a workflow template step's due date from its `dueDateAnchor` +
@@ -31,10 +32,17 @@ export async function resolveDueDate(
   caseId: string,
   anchor: DateAnchor | null,
   offsetDays: number | null,
+  /**
+   * The step's owning module. Required only by `module_activated`, which is the
+   * one anchor that is per case *and* per module rather than a fact about the
+   * case alone. Omitting it on such a step yields a null due date rather than a
+   * wrong one.
+   */
+  moduleId?: string,
 ): Promise<string | null> {
   if (!anchor || offsetDays === null) return null;
 
-  const anchorDate = await getAnchorDate(caseId, anchor);
+  const anchorDate = await getAnchorDate(caseId, anchor, moduleId);
   if (!anchorDate) return null;
 
   return applyOffset(anchorDate, offsetDays);
@@ -72,11 +80,32 @@ export const UNBACKED_ANCHORS = new Set<DateAnchor>([
   "oath_ceremony_date",
 ]);
 
-async function getAnchorDate(caseId: string, anchor: DateAnchor): Promise<Date | null> {
+async function getAnchorDate(
+  caseId: string,
+  anchor: DateAnchor,
+  moduleId?: string,
+): Promise<Date | null> {
   switch (anchor) {
     case "case_opened": {
       const [row] = await db.select({ createdAt: cases.createdAt }).from(cases).where(eq(cases.id, caseId)).limit(1);
       return row?.createdAt ?? null;
+    }
+    case "module_activated": {
+      // Null without a module, and null before the module has activated. Both
+      // are the honest answer: a step whose module has not opened has no
+      // deadline yet, and renders as "due once recorded" until it does.
+      if (!moduleId) return null;
+      const [row] = await db
+        .select({ activatedAt: workflowModuleActivations.activatedAt })
+        .from(workflowModuleActivations)
+        .where(
+          and(
+            eq(workflowModuleActivations.caseId, caseId),
+            eq(workflowModuleActivations.moduleId, moduleId),
+          ),
+        )
+        .limit(1);
+      return row?.activatedAt ?? null;
     }
     case "next_court_date": {
       const [row] = await db.select({ nextCourtDate: cases.nextCourtDate }).from(cases).where(eq(cases.id, caseId)).limit(1);

@@ -2,7 +2,11 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { tasks } from "../../db/schema/tasks";
-import { workflowModules, workflowTemplateSteps } from "../../db/schema/workflow";
+import {
+  workflowModuleActivations,
+  workflowModules,
+  workflowTemplateSteps,
+} from "../../db/schema/workflow";
 import {
   buildConditionContext,
   conditionHasUnansweredInput,
@@ -169,7 +173,12 @@ async function materializeStep(params: {
 }): Promise<void> {
   const { caseId, organizationId, mod, step } = params;
 
-  const dueDate = await resolveDueDate(caseId, step.dueDateAnchor, step.dueDateOffsetDays);
+  const dueDate = await resolveDueDate(
+    caseId,
+    step.dueDateAnchor,
+    step.dueDateOffsetDays,
+    mod.id,
+  );
 
   const [inserted] = await db
     .insert(tasks)
@@ -180,6 +189,13 @@ async function materializeStep(params: {
       workflowTemplateStepId: step.id,
       title: step.title,
       description: step.description,
+      // The five guidance fields travel with the task for the same reason the
+      // title does: this row is the record of the work as it was handed out.
+      purpose: step.purpose,
+      guidance: step.guidance,
+      doneWhen: step.doneWhen,
+      pitfalls: step.pitfalls,
+      authority: step.authority,
       // Denormalized at creation: `phase` is the stable display grouping, and a
       // later template edit must not retitle work already on someone's queue.
       phase: mod.phase,
@@ -362,6 +378,15 @@ export async function materializeTasksForCase(caseId: string): Promise<void> {
       continue;
     }
 
+    // Stamp the activation before any of the module's steps resolve a due
+    // date, because `module_activated` reads this row. Written once and never
+    // updated — a module withdrawn on retrogression and later restored keeps
+    // its original activation, so restored tasks keep the deadlines they had.
+    await db
+      .insert(workflowModuleActivations)
+      .values({ organizationId: caseRow.organizationId, caseId, moduleId: mod.id })
+      .onConflictDoNothing();
+
     const steps = stepsByModule.get(mod.id) ?? [];
     for (const step of steps) {
       const existing = taskByStepId.get(step.id);
@@ -523,6 +548,11 @@ export async function reresolveDueDates(caseId: string): Promise<number> {
       dueDate: tasks.dueDate,
       anchor: workflowTemplateSteps.dueDateAnchor,
       offsetDays: workflowTemplateSteps.dueDateOffsetDays,
+      // `module_activated` resolves per case *and* module, so the re-resolve
+      // pass has to carry the module through as well. The task itself does not
+      // store one — a module is a template-time concept — so it comes from the
+      // step the task was materialized from.
+      moduleId: workflowTemplateSteps.moduleId,
     })
     .from(tasks)
     .innerJoin(workflowTemplateSteps, eq(workflowTemplateSteps.id, tasks.workflowTemplateStepId))
@@ -537,7 +567,7 @@ export async function reresolveDueDates(caseId: string): Promise<number> {
   let updated = 0;
 
   for (const row of rows) {
-    const resolved = await resolveDueDate(caseId, row.anchor, row.offsetDays);
+    const resolved = await resolveDueDate(caseId, row.anchor, row.offsetDays, row.moduleId);
     if (resolved === row.dueDate) continue;
 
     await db.update(tasks).set({ dueDate: resolved }).where(eq(tasks.id, row.id));

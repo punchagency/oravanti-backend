@@ -48,6 +48,13 @@ export const dateAnchorEnum = pgEnum("date_anchor", [
   "filing_deadline",
   "next_court_date",
   "case_opened",
+  /**
+   * When the step's own module first became active on this matter — see
+   * `workflowModuleActivations`. The anchor for a conditional module, whose
+   * work does not become possible until its condition holds; `case_opened`
+   * would date it from a point years before anyone could have started.
+   */
+  "module_activated",
   // immigration — AOS / N-400 / mandamus
   "receipt_date",
   "biometrics_appointment",
