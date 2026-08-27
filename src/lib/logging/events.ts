@@ -411,6 +411,13 @@ export const LogEvent = {
   INVOICE_ISSUED_WITHOUT_DELIVERY: "invoice.issued_without_delivery",
   INVOICE_DELIVERY_FAILED: "invoice.delivery_failed",
   INVOICE_SCHEDULE_DELIVERY_FAILED: "invoice.schedule_delivery_failed",
+  /**
+   * A send the system attempted on a workflow's behalf came back refused —
+   * voided, already sent, or no email on file. A decision about state, not an
+   * outage, which is why it is recorded at info rather than as a failure.
+   */
+  INVOICE_SYSTEM_SEND_REFUSED: "invoice.system_send_refused",
+  INVOICE_SYSTEM_SEND_FAILED: "invoice.system_send_failed",
   INSTALMENT_CREATED: "instalment.created",
   INSTALMENT_REMINDER_SENT: "instalment.reminder_sent",
   REPORT_GENERATED: "report.generated",
