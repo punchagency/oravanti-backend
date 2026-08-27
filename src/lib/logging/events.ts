@@ -305,6 +305,7 @@ export const LogEvent = {
   LEADS_CONSULTATION_INVOICE_VOID_FAILED:
     "leads.consultation_invoice_void_failed",
   LEADS_FEE_AGREEMENT_INVOICE_FAILED: "leads.fee_agreement_invoice_failed",
+  LEADS_FEE_AGREEMENT_PAYMENT_SETTLED: "leads.fee_agreement_payment_settled",
 
   // ── Lead workflow ─────────────────────────────────────────────────────────
   LEAD_WORKFLOW_CREATED: "lead_workflow.created",
@@ -411,6 +412,13 @@ export const LogEvent = {
   INVOICE_ISSUED_WITHOUT_DELIVERY: "invoice.issued_without_delivery",
   INVOICE_DELIVERY_FAILED: "invoice.delivery_failed",
   INVOICE_SCHEDULE_DELIVERY_FAILED: "invoice.schedule_delivery_failed",
+  /**
+   * A send the system attempted on a workflow's behalf came back refused —
+   * voided, already sent, or no email on file. A decision about state, not an
+   * outage, which is why it is recorded at info rather than as a failure.
+   */
+  INVOICE_SYSTEM_SEND_REFUSED: "invoice.system_send_refused",
+  INVOICE_SYSTEM_SEND_FAILED: "invoice.system_send_failed",
   INSTALMENT_CREATED: "instalment.created",
   INSTALMENT_REMINDER_SENT: "instalment.reminder_sent",
   REPORT_GENERATED: "report.generated",
@@ -467,6 +475,9 @@ export const LogEvent = {
    */
   PAYMENT_WEBHOOK_CONSULTATION_SETTLEMENT_FAILED:
     "payment_webhook.consultation_settlement_failed",
+  /** Same shape, same reasoning, for the fee agreement's case-opening gate. */
+  PAYMENT_WEBHOOK_FEE_AGREEMENT_SETTLEMENT_FAILED:
+    "payment_webhook.fee_agreement_settlement_failed",
   PAYMENT_WEBHOOK_STALE_EVENTS_FOUND: "payment_webhook.stale_events_found",
   PAYMENT_WEBHOOK_STALENESS_SWEEP_FAILED:
     "payment_webhook.staleness_sweep_failed",

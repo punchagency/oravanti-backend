@@ -9,10 +9,11 @@ import { staff } from "../../db/schema/staff";
 import { emailService } from "../../utils/email/email.service";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { storageService } from "../../utils/storage/storage.service";
-import { createModuleLogger } from "../../lib/logging/log";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
 
 const log = createModuleLogger("finance.deliveries");
 import { logCaseEvent } from "../cases/case-events.service";
+import { systemAccess } from "./account-access";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
 import { mintPaymentLink, paymentLinkFor } from "./payment-links.service";
@@ -613,6 +614,64 @@ export const resendInvoice = (
   access: AccountAccess,
 ) => deliver(organizationId, invoiceId, actorStaffId, access, { isResend: true });
 
+export type SystemSendResult = {
+  outcome: "sent" | "failed" | "refused";
+  reason: string | null;
+};
+
+/**
+ * Send an invoice the SYSTEM raised, from a path that must not fail because of it.
+ *
+ * The callers are workflow steps — a consultation was booked, an agreement was
+ * signed — where the billing is a consequence of the event, not the event
+ * itself. Throwing here would lose the more important fact: `deliver` refuses a
+ * client with no email address on file, and a lead who signed an agreement
+ * without one has still signed it.
+ *
+ * So every refusal and every transport error is returned rather than raised, and
+ * `systemAccess()` is baked in: this bills trust lines, and a caller reaching for
+ * `accessForRequest()` on a system path would silently drop them
+ * (see `account-access.ts`).
+ *
+ * **Idempotent for free.** `deliver` refuses a non-draft with "already been sent
+ * — use resend", which arrives here as `{ outcome: "refused" }`. That means every
+ * caller can be re-entered — a redelivered webhook, a retried job, a staff member
+ * clicking twice — without a second email or a second bill.
+ */
+export const sendSystemInvoice = async (
+  organizationId: string,
+  invoiceId: string,
+  actorStaffId: string | null,
+): Promise<SystemSendResult> => {
+  try {
+    const result = await sendInvoice(
+      organizationId,
+      invoiceId,
+      actorStaffId,
+      systemAccess(),
+    );
+    return {
+      outcome: result.status === "sent" ? "sent" : "failed",
+      reason: result.failureReason,
+    };
+  } catch (err) {
+    // A refusal is a decision `deliver` made about state — voided, already sent,
+    // no email on file. Not an outage, and not worth an error-level log.
+    if (err instanceof BadRequestError) {
+      log.info(LogEvent.INVOICE_SYSTEM_SEND_REFUSED, {
+        invoiceId,
+        reason: err.message,
+      });
+      return { outcome: "refused", reason: err.message };
+    }
+    log.failure(LogEvent.INVOICE_SYSTEM_SEND_FAILED, err, { invoiceId });
+    return {
+      outcome: "failed",
+      reason: err instanceof Error ? err.message : "Unknown error",
+    };
+  }
+};
+
 /** Attempt history for the invoice detail dialog. */
 export const listDeliveries = async (
   organizationId: string,
@@ -671,10 +730,23 @@ export const listDeliveries = async (
  *   - delivery rows exist but none succeeded   → NO. Here we know the client
  *     never received it, which is exactly the case worth refusing.
  */
-export const canChaseInvoice = async (
+/**
+ * How hard we have tried to put this invoice in front of the client.
+ *
+ * The distinction that matters is **absence of evidence versus evidence of
+ * failure**. Zero attempts means nobody ever asked — which is the honest state
+ * of every invoice raised before its send path existed, and must not be read as
+ * "the client refused to pay". One or more attempts that all failed is positive
+ * evidence the client was never billed, and is actionable: visible as a `failed`
+ * row with a reason, and fixable by resending.
+ *
+ * Two callers need exactly this split — `canChaseInvoice` (may we nag?) and
+ * `feeInvoiceSatisfied` (may this open a case?) — so it lives here once.
+ */
+export const deliveryEvidence = async (
   organizationId: string,
   invoiceId: string,
-): Promise<boolean> => {
+): Promise<{ attempts: number; succeeded: number }> => {
   const [row] = await db
     .select({
       total: sql<number>`count(*)::int`,
@@ -692,8 +764,20 @@ export const canChaseInvoice = async (
       ),
     );
 
-  if ((row?.succeeded ?? 0) > 0) return true;
-  if ((row?.total ?? 0) > 0) return false;
+  return { attempts: row?.total ?? 0, succeeded: row?.succeeded ?? 0 };
+};
+
+export const canChaseInvoice = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<boolean> => {
+  const { attempts, succeeded } = await deliveryEvidence(
+    organizationId,
+    invoiceId,
+  );
+
+  if (succeeded > 0) return true;
+  if (attempts > 0) return false;
 
   const [invoice] = await db
     .select({ sentAt: invoices.sentAt })

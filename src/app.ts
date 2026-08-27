@@ -155,6 +155,14 @@ export class App {
     this.express.use("/invoice-payment", makeRateLimit(30));
 
     /**
+     * Same reasoning, and now the same stakes. The signing token is the only
+     * credential on this route, and it can mint a checkout for the agreement's
+     * invoice — so an unthrottled endpoint is a token oracle that ends at money.
+     * The page polls while the signature webhook lands, hence 30 rather than 10.
+     */
+    this.express.use("/agreement-signing", makeRateLimit(30));
+
+    /**
      * Better Auth Initialization
      */
     this.express.all("/api/auth/*splat", toNodeHandler(auth));

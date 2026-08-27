@@ -49,8 +49,12 @@ import {
   refundInvoiceInFull,
 } from "../finance/refunds.service";
 import {
+  feeAgreementInvoiceSummary,
   feeInvoiceSatisfied,
+  issueFeeAgreementInvoice,
   raiseFeeAgreementInvoice,
+  sendFeeAgreementInvoice,
+  settleFeeAgreementInvoice,
 } from "../finance/fee-agreement-billing.service";
 import { consultationLocations } from "../../db/schema/consultation-locations";
 import { consultationSettings } from "../../db/schema/consultation-settings";
@@ -90,6 +94,7 @@ import {
 } from "../../queue/queues";
 import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
 import {
+  invoiceByPaymentToken,
   mintPaymentLink,
   startCheckout,
 } from "../finance/payment-links.service";
@@ -4906,6 +4911,7 @@ const generateFeeAgreement = async (
     otherCosts?: FeeAgreementDetails["otherCosts"];
     governmentFeesPaidBy?: FeeAgreementDetails["governmentFeesPaidBy"];
     paymentPlan?: FeeAgreementDetails["paymentPlan"];
+    paymentTiming?: FeeAgreementDetails["paymentTiming"];
     twoPaymentsSchedule?: FeeAgreementDetails["twoPaymentsSchedule"];
     installmentSchedule?: FeeAgreementDetails["installmentSchedule"];
     paymentAllocation?: FeeAgreementDetails["paymentAllocation"];
@@ -4988,6 +4994,7 @@ const generateFeeAgreement = async (
     ...(data.otherCosts?.length ? { otherCosts: data.otherCosts } : {}),
     governmentFeesPaidBy: data.governmentFeesPaidBy ?? "client_upfront",
     paymentPlan: data.paymentPlan ?? "pay_in_full",
+    paymentTiming: data.paymentTiming ?? "pay_at_signing",
     // Schedules persist only when they match the chosen plan; anything else
     // sent by a stale client is dropped.
     ...(data.paymentPlan === "two_payments" && data.twoPaymentsSchedule
@@ -5215,9 +5222,15 @@ const sendFeeAgreement = async (
  * received by hand — and a billing step that only one of them performed would
  * be a gap nobody notices until a case opens unpaid.
  *
- * Idempotent on `invoiceId`: the webhook retries, and the manual path can run
- * after it. A second invoice for the same agreement would be a second demand
- * for the same money.
+ * ## Idempotency is per-step, not for the whole function
+ *
+ * It used to bail whenever `invoiceId` was set, which meant a successful raise
+ * followed by a failed send was never retried — one transient SMTP failure left
+ * a permanent draft, and a permanent draft is an invoice the client never sees.
+ * The RAISE is skipped when an invoice already exists (a second invoice would be
+ * a second demand for the same money); the SEND is attempted regardless.
+ * `sendSystemInvoice` refuses an already-sent invoice, so re-entering on every
+ * webhook retry costs nothing and self-heals a send that failed the first time.
  *
  * Failure is logged, not thrown. The signature is valid and recorded; refusing
  * to acknowledge it because an invoice could not be raised would lose the more
@@ -5240,24 +5253,57 @@ const billSignedFeeAgreement = async (
       )
       .limit(1);
 
-    if (!agreement || agreement.invoiceId) return;
+    if (!agreement) return;
 
-    const document = await assembleFeeAgreementDocument(
-      agreement,
-      organizationId,
-    );
+    let invoiceId = agreement.invoiceId;
 
-    await raiseFeeAgreementInvoice(organizationId, actorId ?? null, {
-      agreementId,
-      leadId: agreement.leadId,
-      feeLines: document.feeLines,
-      totalDue: document.totalDue,
-      paymentPlan: document.paymentPlan,
-      twoPaymentsSchedule: document.twoPaymentsSchedule,
-      installmentSchedule: document.installmentSchedule,
-      applyConsultationCredit: document.applyConsultationCredit,
-      consultationFeeAmount: document.consultationFeeAmount,
-    });
+    if (!invoiceId) {
+      const document = await assembleFeeAgreementDocument(
+        agreement,
+        organizationId,
+      );
+
+      invoiceId = await raiseFeeAgreementInvoice(
+        organizationId,
+        actorId ?? null,
+        {
+          agreementId,
+          leadId: agreement.leadId,
+          feeLines: document.feeLines,
+          totalDue: document.totalDue,
+          paymentPlan: document.paymentPlan,
+          twoPaymentsSchedule: document.twoPaymentsSchedule,
+          installmentSchedule: document.installmentSchedule,
+          applyConsultationCredit: document.applyConsultationCredit,
+          consultationFeeAmount: document.consultationFeeAmount,
+        },
+      );
+    }
+
+    // Nothing to bill — a pure contingency with firm-advanced costs. The gate
+    // treats a null invoice as satisfied, which is correct: no money is owed.
+    if (!invoiceId) return;
+
+    // Resolve timing once and act on it once, so the send decision and the
+    // invoice's resulting status cannot disagree. Absent means pay_at_signing:
+    // see the note on `FeeAgreementDetails.paymentTiming`.
+    const timing = agreement.details?.paymentTiming ?? "pay_at_signing";
+
+    if (timing === "pay_at_signing") {
+      await sendFeeAgreementInvoice(organizationId, invoiceId, actorId ?? null);
+    } else {
+      // On the books, but not emailed. Never left as a draft: a lead's draft
+      // invoice is invisible to the finance tab and uneditable in a dialog that
+      // expects a client, so it is a dead end for the staff who have to chase it.
+      await issueFeeAgreementInvoice(
+        organizationId,
+        invoiceId,
+        actorId ?? null,
+        timing === "invoice_after"
+          ? "Fee agreement — invoiced after signing"
+          : "Fee agreement — payable in person",
+      );
+    }
   } catch (err) {
     log.failure("leads.fee_agreement_invoice_failed", err, { agreementId });
   }
@@ -5295,6 +5341,70 @@ const advanceLeadToCaseOpening = async (
       actorId,
     });
   }
+};
+
+/**
+ * Open the case now that the fee agreement's own invoice has been paid.
+ *
+ * The fee-agreement counterpart to `settleConsultationForInvoice`, and called
+ * from the same place — the tail of `recordConfidoTransaction` — for the same
+ * reason: this must be downstream of money actually arriving, not of a button
+ * being clicked. Without it, a client who signed and then paid online stayed at
+ * `fee_agreement` forever, because the only paths that re-checked the gate were
+ * the signature webhook (which fires before payment) and a staff member marking
+ * it received by hand.
+ *
+ * Deliberately re-asks `feeAgreementPaymentSatisfied` rather than assuming the
+ * money is enough. This fires on every leg of every payment: a part payment
+ * against an instalment plan lands here too, and only the gate knows whether it
+ * cleared the threshold or whether the firm's clearing policy is still waiting
+ * on an ACH.
+ *
+ * Idempotent — `advanceLeadToCaseOpening` on a lead already there is a no-op
+ * write plus a stage-change event from `case_opening` to itself, which
+ * `logStageChange` filters.
+ */
+export const settleFeeAgreementForInvoice = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<void> => {
+  const [agreement] = await db
+    .select({
+      id: feeAgreements.id,
+      leadId: feeAgreements.leadId,
+      status: feeAgreements.status,
+      invoiceId: feeAgreements.invoiceId,
+      details: feeAgreements.details,
+    })
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.organizationId, organizationId),
+        eq(feeAgreements.invoiceId, invoiceId),
+      ),
+    )
+    .limit(1);
+
+  // Not a fee-agreement invoice, or the client paid before signing — which is
+  // allowed (firms collect at signing), but the signature is the other half of
+  // the gate and the e-signature webhook will re-check it.
+  if (!agreement || agreement.status !== "signed") return;
+
+  if (!(await feeAgreementPaymentSatisfied(organizationId, agreement))) return;
+
+  await advanceLeadToCaseOpening(
+    agreement.leadId,
+    organizationId,
+    new Date(),
+    // The client paid through the provider, so there is no staff actor. Leave it
+    // null rather than attributing the advance to whoever sent the invoice.
+    null,
+  );
+
+  log.action(LogEvent.LEADS_FEE_AGREEMENT_PAYMENT_SETTLED, {
+    agreementId: agreement.id,
+    invoiceId,
+  });
 };
 
 // Staff manually confirms receipt of the signed document: mark the agreement
@@ -5393,6 +5503,32 @@ const markFeeAgreementPaymentReceived = async (
   if (!agreement.details)
     throw new BadRequestError("This agreement predates payment tracking");
 
+  // The ledger write comes FIRST, and its failures propagate.
+  //
+  // A send is best-effort decoration on a workflow step; an attestation is the
+  // entire content of this request. Flipping the flag first and recording the
+  // money afterwards on a best-effort basis is exactly how the old version
+  // drifted: it wrote `paymentReceivedAt`, advanced the lead, and left the
+  // invoice outstanding forever beside a case already being worked. Either both
+  // move or neither does.
+  if (agreement.invoiceId) {
+    const settled = await settleFeeAgreementInvoice(
+      organizationId,
+      agreement.invoiceId,
+      actorId ?? null,
+    );
+
+    // `settleByAttestation` sends a draft before recording, so reaching here
+    // means the send was refused or failed and the client genuinely has no bill.
+    // Recording a payment against an invoice nobody received would open a case
+    // on money the client was never asked for.
+    if (!settled.recorded && settled.reason === "undelivered") {
+      throw new BadRequestError(
+        "This agreement's invoice could not be delivered to the client, so a payment cannot be recorded against it. Resend the invoice from Finance, then try again.",
+      );
+    }
+  }
+
   // Idempotent: repeat calls keep the original timestamp.
   let paymentReceivedAt = agreement.details.paymentReceivedAt ?? null;
   const now = new Date();
@@ -5417,14 +5553,37 @@ const markFeeAgreementPaymentReceived = async (
     });
   }
 
-  // Payment was the last missing gate condition once signed.
+  // Payment was the last missing gate condition once signed — but ask the gate
+  // rather than assuming, so all four advance paths agree on one predicate.
+  // A bare `status === "signed"` was how this path jumped the invoice check
+  // entirely: it advanced on the flag it had just written, which is not what the
+  // gate consults once an invoice exists.
+  //
+  // Re-read: `settleFeeAgreementInvoice` has just written to the ledger, and the
+  // gate is about to count it.
   if (agreement.status === "signed") {
-    await advanceLeadToCaseOpening(
-      agreement.leadId,
-      organizationId,
-      now,
-      actorId,
-    );
+    const [settledAgreement] = await db
+      .select({
+        invoiceId: feeAgreements.invoiceId,
+        details: feeAgreements.details,
+      })
+      .from(feeAgreements)
+      .where(eq(feeAgreements.id, agreementId))
+      .limit(1);
+
+    if (
+      await feeAgreementPaymentSatisfied(
+        organizationId,
+        settledAgreement ?? agreement,
+      )
+    ) {
+      await advanceLeadToCaseOpening(
+        agreement.leadId,
+        organizationId,
+        now,
+        actorId,
+      );
+    }
   }
 
   return {
@@ -5451,7 +5610,18 @@ const getFeeAgreement = async (leadId: string, organizationId: string) => {
     .where(eq(feeAgreements.id, lead.feeAgreementId))
     .limit(1);
 
-  return agreement ?? null;
+  if (!agreement) return null;
+
+  // Additive: the agreement row is returned unchanged and the money hangs off
+  // it, so the tracker can render what was billed and whether it reached the
+  // client without a second request.
+  return {
+    ...agreement,
+    invoice: await feeAgreementInvoiceSummary(
+      organizationId,
+      agreement.invoiceId,
+    ),
+  };
 };
 
 // Returns a drafted agreement plus its assembled preview document (so the
@@ -5557,6 +5727,102 @@ const getEmbeddedSignSession = async (signingToken: string) => {
     agreement.signerSignatureId,
   );
   return { signUrl, clientId: env.DROPBOX_SIGN_CLIENT_ID ?? null, expiresAt };
+};
+
+/**
+ * Take payment on the signing page, right after the client signs.
+ *
+ * The client is never more willing to pay than in the seconds after signing, and
+ * until now the page thanked them and stopped. The emailed invoice is still the
+ * durable record — it is what instalments and reminders hang off, and what
+ * catches anyone who closes the tab — but making them wait for it loses the
+ * moment.
+ *
+ * ## Why this polls
+ *
+ * The invoice is raised by the Dropbox Sign webhook, which is not synchronous
+ * with the signature: the embedded client fires `sign` locally while the webhook
+ * is still in flight. So `pending` is a normal, expected state and the page
+ * renders it as "preparing your invoice" rather than an error.
+ *
+ * ## Scope
+ *
+ * Only `pay_at_signing`. The other two timings are firm decisions to collect
+ * elsewhere, and offering a card anyway would contradict what the attorney
+ * agreed with the client.
+ *
+ * The signing token is the credential here, and it is a plaintext `randomUUID()`
+ * with no expiry — a weaker secret than `invoices.payment_token_hash`, which is
+ * hashed and rotated precisely because it takes money. What that buys an
+ * attacker holding a signing link is bounded: they can only ever reach this one
+ * agreement's own invoice, they cannot read it, and `startCheckout` refuses a
+ * draft or a settled invoice. Rotating `signing_token` onto the hash-only
+ * pattern is worth doing, and is deliberately not bundled into this change.
+ */
+const getAgreementPaymentSession = async (signingToken: string) => {
+  const [agreement] = await db
+    .select({
+      status: feeAgreements.status,
+      invoiceId: feeAgreements.invoiceId,
+      details: feeAgreements.details,
+      organizationId: feeAgreements.organizationId,
+    })
+    .from(feeAgreements)
+    .where(eq(feeAgreements.signingToken, signingToken))
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Signing session not found");
+
+  const unavailable = (reason: string) => ({
+    state: "unavailable" as const,
+    reason,
+    url: null,
+    amountDueNow: null,
+  });
+
+  if (agreement.status !== "signed") {
+    return unavailable("This agreement has not been signed yet");
+  }
+
+  const timing = agreement.details?.paymentTiming ?? "pay_at_signing";
+  if (timing !== "pay_at_signing") {
+    return unavailable(
+      timing === "pay_in_person"
+        ? "Your firm will collect this payment directly."
+        : "Your firm will send an invoice for this shortly.",
+    );
+  }
+
+  // The webhook has not raised it yet. Not an error — the page polls.
+  if (!agreement.invoiceId) {
+    return { state: "pending" as const, reason: null, url: null, amountDueNow: null };
+  }
+
+  const token = await mintPaymentLink(
+    agreement.organizationId,
+    agreement.invoiceId,
+  );
+
+  // Reuses the public payment link path wholesale, so the amount asked for,
+  // the trust/operating split and the settled/void refusals are all decided in
+  // exactly one place — the same one the emailed link goes through.
+  const invoice = await invoiceByPaymentToken(token);
+  if (invoice.settled) {
+    return { state: "settled" as const, reason: null, url: null, amountDueNow: 0 };
+  }
+  if (!invoice.paymentsEnabled) {
+    return unavailable(
+      "Online payment is not available yet. Please contact the firm to arrange payment.",
+    );
+  }
+
+  const session = await startCheckout(token);
+  return {
+    state: "ready" as const,
+    reason: null,
+    url: session.url,
+    amountDueNow: invoice.amountDueNow,
+  };
 };
 
 // ─── Dropbox Sign Webhook ───────────────────────────────────────────────────
@@ -6458,6 +6724,7 @@ export class LeadsService {
   getFeeAgreement = getFeeAgreement;
   nudgeClient = nudgeClient;
   getEmbeddedSignSession = getEmbeddedSignSession;
+  getAgreementPaymentSession = getAgreementPaymentSession;
   handleDropboxSignWebhook = handleDropboxSignWebhook;
   openCase = openCase;
   getEligibleTeamsForLead = getEligibleTeamsForLead;

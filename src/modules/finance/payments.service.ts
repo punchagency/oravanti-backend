@@ -19,8 +19,8 @@ import { createModuleLogger, LogEvent } from "../../lib/logging/log";
 
 const log = createModuleLogger("finance.payments");
 import { logCaseEvent } from "../cases/case-events.service";
-import { requireTrustWrite } from "./account-access";
-import { canChaseInvoice } from "./deliveries.service";
+import { requireTrustWrite, systemAccess } from "./account-access";
+import { canChaseInvoice, sendSystemInvoice } from "./deliveries.service";
 import { agingOverDues } from "./dues";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
@@ -846,4 +846,95 @@ export const sendFollowUp = async (
     /** What is actually late — the whole balance only on an unscheduled invoice. */
     overdueAmount,
   };
+};
+
+export type AttestationResult = {
+  recorded: boolean;
+  reason: "void" | "already_settled" | "undelivered" | null;
+};
+
+/**
+ * Record that a member of staff says the money arrived outside the system.
+ *
+ * The line held throughout the intake payment work: **staff attesting to money
+ * received is real and records a payment; a client clicking a button is not.**
+ * A firm that takes a cheque, a wire, or cash at the front desk needs a way to
+ * say so that reaches the ledger — otherwise the only route to an open case is
+ * a card, and the invoice stays outstanding forever beside a case that is
+ * already being worked.
+ *
+ * ## Why this sends first
+ *
+ * `recordPayment` refuses a draft — "Send the invoice before recording a
+ * payment" — and the case-opening gate refuses an invoice that was never
+ * delivered. Without step 2 below those two rules deadlock: the firm cannot
+ * record the payment because the invoice is a draft, and cannot get past the
+ * gate because no payment is recorded. Sending it first breaks that, and is
+ * also just correct — a firm attesting to payment has certainly decided to
+ * bill.
+ *
+ * Deliberately NOT swallowed the way a system send is. An attestation is the
+ * entire content of the request that triggers it, not decoration on a workflow
+ * step, so a caller must be able to tell the difference between "recorded" and
+ * "we could not reach the client to bill them". Recording it after the fact and
+ * swallowing the error is exactly how the previous flag-based version drifted
+ * from the ledger permanently.
+ */
+export const settleByAttestation = async (
+  organizationId: string,
+  invoiceId: string,
+  actorStaffId: string | null,
+): Promise<AttestationResult> => {
+  const read = async () => {
+    const [row] = await db
+      .select({
+        status: invoices.status,
+        balanceDue: invoices.balanceDue,
+      })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.organizationId, organizationId),
+          eq(invoices.id, invoiceId),
+        ),
+      )
+      .limit(1);
+    return row;
+  };
+
+  let invoice = await read();
+  if (!invoice) throw new NotFoundError("Invoice not found");
+  if (invoice.status === "void") return { recorded: false, reason: "void" };
+
+  // The idempotency key. A second click, or an attestation racing the webhook
+  // for the same money, finds nothing owed and records nothing — rather than
+  // booking the amount twice and driving the invoice into credit.
+  if (num(invoice.balanceDue) <= 0) {
+    return { recorded: false, reason: "already_settled" };
+  }
+
+  if (invoice.status === "draft") {
+    await sendSystemInvoice(organizationId, invoiceId, actorStaffId);
+    invoice = await read();
+    if (!invoice) throw new NotFoundError("Invoice not found");
+  }
+
+  // The send was refused or failed, so the client still has not been billed.
+  // Reported rather than forced: recording a payment against an invoice nobody
+  // ever received would open a case on money the client was never asked for.
+  if (invoice.status === "draft") {
+    return { recorded: false, reason: "undelivered" };
+  }
+
+  await recordPayment(organizationId, invoiceId, actorStaffId, systemAccess(), {
+    amount: num(invoice.balanceDue),
+    paymentDate: await firmToday(organizationId),
+    // `paymentMethodEnum` has no `attested` value, and inventing one would put a
+    // bookkeeping fiction in a column the Reports tab groups by. "other" plus
+    // the note is the honest answer: we know money arrived, not how.
+    method: "other",
+    notes: "Recorded by staff — received outside the system",
+  });
+
+  return { recorded: true, reason: null };
 };

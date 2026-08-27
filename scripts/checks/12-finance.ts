@@ -3198,6 +3198,171 @@ const main = async () => {
         "description is null throughout — logFinanceEvent is dropping it again",
       );
 
+      // ── Fee-agreement payment ─────────────────────────────────────────────
+      // Placed last on purpose: the money assertions above are chained and
+      // absolute, so an invoice created earlier would shift every one of them.
+      section("fee-agreement payment");
+
+      // A pay-in-full agreement has no schedule, so nothing is past due until
+      // the header date falls. The gate used to ask only "is anything overdue?",
+      // which let a token payment open a case for the whole terms window.
+      const fullInvoice = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(0),
+        dueDate: daysFromNow(14),
+        status: "draft",
+        lineItems: [
+          { description: "Retainer in full", quantity: 1, rate: 2400, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await deliveriesService.sendInvoice(orgId, fullInvoice.id, staffBId, FULL);
+
+      await paymentsService.recordPayment(orgId, fullInvoice.id, staffBId, FULL, {
+        amount: 1,
+        paymentDate: daysFromNow(0),
+        method: "cash",
+      });
+      checkEqual(
+        "a token payment does NOT open a case on a pay-in-full agreement",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, fullInvoice.id),
+        false,
+      );
+
+      await paymentsService.recordPayment(orgId, fullInvoice.id, staffBId, FULL, {
+        amount: 2399,
+        paymentDate: daysFromNow(0),
+        method: "bank_transfer",
+      });
+      checkEqual(
+        "paying it in full does",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, fullInvoice.id),
+        true,
+      );
+
+      // ── Absence of evidence vs evidence of failure ────────────────────────
+      const undelivered = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(0),
+        dueDate: daysFromNow(14),
+        status: "draft",
+        lineItems: [
+          { description: "Retainer", quantity: 1, rate: 900, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      checkEqual(
+        "a draft nobody tried to send does not block the case",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, undelivered.id),
+        true,
+      );
+
+      await systemDb
+        .update(clients)
+        .set({ email: "not a valid address" })
+        .where(eq(clients.id, clientId));
+
+      const sysFailed = await deliveriesService.sendSystemInvoice(
+        orgId,
+        undelivered.id,
+        staffBId,
+      );
+      checkEqual("a system send reports failure rather than throwing", sysFailed.outcome, "failed");
+      checkEqual(
+        "and a failed send DOES block the case",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, undelivered.id),
+        false,
+      );
+
+      // Attesting against an undeliverable invoice must record nothing: a case
+      // opened on money the client was never asked for is worse than a refusal.
+      const attestUndelivered = await paymentsService.settleByAttestation(
+        orgId,
+        undelivered.id,
+        staffBId,
+      );
+      checkEqual(
+        "attestation refuses an undeliverable invoice",
+        attestUndelivered.reason,
+        "undelivered",
+      );
+      checkEqual("recording nothing", attestUndelivered.recorded, false);
+      const [undeliveredLedger] = await systemDb
+        .select({ n: sql<number>`count(*)::int` })
+        .from(invoicePayments)
+        .where(eq(invoicePayments.invoiceId, undelivered.id));
+      checkEqual("and writing no ledger row", undeliveredLedger?.n, 0);
+
+      await systemDb
+        .update(clients)
+        .set({ email: CLIENT_EMAIL })
+        .where(eq(clients.id, clientId));
+
+      // ── The system send is idempotent ─────────────────────────────────────
+      const resentOk = await deliveriesService.sendSystemInvoice(
+        orgId,
+        undelivered.id,
+        staffBId,
+      );
+      checkEqual("a retry after fixing the address sends", resentOk.outcome, "sent");
+      const sentAgain = await deliveriesService.sendSystemInvoice(
+        orgId,
+        undelivered.id,
+        staffBId,
+      );
+      checkEqual(
+        "and sending an already-sent invoice is refused, not repeated",
+        sentAgain.outcome,
+        "refused",
+      );
+
+      // ── Attestation on a delivered invoice ────────────────────────────────
+      const attested = await paymentsService.settleByAttestation(
+        orgId,
+        undelivered.id,
+        staffBId,
+      );
+      checkEqual("attestation records the balance", attested.recorded, true);
+      const attestedInvoice = await invoicesService.getById(orgId, undelivered.id, FULL);
+      checkEqual("clearing the invoice", attestedInvoice.totals.balanceDue, 0);
+      checkEqual(
+        "and opening the gate",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, undelivered.id),
+        true,
+      );
+
+      const attestedTwice = await paymentsService.settleByAttestation(
+        orgId,
+        undelivered.id,
+        staffBId,
+      );
+      checkEqual(
+        "a second attestation records nothing",
+        attestedTwice.reason,
+        "already_settled",
+      );
+      const [ledgerRows] = await systemDb
+        .select({ n: sql<number>`count(*)::int` })
+        .from(invoicePayments)
+        .where(eq(invoicePayments.invoiceId, undelivered.id));
+      checkEqual("leaving exactly one ledger row", ledgerRows?.n, 1);
+
+      // ── The summary the agreement card renders ────────────────────────────
+      const feeSummary = await feeAgreementBilling.feeAgreementInvoiceSummary(
+        orgId,
+        undelivered.id,
+      );
+      checkEqual("the summary reports delivery", feeSummary?.delivery, "sent");
+      checkEqual("what is still owed", feeSummary?.balanceDue, 0);
+      checkEqual("and whether the gate is open", feeSummary?.satisfiesGate, true);
+      checkEqual(
+        "no invoice means no summary",
+        await feeAgreementBilling.feeAgreementInvoiceSummary(orgId, null),
+        null,
+      );
+
       // ── Financial access ──────────────────────────────────────────────────
       // The gate that decides who may see and touch trust money. Every
       // assertion above passes a hardcoded `AccountAccess`, so until now
