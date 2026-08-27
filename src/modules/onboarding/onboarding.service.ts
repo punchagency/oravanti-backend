@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { eq } from "drizzle-orm";
 import { auth } from "../../auth";
 import { seedDefaultRoleRows } from "../../auth/seed-default-roles";
+import { seedFinancialAccessControls } from "../../db/seeds/financial-access-controls.seed";
 import { db } from "../../db/client";
 import { createModuleLogger } from "../../lib/logging/log";
 import { organization, user } from "../../db/schema/auth-schema";
@@ -86,6 +87,12 @@ export class OnboardingService {
     // anyone can be assigned one — see the comment on `DEFAULT_ROLE_NAMES`
     // in `auth/permissions.ts` for why they're seeded rather than static.
     await seedDefaultRoleRows(newOrg.id);
+
+    // And its financial-access matrix, for the same reason: rows the org needs
+    // before anyone can act in it. Trust (IOLTA) access is deny-by-default, so
+    // without this NOBODY at the firm — the Super admin included — can touch
+    // trust money, and there is no way to grant it from inside the product.
+    await seedFinancialAccessControls(newOrg.id);
 
     await db.transaction(async (tx) => {
       // 1. Create staff profile
