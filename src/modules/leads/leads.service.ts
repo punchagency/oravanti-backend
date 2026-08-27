@@ -50,7 +50,9 @@ import {
 } from "../finance/refunds.service";
 import {
   feeInvoiceSatisfied,
+  issueFeeAgreementInvoice,
   raiseFeeAgreementInvoice,
+  sendFeeAgreementInvoice,
 } from "../finance/fee-agreement-billing.service";
 import { consultationLocations } from "../../db/schema/consultation-locations";
 import { consultationSettings } from "../../db/schema/consultation-settings";
@@ -5217,9 +5219,15 @@ const sendFeeAgreement = async (
  * received by hand — and a billing step that only one of them performed would
  * be a gap nobody notices until a case opens unpaid.
  *
- * Idempotent on `invoiceId`: the webhook retries, and the manual path can run
- * after it. A second invoice for the same agreement would be a second demand
- * for the same money.
+ * ## Idempotency is per-step, not for the whole function
+ *
+ * It used to bail whenever `invoiceId` was set, which meant a successful raise
+ * followed by a failed send was never retried — one transient SMTP failure left
+ * a permanent draft, and a permanent draft is an invoice the client never sees.
+ * The RAISE is skipped when an invoice already exists (a second invoice would be
+ * a second demand for the same money); the SEND is attempted regardless.
+ * `sendSystemInvoice` refuses an already-sent invoice, so re-entering on every
+ * webhook retry costs nothing and self-heals a send that failed the first time.
  *
  * Failure is logged, not thrown. The signature is valid and recorded; refusing
  * to acknowledge it because an invoice could not be raised would lose the more
@@ -5242,24 +5250,57 @@ const billSignedFeeAgreement = async (
       )
       .limit(1);
 
-    if (!agreement || agreement.invoiceId) return;
+    if (!agreement) return;
 
-    const document = await assembleFeeAgreementDocument(
-      agreement,
-      organizationId,
-    );
+    let invoiceId = agreement.invoiceId;
 
-    await raiseFeeAgreementInvoice(organizationId, actorId ?? null, {
-      agreementId,
-      leadId: agreement.leadId,
-      feeLines: document.feeLines,
-      totalDue: document.totalDue,
-      paymentPlan: document.paymentPlan,
-      twoPaymentsSchedule: document.twoPaymentsSchedule,
-      installmentSchedule: document.installmentSchedule,
-      applyConsultationCredit: document.applyConsultationCredit,
-      consultationFeeAmount: document.consultationFeeAmount,
-    });
+    if (!invoiceId) {
+      const document = await assembleFeeAgreementDocument(
+        agreement,
+        organizationId,
+      );
+
+      invoiceId = await raiseFeeAgreementInvoice(
+        organizationId,
+        actorId ?? null,
+        {
+          agreementId,
+          leadId: agreement.leadId,
+          feeLines: document.feeLines,
+          totalDue: document.totalDue,
+          paymentPlan: document.paymentPlan,
+          twoPaymentsSchedule: document.twoPaymentsSchedule,
+          installmentSchedule: document.installmentSchedule,
+          applyConsultationCredit: document.applyConsultationCredit,
+          consultationFeeAmount: document.consultationFeeAmount,
+        },
+      );
+    }
+
+    // Nothing to bill — a pure contingency with firm-advanced costs. The gate
+    // treats a null invoice as satisfied, which is correct: no money is owed.
+    if (!invoiceId) return;
+
+    // Resolve timing once and act on it once, so the send decision and the
+    // invoice's resulting status cannot disagree. Absent means pay_at_signing:
+    // see the note on `FeeAgreementDetails.paymentTiming`.
+    const timing = agreement.details?.paymentTiming ?? "pay_at_signing";
+
+    if (timing === "pay_at_signing") {
+      await sendFeeAgreementInvoice(organizationId, invoiceId, actorId ?? null);
+    } else {
+      // On the books, but not emailed. Never left as a draft: a lead's draft
+      // invoice is invisible to the finance tab and uneditable in a dialog that
+      // expects a client, so it is a dead end for the staff who have to chase it.
+      await issueFeeAgreementInvoice(
+        organizationId,
+        invoiceId,
+        actorId ?? null,
+        timing === "invoice_after"
+          ? "Fee agreement — invoiced after signing"
+          : "Fee agreement — payable in person",
+      );
+    }
   } catch (err) {
     log.failure("leads.fee_agreement_invoice_failed", err, { agreementId });
   }

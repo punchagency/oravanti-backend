@@ -7,10 +7,12 @@ import { leads } from "../../db/schema/leads";
 import { createModuleLogger } from "../../lib/logging/log";
 import { systemAccess } from "./account-access";
 import { clearingPolicyFor, countsTowardCaseOpening } from "./clearing-policy";
-import { agingOverDues } from "./dues";
+import { sendSystemInvoice } from "./deliveries.service";
 import type { ScheduleRow } from "./instalments";
-import { create, type CreateInvoiceLine } from "./invoices.service";
+import { create, issueInvoice, type CreateInvoiceLine } from "./invoices.service";
+import { agingOverDues } from "./dues";
 import { num, toMoney } from "./money";
+import { settleByAttestation } from "./payments.service";
 import { firmToday } from "./status";
 
 const log = createModuleLogger("fee-agreement-billing.service");
@@ -224,6 +226,49 @@ export const raiseFeeAgreementInvoice = async (
 
   return invoice.id;
 };
+
+/**
+ * Put a signed agreement's invoice in front of the client, however the firm
+ * agreed to collect.
+ *
+ * Wrappers rather than letting `leads` import `deliveries`/`payments` directly.
+ * Those take an `AccountAccess` and `leads` has no concept of one, so a direct
+ * import invites handing `accessForRequest()` to a system path that needs
+ * `systemAccess()` for trust lines — a fee agreement's government fees are
+ * exactly that (see `account-access.ts`). Wrappers make the mistake
+ * unreachable, and keep the logic somewhere `12-finance` can reach it.
+ *
+ * **Never leaves the invoice a draft**, whichever way it goes. Drafts are
+ * excluded from countable invoices and the invoice edit dialog is client-shaped,
+ * so a lead's draft invoice is a dead end — which is precisely how the
+ * fee-agreement gate came to pass unconditionally. `raiseConsultationInvoice`
+ * learned this first; this follows it.
+ */
+export const sendFeeAgreementInvoice = (
+  organizationId: string,
+  invoiceId: string,
+  actorStaffId: string | null,
+) => sendSystemInvoice(organizationId, invoiceId, actorStaffId);
+
+export const issueFeeAgreementInvoice = (
+  organizationId: string,
+  invoiceId: string,
+  actorStaffId: string | null,
+  reason: string,
+) => issueInvoice(organizationId, invoiceId, reason, actorStaffId);
+
+/**
+ * Record that staff say the agreement's upfront payment arrived.
+ *
+ * The case-opening override. Sends the invoice first when it is still a draft,
+ * because `recordPayment` refuses a draft and the gate refuses an undelivered
+ * invoice — see `settleByAttestation`, which carries the reasoning.
+ */
+export const settleFeeAgreementInvoice = (
+  organizationId: string,
+  invoiceId: string,
+  actorStaffId: string | null,
+) => settleByAttestation(organizationId, invoiceId, actorStaffId);
 
 /**
  * Is the fee-agreement invoice paid up enough to open the case?
