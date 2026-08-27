@@ -49,6 +49,7 @@ import {
   refundInvoiceInFull,
 } from "../finance/refunds.service";
 import {
+  feeAgreementInvoiceSummary,
   feeInvoiceSatisfied,
   issueFeeAgreementInvoice,
   raiseFeeAgreementInvoice,
@@ -5609,7 +5610,18 @@ const getFeeAgreement = async (leadId: string, organizationId: string) => {
     .where(eq(feeAgreements.id, lead.feeAgreementId))
     .limit(1);
 
-  return agreement ?? null;
+  if (!agreement) return null;
+
+  // Additive: the agreement row is returned unchanged and the money hangs off
+  // it, so the tracker can render what was billed and whether it reached the
+  // client without a second request.
+  return {
+    ...agreement,
+    invoice: await feeAgreementInvoiceSummary(
+      organizationId,
+      agreement.invoiceId,
+    ),
+  };
 };
 
 // Returns a drafted agreement plus its assembled preview document (so the

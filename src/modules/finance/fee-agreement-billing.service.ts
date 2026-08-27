@@ -12,6 +12,7 @@ import { deliveryEvidence, sendSystemInvoice } from "./deliveries.service";
 import type { ScheduleRow } from "./instalments";
 import { create, issueInvoice, type CreateInvoiceLine } from "./invoices.service";
 import { num, toMoney } from "./money";
+import { amountDueNow } from "./payment-links.service";
 import { settleByAttestation } from "./payments.service";
 import { firmToday } from "./status";
 
@@ -269,6 +270,87 @@ export const settleFeeAgreementInvoice = (
   invoiceId: string,
   actorStaffId: string | null,
 ) => settleByAttestation(organizationId, invoiceId, actorStaffId);
+
+export type FeeAgreementInvoiceSummary = {
+  invoiceId: string;
+  invoiceNumber: string;
+  status: string;
+  total: number;
+  amountPaid: number;
+  balanceDue: number;
+  /** What is being asked for now — the next unpaid instalment, or the balance. */
+  amountDueNow: number;
+  dueDate: string;
+  /**
+   * Whether the client has actually been sent this bill.
+   *
+   * `not_attempted` is the honest state of an agreement whose timing is
+   * `pay_in_person`, and of everything raised before sending existed. `failed`
+   * is the one the tracker has to surface loudly: it is the state in which the
+   * case-opening gate blocks, and the fix — resend — is a click away in Finance.
+   */
+  delivery: "sent" | "failed" | "not_attempted";
+  /** Whether this invoice currently satisfies the case-opening gate. */
+  satisfiesGate: boolean;
+};
+
+/**
+ * The money half of the fee-agreement card, in one read.
+ *
+ * The tracker showed no money at all beyond a "Mark payment received" button,
+ * because there was nothing to show — the invoice was a draft nobody sent. Now
+ * that it is real, staff need to see what was billed, whether it reached the
+ * client, and what is still owed, without leaving the lead for the finance tab.
+ */
+export const feeAgreementInvoiceSummary = async (
+  organizationId: string,
+  invoiceId: string | null,
+): Promise<FeeAgreementInvoiceSummary | null> => {
+  if (!invoiceId) return null;
+
+  const [invoice] = await db
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      status: invoices.status,
+      totalAmount: invoices.totalAmount,
+      amountPaid: invoices.amountPaid,
+      balanceDue: invoices.balanceDue,
+      dueDate: invoices.dueDate,
+    })
+    .from(invoices)
+    .where(
+      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+    )
+    .limit(1);
+
+  if (!invoice) return null;
+
+  const evidence = await deliveryEvidence(organizationId, invoiceId);
+
+  return {
+    invoiceId: invoice.id,
+    invoiceNumber: invoice.invoiceNumber,
+    status: invoice.status,
+    total: num(invoice.totalAmount),
+    amountPaid: num(invoice.amountPaid),
+    balanceDue: num(invoice.balanceDue),
+    amountDueNow: await amountDueNow(
+      organizationId,
+      invoiceId,
+      num(invoice.amountPaid),
+      num(invoice.balanceDue),
+    ),
+    dueDate: invoice.dueDate,
+    delivery:
+      evidence.succeeded > 0
+        ? "sent"
+        : evidence.attempts > 0
+          ? "failed"
+          : "not_attempted",
+    satisfiesGate: await feeInvoiceSatisfied(organizationId, invoiceId),
+  };
+};
 
 /**
  * What this invoice must have collected before a case may open.
