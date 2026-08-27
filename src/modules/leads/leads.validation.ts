@@ -405,6 +405,12 @@ export const generateFeeAgreementBodySchema = z
     paymentPlan: z
       .enum(["pay_in_full", "two_payments", "installments"])
       .default("pay_in_full"),
+    // Defaulted rather than optional: "we never said" and "email it at signing"
+    // must not be distinguishable downstream, or the send decision grows a third
+    // branch nobody chose.
+    paymentTiming: z
+      .enum(["pay_at_signing", "invoice_after", "pay_in_person"])
+      .default("pay_at_signing"),
     twoPaymentsSchedule: z
       .object({
         firstAmount: z.number().positive(),

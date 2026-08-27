@@ -4906,6 +4906,7 @@ const generateFeeAgreement = async (
     otherCosts?: FeeAgreementDetails["otherCosts"];
     governmentFeesPaidBy?: FeeAgreementDetails["governmentFeesPaidBy"];
     paymentPlan?: FeeAgreementDetails["paymentPlan"];
+    paymentTiming?: FeeAgreementDetails["paymentTiming"];
     twoPaymentsSchedule?: FeeAgreementDetails["twoPaymentsSchedule"];
     installmentSchedule?: FeeAgreementDetails["installmentSchedule"];
     paymentAllocation?: FeeAgreementDetails["paymentAllocation"];
@@ -4988,6 +4989,7 @@ const generateFeeAgreement = async (
     ...(data.otherCosts?.length ? { otherCosts: data.otherCosts } : {}),
     governmentFeesPaidBy: data.governmentFeesPaidBy ?? "client_upfront",
     paymentPlan: data.paymentPlan ?? "pay_in_full",
+    paymentTiming: data.paymentTiming ?? "pay_at_signing",
     // Schedules persist only when they match the chosen plan; anything else
     // sent by a stale client is dropped.
     ...(data.paymentPlan === "two_payments" && data.twoPaymentsSchedule
