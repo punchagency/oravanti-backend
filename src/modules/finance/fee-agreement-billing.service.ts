@@ -1,16 +1,16 @@
 import { and, eq, sql } from "drizzle-orm";
-import { db } from "../../db/client";
+import { db, systemDb } from "../../db/client";
 import { feeAgreements } from "../../db/schema/fee-agreements";
+import { invoiceInstalments } from "../../db/schema/invoice-instalments";
 import { invoicePayments } from "../../db/schema/invoice-payments";
 import { invoices } from "../../db/schema/invoices";
 import { leads } from "../../db/schema/leads";
 import { createModuleLogger } from "../../lib/logging/log";
 import { systemAccess } from "./account-access";
 import { clearingPolicyFor, countsTowardCaseOpening } from "./clearing-policy";
-import { sendSystemInvoice } from "./deliveries.service";
+import { deliveryEvidence, sendSystemInvoice } from "./deliveries.service";
 import type { ScheduleRow } from "./instalments";
 import { create, issueInvoice, type CreateInvoiceLine } from "./invoices.service";
-import { agingOverDues } from "./dues";
 import { num, toMoney } from "./money";
 import { settleByAttestation } from "./payments.service";
 import { firmToday } from "./status";
@@ -271,6 +271,45 @@ export const settleFeeAgreementInvoice = (
 ) => settleByAttestation(organizationId, invoiceId, actorStaffId);
 
 /**
+ * What this invoice must have collected before a case may open.
+ *
+ * The first instalment when the agreement is on a plan, the full total when it
+ * is not. A firm that agrees a deposit plus three monthly payments opens the
+ * case on the deposit — waiting for the whole plan would make offering one
+ * pointless — and a missed instalment later does not close the case again; this
+ * is only consulted at open time.
+ *
+ * Replaces an "is anything past due?" test that had a hole in it. On
+ * `pay_in_full` there is no schedule, so nothing is past due until the header
+ * date falls — which let a $1 payment against a $2,400 retainer open a case for
+ * the whole 14-day terms window. Stated as a threshold, `pay_in_full` has no
+ * deposit and its first instalment *is* the total, which is the answer the firm
+ * meant.
+ *
+ * Mirrors `consultationFeeUnsettled` deliberately, half-cent tolerance included:
+ * both answer "have we been paid enough to proceed?" and they should not drift.
+ */
+const requiredBeforeOpening = async (
+  organizationId: string,
+  invoiceId: string,
+  totalAmount: number,
+): Promise<number> => {
+  const [first] = await systemDb
+    .select({ amount: invoiceInstalments.amount })
+    .from(invoiceInstalments)
+    .where(
+      and(
+        eq(invoiceInstalments.organizationId, organizationId),
+        eq(invoiceInstalments.invoiceId, invoiceId),
+      ),
+    )
+    .orderBy(invoiceInstalments.sequence)
+    .limit(1);
+
+  return first ? num(first.amount) : totalAmount;
+};
+
+/**
  * Is the fee-agreement invoice paid up enough to open the case?
  *
  * "Nothing overdue, and enough money that counts." A firm that agrees a deposit
@@ -299,6 +338,24 @@ export const settleFeeAgreementInvoice = (
  *
  * Returns true when there is no invoice at all: an agreement that bills nothing
  * upfront has nothing to satisfy.
+ *
+ * ## The draft branch
+ *
+ * A draft used to pass unconditionally, on the reasoning that an invoice which
+ * was never sent is one the client was never asked to pay. The reasoning was
+ * sound and the conclusion was still wrong, because at the time NOTHING sent a
+ * fee-agreement invoice — so every invoice was a draft, and this gate passed
+ * unconditionally instead. Raising invoices had removed the check it was meant
+ * to enforce.
+ *
+ * It now distinguishes absence of evidence from evidence of failure:
+ *
+ *   - zero send attempts  → pass. Every agreement predating invoicing is here,
+ *                           and this is the literal truth of the old comment.
+ *   - attempts, none sent → BLOCK. Positive evidence the client was never
+ *                           billed. Visible as a `failed` delivery row with a
+ *                           reason, fixable by resending, and overridable
+ *                           through `settleFeeAgreementInvoice`.
  */
 export const feeInvoiceSatisfied = async (
   organizationId: string,
@@ -326,29 +383,33 @@ export const feeInvoiceSatisfied = async (
   // client paid and got the money back — they have not paid, so the case should
   // stay shut. Falling through to the counted-money test below gets that right
   // on its own: the reversal nets the payment out and `counted` is zero.
-  // Still a draft: it was never sent, so the client has not been asked. Do not
-  // hold the case hostage to a billing step the firm has not completed.
-  if (invoice.status === "draft") return true;
+  if (invoice.status === "draft") {
+    const { attempts, succeeded } = await deliveryEvidence(
+      organizationId,
+      invoiceId,
+    );
+    // Delivered and somehow still a draft: the client has the bill, so the
+    // absence of payment is the answer, not the absence of a demand.
+    if (succeeded > 0) return false;
+    return attempts === 0;
+  }
 
-  // Deliberately BEFORE the `paid` short-circuit that used to sit above.
-  // `status` is derived from `amount_paid`, which is gross of settlement, so an
-  // invoice paid in full by a card that has not deposited reads as "paid" — and
-  // returning true on that would wave through exactly the money this gate
-  // exists to wait for, under every policy including all_payments.
+  // Deliberately BEFORE any `paid` short-circuit. `status` is derived from
+  // `amount_paid`, which is gross of settlement, so an invoice paid in full by a
+  // card that has not deposited reads as "paid" — and returning true on that
+  // would wave through exactly the money this gate exists to wait for, under
+  // every policy including all_payments.
   const counted = await countedPaid(organizationId, invoiceId);
-  if (counted <= 0) return false;
-
-  // Covered outright by money that counts. Equivalent to the old `paid`
-  // short-circuit, but measured against cleared money rather than reported.
-  if (counted - num(invoice.totalAmount) >= -0.005) return true;
-
-  const today = await firmToday(organizationId);
-  const overdue = await agingOverDues(
+  const required = await requiredBeforeOpening(
     organizationId,
-    today,
-    eq(invoices.id, invoiceId),
+    invoiceId,
+    num(invoice.totalAmount),
   );
-  return num(overdue.pastDue) <= 0;
+
+  // Half a cent, matching `consultationFeeUnsettled`, so an instalment that
+  // divides badly cannot hold a case shut over a rounding artefact the client
+  // has no way to pay off.
+  return counted >= required - 0.005;
 };
 
 /**
