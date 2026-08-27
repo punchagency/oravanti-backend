@@ -496,9 +496,14 @@ export class AgreementsRouter {
       ctrl.markFeeAgreementReceived,
     );
 
+    // Gated like every other money route now that it writes to the ledger.
+    // Marking payment received used to set a flag in a JSON blob; it now records
+    // an `invoice_payments` row, which is the same act as Finance's
+    // "Record payment" and belongs behind the same permission.
     this.router.post(
       "/:agreementId/mark-payment-received",
       requireAuth,
+      requirePermission({ finance: ["record_payment"] }),
       validateRequest({ params: v.agreementIdParamsSchema }),
       ctrl.markFeeAgreementPaymentReceived,
     );

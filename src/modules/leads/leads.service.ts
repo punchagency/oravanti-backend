@@ -53,6 +53,7 @@ import {
   issueFeeAgreementInvoice,
   raiseFeeAgreementInvoice,
   sendFeeAgreementInvoice,
+  settleFeeAgreementInvoice,
 } from "../finance/fee-agreement-billing.service";
 import { consultationLocations } from "../../db/schema/consultation-locations";
 import { consultationSettings } from "../../db/schema/consultation-settings";
@@ -5500,6 +5501,32 @@ const markFeeAgreementPaymentReceived = async (
   if (!agreement.details)
     throw new BadRequestError("This agreement predates payment tracking");
 
+  // The ledger write comes FIRST, and its failures propagate.
+  //
+  // A send is best-effort decoration on a workflow step; an attestation is the
+  // entire content of this request. Flipping the flag first and recording the
+  // money afterwards on a best-effort basis is exactly how the old version
+  // drifted: it wrote `paymentReceivedAt`, advanced the lead, and left the
+  // invoice outstanding forever beside a case already being worked. Either both
+  // move or neither does.
+  if (agreement.invoiceId) {
+    const settled = await settleFeeAgreementInvoice(
+      organizationId,
+      agreement.invoiceId,
+      actorId ?? null,
+    );
+
+    // `settleByAttestation` sends a draft before recording, so reaching here
+    // means the send was refused or failed and the client genuinely has no bill.
+    // Recording a payment against an invoice nobody received would open a case
+    // on money the client was never asked for.
+    if (!settled.recorded && settled.reason === "undelivered") {
+      throw new BadRequestError(
+        "This agreement's invoice could not be delivered to the client, so a payment cannot be recorded against it. Resend the invoice from Finance, then try again.",
+      );
+    }
+  }
+
   // Idempotent: repeat calls keep the original timestamp.
   let paymentReceivedAt = agreement.details.paymentReceivedAt ?? null;
   const now = new Date();
@@ -5524,14 +5551,37 @@ const markFeeAgreementPaymentReceived = async (
     });
   }
 
-  // Payment was the last missing gate condition once signed.
+  // Payment was the last missing gate condition once signed — but ask the gate
+  // rather than assuming, so all four advance paths agree on one predicate.
+  // A bare `status === "signed"` was how this path jumped the invoice check
+  // entirely: it advanced on the flag it had just written, which is not what the
+  // gate consults once an invoice exists.
+  //
+  // Re-read: `settleFeeAgreementInvoice` has just written to the ledger, and the
+  // gate is about to count it.
   if (agreement.status === "signed") {
-    await advanceLeadToCaseOpening(
-      agreement.leadId,
-      organizationId,
-      now,
-      actorId,
-    );
+    const [settledAgreement] = await db
+      .select({
+        invoiceId: feeAgreements.invoiceId,
+        details: feeAgreements.details,
+      })
+      .from(feeAgreements)
+      .where(eq(feeAgreements.id, agreementId))
+      .limit(1);
+
+    if (
+      await feeAgreementPaymentSatisfied(
+        organizationId,
+        settledAgreement ?? agreement,
+      )
+    ) {
+      await advanceLeadToCaseOpening(
+        agreement.leadId,
+        organizationId,
+        now,
+        actorId,
+      );
+    }
   }
 
   return {
