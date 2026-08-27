@@ -5340,6 +5340,70 @@ const advanceLeadToCaseOpening = async (
   }
 };
 
+/**
+ * Open the case now that the fee agreement's own invoice has been paid.
+ *
+ * The fee-agreement counterpart to `settleConsultationForInvoice`, and called
+ * from the same place — the tail of `recordConfidoTransaction` — for the same
+ * reason: this must be downstream of money actually arriving, not of a button
+ * being clicked. Without it, a client who signed and then paid online stayed at
+ * `fee_agreement` forever, because the only paths that re-checked the gate were
+ * the signature webhook (which fires before payment) and a staff member marking
+ * it received by hand.
+ *
+ * Deliberately re-asks `feeAgreementPaymentSatisfied` rather than assuming the
+ * money is enough. This fires on every leg of every payment: a part payment
+ * against an instalment plan lands here too, and only the gate knows whether it
+ * cleared the threshold or whether the firm's clearing policy is still waiting
+ * on an ACH.
+ *
+ * Idempotent — `advanceLeadToCaseOpening` on a lead already there is a no-op
+ * write plus a stage-change event from `case_opening` to itself, which
+ * `logStageChange` filters.
+ */
+export const settleFeeAgreementForInvoice = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<void> => {
+  const [agreement] = await db
+    .select({
+      id: feeAgreements.id,
+      leadId: feeAgreements.leadId,
+      status: feeAgreements.status,
+      invoiceId: feeAgreements.invoiceId,
+      details: feeAgreements.details,
+    })
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.organizationId, organizationId),
+        eq(feeAgreements.invoiceId, invoiceId),
+      ),
+    )
+    .limit(1);
+
+  // Not a fee-agreement invoice, or the client paid before signing — which is
+  // allowed (firms collect at signing), but the signature is the other half of
+  // the gate and the e-signature webhook will re-check it.
+  if (!agreement || agreement.status !== "signed") return;
+
+  if (!(await feeAgreementPaymentSatisfied(organizationId, agreement))) return;
+
+  await advanceLeadToCaseOpening(
+    agreement.leadId,
+    organizationId,
+    new Date(),
+    // The client paid through the provider, so there is no staff actor. Leave it
+    // null rather than attributing the advance to whoever sent the invoice.
+    null,
+  );
+
+  log.action(LogEvent.LEADS_FEE_AGREEMENT_PAYMENT_SETTLED, {
+    agreementId: agreement.id,
+    invoiceId,
+  });
+};
+
 // Staff manually confirms receipt of the signed document: mark the agreement
 // signed and advance the lead to the case-opening stage (the manual equivalent
 // of the e-signature webhook).

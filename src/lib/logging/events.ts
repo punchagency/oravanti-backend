@@ -305,6 +305,7 @@ export const LogEvent = {
   LEADS_CONSULTATION_INVOICE_VOID_FAILED:
     "leads.consultation_invoice_void_failed",
   LEADS_FEE_AGREEMENT_INVOICE_FAILED: "leads.fee_agreement_invoice_failed",
+  LEADS_FEE_AGREEMENT_PAYMENT_SETTLED: "leads.fee_agreement_payment_settled",
 
   // ── Lead workflow ─────────────────────────────────────────────────────────
   LEAD_WORKFLOW_CREATED: "lead_workflow.created",
@@ -474,6 +475,9 @@ export const LogEvent = {
    */
   PAYMENT_WEBHOOK_CONSULTATION_SETTLEMENT_FAILED:
     "payment_webhook.consultation_settlement_failed",
+  /** Same shape, same reasoning, for the fee agreement's case-opening gate. */
+  PAYMENT_WEBHOOK_FEE_AGREEMENT_SETTLEMENT_FAILED:
+    "payment_webhook.fee_agreement_settlement_failed",
   PAYMENT_WEBHOOK_STALE_EVENTS_FOUND: "payment_webhook.stale_events_found",
   PAYMENT_WEBHOOK_STALENESS_SWEEP_FAILED:
     "payment_webhook.staleness_sweep_failed",
