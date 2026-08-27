@@ -37,10 +37,16 @@ import { leads } from "../../src/db/schema/leads";
 import { practiceAreaCaseTypes } from "../../src/db/schema/practice-area-case-types";
 import { practiceAreaSubcategories } from "../../src/db/schema/practice-area-subcategories";
 import { practiceAreas } from "../../src/db/schema/practice-areas";
+import { financialAccessControls } from "../../src/db/schema/financial-access-controls";
+import { seedFinancialAccessControls } from "../../src/db/seeds/financial-access-controls.seed";
+import { FinancialAccessService } from "../../src/modules/settings/financial-access/financial-access.service";
 import { staff } from "../../src/db/schema/staff";
 import { teamMembers } from "../../src/db/schema/team-members";
 import { timeEntries } from "../../src/db/schema/time-entries";
-import { pickFinanceRole } from "../../src/modules/finance/account-access";
+import {
+  pickFinanceRole,
+  resolveAccountAccess,
+} from "../../src/modules/finance/account-access";
 import {
   resolveBillingRate,
   setBillingRate,
@@ -75,6 +81,8 @@ import {
   silenceEmail,
   withOrgContext,
 } from "./_bootstrap";
+
+const financialAccess = new FinancialAccessService();
 
 const FULL: AccountAccess = { operating: "full_access", trust: "full_access" };
 const NO_TRUST: AccountAccess = { operating: "full_access", trust: "no_access" };
@@ -3189,6 +3197,129 @@ const main = async () => {
         feed.some((e) => e.description != null),
         "description is null throughout — logFinanceEvent is dropping it again",
       );
+
+      // ── Financial access ──────────────────────────────────────────────────
+      // The gate that decides who may see and touch trust money. Every
+      // assertion above passes a hardcoded `AccountAccess`, so until now
+      // NOTHING exercised the resolver that produces one in a real request —
+      // which is how a firm could be locked out of its own trust data by an
+      // empty table, with no way to grant access from inside the product.
+      section("financial access");
+
+      // Deny-by-default, before anything is configured. Trust money is the
+      // money a firm gets disbarred for mishandling, so an unconfigured firm
+      // sees none of it; operating is the firm's own revenue and stays open.
+      const bare = await resolveAccountAccess(orgId, "admin");
+      checkEqual("an unconfigured firm grants no trust access", bare.trust, "no_access");
+      checkEqual("but operating stays open", bare.operating, "full_access");
+
+      // An unrecognised role never reached the table at all — it returns the
+      // defaults early. Worth pinning: it is why "Super admin" had to map onto
+      // a `permission_role_enum` value rather than being passed through.
+      const unknownRole = await resolveAccountAccess(orgId, "receptionist");
+      checkEqual("an unmapped role gets the defaults", unknownRole.trust, "no_access");
+
+      await seedFinancialAccessControls(orgId);
+
+      const seededAdmin = await resolveAccountAccess(orgId, "admin");
+      checkEqual("a seeded firm grants admins trust access", seededAdmin.trust, "full_access");
+      // The Super admin path this was reported through: `member.role = owner`
+      // is mapped onto `admin` for the lookup, because permission_role_enum has
+      // no `owner` value and an owner may have no staff row at all.
+      const seededOwner = await resolveAccountAccess(orgId, "owner");
+      checkEqual("and resolves an owner as an admin", seededOwner.trust, "full_access");
+      checkEqual(
+        "attorneys see trust but cannot write it",
+        (await resolveAccountAccess(orgId, "attorney")).trust,
+        "view_only",
+      );
+      checkEqual(
+        "paralegals see none of it",
+        (await resolveAccountAccess(orgId, "paralegal")).trust,
+        "no_access",
+      );
+
+      // Re-seeding must not disturb a firm that has since changed its matrix.
+      await financialAccess.updateFinancialAccess(orgId, [
+        { accountType: "trust_iolta", role: "attorney", permission: "no_access" },
+      ]);
+      await seedFinancialAccessControls(orgId);
+      checkEqual(
+        "re-seeding does not overwrite a firm's own choice",
+        (await resolveAccountAccess(orgId, "attorney")).trust,
+        "no_access",
+      );
+
+      // The regression this fix exists for. `updateFinancialAccess` was an
+      // UPDATE, so on a firm with no rows it matched nothing, wrote nothing,
+      // recorded an audit event and returned success — leaving the firm locked
+      // out with no indication why.
+      const emptyOrgId = `fin-check-fa-${randomUUID()}`;
+      await systemDb.insert(organization).values({
+        id: emptyOrgId,
+        name: "Empty Financial Access Firm",
+        slug: emptyOrgId,
+        createdAt: new Date(),
+      });
+
+      checkEqual(
+        "a firm starts with no controls at all",
+        (
+          await systemDb
+            .select({ n: sql<number>`count(*)::int` })
+            .from(financialAccessControls)
+            .where(eq(financialAccessControls.organizationId, emptyOrgId))
+        )[0]?.n,
+        0,
+      );
+
+      await financialAccess.updateFinancialAccess(emptyOrgId, [
+        { accountType: "trust_iolta", role: "admin", permission: "full_access" },
+      ]);
+      const createdByUpsert = await resolveAccountAccess(emptyOrgId, "admin");
+      check(
+        "updating a firm with no rows CREATES the row",
+        createdByUpsert.trust === "full_access",
+        "the upsert regressed to an UPDATE — a firm with no rows cannot grant " +
+          `itself access (trust resolved to ${createdByUpsert.trust})`,
+      );
+
+      await financialAccess.updateFinancialAccess(emptyOrgId, [
+        { accountType: "trust_iolta", role: "admin", permission: "view_only" },
+      ]);
+      checkEqual(
+        "and updating it again changes rather than duplicates",
+        (await resolveAccountAccess(emptyOrgId, "admin")).trust,
+        "view_only",
+      );
+      checkEqual(
+        "leaving exactly one row",
+        (
+          await systemDb
+            .select({ n: sql<number>`count(*)::int` })
+            .from(financialAccessControls)
+            .where(eq(financialAccessControls.organizationId, emptyOrgId))
+        )[0]?.n,
+        1,
+      );
+
+      // Enum values are checked before the write: the route validates that the
+      // body holds a non-empty array, not what is inside it, so an unrecognised
+      // string would otherwise reach Postgres as a 500.
+      let badEnumRejected = false;
+      try {
+        await financialAccess.updateFinancialAccess(emptyOrgId, [
+          { accountType: "trust_iolta", role: "admin", permission: "sudo" },
+        ]);
+      } catch {
+        badEnumRejected = true;
+      }
+      check("an unknown permission is refused, not sent to Postgres", badEnumRejected);
+
+      await systemDb
+        .delete(financialAccessControls)
+        .where(eq(financialAccessControls.organizationId, emptyOrgId));
+      await systemDb.delete(organization).where(eq(organization.id, emptyOrgId));
     });
   } finally {
     // ── Cleanup ──────────────────────────────────────────────────────────────
@@ -3245,6 +3376,9 @@ const main = async () => {
     await systemDb
       .delete(paymentWebhookEvents)
       .where(eq(paymentWebhookEvents.eventId, "evt_check_1"));
+    await systemDb
+      .delete(financialAccessControls)
+      .where(eq(financialAccessControls.organizationId, orgId));
     await systemDb.delete(auditEvents).where(eq(auditEvents.organizationId, orgId));
     await systemDb.delete(invoices).where(eq(invoices.organizationId, orgId));
     await systemDb
