@@ -637,6 +637,13 @@ export class LeadsController {
     sendSuccess(res, result, "Signing session retrieved successfully");
   };
 
+  getAgreementPaymentSession = async (req: Request, res: Response) => {
+    const result = await this.svc.getAgreementPaymentSession(
+      req.params.token as string,
+    );
+    sendSuccess(res, result, "Payment session retrieved successfully");
+  };
+
   // Dropbox Sign Webhook (public)
 
   handleDropboxSignWebhook = async (req: Request, res: Response) => {

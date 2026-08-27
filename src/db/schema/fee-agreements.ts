@@ -46,6 +46,26 @@ export type FeeAgreementDetails = {
   // Who fronts government fees. Absent on old rows → treated as "client_upfront".
   governmentFeesPaidBy?: "client_upfront" | "firm_advanced";
   paymentPlan: "pay_in_full" | "two_payments" | "installments";
+  /**
+   * How the firm collects what this agreement charges upfront.
+   *
+   * Mirrors `consultations.payment_timing`, deliberately — a firm that takes a
+   * card at signing for consultations does the same for retainers, and two
+   * vocabularies for one question would be two things to keep in step.
+   *
+   *   pay_at_signing — the invoice is emailed the moment the agreement is
+   *                    signed, and the signing page offers to take payment
+   *                    there and then
+   *   invoice_after  — put on the books at signing but not emailed; staff send
+   *                    it from Finance when they are ready
+   *   pay_in_person  — never emailed; staff attest the payment when it arrives
+   *
+   * Absent on rows generated before this existed → treated as
+   * `pay_at_signing`. Safe because sending only ever happens inside
+   * `billSignedFeeAgreement`, which runs at signing: an agreement signed before
+   * this shipped never re-enters that path and is never retroactively billed.
+   */
+  paymentTiming?: "pay_at_signing" | "invoice_after" | "pay_in_person";
   // Concrete schedules — present iff the matching paymentPlan was chosen.
   twoPaymentsSchedule?: {
     // First payment is due at signing.

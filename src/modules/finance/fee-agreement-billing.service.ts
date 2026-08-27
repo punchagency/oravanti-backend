@@ -1,16 +1,20 @@
 import { and, eq, sql } from "drizzle-orm";
-import { db } from "../../db/client";
+import { db, systemDb } from "../../db/client";
 import { feeAgreements } from "../../db/schema/fee-agreements";
+import { invoiceInstalments } from "../../db/schema/invoice-instalments";
 import { invoicePayments } from "../../db/schema/invoice-payments";
 import { invoices } from "../../db/schema/invoices";
 import { leads } from "../../db/schema/leads";
 import { createModuleLogger } from "../../lib/logging/log";
 import { systemAccess } from "./account-access";
 import { clearingPolicyFor, countsTowardCaseOpening } from "./clearing-policy";
-import { agingOverDues } from "./dues";
+import { deliveryEvidence, sendSystemInvoice } from "./deliveries.service";
 import type { ScheduleRow } from "./instalments";
-import { create, type CreateInvoiceLine } from "./invoices.service";
+import { agingOverDues } from "./dues";
+import { create, issueInvoice, type CreateInvoiceLine } from "./invoices.service";
 import { num, toMoney } from "./money";
+import { amountDueNow } from "./payment-links.service";
+import { settleByAttestation } from "./payments.service";
 import { firmToday } from "./status";
 
 const log = createModuleLogger("fee-agreement-billing.service");
@@ -226,6 +230,169 @@ export const raiseFeeAgreementInvoice = async (
 };
 
 /**
+ * Put a signed agreement's invoice in front of the client, however the firm
+ * agreed to collect.
+ *
+ * Wrappers rather than letting `leads` import `deliveries`/`payments` directly.
+ * Those take an `AccountAccess` and `leads` has no concept of one, so a direct
+ * import invites handing `accessForRequest()` to a system path that needs
+ * `systemAccess()` for trust lines — a fee agreement's government fees are
+ * exactly that (see `account-access.ts`). Wrappers make the mistake
+ * unreachable, and keep the logic somewhere `12-finance` can reach it.
+ *
+ * **Never leaves the invoice a draft**, whichever way it goes. Drafts are
+ * excluded from countable invoices and the invoice edit dialog is client-shaped,
+ * so a lead's draft invoice is a dead end — which is precisely how the
+ * fee-agreement gate came to pass unconditionally. `raiseConsultationInvoice`
+ * learned this first; this follows it.
+ */
+export const sendFeeAgreementInvoice = (
+  organizationId: string,
+  invoiceId: string,
+  actorStaffId: string | null,
+) => sendSystemInvoice(organizationId, invoiceId, actorStaffId);
+
+export const issueFeeAgreementInvoice = (
+  organizationId: string,
+  invoiceId: string,
+  actorStaffId: string | null,
+  reason: string,
+) => issueInvoice(organizationId, invoiceId, reason, actorStaffId);
+
+/**
+ * Record that staff say the agreement's upfront payment arrived.
+ *
+ * The case-opening override. Sends the invoice first when it is still a draft,
+ * because `recordPayment` refuses a draft and the gate refuses an undelivered
+ * invoice — see `settleByAttestation`, which carries the reasoning.
+ */
+export const settleFeeAgreementInvoice = (
+  organizationId: string,
+  invoiceId: string,
+  actorStaffId: string | null,
+) => settleByAttestation(organizationId, invoiceId, actorStaffId);
+
+export type FeeAgreementInvoiceSummary = {
+  invoiceId: string;
+  invoiceNumber: string;
+  status: string;
+  total: number;
+  amountPaid: number;
+  balanceDue: number;
+  /** What is being asked for now — the next unpaid instalment, or the balance. */
+  amountDueNow: number;
+  dueDate: string;
+  /**
+   * Whether the client has actually been sent this bill.
+   *
+   * `not_attempted` is the honest state of an agreement whose timing is
+   * `pay_in_person`, and of everything raised before sending existed. `failed`
+   * is the one the tracker has to surface loudly: it is the state in which the
+   * case-opening gate blocks, and the fix — resend — is a click away in Finance.
+   */
+  delivery: "sent" | "failed" | "not_attempted";
+  /** Whether this invoice currently satisfies the case-opening gate. */
+  satisfiesGate: boolean;
+};
+
+/**
+ * The money half of the fee-agreement card, in one read.
+ *
+ * The tracker showed no money at all beyond a "Mark payment received" button,
+ * because there was nothing to show — the invoice was a draft nobody sent. Now
+ * that it is real, staff need to see what was billed, whether it reached the
+ * client, and what is still owed, without leaving the lead for the finance tab.
+ */
+export const feeAgreementInvoiceSummary = async (
+  organizationId: string,
+  invoiceId: string | null,
+): Promise<FeeAgreementInvoiceSummary | null> => {
+  if (!invoiceId) return null;
+
+  const [invoice] = await db
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      status: invoices.status,
+      totalAmount: invoices.totalAmount,
+      amountPaid: invoices.amountPaid,
+      balanceDue: invoices.balanceDue,
+      dueDate: invoices.dueDate,
+    })
+    .from(invoices)
+    .where(
+      and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)),
+    )
+    .limit(1);
+
+  if (!invoice) return null;
+
+  const evidence = await deliveryEvidence(organizationId, invoiceId);
+
+  return {
+    invoiceId: invoice.id,
+    invoiceNumber: invoice.invoiceNumber,
+    status: invoice.status,
+    total: num(invoice.totalAmount),
+    amountPaid: num(invoice.amountPaid),
+    balanceDue: num(invoice.balanceDue),
+    amountDueNow: await amountDueNow(
+      organizationId,
+      invoiceId,
+      num(invoice.amountPaid),
+      num(invoice.balanceDue),
+    ),
+    dueDate: invoice.dueDate,
+    delivery:
+      evidence.succeeded > 0
+        ? "sent"
+        : evidence.attempts > 0
+          ? "failed"
+          : "not_attempted",
+    satisfiesGate: await feeInvoiceSatisfied(organizationId, invoiceId),
+  };
+};
+
+/**
+ * What this invoice must have collected before a case may open.
+ *
+ * The first instalment when the agreement is on a plan, the full total when it
+ * is not. A firm that agrees a deposit plus three monthly payments opens the
+ * case on the deposit — waiting for the whole plan would make offering one
+ * pointless — and a missed instalment later does not close the case again; this
+ * is only consulted at open time.
+ *
+ * Replaces an "is anything past due?" test that had a hole in it. On
+ * `pay_in_full` there is no schedule, so nothing is past due until the header
+ * date falls — which let a $1 payment against a $2,400 retainer open a case for
+ * the whole 14-day terms window. Stated as a threshold, `pay_in_full` has no
+ * deposit and its first instalment *is* the total, which is the answer the firm
+ * meant.
+ *
+ * Mirrors `consultationFeeUnsettled` deliberately, half-cent tolerance included:
+ * both answer "have we been paid enough to proceed?" and they should not drift.
+ */
+const requiredBeforeOpening = async (
+  organizationId: string,
+  invoiceId: string,
+  totalAmount: number,
+): Promise<number> => {
+  const [first] = await systemDb
+    .select({ amount: invoiceInstalments.amount })
+    .from(invoiceInstalments)
+    .where(
+      and(
+        eq(invoiceInstalments.organizationId, organizationId),
+        eq(invoiceInstalments.invoiceId, invoiceId),
+      ),
+    )
+    .orderBy(invoiceInstalments.sequence)
+    .limit(1);
+
+  return first ? num(first.amount) : totalAmount;
+};
+
+/**
  * Is the fee-agreement invoice paid up enough to open the case?
  *
  * "Nothing overdue, and enough money that counts." A firm that agrees a deposit
@@ -254,6 +421,24 @@ export const raiseFeeAgreementInvoice = async (
  *
  * Returns true when there is no invoice at all: an agreement that bills nothing
  * upfront has nothing to satisfy.
+ *
+ * ## The draft branch
+ *
+ * A draft used to pass unconditionally, on the reasoning that an invoice which
+ * was never sent is one the client was never asked to pay. The reasoning was
+ * sound and the conclusion was still wrong, because at the time NOTHING sent a
+ * fee-agreement invoice — so every invoice was a draft, and this gate passed
+ * unconditionally instead. Raising invoices had removed the check it was meant
+ * to enforce.
+ *
+ * It now distinguishes absence of evidence from evidence of failure:
+ *
+ *   - zero send attempts  → pass. Every agreement predating invoicing is here,
+ *                           and this is the literal truth of the old comment.
+ *   - attempts, none sent → BLOCK. Positive evidence the client was never
+ *                           billed. Visible as a `failed` delivery row with a
+ *                           reason, fixable by resending, and overridable
+ *                           through `settleFeeAgreementInvoice`.
  */
 export const feeInvoiceSatisfied = async (
   organizationId: string,
@@ -281,26 +466,44 @@ export const feeInvoiceSatisfied = async (
   // client paid and got the money back — they have not paid, so the case should
   // stay shut. Falling through to the counted-money test below gets that right
   // on its own: the reversal nets the payment out and `counted` is zero.
-  // Still a draft: it was never sent, so the client has not been asked. Do not
-  // hold the case hostage to a billing step the firm has not completed.
-  if (invoice.status === "draft") return true;
+  if (invoice.status === "draft") {
+    const { attempts, succeeded } = await deliveryEvidence(
+      organizationId,
+      invoiceId,
+    );
+    // Delivered and somehow still a draft: the client has the bill, so the
+    // absence of payment is the answer, not the absence of a demand.
+    if (succeeded > 0) return false;
+    return attempts === 0;
+  }
 
-  // Deliberately BEFORE the `paid` short-circuit that used to sit above.
-  // `status` is derived from `amount_paid`, which is gross of settlement, so an
-  // invoice paid in full by a card that has not deposited reads as "paid" — and
-  // returning true on that would wave through exactly the money this gate
-  // exists to wait for, under every policy including all_payments.
+  // Deliberately BEFORE any `paid` short-circuit. `status` is derived from
+  // `amount_paid`, which is gross of settlement, so an invoice paid in full by a
+  // card that has not deposited reads as "paid" — and returning true on that
+  // would wave through exactly the money this gate exists to wait for, under
+  // every policy including all_payments.
   const counted = await countedPaid(organizationId, invoiceId);
-  if (counted <= 0) return false;
+  const required = await requiredBeforeOpening(
+    organizationId,
+    invoiceId,
+    num(invoice.totalAmount),
+  );
 
-  // Covered outright by money that counts. Equivalent to the old `paid`
-  // short-circuit, but measured against cleared money rather than reported.
-  if (counted - num(invoice.totalAmount) >= -0.005) return true;
+  // Half a cent, matching `consultationFeeUnsettled`, so an instalment that
+  // divides badly cannot hold a case shut over a rounding artefact the client
+  // has no way to pay off.
+  if (counted < required - 0.005) return false;
 
-  const today = await firmToday(organizationId);
+  // Cleared the threshold, and still nothing late.
+  //
+  // Both conditions, not either. The threshold alone would open a case for a
+  // client who paid a deposit and then went delinquent before anyone got round
+  // to opening it — this is only consulted at open time, so "they are behind
+  // right now" is exactly the question being asked. The past-due test alone was
+  // the previous behaviour and had the `pay_in_full` hole above.
   const overdue = await agingOverDues(
     organizationId,
-    today,
+    await firmToday(organizationId),
     eq(invoices.id, invoiceId),
   );
   return num(overdue.pastDue) <= 0;

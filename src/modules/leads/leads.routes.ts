@@ -496,9 +496,14 @@ export class AgreementsRouter {
       ctrl.markFeeAgreementReceived,
     );
 
+    // Gated like every other money route now that it writes to the ledger.
+    // Marking payment received used to set a flag in a JSON blob; it now records
+    // an `invoice_payments` row, which is the same act as Finance's
+    // "Record payment" and belongs behind the same permission.
     this.router.post(
       "/:agreementId/mark-payment-received",
       requireAuth,
+      requirePermission({ finance: ["record_payment"] }),
       validateRequest({ params: v.agreementIdParamsSchema }),
       ctrl.markFeeAgreementPaymentReceived,
     );
@@ -561,6 +566,14 @@ export class AgreementSigningRouter {
       "/:token/session",
       validateRequest({ params: v.agreementSigningTokenParamsSchema }),
       ctrl.getEmbeddedSignSession,
+    );
+
+    // Polled by the signing page after the client signs: the invoice is raised
+    // by the Dropbox Sign webhook, which is not synchronous with the signature.
+    this.router.post(
+      "/:token/payment-session",
+      validateRequest({ params: v.agreementSigningTokenParamsSchema }),
+      ctrl.getAgreementPaymentSession,
     );
   }
 }
