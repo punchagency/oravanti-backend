@@ -1,7 +1,9 @@
 import { and, count, desc, eq, type SQL } from "drizzle-orm";
 import { db } from "../../db/client";
 import { notifications } from "../../db/schema/notifications";
-import { isEmailDeliveryTrackingConfigured } from "../../notifications/sms/sms.provider";
+import {
+  isEmailDeliveryTrackingConfigured,
+} from "../../notifications/sms/sms.provider";
 import {
   buildPaginatedResponse,
   getPaginationOffset,
