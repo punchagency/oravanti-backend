@@ -54,6 +54,29 @@ const defaults = [
     role: "client" as const,
     permission: "no_access" as const,
   },
+  // Added when the role enum widened. Both mirror what these roles resolved to
+  // BEFORE they were mappable — operating open via `OPERATING_DEFAULT`, no
+  // trust — so widening the enum changes nothing until a firm opts in.
+  {
+    accountType: "operating" as const,
+    role: "legal_assistant" as const,
+    permission: "full_access" as const,
+  },
+  {
+    accountType: "trust_iolta" as const,
+    role: "legal_assistant" as const,
+    permission: "no_access" as const,
+  },
+  {
+    accountType: "operating" as const,
+    role: "receptionist" as const,
+    permission: "full_access" as const,
+  },
+  {
+    accountType: "trust_iolta" as const,
+    role: "receptionist" as const,
+    permission: "no_access" as const,
+  },
 ];
 
 /**

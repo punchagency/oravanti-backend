@@ -95,7 +95,6 @@ const UNGATED_BUDGET: Record<string, number> = {
   "payments-public": 3,
   "approval-workflows": 2,
   "data-access": 2,
-  "financial-access": 2,
   "firm-info": 2,
   "revenue-analytics": 2,
   "confido-webhooks": 1,
@@ -112,7 +111,7 @@ const UNGATED_BUDGET: Record<string, number> = {
 };
 
 /** Total ungated routes when last measured. Ratcheted downward only. */
-const UNGATED_ROUTE_BUDGET = 86;
+const UNGATED_ROUTE_BUDGET = 67;
 
 describe("route authorization coverage", () => {
   it("discovers the route modules", () => {

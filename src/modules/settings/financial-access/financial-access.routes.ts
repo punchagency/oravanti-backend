@@ -7,6 +7,7 @@
 import { Router } from "express";
 
 import { requireAuth } from "../../../middleware/auth.middleware";
+import { requirePermission } from "../../../middleware/permission.middleware";
 import { resolveActorContext } from "../../../middleware/resolve-actor-context";
 import { CommonValidation } from "../../../validation/common.validation";
 
@@ -34,6 +35,17 @@ export class FinancialAccessRouter {
   private initializeRoutes() {
     this.router.use(requireAuth);
     this.router.use(resolveActorContext);
+    /**
+     * Deciding who may see and touch trust money is a firm-configuration act,
+     * not an operational one — the same class as connecting the payment
+     * processor, and gated the same way.
+     *
+     * This route had no permission at all, so any authenticated member of the
+     * firm could grant themselves IOLTA access. `configure` rather than
+     * `update`, deliberately: `update` is invoice editing, and widening who may
+     * edit an invoice must never silently widen who may re-cut this matrix.
+     */
+    this.router.use(requirePermission({ finance: ["configure"] }));
 
     /**
      * @openapi

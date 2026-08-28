@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../../../db/client";
 import { financialAccessControls } from "../../../db/schema";
 import {
@@ -6,6 +6,13 @@ import {
   permissionLevelEnum,
   permissionRoleEnum,
 } from "../../../db/schema/financial-access-controls";
+import { member } from "../../../db/schema/auth-schema";
+import { staff } from "../../../db/schema/staff";
+import { getRequestContext } from "../../../middleware/request-context";
+import {
+  pickFinanceRole,
+  resolveAccountAccess,
+} from "../../finance/account-access";
 import { recordAuditEvent } from "../../shared/audit.service";
 import { createModuleLogger } from "../../../lib/logging/log";
 import { BadRequestError } from "../../../utils/error/app-error";
@@ -23,20 +30,59 @@ type PermissionRole = (typeof PERMISSION_ROLES)[number];
 type PermissionLevel = (typeof PERMISSION_LEVELS)[number];
 
 export class FinancialAccessService {
+  /**
+   * The firm's matrix, plus where the CALLER sits in it.
+   *
+   * `viewer` is resolved server-side rather than left to the client. The
+   * settings page needs it to warn an admin who is about to remove their own
+   * trust access, and deriving it in the browser would mean a second copy of
+   * the `member.role` vs `staff.role` rule that `pickFinanceRole` exists to
+   * hold — a rule that has already shipped wrong once, silently giving every
+   * attorney and paralegal the defaults no matter what the firm configured.
+   */
   getFinancialAccess = async (organizationId: string) => {
     const rows = await db
       .select()
       .from(financialAccessControls)
       .where(eq(financialAccessControls.organizationId, organizationId));
 
-    return rows.reduce(
+    const controls = rows.reduce(
       (acc, row) => {
         if (!acc[row.accountType]) acc[row.accountType] = {};
-        acc[row.accountType][row.role] = row.permission;
+        acc[row.accountType]![row.role] = row.permission;
         return acc;
       },
       {} as Record<string, Record<string, string>>,
     );
+
+    return { controls, viewer: await this.viewer(organizationId) };
+  };
+
+  private viewer = async (organizationId: string) => {
+    const { userId } = getRequestContext();
+    if (!userId) return { financeRole: null, trust: "no_access" as const };
+
+    const [[membership], [staffRow]] = await Promise.all([
+      db
+        .select({ role: member.role })
+        .from(member)
+        .where(
+          and(eq(member.userId, userId), eq(member.organizationId, organizationId)),
+        )
+        .limit(1),
+      db
+        .select({ role: staff.role })
+        .from(staff)
+        .where(
+          and(eq(staff.userId, userId), eq(staff.organizationId, organizationId)),
+        )
+        .limit(1),
+    ]);
+
+    const financeRole = pickFinanceRole(membership?.role, staffRow?.role);
+    const access = await resolveAccountAccess(organizationId, financeRole);
+
+    return { financeRole, trust: access.trust };
   };
 
   /**

@@ -3484,6 +3484,45 @@ const main = async () => {
       await systemDb
         .delete(financialAccessControls)
         .where(eq(financialAccessControls.organizationId, emptyOrgId));
+
+      // ── The widened role enum ─────────────────────────────────────────────
+      // `staff_role` has six values and `permission_role` had four, so these
+      // two returned null from `toPermissionRole` — and a null returns the
+      // DEFAULTS without reading the table, making them unconfigurable however
+      // the firm set things up.
+      checkEqual(
+        "legal assistants resolve from the table, not the defaults",
+        (await resolveAccountAccess(orgId, "legal_assistant")).trust,
+        "no_access",
+      );
+      await financialAccess.updateFinancialAccess(orgId, [
+        { accountType: "trust_iolta", role: "legal_assistant", permission: "view_only" },
+      ]);
+      checkEqual(
+        "and can now be granted trust access at all",
+        (await resolveAccountAccess(orgId, "legal_assistant")).trust,
+        "view_only",
+        );
+      checkEqual(
+        "receptionists too",
+        (await resolveAccountAccess(orgId, "receptionist")).trust,
+        "no_access",
+      );
+
+      // Widening must be purely additive: both roles resolved to no trust
+      // before they were mappable, and the seed keeps them there.
+      checkEqual(
+        "the seed leaves operating as it effectively was",
+        (await resolveAccountAccess(orgId, "receptionist")).operating,
+        "full_access",
+      );
+
+      // A role still outside the enum falls through without touching the table.
+      checkEqual(
+        "an unmapped role still gets the defaults",
+        (await resolveAccountAccess(orgId, "bookkeeper")).trust,
+        "no_access",
+      );
       await systemDb.delete(organization).where(eq(organization.id, emptyOrgId));
     });
   } finally {
