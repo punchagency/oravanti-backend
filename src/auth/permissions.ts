@@ -122,6 +122,17 @@ const statement = {
     // within range.
     "record_consultation_fee",
   ],
+  // Executing a fee agreement on the firm's own behalf — the counter-signature
+  // that turns a client-signed retainer into a fully executed one.
+  //
+  // Its own resource rather than an action on `leads`, for two reasons. It is
+  // not lead work: it is the firm binding itself to a contract, which is why a
+  // paralegal who may `leads:update` all day must not hold it. And a new action
+  // on an existing resource would never reach the firms already running —
+  // `backfillDefaultRolePermissions` fills in absent resource keys, not absent
+  // actions within a key that is already present, so `leads:sign_agreement`
+  // would have been granted to nobody but brand-new organizations.
+  fee_agreements: ["sign"],
 } as const;
 
 export const ac = createAccessControl(statement);
@@ -200,6 +211,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleName, Record<string, re
     training: [],
     audit: [],
     finance: ["read", "create", "log_time"],
+    // The firm's own signature on a retainer. The senior default role beneath
+    // firm admin is the one that has always been described as owning fee
+    // agreements, so it is the only default that gets this.
+    fee_agreements: ["sign"],
     ...memberAc.statements,
   },
   // Assigned-cases only; certified workflow steps but never override/approve
@@ -232,6 +247,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleName, Record<string, re
     training: [],
     audit: [],
     finance: ["read", "log_time"],
+    // Empty, not absent — binding the firm to a contract is not support work.
+    fee_agreements: [],
     ...memberAc.statements,
   },
   // Minimal, support-only access: reads what attorneys/paralegals are
@@ -260,6 +277,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleName, Record<string, re
     training: [],
     audit: [],
     finance: [],
+    fee_agreements: [],
     ...memberAc.statements,
   },
   // Intake-facing: search and basic scheduling, never modifies a case or
@@ -290,6 +308,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleName, Record<string, re
     training: [],
     audit: [],
     finance: ["record_consultation_fee"],
+    fee_agreements: [],
     ...memberAc.statements,
   },
 };
@@ -325,6 +344,7 @@ export const client = ac.newRole({
   training: [],
   audit: [],
   finance: [],
+  fee_agreements: [],
   ...memberAc.statements,
 });
 
