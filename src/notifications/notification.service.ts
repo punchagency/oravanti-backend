@@ -18,6 +18,7 @@ import {
 } from "./preferences.service";
 import { resolveRecipient } from "./recipients";
 import { TEMPLATES, type TemplateMeta } from "./templates";
+import { ATTACHMENTS_KEY } from "./types";
 import type {
   NotificationChannel,
   NotifyInput,
@@ -170,7 +171,16 @@ const buildRow = async (args: {
     recipientType: resolved.type,
     recipientId: resolved.id,
     recipientName: resolved.name,
-    payload: input.context as Record<string, unknown>,
+    // Attachments ride inside the payload under a reserved key rather than in
+    // a column of their own: they are part of what this message *is*, so they
+    // have to survive the same re-render the body does. Only keys are stored —
+    // the bytes are fetched when the worker sends.
+    payload: {
+      ...(input.context as Record<string, unknown>),
+      ...(input.attachments?.length
+        ? { [ATTACHMENTS_KEY]: input.attachments }
+        : {}),
+    },
     dedupeKey: input.dedupeKey
       ? // Scoped per channel: an event that goes out by both email and SMS
         // produces two rows, and one dedupe key cannot cover both without the

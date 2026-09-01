@@ -6650,6 +6650,17 @@ const deliverExecutedAgreement = async (
       context: {
         link: `${env.FRONTEND_APP_URL}/sign/${agreement.signingToken}`,
       },
+      // The contract itself, attached. A client should not have to follow a
+      // link and trust it to get the document they are a party to — the link
+      // stays as the fallback for a mail client that strips attachments, and
+      // for anyone who comes back to it after the file is gone from their inbox.
+      attachments: [
+        {
+          storageKey: signedKey,
+          filename: `${agreement.details?.docRef ?? "fee-agreement"}.pdf`,
+          contentType: "application/pdf",
+        },
+      ],
       scenario: { leadId: agreement.leadId },
       // The agreement is executed exactly once, so a redelivered webhook must
       // not send a second copy.

@@ -377,7 +377,7 @@ const main = async () => {
     );
 
     const executedNotices = await systemDb
-      .select({ id: notifications.id })
+      .select({ id: notifications.id, payload: notifications.payload })
       .from(notifications)
       .where(
         and(
@@ -391,8 +391,23 @@ const main = async () => {
       1,
     );
 
+    // The contract travels with the email. Only the storage key is persisted —
+    // the worker fetches the bytes at send time — so this is what "attached"
+    // looks like from here.
+    const executedPayload = (executedNotices[0]?.payload ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const attached = (executedPayload["__attachments"] ??
+      []) as { storageKey?: string }[];
+    checkEqual(
+      "the executed copy is attached to that email",
+      attached[0]?.storageKey,
+      row.signedDocumentUrl ?? undefined,
+    );
+
     const signedDoc = await svc.getAgreementSignedDocument(row.signingToken!);
-    check("and can download it with the token they signed with", Boolean(signedDoc.url));
+    check("and the link still works as a fallback", Boolean(signedDoc.url));
 
     // ── 4. Billing before the firm signs, when the firm asked for that ──────
     section("A firm that does not hold the invoice is billed on the client's signature");
