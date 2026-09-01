@@ -30,6 +30,7 @@
     "test:db:drop": "tsx scripts/test-db/drop.ts --database",
     "check": "tsx scripts/check.ts",
     "routes:audit": "tsx scripts/routes-audit.ts",
+    "backfill:fee-agreement-classification": "tsx scripts/backfill-fee-agreement-classification.ts",
     "backfill:financial-access": "tsx scripts/backfill-financial-access.ts",
     "backfill:time-entry-status": "tsx src/scripts/backfill-time-entry-status.ts",
     "security:baseline": "tsx scripts/apply-security-baseline.ts",
