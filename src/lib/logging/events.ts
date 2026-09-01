@@ -753,6 +753,7 @@ export const LogEvent = {
   SETTINGS_SECURITY_UPDATED: "settings.security_updated",
   SETTINGS_APPROVAL_WORKFLOW_UPDATED: "settings.approval_workflow_updated",
   SETTINGS_CONSULTATION_UPDATED: "settings.consultation_updated",
+  SETTINGS_FEE_AGREEMENT_UPDATED: "settings.fee_agreement_updated",
   SETTINGS_ACCESS_CONTROL_UPDATED: "settings.access_control_updated",
   SETTINGS_CERTIFICATION_GATE_UPDATED: "settings.certification_gate_updated",
   SETTINGS_FIRM_PROFILE_UPDATED: "settings.firm_profile_updated",
