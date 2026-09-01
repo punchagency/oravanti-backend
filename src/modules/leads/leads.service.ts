@@ -782,7 +782,15 @@ const getAllLeads = async (
   );
 };
 
-const getLeadById = async (id: string, organizationId: string) => {
+const getLeadById = async (
+  id: string,
+  organizationId: string,
+  // Only used to resolve `canSign` on the embedded fee agreement — the card
+  // list renders from this payload rather than from `getFeeAgreement`, so the
+  // two must carry the same fields or the signing button appears in one place
+  // and not the other.
+  actorStaffId?: string | null,
+) => {
   const [lead] = await db
     .select({
       ...getTableColumns(leads),
@@ -873,7 +881,9 @@ const getLeadById = async (id: string, organizationId: string) => {
     questionnaireSend,
     consultation: consultationWithFee,
     consultationHistory,
-    feeAgreement,
+    feeAgreement: feeAgreement
+      ? await withFirmSignerFields(feeAgreement, actorStaffId)
+      : null,
   };
 };
 
@@ -5085,7 +5095,10 @@ const generateFeeAgreement = async (
     agreement,
     organizationId,
   );
-  return { agreement, document };
+  return {
+    agreement: await withFirmSignerFields(agreement, actorId),
+    document,
+  };
 };
 
 // Discard a drafted agreement so it can be reconfigured and regenerated.
@@ -5166,6 +5179,38 @@ const loadFirmSigner = async (
     id: row.id,
     name: `${row.firstName} ${row.lastName}`.trim(),
     email: row.orgEmail ?? row.email,
+  };
+};
+
+/**
+ * Add the counter-signature fields every staff-facing read of an agreement
+ * needs: who signs for the firm, and whether the caller can sign it right now.
+ *
+ * One helper for all four read paths — the lead detail, the agreement endpoint,
+ * generation and preview — because the card is rendered from more than one of
+ * them. `canSign` in particular cannot be derived in the UI: it depends on the
+ * signing order and on the other party's progress, so a client-side guess would
+ * offer a button that 409s.
+ */
+const withFirmSignerFields = async <T extends typeof feeAgreements.$inferSelect>(
+  agreement: T,
+  actorStaffId?: string | null,
+) => {
+  const firmSigner = await loadFirmSigner(agreement.firmSignerStaffId);
+  return {
+    ...agreement,
+    firmSigner: firmSigner
+      ? { staffId: firmSigner.id, name: firmSigner.name }
+      : null,
+    canSign:
+      Boolean(agreement.firmSignerSignatureId) &&
+      !agreement.firmSignedAt &&
+      agreement.status === "pending_signature" &&
+      actorStaffId != null &&
+      actorStaffId === agreement.firmSignerStaffId &&
+      (agreement.signingOrder === "firm_first"
+        ? true
+        : Boolean(agreement.clientSignedAt)),
   };
 };
 
@@ -5840,31 +5885,11 @@ const getFeeAgreement = async (
 
   if (!agreement) return null;
 
-  const firmSigner = await loadFirmSigner(agreement.firmSignerStaffId);
-
   // Additive: the agreement row is returned unchanged and the money hangs off
   // it, so the tracker can render what was billed and whether it reached the
   // client without a second request.
   return {
-    ...agreement,
-    firmSigner: firmSigner
-      ? { staffId: firmSigner.id, name: firmSigner.name }
-      : null,
-    /**
-     * Whether the caller can sign this agreement right now. Resolved here
-     * rather than in the UI because "right now" depends on the signing order
-     * and the other party's progress, and a button that 409s is worse than no
-     * button.
-     */
-    canSign:
-      Boolean(agreement.firmSignerSignatureId) &&
-      !agreement.firmSignedAt &&
-      agreement.status === "pending_signature" &&
-      actorStaffId != null &&
-      actorStaffId === agreement.firmSignerStaffId &&
-      (agreement.signingOrder === "firm_first"
-        ? true
-        : Boolean(agreement.clientSignedAt)),
+    ...(await withFirmSignerFields(agreement, actorStaffId)),
     invoice: await feeAgreementInvoiceSummary(
       organizationId,
       agreement.invoiceId,
@@ -5895,7 +5920,10 @@ const getFeeAgreementPreview = async (
     agreement,
     organizationId,
   );
-  return { agreement, document };
+  // The preview and the PDF must name the same signer. The document payload
+  // carries `attorneyName` — the consultation attorney — which is not
+  // necessarily who signs, so the signer travels alongside it.
+  return { agreement: await withFirmSignerFields(agreement), document };
 };
 
 const nudgeClient = async (agreementId: string, organizationId: string) => {

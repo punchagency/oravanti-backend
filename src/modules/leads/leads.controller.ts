@@ -109,6 +109,7 @@ export class LeadsController {
     const lead = await this.svc.getLeadById(
       req.params.id as string,
       organizationId!,
+      staffId,
     );
     if (!lead)
       return res.status(404).json({ success: false, error: "Lead not found" });
