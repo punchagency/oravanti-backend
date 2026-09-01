@@ -5020,8 +5020,13 @@ const generateFeeAgreement = async (
     .values({
       organizationId,
       leadId,
-      practiceAreaId: undefined,
-      caseTypeId: undefined,
+      // Snapshotted off the lead, not left to be resolved through it later: an
+      // agreement is a legal document, and a lead re-classified afterwards must
+      // not restate what a signed one was about. The lead's pair is already
+      // validated by `ensureCaseTypeIdBelongsToPracticeArea` at creation, so
+      // copying both together inherits a consistent pair and needs no re-check.
+      practiceAreaId: lead.practiceAreaId,
+      caseTypeId: lead.caseTypeId,
       agreementType: data.agreementType ?? "retainer",
       details,
       generatedFrom: (data.generatedFrom ?? "manual") as any,
@@ -5269,6 +5274,7 @@ const billSignedFeeAgreement = async (
         {
           agreementId,
           leadId: agreement.leadId,
+          practiceAreaId: agreement.practiceAreaId,
           feeLines: document.feeLines,
           totalDue: document.totalDue,
           paymentPlan: document.paymentPlan,

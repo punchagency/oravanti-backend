@@ -113,8 +113,34 @@ export const feeAgreements = pgTable("fee_agreements", {
   leadId: uuid("lead_id")
     .notNull()
     .references(() => leads.id, { onDelete: "cascade" }),
-  practiceAreaId: uuid("practice_area_id").references(() => practiceAreas.id),
-  caseTypeId: uuid("case_type_id").references(() => practiceAreaCaseTypes.id),
+  /**
+   * What the agreement is about, snapshotted off the lead at generation —
+   * NOT a pointer to be dereferenced through `leads` at read time, which is
+   * mutable and would silently restate a signed document the moment someone
+   * re-classified the lead behind it.
+   *
+   * `generateFeeAgreement` is the single writer. Regeneration goes through it
+   * too: `discardDraftFeeAgreement` hard-deletes the draft rather than updating
+   * it, so a re-generated agreement re-snapshots from the lead as it stands
+   * then, which is the intent.
+   *
+   * The FKs guarantee each id exists, NOT that the two agree — a case type
+   * reaches its practice area only through its subcategory. They are consistent
+   * here because the lead's own pair is validated by
+   * `ensureCaseTypeIdBelongsToPracticeArea` and both are copied together.
+   *
+   * NOT NULL, like `cases.practice_area_id` and `cases.case_type_id` — the same
+   * snapshot one pipeline stage further on — and like the `leads` columns they
+   * are copied from. Existing rows were filled by
+   * `npm run backfill:fee-agreement-classification`, which has to run before the
+   * migration that adds the constraint.
+   */
+  practiceAreaId: uuid("practice_area_id")
+    .notNull()
+    .references(() => practiceAreas.id),
+  caseTypeId: uuid("case_type_id")
+    .notNull()
+    .references(() => practiceAreaCaseTypes.id),
   agreementType: text("agreement_type"),
   // Structured form captured before generation (attorney/government fees,
   // payment plan, consultation credit, account split, docRef).

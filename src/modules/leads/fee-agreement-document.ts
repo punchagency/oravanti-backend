@@ -86,9 +86,13 @@ export const assembleFeeAgreementDocument = async (
       assignedStaffId: leads.respondentId,
     })
     .from(leads)
+    // Joined on the AGREEMENT's case type, not the lead's. This document is
+    // rendered for previews and for agreements that were signed long ago, so
+    // resolving through the lead would let a later re-classification restate
+    // what a signed document said the matter was.
     .leftJoin(
       practiceAreaCaseTypes,
-      eq(practiceAreaCaseTypes.id, leads.caseTypeId),
+      eq(practiceAreaCaseTypes.id, agreement.caseTypeId),
     )
     .where(eq(leads.id, agreement.leadId))
     .limit(1);
