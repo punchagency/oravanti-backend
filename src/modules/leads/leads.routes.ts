@@ -514,6 +514,45 @@ export class AgreementsRouter {
       validateRequest({ params: v.agreementIdParamsSchema }),
       ctrl.discardDraftFeeAgreement,
     );
+
+    // ── Firm counter-signature ───────────────────────────────────────────────
+
+    // Holding the grant says you may sign fee agreements; it does not say you
+    // may sign this one, which names somebody. The service does that second
+    // check — the middleware cannot, because it has no agreement to look at.
+    this.router.post(
+      "/:agreementId/firm-sign-session",
+      requirePermission({ fee_agreements: ["sign"] }),
+      validateRequest({ params: v.agreementIdParamsSchema }),
+      ctrl.getFirmSignSession,
+    );
+
+    // Not gated on `fee_agreements:sign`: chasing a colleague for a signature
+    // is administration, and the person doing the chasing is routinely the one
+    // who cannot sign.
+    this.router.post(
+      "/:agreementId/remind-signer",
+      validateRequest({ params: v.agreementIdParamsSchema }),
+      ctrl.remindFirmSigner,
+    );
+
+    // Gated, though — choosing who binds the firm to a contract is the same
+    // authority as signing it.
+    this.router.post(
+      "/:agreementId/reassign-signer",
+      requirePermission({ fee_agreements: ["sign"] }),
+      validateRequest({
+        params: v.agreementIdParamsSchema,
+        body: v.reassignFirmSignerBodySchema,
+      }),
+      ctrl.reassignFirmSigner,
+    );
+
+    this.router.get(
+      "/:agreementId/document",
+      validateRequest({ params: v.agreementIdParamsSchema }),
+      ctrl.getFeeAgreementSignedDocument,
+    );
   }
 }
 
@@ -574,6 +613,15 @@ export class AgreementSigningRouter {
       "/:token/payment-session",
       validateRequest({ params: v.agreementSigningTokenParamsSchema }),
       ctrl.getAgreementPaymentSession,
+    );
+
+    // The client's executed copy. Same token they signed with — a second
+    // credential for the same person and the same document would be one more
+    // thing to leak.
+    this.router.get(
+      "/:token/document",
+      validateRequest({ params: v.agreementSigningTokenParamsSchema }),
+      ctrl.getAgreementSignedDocument,
     );
   }
 }

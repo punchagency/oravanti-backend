@@ -26,6 +26,10 @@ export const adversePartyParamsSchema = z.object({
 
 export const agreementIdParamsSchema = z.object({ agreementId: uuid });
 
+export const reassignFirmSignerBodySchema = z.object({
+  firmSignerStaffId: uuid,
+});
+
 export const createLeadBodySchema = z.object({
   firstName: z.string().min(1),
   lastName: z.string().min(1),
@@ -432,6 +436,11 @@ export const generateFeeAgreementBodySchema = z
       })
       .optional(),
     applyConsultationCredit: z.boolean().default(false),
+    // Who counter-signs for the firm. Optional, and ignored rather than
+    // rejected when the firm does not allow the generating attorney to choose —
+    // a client that has not refetched the settings should not fail a valid
+    // draft over a field the server was going to overrule anyway.
+    firmSignerStaffId: z.string().uuid().optional(),
     accountSplit: z
       .object({
         operating: z.number().nonnegative(),

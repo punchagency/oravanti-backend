@@ -230,6 +230,44 @@ export const NOTIFICATION_EVENTS = {
   },
 
   // ── Fee agreement ──────────────────────────────────────────────────────────
+  /**
+   * The client has signed and the firm's own signature is now outstanding.
+   *
+   * Addressed to one person — the assigned signer — rather than to the firm,
+   * which is why it exists at all: without it a counter-signature is a step
+   * nobody is told about, and an agreement sits fully paid for on the client's
+   * side and unexecuted on the firm's.
+   */
+  fee_agreement_awaiting_firm_signature: {
+    tier: "preference",
+    prefKey: "case_stage_changed",
+    audience: "staff",
+    channels: ["email", "in_app"],
+    label: "Fee agreement awaiting your signature",
+    producer: "wired",
+  },
+  fee_agreement_signer_reassigned: {
+    tier: "preference",
+    prefKey: "case_stage_changed",
+    audience: "staff",
+    channels: ["email", "in_app"],
+    label: "Fee agreement signer changed",
+    producer: "wired",
+  },
+  /**
+   * The lead's own copy of the fully executed agreement.
+   *
+   * Transactional, and the only fee-agreement event addressed to the client:
+   * this is the contract they are a party to, so it is not something a firm
+   * preference gets to suppress.
+   */
+  fee_agreement_executed: {
+    tier: "transactional",
+    audience: "recipient",
+    channels: ["email"],
+    label: "Signed fee agreement ready",
+    producer: "wired",
+  },
   fee_agreement_signed: {
     tier: "preference",
     prefKey: "case_stage_changed",
