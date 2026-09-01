@@ -1,4 +1,5 @@
 import {
+  boolean,
   jsonb,
   pgEnum,
   pgTable,
@@ -7,6 +8,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { organization } from "./auth-schema";
+import { feeAgreementSigningOrderEnum } from "./fee-agreement-settings";
 import { leads } from "./leads";
 import { practiceAreaCaseTypes } from "./practice-area-case-types";
 import { practiceAreas } from "./practice-areas";
@@ -167,6 +169,43 @@ export const feeAgreements = pgTable("fee_agreements", {
   lastWebhookEventAt: timestamp("last_webhook_event_at"),
   clientSignedAt: timestamp("client_signed_at"),
   /**
+   * Who signs on the firm's behalf, chosen when the agreement is generated.
+   *
+   * Persisted rather than re-resolved through `consultations.leadAttorneyId` at
+   * read time, for the same reason `practiceAreaId` is snapshotted above: the
+   * consultation's attorney can change after the document has gone out, and the
+   * name printed on a signature block must not.
+   */
+  firmSignerStaffId: uuid("firm_signer_staff_id").references(() => staff.id),
+  /**
+   * Dropbox Sign signature_id for the firm signer.
+   *
+   * NULL is the load-bearing state: it means this agreement is a single-signer
+   * agreement and always was. Every counter-signature branch keys off this
+   * column rather than off the firm's live setting, which is what makes two
+   * different situations one code path — a firm that has counter-signing turned
+   * off, and an agreement that was already out for signature when the feature
+   * shipped. The latter cannot be fixed by any setting: its signature request
+   * exists at the provider with one signer and can never gain a second.
+   */
+  firmSignerSignatureId: text("firm_signer_signature_id"),
+  firmSignedAt: timestamp("firm_signed_at"),
+  /**
+   * The firm's signing policy as it stood when the agreement was dispatched.
+   *
+   * Snapshotted, not dereferenced. An admin who flips the order or the invoice
+   * gate must not change the rules under a document already in front of a
+   * client — and with sequential signing the order is fixed at the provider the
+   * moment the request is created, so a live read could disagree with what
+   * Dropbox Sign will actually do.
+   *
+   * Both null on single-signer agreements, where neither says anything.
+   */
+  signingOrder: feeAgreementSigningOrderEnum("signing_order"),
+  invoiceWaitsForFirmSignature: boolean("invoice_waits_for_firm_signature"),
+  /** When the firm signer was last reminded that a signature is outstanding. */
+  firmSignerRemindedAt: timestamp("firm_signer_reminded_at"),
+  /**
    * The invoice raised for what this agreement charges upfront, minted when it
    * is signed. Null when the agreement bills nothing then — a pure contingency
    * with firm-advanced costs — and on every agreement signed before invoicing
@@ -179,7 +218,9 @@ export const feeAgreements = pgTable("fee_agreements", {
   invoiceId: uuid("invoice_id"),
   nudgedAt: timestamp("nudged_at"),
   // Actors. The client signs via the provider, so there is no staff actor for
-  // the signature itself — receivedById records who *marked* it received manually.
+  // *their* signature — receivedById records who marked it received manually,
+  // and firmSignerStaffId above is the one staff member who signs rather than
+  // administers.
   generatedById: uuid("generated_by_id").references(() => staff.id),
   sentById: uuid("sent_by_id").references(() => staff.id),
   receivedById: uuid("received_by_id").references(() => staff.id),
