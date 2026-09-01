@@ -5941,6 +5941,17 @@ const nudgeClient = async (agreementId: string, organizationId: string) => {
   if (!agreement) throw new NotFoundError("Agreement not found");
   if (agreement.status === "signed")
     throw new ConflictError("Agreement is already signed");
+  // Nothing to chase the client for. Both cases send them to a page that will
+  // refuse them: they have signed and are waiting on the firm, or the firm has
+  // not signed yet on a firm-first agreement and their turn has not come.
+  if (agreement.clientSignedAt)
+    throw new ConflictError(
+      "The client has already signed. The firm's counter-signature is what is outstanding.",
+    );
+  if (agreement.signingOrder === "firm_first" && !agreement.firmSignedAt)
+    throw new ConflictError(
+      "The firm signs first on this agreement. The client is emailed once it has been signed.",
+    );
 
   const [lead] = await db
     .select()
