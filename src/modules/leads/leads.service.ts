@@ -5161,9 +5161,11 @@ const sendFeeAgreement = async (
   // No email is sent by the provider — the client signs on our own signing page.
   const provider = getESignatureProvider();
   const leadName = `${lead.firstName} ${lead.lastName}`;
-  const { signatureRequestId, signerSignatureId } =
+  const { signatureRequestId, signatureIds } =
     await provider.createEmbeddedRequest({
-      signer: { email: lead.email, name: leadName },
+      signers: [
+        { email: lead.email, name: leadName, role: "client", order: 0 },
+      ],
       file: pdfBuffer,
       fileName: `${documentData.docRef || agreement.id}.pdf`,
       title: `Fee Agreement — ${leadName}`,
@@ -5187,7 +5189,7 @@ const sendFeeAgreement = async (
     .set({
       status: "pending_signature",
       envelopeId: signatureRequestId,
-      signerSignatureId,
+      signerSignatureId: signatureIds.client ?? null,
       signingToken,
       signingLink,
       documentUrl: documentKey,

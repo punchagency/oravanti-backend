@@ -135,17 +135,29 @@ const hr = (doc: PDFKit.PDFDocument) => {
  * pattern as questionnaires.service.ts). The prose mirrors the frontend preview
  * in oravanti/src/pages/admin/intake/components/fee-agreement-document.ts.
  *
- * A Dropbox Sign text-tag anchor is embedded in the client signature block. When
- * the signature request is created with `useTextTags: true, hideTextTags: true`
- * the anchor is replaced by the signature/date fields and hidden from the final
- * document. `signerId` matches the signer index sent to Dropbox Sign (default
- * "signer1" — the client).
+ * A Dropbox Sign text-tag anchor is embedded in each signature block. When the
+ * signature request is created with `useTextTags: true, hideTextTags: true` the
+ * anchor is replaced by the signature/date fields and hidden from the final
+ * document. The ids match the signer *index* sent to Dropbox Sign, so they are
+ * positional: whoever signs first is `signer1`. On a firm-first agreement that
+ * is the attorney, which is why the caller passes both rather than either one
+ * being assumed.
+ *
+ * `firmSignerId` absent means a client-only agreement: the attorney block is
+ * then rendered as a printed line, as it always was, so the paper copy still
+ * reads correctly for a firm that does not counter-sign.
  */
 export const renderFeeAgreementPdf = async (
   document: FeeAgreementDocument,
-  opts: { signerId?: string } = {},
+  opts: {
+    signerId?: string;
+    firmSignerId?: string;
+    firmSignerName?: string;
+  } = {},
 ): Promise<Buffer> => {
   const signerId = opts.signerId ?? "signer1";
+  const firmSignerId = opts.firmSignerId;
+  const firmSignerName = opts.firmSignerName ?? document.attorneyName;
   const firmName = document.firm.name;
   const state = document.firm.state ?? "the applicable";
   const cityCounty = document.firm.city
@@ -493,18 +505,37 @@ export const renderFeeAgreementPdf = async (
 
   doc.y = sigTop;
   drawLabel(doc, "Attorney signature", { x: rightX, width: colWidth });
-  // Attorney counter-signature is out of scope for now (client-only); rendered
-  // as a manual line so the printed document still has an attorney block.
-  doc.moveDown(3.5);
-  doc
-    .font("Helvetica")
-    .fontSize(10)
-    .fillColor("#1a1a1a")
-    .text(`${document.attorneyName}, Esq.`, rightX, doc.y, { width: colWidth });
-  doc
-    .fontSize(9)
-    .fillColor("#888")
-    .text("Date: __________________", rightX, doc.y, { width: colWidth });
+  if (firmSignerId) {
+    doc.moveDown(2);
+    doc
+      .font("Helvetica")
+      .fontSize(9)
+      .fillColor("#ffffff")
+      .text(`[sig|req|${firmSignerId}]`, rightX, doc.y, { width: colWidth });
+    doc
+      .fontSize(10)
+      .fillColor("#1a1a1a")
+      .text(`${firmSignerName}, Esq.`, rightX, doc.y, { width: colWidth });
+    doc
+      .fontSize(9)
+      .fillColor("#888")
+      .text(`Date: [date|req|${firmSignerId}]`, rightX, doc.y, {
+        width: colWidth,
+      });
+  } else {
+    // Client-only agreement: a printed line, as before, so the document still
+    // has somewhere for a wet signature.
+    doc.moveDown(3.5);
+    doc
+      .font("Helvetica")
+      .fontSize(10)
+      .fillColor("#1a1a1a")
+      .text(`${firmSignerName}, Esq.`, rightX, doc.y, { width: colWidth });
+    doc
+      .fontSize(9)
+      .fillColor("#888")
+      .text("Date: __________________", rightX, doc.y, { width: colWidth });
+  }
   doc.y = Math.max(clientBottom, doc.y);
   doc.x = leftX;
 
