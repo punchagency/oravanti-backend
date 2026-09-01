@@ -4,7 +4,6 @@ import { feeAgreements } from "../../db/schema/fee-agreements";
 import { invoiceInstalments } from "../../db/schema/invoice-instalments";
 import { invoicePayments } from "../../db/schema/invoice-payments";
 import { invoices } from "../../db/schema/invoices";
-import { leads } from "../../db/schema/leads";
 import { createModuleLogger } from "../../lib/logging/log";
 import { systemAccess } from "./account-access";
 import { clearingPolicyFor, countsTowardCaseOpening } from "./clearing-policy";
@@ -143,6 +142,13 @@ export const scheduleFromPlan = (
 export type FeeAgreementInvoiceInput = {
   agreementId: string;
   leadId: string;
+  /**
+   * The agreement's own practice area, not the lead's. Passed in rather than
+   * looked up so the invoice is attributed to what the client actually signed:
+   * revenue-by-practice-area must not move because someone re-classified the
+   * lead afterwards. NOT NULL on the agreement, so there is nothing to guard.
+   */
+  practiceAreaId: string;
   feeLines: DocumentLine[];
   totalDue: number;
   paymentPlan: "pay_in_full" | "two_payments" | "installments";
@@ -190,14 +196,6 @@ export const raiseFeeAgreementInvoice = async (
   const billed = toMoney(lines.reduce((sum, l) => sum + l.quantity * l.rate, 0));
   if (billed <= 0) return null;
 
-  const [lead] = await db
-    .select({ practiceAreaId: leads.practiceAreaId })
-    .from(leads)
-    .where(and(eq(leads.organizationId, organizationId), eq(leads.id, input.leadId)))
-    .limit(1);
-
-  if (!lead?.practiceAreaId) return null;
-
   const today = await firmToday(organizationId);
   const schedule = scheduleFromPlan(
     billed,
@@ -209,7 +207,7 @@ export const raiseFeeAgreementInvoice = async (
 
   const invoice = await create(organizationId, actorStaffId, systemAccess(), {
     leadId: input.leadId,
-    practiceAreaId: lead.practiceAreaId,
+    practiceAreaId: input.practiceAreaId,
     issueDate: today,
     // With a plan the schedule pins the header date to its final instalment.
     dueDate: addDays(today, TERMS_DAYS),

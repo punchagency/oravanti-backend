@@ -5274,6 +5274,7 @@ const billSignedFeeAgreement = async (
         {
           agreementId,
           leadId: agreement.leadId,
+          practiceAreaId: agreement.practiceAreaId,
           feeLines: document.feeLines,
           totalDue: document.totalDue,
           paymentPlan: document.paymentPlan,
