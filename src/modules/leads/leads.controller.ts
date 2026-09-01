@@ -597,6 +597,18 @@ export class LeadsController {
     sendSuccess(res, result, "Fee agreement sent successfully");
   };
 
+  listAgreementsAwaitingFirmSignature = async (
+    _req: Request,
+    res: Response,
+  ) => {
+    const { staffId, organizationId } = getRequestContext();
+    const result = await this.svc.listAgreementsAwaitingFirmSignature(
+      organizationId!,
+      staffId ?? null,
+    );
+    sendSuccess(res, result, "Agreements awaiting signature retrieved");
+  };
+
   getFirmSignSession = async (req: Request, res: Response) => {
     const { staffId, organizationId } = getRequestContext();
     const result = await this.svc.getFirmSignSession(

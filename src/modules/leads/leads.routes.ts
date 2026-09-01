@@ -468,6 +468,15 @@ export class AgreementsRouter {
     this.router.use(requireAuth);
     this.router.use(resolveActorContext);
 
+    // The signer's own queue. Scoped to the caller by definition — it asks what
+    // is assigned to them — so it needs no permission beyond being staff, and
+    // deliberately sits above the `/:agreementId` routes so "awaiting-signature"
+    // is never read as an id.
+    this.router.get(
+      "/awaiting-signature",
+      ctrl.listAgreementsAwaitingFirmSignature,
+    );
+
     this.router.get(
       "/:agreementId/preview",
       requireAuth,
@@ -516,6 +525,7 @@ export class AgreementsRouter {
     );
 
     // ── Firm counter-signature ───────────────────────────────────────────────
+
 
     // Holding the grant says you may sign fee agreements; it does not say you
     // may sign this one, which names somebody. The service does that second

@@ -5240,7 +5240,12 @@ const notifyFirmSigner = async (
       recipients: [{ type: "staff", id: agreement.firmSignerStaffId }],
       context: {
         leadName: lead ? `${lead.firstName} ${lead.lastName}`.trim() : undefined,
-        link: `${env.FRONTEND_APP_URL}/admin/leads/${agreement.leadId}`,
+        // The consultation page, not the lead overview: the fee-agreement card
+        // and its sign button live there. And no `/admin` prefix — the frontend
+        // has no such route, so the ten links elsewhere in this file that use
+        // one have always 404'd. Not fixing those here; a signature request that
+        // links nowhere is the one that cannot wait.
+        link: `${env.FRONTEND_APP_URL}/leads/${agreement.leadId}/consultation`,
       },
       scenario: { leadId: agreement.leadId },
       dedupeKey,
@@ -6084,6 +6089,77 @@ const getFeeAgreementSignedDocument = async (
 };
 
 // ─── Firm counter-signature ─────────────────────────────────────────────────
+
+/**
+ * Every agreement waiting on the signed-in staff member's signature.
+ *
+ * The surface that answers "what is on me". Without it the only route to the
+ * sign button is a notification and prior knowledge of which lead it belongs to
+ * — which is no answer at all for an attorney coming back from a week away.
+ *
+ * Deliberately includes agreements whose turn has not come. On a client-first
+ * agreement the attorney can do nothing until the client signs, but seeing it
+ * queued is the point: it is what the week looks like, not just what is
+ * actionable this second. `canSign` separates the two.
+ */
+const listAgreementsAwaitingFirmSignature = async (
+  organizationId: string,
+  actorStaffId: string | null,
+) => {
+  if (!actorStaffId) return [];
+
+  const rows = await db
+    .select({
+      id: feeAgreements.id,
+      leadId: feeAgreements.leadId,
+      status: feeAgreements.status,
+      details: feeAgreements.details,
+      signingOrder: feeAgreements.signingOrder,
+      clientSignedAt: feeAgreements.clientSignedAt,
+      firmSignedAt: feeAgreements.firmSignedAt,
+      firmSignerSignatureId: feeAgreements.firmSignerSignatureId,
+      firmSignerRemindedAt: feeAgreements.firmSignerRemindedAt,
+      createdAt: feeAgreements.createdAt,
+      updatedAt: feeAgreements.updatedAt,
+      leadFirstName: leads.firstName,
+      leadLastName: leads.lastName,
+      caseTypeName: practiceAreaCaseTypes.name,
+    })
+    .from(feeAgreements)
+    .innerJoin(leads, eq(leads.id, feeAgreements.leadId))
+    .leftJoin(
+      practiceAreaCaseTypes,
+      eq(practiceAreaCaseTypes.id, feeAgreements.caseTypeId),
+    )
+    .where(
+      and(
+        eq(feeAgreements.organizationId, organizationId),
+        eq(feeAgreements.firmSignerStaffId, actorStaffId),
+        eq(feeAgreements.status, "pending_signature"),
+        isNull(feeAgreements.firmSignedAt),
+        // Null here means a single-signer agreement, which has no firm
+        // signature outstanding however the row is otherwise assigned.
+        isNotNull(feeAgreements.firmSignerSignatureId),
+      ),
+    )
+    // The ones the attorney can act on now, first; then oldest, because an
+    // agreement outstanding for a fortnight is the one to worry about.
+    .orderBy(desc(feeAgreements.clientSignedAt), asc(feeAgreements.updatedAt));
+
+  return rows.map((row) => ({
+    id: row.id,
+    leadId: row.leadId,
+    leadName: `${row.leadFirstName} ${row.leadLastName}`.trim(),
+    matterType: row.caseTypeName,
+    docRef: row.details?.docRef ?? null,
+    signingOrder: row.signingOrder,
+    clientSignedAt: row.clientSignedAt,
+    remindedAt: row.firmSignerRemindedAt,
+    sentAt: row.updatedAt,
+    canSign:
+      row.signingOrder === "firm_first" ? true : Boolean(row.clientSignedAt),
+  }));
+};
 
 /**
  * Mint an embedded sign URL for the firm's own signer.
@@ -7498,6 +7574,7 @@ export class LeadsService {
   getFeeAgreement = getFeeAgreement;
   nudgeClient = nudgeClient;
   getEmbeddedSignSession = getEmbeddedSignSession;
+  listAgreementsAwaitingFirmSignature = listAgreementsAwaitingFirmSignature;
   getFirmSignSession = getFirmSignSession;
   remindFirmSigner = remindFirmSigner;
   reassignFirmSigner = reassignFirmSigner;
