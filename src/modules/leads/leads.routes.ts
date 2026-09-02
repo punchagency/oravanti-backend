@@ -513,7 +513,10 @@ export class AgreementsRouter {
       "/:agreementId/mark-payment-received",
       requireAuth,
       requirePermission({ finance: ["record_payment"] }),
-      validateRequest({ params: v.agreementIdParamsSchema }),
+      validateRequest({
+        params: v.agreementIdParamsSchema,
+        body: v.markPaymentReceivedBodySchema,
+      }),
       ctrl.markFeeAgreementPaymentReceived,
     );
 

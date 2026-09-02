@@ -674,6 +674,7 @@ export class LeadsController {
       req.params.agreementId as string,
       organizationId!,
       staffId,
+      (req.body as { instalments?: number })?.instalments,
     );
     res.json({ success: true, data: result });
   };

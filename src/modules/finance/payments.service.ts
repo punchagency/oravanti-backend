@@ -886,6 +886,14 @@ export const settleByAttestation = async (
   organizationId: string,
   invoiceId: string,
   actorStaffId: string | null,
+  /**
+   * How much arrived. Omitted means the whole outstanding balance, which is
+   * right for a single payment and wrong for a schedule — a firm attesting to
+   * one instalment of six was booking all six, marking the plan settled and
+   * silencing every reminder that would have chased the rest. Callers with a
+   * schedule pass the amount for the instalments actually received.
+   */
+  opts: { amount?: number } = {},
 ): Promise<AttestationResult> => {
   const read = async () => {
     const [row] = await db
@@ -928,8 +936,16 @@ export const settleByAttestation = async (
     return { recorded: false, reason: "undelivered" };
   }
 
+  const balanceDue = num(invoice.balanceDue);
+  // Never more than is owed: an over-payment would drive the invoice into
+  // credit, which no attestation should be able to do by arithmetic error.
+  const amount =
+    opts.amount == null ? balanceDue : Math.min(opts.amount, balanceDue);
+
+  if (amount <= 0) return { recorded: false, reason: "already_settled" };
+
   await recordPayment(organizationId, invoiceId, actorStaffId, systemAccess(), {
-    amount: num(invoice.balanceDue),
+    amount,
     paymentDate: await firmToday(organizationId),
     // `paymentMethodEnum` has no `attested` value, and inventing one would put a
     // bookkeeping fiction in a column the Reports tab groups by. "other" plus
