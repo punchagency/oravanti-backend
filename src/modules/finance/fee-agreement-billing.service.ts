@@ -9,6 +9,10 @@ import { systemAccess } from "./account-access";
 import { clearingPolicyFor, countsTowardCaseOpening } from "./clearing-policy";
 import { deliveryEvidence, sendSystemInvoice } from "./deliveries.service";
 import type { ScheduleRow } from "./instalments";
+import {
+  allocatedInstalments,
+  amountForNextInstalments,
+} from "./instalments.service";
 import { agingOverDues } from "./dues";
 import { create, issueInvoice, type CreateInvoiceLine } from "./invoices.service";
 import { num, toMoney } from "./money";
@@ -264,11 +268,34 @@ export const issueFeeAgreementInvoice = (
  * because `recordPayment` refuses a draft and the gate refuses an undelivered
  * invoice — see `settleByAttestation`, which carries the reasoning.
  */
-export const settleFeeAgreementInvoice = (
+/**
+ * Attest to money received against a fee agreement's invoice.
+ *
+ * `instalmentCount` is how many instalments the firm is saying arrived. It
+ * defaults to one rather than to the whole balance, because on a plan the whole
+ * balance is almost never what happened: a firm marking the deposit received
+ * was booking every future instalment as paid, closing the schedule and
+ * stopping the reminders that would have chased it.
+ *
+ * Ignored on an invoice with no schedule — there is no "next instalment" there,
+ * and the balance is the only sensible amount.
+ */
+export const settleFeeAgreementInvoice = async (
   organizationId: string,
   invoiceId: string,
   actorStaffId: string | null,
-) => settleByAttestation(organizationId, invoiceId, actorStaffId);
+  instalmentCount = 1,
+) => {
+  const amount = await amountForNextInstalments(
+    organizationId,
+    invoiceId,
+    instalmentCount,
+  );
+  return settleByAttestation(organizationId, invoiceId, actorStaffId, {
+    // null means no schedule: fall through to the full balance.
+    ...(amount == null ? {} : { amount }),
+  });
+};
 
 export type FeeAgreementInvoiceSummary = {
   invoiceId: string;
@@ -291,6 +318,19 @@ export type FeeAgreementInvoiceSummary = {
   delivery: "sent" | "failed" | "not_attempted";
   /** Whether this invoice currently satisfies the case-opening gate. */
   satisfiesGate: boolean;
+  /**
+   * The payment schedule, if there is one, with each row's derived state.
+   *
+   * Present so the card can ask how many instalments arrived rather than
+   * assuming all of them. Empty on an invoice paid in one go.
+   */
+  instalments: {
+    sequence: number;
+    dueDate: string;
+    amount: number;
+    outstanding: number;
+    state: "paid" | "partial" | "due";
+  }[];
 };
 
 /**
@@ -348,6 +388,15 @@ export const feeAgreementInvoiceSummary = async (
           ? "failed"
           : "not_attempted",
     satisfiesGate: await feeInvoiceSatisfied(organizationId, invoiceId),
+    instalments: (await allocatedInstalments(organizationId, invoiceId)).map(
+      (row) => ({
+        sequence: row.sequence,
+        dueDate: row.dueDate,
+        amount: row.amount,
+        outstanding: row.outstanding,
+        state: row.state,
+      }),
+    ),
   };
 };
 

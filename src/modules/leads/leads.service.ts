@@ -5759,6 +5759,13 @@ const markFeeAgreementPaymentReceived = async (
   agreementId: string,
   organizationId: string,
   actorId?: string,
+  /**
+   * How many instalments the firm is attesting to. One by default — on a plan,
+   * "payment received" almost never means the whole plan, and booking it that
+   * way marks every future instalment paid and stops the reminders chasing
+   * them. Ignored when the invoice has no schedule.
+   */
+  instalmentCount = 1,
 ) => {
   const [agreement] = await db
     .select()
@@ -5790,6 +5797,7 @@ const markFeeAgreementPaymentReceived = async (
       organizationId,
       agreement.invoiceId,
       actorId ?? null,
+      instalmentCount,
     );
 
     // `settleByAttestation` sends a draft before recording, so reaching here

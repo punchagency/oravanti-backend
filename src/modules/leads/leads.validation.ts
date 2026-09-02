@@ -26,6 +26,15 @@ export const adversePartyParamsSchema = z.object({
 
 export const agreementIdParamsSchema = z.object({ agreementId: uuid });
 
+/**
+ * How many instalments a staff attestation covers. Optional so an invoice with
+ * no schedule — and every existing caller — keeps working; the service defaults
+ * to one, which is the next instalment rather than the whole plan.
+ */
+export const markPaymentReceivedBodySchema = z.object({
+  instalments: z.number().int().min(1).max(120).optional(),
+});
+
 export const reassignFirmSignerBodySchema = z.object({
   firmSignerStaffId: uuid,
 });
