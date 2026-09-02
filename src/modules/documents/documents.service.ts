@@ -50,6 +50,7 @@ import { recordAccessEvent, recordAuditEvent } from "../shared/audit.service";
 import type { AuditActionName } from "../../lib/audit/actions";
 import { auditEvents } from "../../db/schema/audit-events";
 import { createModuleLogger, LogEvent } from "../../lib/logging/log";
+import { caseOrLeadUrl } from "../../lib/app-links";
 
 const log = createModuleLogger("documents.service");
 
@@ -1254,9 +1255,7 @@ export class DocumentsService {
         context: {
           documentTitle,
           uploadedBy: uploadedByName,
-          link: request.caseId
-            ? `${env.FRONTEND_APP_URL}/admin/cases/${request.caseId}`
-            : `${env.FRONTEND_APP_URL}/admin/leads/${request.leadId}`,
+          link: caseOrLeadUrl(request),
         },
         scenario: {
           caseId: request.caseId ?? undefined,

@@ -132,6 +132,11 @@ import {
   resolveDefaultFirmSigner,
 } from "../settings/fee-agreements/fee-agreement-settings.service";
 import { createModuleLogger, LogEvent } from "../../lib/logging/log";
+import {
+  caseUrl,
+  leadConsultationUrl,
+  leadUrl,
+} from "../../lib/app-links";
 // `hydrateCaseWorkflow` is deliberately not imported here any more. It is the
 // previous engine — `case_workflow_steps`, templates keyed by practice area —
 // which this branch replaces with per-case-type templates materialized into
@@ -605,7 +610,7 @@ export const createLead = async (
     context: {
       leadName: `${lead.firstName} ${lead.lastName}`.trim(),
       source: data.source,
-      link: `${env.FRONTEND_APP_URL}/admin/leads/${lead.id}`,
+      link: leadUrl(lead.id),
     },
     scenario: { leadId: lead.id },
     actorStaffId: creatorStaffId,
@@ -6567,7 +6572,9 @@ const notifyAgreementOutcome = async (
       recipients,
       context: {
         leadName: `${lead.firstName} ${lead.lastName}`.trim(),
-        link: `${env.FRONTEND_APP_URL}/admin/leads/${agreement.leadId}`,
+        // The consultation page, not the lead overview: this is about a fee
+        // agreement, and the agreement card lives there.
+        link: leadConsultationUrl(agreement.leadId),
         ...extra,
       },
       scenario: { leadId: agreement.leadId },
@@ -7227,7 +7234,7 @@ const openCase = async (
         context: {
           caseNumber: newCase.caseNumber,
           clientName: leadName,
-          link: `${env.FRONTEND_APP_URL}/admin/cases/${newCase.id}`,
+          link: caseUrl(newCase.id),
         },
         scenario: { leadId: lead.id, caseId: newCase.id },
         actorStaffId: creatorStaffId,

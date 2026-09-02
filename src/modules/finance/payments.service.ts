@@ -10,7 +10,6 @@ import {
 } from "../../db/schema/invoice-payments";
 import { invoices, type PaymentMethod } from "../../db/schema/invoices";
 import { withTransaction } from "../../db/transaction-context";
-import { env } from "../../config/env";
 import { notify } from "../../notifications/notification.service";
 import { staffRecipientsForFirm } from "../../notifications/recipients";
 import { dispatchNotification } from "../../queue/workers/notification.worker";
@@ -29,6 +28,7 @@ import { onClient, onLead, partyEmail, partyName, partyPhone } from "./party";
 import { dueBy, firmToday } from "./status";
 import { recalculateInvoiceTotals } from "./totals";
 import type { AccountAccess, FollowupChannelInput } from "./types";
+import { invoiceUrl } from "../../lib/app-links";
 
 export type RecordPaymentInput = {
   amount: number;
@@ -365,7 +365,9 @@ const notifyPaymentRecorded = async (args: {
       amount,
       invoiceNumber: args.invoiceNumber,
       clientName: row.partyName,
-      link: `${env.FRONTEND_APP_URL}/admin/finance/invoices/${args.invoiceId}`,
+      // By number, not id: there is no per-invoice route, so this filters
+      // the invoicing list — and the id matches nothing a user can see.
+      link: invoiceUrl(args.invoiceNumber),
     },
     scenario: {
       invoiceId: args.invoiceId,
