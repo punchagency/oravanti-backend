@@ -16,6 +16,10 @@ type Headers = Record<string, string | string[] | undefined>;
  * frontend's `useHasPermission` reads) both call it, because divergence
  * between them is exactly how a member added to a role group could show as
  * having access in the UI while every request still 403s.
+ *
+ * Asking the same question of a whole firm at once is
+ * `listUserIdsWithGrant` in `grant-holders.service.ts`, which lives apart
+ * because it needs no better-auth instance and its callers must not acquire one.
  */
 export async function resolveMemberGrants(
   userId: string,

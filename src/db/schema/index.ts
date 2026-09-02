@@ -27,6 +27,7 @@ export * from "./document-analyses";
 export * from "./document-requirements";
 export * from "./documents";
 export * from "./email-suppressions";
+export * from "./fee-agreement-settings";
 export * from "./fee-agreements";
 export * from "./financial-access-controls";
 export * from "./firm-practice-areas";

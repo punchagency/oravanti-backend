@@ -108,6 +108,40 @@ export const staffTemplates = {
     }),
   },
 
+  fee_agreement_awaiting_firm_signature: {
+    email: (ctx: { leadName?: string; link?: string }, meta) => ({
+      subject: `Your signature is needed — fee agreement${ctx.leadName ? ` for ${ctx.leadName}` : ""}`,
+      html: layout(
+        "A fee agreement is waiting for your signature",
+        html`<p>${ctx.leadName ?? "A lead"} has signed their fee agreement. It is not executed until you counter-sign it, and no invoice goes out until then.</p>` +
+          link(ctx.link, "Review and sign"),
+        meta,
+      ),
+    }),
+    inApp: (ctx: { leadName?: string; link?: string }) => ({
+      title: "Fee agreement awaiting your signature",
+      body: `${ctx.leadName ?? "A lead"} has signed — yours is outstanding`,
+      href: ctx.link,
+    }),
+  },
+
+  fee_agreement_signer_reassigned: {
+    email: (ctx: { leadName?: string; link?: string }, meta) => ({
+      subject: `You are now signing the fee agreement${ctx.leadName ? ` for ${ctx.leadName}` : ""}`,
+      html: layout(
+        "You have been assigned a fee agreement to sign",
+        html`<p>You are now the firm signer on ${ctx.leadName ?? "a lead"}'s fee agreement.</p>` +
+          link(ctx.link, "Open lead"),
+        meta,
+      ),
+    }),
+    inApp: (ctx: { leadName?: string; link?: string }) => ({
+      title: "Fee agreement signer changed",
+      body: `You are now signing for ${ctx.leadName ?? "a lead"}`,
+      href: ctx.link,
+    }),
+  },
+
   fee_agreement_signed: {
     email: (ctx: { leadName?: string; link?: string }, meta) => ({
       subject: `Fee agreement signed${ctx.leadName ? ` — ${ctx.leadName}` : ""}`,

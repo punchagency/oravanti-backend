@@ -29,6 +29,7 @@ import { RevenueAnalyticsModule } from "./revenue-analytics/revenue-analytics.mo
 import { RolesPermissionsModule } from "./settings/roles-permissions/roles-permissions.module";
 import { RoleGroupsModule } from "./settings/role-groups/role-groups.module";
 import { ConsultationSettingsModule } from "./settings/consultation/consultation-settings.module";
+import { FeeAgreementSettingsModule } from "./settings/fee-agreements/fee-agreement-settings.module";
 import { NotificationSettingsModule } from "./settings/notifications/notification-settings.module";
 import { ConfidoWebhookModule } from "./finance/confido/confido-webhooks.routes";
 import { PaymentSettingsModule } from "./settings/payments/payment-settings.module";
@@ -86,6 +87,7 @@ export const modules: Module[] = [
   new FirmInfoModule(),
   new FirmProfileModule(),
   new ConsultationSettingsModule(),
+  new FeeAgreementSettingsModule(),
   new NotificationSettingsModule(),
   new PaymentSettingsModule(),
   new RolesPermissionsModule(),

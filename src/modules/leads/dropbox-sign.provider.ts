@@ -34,9 +34,15 @@ export class DropboxSignProvider implements ESignatureProvider {
     form.append("client_id", this.clientId);
     form.append("title", input.title);
     form.append("subject", input.subject);
-    form.append("signers[0][email_address]", input.signer.email);
-    form.append("signers[0][name]", input.signer.name);
-    form.append("signers[0][order]", "0");
+    // Sent in `order`, so the array index and the signing position agree — the
+    // text tags in the PDF are numbered by position (`signer1`, `signer2`), and
+    // Dropbox Sign matches a tag to the signer at that index.
+    const signers = [...input.signers].sort((a, b) => a.order - b.order);
+    signers.forEach((signer, index) => {
+      form.append(`signers[${index}][email_address]`, signer.email);
+      form.append(`signers[${index}][name]`, signer.name);
+      form.append(`signers[${index}][order]`, String(signer.order));
+    });
     form.append("use_text_tags", "1");
     form.append("hide_text_tags", "1");
     form.append("test_mode", input.testMode ? "1" : "0");
@@ -57,16 +63,22 @@ export class DropboxSignProvider implements ESignatureProvider {
     }>("/signature_request/create_embedded", { method: "POST", body: form });
 
     const sr = json.signature_request;
-    const signerSignatureId = sr.signatures?.[0]?.signature_id;
-    if (!sr.signature_request_id || !signerSignatureId) {
+    // `signatures` comes back in the order the signers were sent, which is the
+    // order they were sorted into above — so index i is `signers[i]`, and the
+    // role mapping survives a firm that signs first.
+    const signatureIds: CreateEmbeddedRequestResult["signatureIds"] = {};
+    signers.forEach((signer, index) => {
+      const id = sr.signatures?.[index]?.signature_id;
+      if (id) signatureIds[signer.role] = id;
+    });
+
+    const missing = signers.some((signer) => !signatureIds[signer.role]);
+    if (!sr.signature_request_id || missing) {
       throw new ExternalServiceError(
         "Dropbox Sign returned an incomplete signature request",
       );
     }
-    return {
-      signatureRequestId: sr.signature_request_id,
-      signerSignatureId,
-    };
+    return { signatureRequestId: sr.signature_request_id, signatureIds };
   }
 
   async getEmbeddedSignUrl(signatureId: string): Promise<EmbeddedSignUrl> {
@@ -105,6 +117,23 @@ export class DropboxSignProvider implements ESignatureProvider {
     const a = Buffer.from(expected);
     const b = Buffer.from(eventHash ?? "");
     return a.length === b.length && timingSafeEqual(a, b);
+  }
+
+  async cancelSignatureRequest(signatureRequestId: string): Promise<void> {
+    // Returns 200 with an empty body rather than JSON, so it does not go
+    // through `request()`.
+    const res = await fetch(
+      `${API_BASE}/signature_request/cancel/${signatureRequestId}`,
+      { method: "POST", headers: { Authorization: this.authHeader() } },
+    );
+    // 404 means it is already gone, and 409 that it is already complete —
+    // either way there is nothing left to withdraw, which is what the caller
+    // wanted. Only a real failure should stop a reassignment.
+    if (!res.ok && res.status !== 404 && res.status !== 409) {
+      throw new ExternalServiceError(
+        `Dropbox Sign cancel failed (${res.status})`,
+      );
+    }
   }
 
   private async request<T>(path: string, init: RequestInit): Promise<T> {

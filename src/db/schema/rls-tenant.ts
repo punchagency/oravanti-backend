@@ -71,6 +71,7 @@ import {
   externalSubmissions,
 } from "./documents";
 import { connectedEmailAccount } from "./email";
+import { feeAgreementSettings } from "./fee-agreement-settings";
 import { feeAgreements } from "./fee-agreements";
 import { financialAccessControls } from "./financial-access-controls";
 import { firmPracticeAreas } from "./firm-practice-areas";
@@ -198,6 +199,7 @@ export const [rlsCaseTypeDocumentRequirementsOrg, rlsCaseTypeDocumentRequirement
 export const [rlsScenarioDocumentRequirementsOrg, rlsScenarioDocumentRequirementsStaff] = orgScoped("scenario_document_requirements", scenarioDocumentRequirements);
 export const [rlsDocumentRequestsOrg, rlsDocumentRequestsStaff] = orgScoped("document_requests", documentRequests);
 export const [rlsConnectedEmailAccountOrg, rlsConnectedEmailAccountStaff] = orgScoped("connected_email_account", connectedEmailAccount);
+export const [rlsFeeAgreementSettingsOrg, rlsFeeAgreementSettingsStaff] = orgScoped("fee_agreement_settings", feeAgreementSettings);
 export const [rlsFeeAgreementsOrg, rlsFeeAgreementsStaff] = orgScoped("fee_agreements", feeAgreements);
 export const [rlsFinancialAccessControlsOrg, rlsFinancialAccessControlsStaff] = orgScoped("financial_access_controls", financialAccessControls);
 export const [rlsFirmPracticeAreasOrg, rlsFirmPracticeAreasStaff] = orgScoped("firm_practice_areas", firmPracticeAreas);

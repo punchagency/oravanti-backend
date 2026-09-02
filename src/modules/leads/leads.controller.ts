@@ -109,6 +109,7 @@ export class LeadsController {
     const lead = await this.svc.getLeadById(
       req.params.id as string,
       organizationId!,
+      staffId,
     );
     if (!lead)
       return res.status(404).json({ success: false, error: "Lead not found" });
@@ -554,6 +555,7 @@ export class LeadsController {
     const result = await this.svc.getFeeAgreement(
       req.params.id as string,
       organizationId!,
+      staffId,
     );
     logLeadView(
       organizationId!,
@@ -593,6 +595,65 @@ export class LeadsController {
       staffId,
     );
     sendSuccess(res, result, "Fee agreement sent successfully");
+  };
+
+  listAgreementsAwaitingFirmSignature = async (
+    _req: Request,
+    res: Response,
+  ) => {
+    const { staffId, organizationId } = getRequestContext();
+    const result = await this.svc.listAgreementsAwaitingFirmSignature(
+      organizationId!,
+      staffId ?? null,
+    );
+    sendSuccess(res, result, "Agreements awaiting signature retrieved");
+  };
+
+  getFirmSignSession = async (req: Request, res: Response) => {
+    const { staffId, organizationId } = getRequestContext();
+    const result = await this.svc.getFirmSignSession(
+      req.params.agreementId as string,
+      organizationId!,
+      staffId ?? null,
+    );
+    sendSuccess(res, result, "Signing session created successfully");
+  };
+
+  remindFirmSigner = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.svc.remindFirmSigner(
+      req.params.agreementId as string,
+      organizationId!,
+    );
+    sendSuccess(res, result, "Signer reminded successfully");
+  };
+
+  reassignFirmSigner = async (req: Request, res: Response) => {
+    const { staffId: _staffId, organizationId } = getRequestContext();
+    const staffId = _staffId ?? undefined;
+    const result = await this.svc.reassignFirmSigner(
+      req.params.agreementId as string,
+      organizationId!,
+      req.body.firmSignerStaffId as string,
+      staffId,
+    );
+    sendSuccess(res, result, "Fee agreement signer changed successfully");
+  };
+
+  getFeeAgreementSignedDocument = async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.svc.getFeeAgreementSignedDocument(
+      req.params.agreementId as string,
+      organizationId!,
+    );
+    sendSuccess(res, result, "Signed agreement retrieved successfully");
+  };
+
+  getAgreementSignedDocument = async (req: Request, res: Response) => {
+    const result = await this.svc.getAgreementSignedDocument(
+      req.params.token as string,
+    );
+    sendSuccess(res, result, "Signed agreement retrieved successfully");
   };
 
   markFeeAgreementReceived = async (req: Request, res: Response) => {
