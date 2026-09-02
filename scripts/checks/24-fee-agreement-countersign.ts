@@ -48,7 +48,7 @@ import { practiceAreaCaseTypes } from "../../src/db/schema/practice-area-case-ty
 import { practiceAreaSubcategories } from "../../src/db/schema/practice-area-subcategories";
 import { practiceAreas } from "../../src/db/schema/practice-areas";
 import { staff } from "../../src/db/schema/staff";
-import { listUserIdsWithGrant } from "../../src/modules/shared/member-grants.service";
+import { listUserIdsWithGrant } from "../../src/modules/shared/grant-holders.service";
 import {
   listEligibleSigners,
   resolveDefaultFirmSigner,

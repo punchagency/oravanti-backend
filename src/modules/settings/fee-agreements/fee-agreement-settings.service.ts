@@ -11,7 +11,7 @@ import { staff } from "../../../db/schema/staff";
 import { createModuleLogger } from "../../../lib/logging/log";
 import { BadRequestError } from "../../../utils/error/app-error";
 import { recordAuditEvent } from "../../shared/audit.service";
-import { listUserIdsWithGrant } from "../../shared/member-grants.service";
+import { listUserIdsWithGrant } from "../../shared/grant-holders.service";
 import { UpsertFeeAgreementSettingsBody } from "./fee-agreement-settings.validation";
 
 const log = createModuleLogger("fee-agreement-settings.service");
