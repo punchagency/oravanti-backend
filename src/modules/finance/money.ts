@@ -2,10 +2,10 @@
  * Money helpers for the finance module.
  *
  * Columns are numeric(15,4). The four decimals exist to carry *rate* precision
- * through intermediate math — hours x rate, pro-rated payment splits — without
- * accumulating rounding drift. Anything a client is actually billed or pays is
- * rounded to 2dp at write time, so line amounts sum exactly and nobody is
- * charged a fraction of a cent.
+ * through intermediate math — hours x rate, a total divided into instalments —
+ * without accumulating rounding drift. Anything a client is actually billed or
+ * pays is rounded to 2dp at write time, so line amounts sum exactly and nobody
+ * is charged a fraction of a cent.
  *
  * Postgres numeric arrives over the wire as a string. Parse at the edge, format
  * on the way back in; never let a JS float become the stored value directly.
