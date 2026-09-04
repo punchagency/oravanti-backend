@@ -5548,6 +5548,9 @@ const billSignedFeeAgreement = async (
           installmentSchedule: document.installmentSchedule,
           applyConsultationCredit: document.applyConsultationCredit,
           consultationFeeAmount: document.consultationFeeAmount,
+          // The clause the client signed, carried onto the invoice so payments
+          // are applied the way the agreement says they are.
+          paymentAllocation: document.paymentAllocation,
         },
       );
     }

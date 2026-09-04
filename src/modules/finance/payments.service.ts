@@ -9,6 +9,7 @@ import {
   type PaymentEntryKind,
 } from "../../db/schema/invoice-payments";
 import { invoices, type PaymentMethod } from "../../db/schema/invoices";
+import { agreedSplit } from "./allocation.service";
 import { withTransaction } from "../../db/transaction-context";
 import { notify } from "../../notifications/notification.service";
 import { staffRecipientsForFirm } from "../../notifications/recipients";
@@ -23,7 +24,7 @@ import { canChaseInvoice, sendSystemInvoice } from "./deliveries.service";
 import { agingOverDues } from "./dues";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
-import { money, num, toMoney, trustFirstSplit } from "./money";
+import { money, num, toMoney } from "./money";
 import { onClient, onLead, partyEmail, partyName, partyPhone } from "./party";
 import { dueBy, firmToday } from "./status";
 import { recalculateInvoiceTotals } from "./totals";
@@ -32,7 +33,11 @@ import { invoiceUrl } from "../../lib/app-links";
 
 export type RecordPaymentInput = {
   amount: number;
-  /** Optional explicit split; pro-rated from the outstanding balance if absent. */
+  /**
+   * Optional explicit split. Absent means the invoice's own application
+   * order — the one its fee agreement promised the client — falling back to
+   * `trustFirstSplit` when there is no such promise. See `allocation.ts`.
+   */
   amountOperating?: number;
   amountTrust?: number;
   paymentDate: string;
@@ -95,6 +100,8 @@ export const recordPayment = async (
       subtotalOperating: invoices.subtotalOperating,
       subtotalTrust: invoices.subtotalTrust,
       amountPaid: invoices.amountPaid,
+      paymentApplicationOrder: invoices.paymentApplicationOrder,
+      paymentApplicationFeePercent: invoices.paymentApplicationFeePercent,
     })
     .from(invoices)
     .where(
@@ -110,8 +117,9 @@ export const recordPayment = async (
     throw new BadRequestError("Send the invoice before recording a payment");
   }
 
-  // What is still owed on each side, so the pro-rata default apportions against
-  // the remaining balance rather than the original totals.
+  // What is still owed on each side. Only the trust-first fallback reads these
+  // — an invoice with an application order is placed across its lines instead —
+  // and it apportions against the remaining balance, not the original totals.
   const paid = await sumPaidBySide(organizationId, invoiceId);
 
   const operatingOutstanding = Math.max(
@@ -131,7 +139,14 @@ export const recordPayment = async (
         operating: toMoney(input.amountOperating ?? 0),
         trust: toMoney(input.amountTrust ?? 0),
       }
-    : trustFirstSplit(input.amount, operatingOutstanding, trustOutstanding);
+    : await agreedSplit(
+        organizationId,
+        invoiceId,
+        input.amount,
+        num(invoice.amountPaid),
+        operatingOutstanding,
+        trustOutstanding,
+      );
 
   if (explicit) {
     const sum = toMoney(split.operating + split.trust);
@@ -238,11 +253,14 @@ export const recordPayment = async (
       metadata: {
         amountOperating: effective.operating,
         amountTrust: effective.trust,
+        // Names the rule actually used. It hardcoded "trust_first", which
+        // stops being true the moment an agreement asks for something else —
+        // and a split source that lies is worse than none.
         splitSource: input.legs?.length
           ? "provider_legs"
           : explicit
             ? "explicit"
-            : "trust_first",
+            : (invoice.paymentApplicationOrder ?? "trust_first"),
       },
     });
 
@@ -379,7 +397,7 @@ const notifyPaymentRecorded = async (args: {
   });
 };
 
-/** Paid-to-date per side, so the pro-rata default uses live outstandings. */
+/** Paid-to-date per side, so the trust-first fallback uses live outstandings. */
 const sumPaidBySide = async (
   organizationId: string,
   invoiceId: string,
