@@ -9,6 +9,7 @@ import {
   type PaymentEntryKind,
 } from "../../db/schema/invoice-payments";
 import { invoices, type PaymentMethod } from "../../db/schema/invoices";
+import { agreedSplit } from "./allocation.service";
 import { withTransaction } from "../../db/transaction-context";
 import { notify } from "../../notifications/notification.service";
 import { staffRecipientsForFirm } from "../../notifications/recipients";
@@ -23,7 +24,7 @@ import { canChaseInvoice, sendSystemInvoice } from "./deliveries.service";
 import { agingOverDues } from "./dues";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
-import { money, num, toMoney, trustFirstSplit } from "./money";
+import { money, num, toMoney } from "./money";
 import { onClient, onLead, partyEmail, partyName, partyPhone } from "./party";
 import { dueBy, firmToday } from "./status";
 import { recalculateInvoiceTotals } from "./totals";
@@ -95,6 +96,8 @@ export const recordPayment = async (
       subtotalOperating: invoices.subtotalOperating,
       subtotalTrust: invoices.subtotalTrust,
       amountPaid: invoices.amountPaid,
+      paymentApplicationOrder: invoices.paymentApplicationOrder,
+      paymentApplicationFeePercent: invoices.paymentApplicationFeePercent,
     })
     .from(invoices)
     .where(
@@ -131,7 +134,14 @@ export const recordPayment = async (
         operating: toMoney(input.amountOperating ?? 0),
         trust: toMoney(input.amountTrust ?? 0),
       }
-    : trustFirstSplit(input.amount, operatingOutstanding, trustOutstanding);
+    : await agreedSplit(
+        organizationId,
+        invoiceId,
+        input.amount,
+        num(invoice.amountPaid),
+        operatingOutstanding,
+        trustOutstanding,
+      );
 
   if (explicit) {
     const sum = toMoney(split.operating + split.trust);
@@ -238,11 +248,14 @@ export const recordPayment = async (
       metadata: {
         amountOperating: effective.operating,
         amountTrust: effective.trust,
+        // Names the rule actually used. It hardcoded "trust_first", which
+        // stops being true the moment an agreement asks for something else —
+        // and a split source that lies is worse than none.
         splitSource: input.legs?.length
           ? "provider_legs"
           : explicit
             ? "explicit"
-            : "trust_first",
+            : (invoice.paymentApplicationOrder ?? "trust_first"),
       },
     });
 

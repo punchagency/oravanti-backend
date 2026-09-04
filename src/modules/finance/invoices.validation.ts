@@ -80,6 +80,12 @@ const lineItemSchema = z.object({
   rate: z.coerce.number().nonnegative(),
   account: z.enum(["operating", "trust_iolta"]).default("operating"),
   /**
+   * Fee or cost — a different axis from `account`, and optional because most
+   * callers have no basis to say. Omitting it on any line of an invoice leaves
+   * that invoice on the trust-first split, which is the safe default.
+   */
+  category: z.enum(["fee", "cost"]).optional(),
+  /**
    * Which catalog preset this line was composed from. Provenance only — the
    * billed figures are the three fields above, and the server never reads the
    * preset to fill them in. A stale or unknown id would therefore change

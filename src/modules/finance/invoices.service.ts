@@ -602,6 +602,12 @@ export type CreateInvoiceLine = {
   rate: number;
   account: "operating" | "trust_iolta";
   /**
+   * Fee or cost — a different axis from `account`, and only known to sources
+   * that draw the distinction. Omitted means unclassified, which makes the
+   * whole invoice fall back to the trust-first split.
+   */
+  category?: "fee" | "cost";
+  /**
    * The catalog preset this line was composed from, when it was. Provenance
    * only: the three fields above are what gets billed, and none of them is
    * ever read back off the preset. See `line-presets.service.ts`.
@@ -705,6 +711,7 @@ const buildLineValues = (
     rate: money(l.rate),
     amount: money(l.quantity * l.rate),
     account: l.account,
+    category: l.category ?? null,
     presetId: l.presetId ?? null,
     sortOrder: sortOrder++,
   }));
@@ -725,6 +732,8 @@ const buildLineValues = (
       // approved, and recomputing could differ by a rounding step.
       amount: money(e.amount == null ? hours * rate : num(e.amount)),
       account: "operating" as const,
+      // Billed time is the firm's own fee, never a pass-through cost.
+      category: "fee" as const,
       sortOrder: sortOrder++,
       timeEntryId: e.id,
     });
@@ -734,6 +743,13 @@ const buildLineValues = (
 };
 
 export type CreateInvoiceInput = {
+  /**
+   * How payments against this invoice are applied across fee and cost lines,
+   * when the agreement behind it promised the client an order. Null/omitted
+   * leaves it on the trust-first default.
+   */
+  paymentApplicationOrder?: "fees_first" | "costs_first" | "custom";
+  paymentApplicationFeePercent?: number | null;
   /** Exactly one of these. A lead is billed during intake, a client after. */
   clientId?: string;
   leadId?: string;
@@ -785,6 +801,8 @@ export const create = async (
         issueDate: input.issueDate,
         dueDate: input.dueDate,
         notes: input.notes ?? null,
+        paymentApplicationOrder: input.paymentApplicationOrder ?? null,
+        paymentApplicationFeePercent: input.paymentApplicationFeePercent ?? null,
         // `sentAt` is set by a successful delivery and nothing else.
         createdById: actorStaffId,
       })
