@@ -7,7 +7,8 @@
  *   - invoice numbers are per-org, zero-padded, and monotonic
  *   - operating/trust subtotals fold correctly from line items
  *   - a partial payment lands on `partial`, the remainder flips it to `paid`
- *   - payment splits are pro-rated against the OUTSTANDING balance, and stored
+ *   - payment splits fill trust first against the OUTSTANDING balance, and are
+ *     stored rather than derived at read time
  *   - a time entry can be billed exactly once
  *   - overdue outranks partial in the status buckets
  *   - billing rates resolve by the entry's date, not today's
