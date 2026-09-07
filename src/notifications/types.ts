@@ -1,4 +1,10 @@
-import type { EmailAttachment } from "../utils/email/email.types";
+/** An attachment resolved from object storage when the message is sent. */
+export type NotificationAttachment = {
+  /** Object-storage key. Fetched by the worker, never by the caller. */
+  storageKey: string;
+  filename: string;
+  contentType?: string;
+};
 import type { NotificationEventKey } from "./events";
 
 export type NotificationChannel = "email" | "sms" | "in_app";
@@ -64,8 +70,18 @@ export type NotifyInput = {
   };
   /** The staff member whose action triggered this. */
   actorStaffId?: string | null;
-  /** Email only, and deliberately not persisted — see notifications.payload. */
-  attachments?: EmailAttachment[];
+  /**
+   * Files to attach, named by storage key rather than carried as buffers.
+   *
+   * The worker re-renders every message from the persisted payload, so an
+   * attachment has to survive that round trip — and a base64 PDF sitting in a
+   * Redis job and a database row is the wrong way to make it. The key is
+   * persisted and the bytes are fetched at send time, which also means a retry
+   * attaches the current file rather than a stale copy of it.
+   *
+   * Email only; every other channel ignores these.
+   */
+  attachments?: NotificationAttachment[];
 };
 
 export type NotifyResultRow = {
@@ -107,3 +123,22 @@ export type SkipReason =
 export type ChannelDecision =
   | { allowed: true }
   | { allowed: false; skipReason: SkipReason };
+
+/**
+ * Reserved payload key holding a message's attachments.
+ *
+ * Namespaced so it cannot collide with a template's own context, and stripped
+ * before rendering so no template ever has to know it is there.
+ */
+export const ATTACHMENTS_KEY = "__attachments";
+
+/** Pull the attachments out of a persisted payload, leaving the render context. */
+export const splitAttachments = (
+  payload: Record<string, unknown>,
+): { context: Record<string, unknown>; attachments: NotificationAttachment[] } => {
+  const { [ATTACHMENTS_KEY]: raw, ...context } = payload;
+  return {
+    context,
+    attachments: Array.isArray(raw) ? (raw as NotificationAttachment[]) : [],
+  };
+};

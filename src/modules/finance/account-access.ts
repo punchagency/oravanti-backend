@@ -5,6 +5,7 @@ import { financialAccessControls } from "../../db/schema/financial-access-contro
 import { staff } from "../../db/schema/staff";
 import { getRequestContext } from "../../middleware/request-context";
 import { AuthorizationError } from "../../utils/error/app-error";
+import type { PermissionRole } from "../../db/schema/financial-access-controls";
 import type { AccountAccess, AccountLevel, FinanceRestrictions } from "./types";
 
 /**
@@ -25,13 +26,18 @@ const TRUST_DEFAULT: AccountLevel = "no_access";
 const OPERATING_DEFAULT: AccountLevel = "full_access";
 
 /**
- * `permission_role_enum` is (admin | attorney | paralegal | client) — there is
- * no `owner` value, and an org owner may not have a staff row at all. Owners
- * are resolved as `admin` for this lookup.
+ * `permission_role_enum` has no `owner` value, and an org owner may not have a
+ * staff row at all — so owners are resolved as `admin` for this lookup. Every
+ * other `staff_role` maps to itself.
+ *
+ * A `null` here is load-bearing: `resolveAccountAccess` returns the defaults
+ * without reading the table, so an unmapped role can be neither granted nor
+ * restricted. That is why `legal_assistant` and `receptionist` had to be added
+ * to the enum rather than left to fall through.
  */
 const toPermissionRole = (
   role: string | null | undefined,
-): "admin" | "attorney" | "paralegal" | "client" | null => {
+): PermissionRole | null => {
   switch (role) {
     case "owner":
     case "admin":
@@ -40,6 +46,10 @@ const toPermissionRole = (
       return "attorney";
     case "paralegal":
       return "paralegal";
+    case "legal_assistant":
+      return "legal_assistant";
+    case "receptionist":
+      return "receptionist";
     case "client":
       return "client";
     default:

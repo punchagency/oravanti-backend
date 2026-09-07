@@ -10,8 +10,8 @@ import { createModuleLogger } from "../../lib/logging/log";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { sendScheduleUpdate } from "./deliveries.service";
 import { logFinanceEvent } from "./finance-events.service";
-import type { ScheduleRow } from "./instalments";
-import { money, num } from "./money";
+import { allocate, type ScheduleRow } from "./instalments";
+import { money, num, toMoney } from "./money";
 import { recalculateInvoiceTotals } from "./totals";
 import type { AccountAccess } from "./types";
 
@@ -46,6 +46,79 @@ export const listInstalments = async (
       ),
     )
     .orderBy(asc(invoiceInstalments.sequence));
+
+/**
+ * The schedule with each row's paid/outstanding figure worked out.
+ *
+ * Per-instalment amounts are derived, never stored — `invoices.amount_paid` is
+ * the only paid figure, walked down the schedule oldest-first — so this is the
+ * only honest way to ask "what is still owed on instalment 3".
+ */
+export const allocatedInstalments = async (
+  organizationId: string,
+  invoiceId: string,
+) => {
+  const [invoice] = await db
+    .select({ amountPaid: invoices.amountPaid })
+    .from(invoices)
+    .where(and(eq(invoices.organizationId, organizationId), eq(invoices.id, invoiceId)))
+    .limit(1);
+  if (!invoice) return [];
+
+  const rows = await listInstalments(organizationId, invoiceId);
+  if (rows.length === 0) return [];
+
+  return allocate(
+    rows.map((row) => ({
+      id: row.id,
+      sequence: row.sequence,
+      dueDate: row.dueDate,
+      amount: num(row.amount),
+    })),
+    num(invoice.amountPaid),
+  );
+};
+
+/**
+ * What it costs to settle the next `count` unpaid instalments.
+ *
+ * Returns null when the invoice has no schedule, which is the caller's signal
+ * to fall back to the whole balance — an invoice with no plan has no "next
+ * instalment" to speak of.
+ *
+ * Counts from the oldest unpaid, and includes a partially paid one for the
+ * remainder only. That matches how `allocate` derives state in the first place,
+ * so "pay two instalments" costs the same whether or not a part payment landed
+ * earlier.
+ */
+export const amountForNextInstalments = async (
+  organizationId: string,
+  invoiceId: string,
+  count: number,
+): Promise<number | null> => {
+  const allocated = await allocatedInstalments(organizationId, invoiceId);
+  if (allocated.length === 0) return null;
+
+  const outstanding = allocated.filter((row) => row.outstanding > 0);
+  if (outstanding.length === 0) return 0;
+
+  if (count < 1) {
+    throw new BadRequestError("Choose at least one instalment to record");
+  }
+  if (count > outstanding.length) {
+    throw new BadRequestError(
+      outstanding.length === 1
+        ? "Only one instalment is still outstanding on this invoice"
+        : `Only ${outstanding.length} instalments are still outstanding on this invoice`,
+    );
+  }
+
+  // `toMoney`, not `money`: the caller records this as an amount, and `money`
+  // returns a formatted string for display.
+  return toMoney(
+    outstanding.slice(0, count).reduce((sum, row) => sum + row.outstanding, 0),
+  );
+};
 
 /**
  * A schedule that does not sum to the invoice total is a receivable that partly

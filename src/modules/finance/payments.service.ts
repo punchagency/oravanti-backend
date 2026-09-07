@@ -10,7 +10,6 @@ import {
 } from "../../db/schema/invoice-payments";
 import { invoices, type PaymentMethod } from "../../db/schema/invoices";
 import { withTransaction } from "../../db/transaction-context";
-import { env } from "../../config/env";
 import { notify } from "../../notifications/notification.service";
 import { staffRecipientsForFirm } from "../../notifications/recipients";
 import { dispatchNotification } from "../../queue/workers/notification.worker";
@@ -19,8 +18,8 @@ import { createModuleLogger, LogEvent } from "../../lib/logging/log";
 
 const log = createModuleLogger("finance.payments");
 import { logCaseEvent } from "../cases/case-events.service";
-import { requireTrustWrite } from "./account-access";
-import { canChaseInvoice } from "./deliveries.service";
+import { requireTrustWrite, systemAccess } from "./account-access";
+import { canChaseInvoice, sendSystemInvoice } from "./deliveries.service";
 import { agingOverDues } from "./dues";
 import { logFinanceEvent } from "./finance-events.service";
 import { getById } from "./invoices.service";
@@ -29,10 +28,12 @@ import { onClient, onLead, partyEmail, partyName, partyPhone } from "./party";
 import { dueBy, firmToday } from "./status";
 import { recalculateInvoiceTotals } from "./totals";
 import type { AccountAccess, FollowupChannelInput } from "./types";
+import { invoiceUrl } from "../../lib/app-links";
 
 export type RecordPaymentInput = {
   amount: number;
-  /** Optional explicit split; pro-rated from the outstanding balance if absent. */
+  /** Optional explicit split. Absent means `trustFirstSplit` against the
+   * outstanding balance — trust to its cap, remainder to operating. */
   amountOperating?: number;
   amountTrust?: number;
   paymentDate: string;
@@ -110,7 +111,7 @@ export const recordPayment = async (
     throw new BadRequestError("Send the invoice before recording a payment");
   }
 
-  // What is still owed on each side, so the pro-rata default apportions against
+  // What is still owed on each side, so the trust-first default fills against
   // the remaining balance rather than the original totals.
   const paid = await sumPaidBySide(organizationId, invoiceId);
 
@@ -365,7 +366,9 @@ const notifyPaymentRecorded = async (args: {
       amount,
       invoiceNumber: args.invoiceNumber,
       clientName: row.partyName,
-      link: `${env.FRONTEND_APP_URL}/admin/finance/invoices/${args.invoiceId}`,
+      // By number, not id: there is no per-invoice route, so this filters
+      // the invoicing list — and the id matches nothing a user can see.
+      link: invoiceUrl(args.invoiceNumber),
     },
     scenario: {
       invoiceId: args.invoiceId,
@@ -377,7 +380,7 @@ const notifyPaymentRecorded = async (args: {
   });
 };
 
-/** Paid-to-date per side, so the pro-rata default uses live outstandings. */
+/** Paid-to-date per side, so the trust-first default uses live outstandings. */
 const sumPaidBySide = async (
   organizationId: string,
   invoiceId: string,
@@ -846,4 +849,111 @@ export const sendFollowUp = async (
     /** What is actually late — the whole balance only on an unscheduled invoice. */
     overdueAmount,
   };
+};
+
+export type AttestationResult = {
+  recorded: boolean;
+  reason: "void" | "already_settled" | "undelivered" | null;
+};
+
+/**
+ * Record that a member of staff says the money arrived outside the system.
+ *
+ * The line held throughout the intake payment work: **staff attesting to money
+ * received is real and records a payment; a client clicking a button is not.**
+ * A firm that takes a cheque, a wire, or cash at the front desk needs a way to
+ * say so that reaches the ledger — otherwise the only route to an open case is
+ * a card, and the invoice stays outstanding forever beside a case that is
+ * already being worked.
+ *
+ * ## Why this sends first
+ *
+ * `recordPayment` refuses a draft — "Send the invoice before recording a
+ * payment" — and the case-opening gate refuses an invoice that was never
+ * delivered. Without step 2 below those two rules deadlock: the firm cannot
+ * record the payment because the invoice is a draft, and cannot get past the
+ * gate because no payment is recorded. Sending it first breaks that, and is
+ * also just correct — a firm attesting to payment has certainly decided to
+ * bill.
+ *
+ * Deliberately NOT swallowed the way a system send is. An attestation is the
+ * entire content of the request that triggers it, not decoration on a workflow
+ * step, so a caller must be able to tell the difference between "recorded" and
+ * "we could not reach the client to bill them". Recording it after the fact and
+ * swallowing the error is exactly how the previous flag-based version drifted
+ * from the ledger permanently.
+ */
+export const settleByAttestation = async (
+  organizationId: string,
+  invoiceId: string,
+  actorStaffId: string | null,
+  /**
+   * How much arrived. Omitted means the whole outstanding balance, which is
+   * right for a single payment and wrong for a schedule — a firm attesting to
+   * one instalment of six was booking all six, marking the plan settled and
+   * silencing every reminder that would have chased the rest. Callers with a
+   * schedule pass the amount for the instalments actually received.
+   */
+  opts: { amount?: number } = {},
+): Promise<AttestationResult> => {
+  const read = async () => {
+    const [row] = await db
+      .select({
+        status: invoices.status,
+        balanceDue: invoices.balanceDue,
+      })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.organizationId, organizationId),
+          eq(invoices.id, invoiceId),
+        ),
+      )
+      .limit(1);
+    return row;
+  };
+
+  let invoice = await read();
+  if (!invoice) throw new NotFoundError("Invoice not found");
+  if (invoice.status === "void") return { recorded: false, reason: "void" };
+
+  // The idempotency key. A second click, or an attestation racing the webhook
+  // for the same money, finds nothing owed and records nothing — rather than
+  // booking the amount twice and driving the invoice into credit.
+  if (num(invoice.balanceDue) <= 0) {
+    return { recorded: false, reason: "already_settled" };
+  }
+
+  if (invoice.status === "draft") {
+    await sendSystemInvoice(organizationId, invoiceId, actorStaffId);
+    invoice = await read();
+    if (!invoice) throw new NotFoundError("Invoice not found");
+  }
+
+  // The send was refused or failed, so the client still has not been billed.
+  // Reported rather than forced: recording a payment against an invoice nobody
+  // ever received would open a case on money the client was never asked for.
+  if (invoice.status === "draft") {
+    return { recorded: false, reason: "undelivered" };
+  }
+
+  const balanceDue = num(invoice.balanceDue);
+  // Never more than is owed: an over-payment would drive the invoice into
+  // credit, which no attestation should be able to do by arithmetic error.
+  const amount =
+    opts.amount == null ? balanceDue : Math.min(opts.amount, balanceDue);
+
+  if (amount <= 0) return { recorded: false, reason: "already_settled" };
+
+  await recordPayment(organizationId, invoiceId, actorStaffId, systemAccess(), {
+    amount,
+    paymentDate: await firmToday(organizationId),
+    // `paymentMethodEnum` has no `attested` value, and inventing one would put a
+    // bookkeeping fiction in a column the Reports tab groups by. "other" plus
+    // the note is the honest answer: we know money arrived, not how.
+    method: "other",
+    notes: "Recorded by staff — received outside the system",
+  });
+
+  return { recorded: true, reason: null };
 };

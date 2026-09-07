@@ -83,6 +83,27 @@ const sendReasonCopy = (
 };
 
 export const intakeTemplates = {
+  /**
+   * The executed copy — the PDF is attached to this email, and the link is the
+   * fallback rather than the point.
+   *
+   * The link goes to the signing page rather than carrying a presigned download
+   * URL: those expire within the hour, and an email is read whenever it is read,
+   * so a direct URL would be dead for most recipients. The page mints a fresh
+   * one on demand.
+   */
+  fee_agreement_executed: {
+    email: (ctx: { link: string }, meta) => ({
+      subject: `Your signed agreement with ${meta.firmName}`,
+      html: layout(
+        `Hello ${meta.recipientName},`,
+        html`<p>Your fee agreement with ${meta.firmName} has been signed by both parties. <strong>Your signed copy is attached to this email</strong> — please keep it for your records.</p>` +
+          html`<p style="color:#666;font-size:13px;">If the attachment did not come through, you can download it here instead:<br /><a href="${ctx.link}">${ctx.link}</a></p>`,
+        meta,
+      ),
+    }),
+  },
+
   questionnaire_sent: {
     email: (ctx: QuestionnaireSendContext, meta) => {
       const { subject, lead, action } = sendReasonCopy(ctx.reason, meta.firmName);

@@ -1,5 +1,4 @@
 import { and, asc, count, desc, eq, gte, lte, or } from "drizzle-orm";
-import { env } from "../../config/env";
 import { db } from "../../db/client";
 import type { UpdateTaskInput } from "./tasks.validation";
 import { admins, cases, clients, staff, tasks } from "../../db/schema";
@@ -11,6 +10,7 @@ import { logLeadEvent } from "../leads/lead-events.service";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 import { recordAuditEvent } from "../shared/audit.service";
 import { createModuleLogger, LogEvent } from "../../lib/logging/log";
+import { myTasksUrl } from "../../lib/app-links";
 
 const log = createModuleLogger("tasks.service");
 
@@ -524,7 +524,9 @@ export const notifyTaskAssignee = async (
                 assignedBy: `${assigner.firstName} ${assigner.lastName}`.trim(),
               }
             : {}),
-          link: `${env.FRONTEND_APP_URL}/admin/tasks/${task.id}`,
+          // There is no per-task page. The assignee's queue is what this
+          // notification is really about anyway.
+          link: myTasksUrl(task),
         },
         scenario: { caseId: task.caseId ?? undefined },
         actorStaffId: assignedById,

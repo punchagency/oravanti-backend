@@ -42,11 +42,11 @@ export const paymentEntryKindEnum = pgEnum("payment_entry_kind", [
  * `amountOperating` / `amountTrust` are the load-bearing columns. The Reports
  * tab needs "filing fees collected" and "held in trust pending"; if a $1,500
  * trust / $500 operating invoice receives $600, nothing else in the data says
- * how much of that was trust money. Pro-rating at read time is cheap but
+ * how much of that was trust money. Deriving it at read time is cheap but
  * legally wrong — IOLTA funds must be tracked, not estimated. The service
- * pro-rates as the default when the caller omits the split (so the simple
- * Record-payment form still works), but the number is then stored, auditable
- * and correctable.
+ * applies its trust-first default when the caller omits the split (so the
+ * simple Record-payment form still works), but the number is then stored,
+ * auditable and correctable.
  *
  * ## Reversals are signed, not flagged
  *

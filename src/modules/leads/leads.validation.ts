@@ -26,6 +26,19 @@ export const adversePartyParamsSchema = z.object({
 
 export const agreementIdParamsSchema = z.object({ agreementId: uuid });
 
+/**
+ * How many instalments a staff attestation covers. Optional so an invoice with
+ * no schedule — and every existing caller — keeps working; the service defaults
+ * to one, which is the next instalment rather than the whole plan.
+ */
+export const markPaymentReceivedBodySchema = z.object({
+  instalments: z.number().int().min(1).max(120).optional(),
+});
+
+export const reassignFirmSignerBodySchema = z.object({
+  firmSignerStaffId: uuid,
+});
+
 export const createLeadBodySchema = z.object({
   firstName: z.string().min(1),
   lastName: z.string().min(1),
@@ -406,6 +419,12 @@ export const generateFeeAgreementBodySchema = z
     paymentPlan: z
       .enum(["pay_in_full", "two_payments", "installments"])
       .default("pay_in_full"),
+    // Defaulted rather than optional: "we never said" and "email it at signing"
+    // must not be distinguishable downstream, or the send decision grows a third
+    // branch nobody chose.
+    paymentTiming: z
+      .enum(["pay_at_signing", "invoice_after", "pay_in_person"])
+      .default("pay_at_signing"),
     twoPaymentsSchedule: z
       .object({
         firstAmount: z.number().positive(),
@@ -427,6 +446,11 @@ export const generateFeeAgreementBodySchema = z
       })
       .optional(),
     applyConsultationCredit: z.boolean().default(false),
+    // Who counter-signs for the firm. Optional, and ignored rather than
+    // rejected when the firm does not allow the generating attorney to choose —
+    // a client that has not refetched the settings should not fail a valid
+    // draft over a field the server was going to overrule anyway.
+    firmSignerStaffId: z.string().uuid().optional(),
     accountSplit: z
       .object({
         operating: z.number().nonnegative(),

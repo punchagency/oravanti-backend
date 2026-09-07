@@ -7,7 +7,8 @@
  *   - invoice numbers are per-org, zero-padded, and monotonic
  *   - operating/trust subtotals fold correctly from line items
  *   - a partial payment lands on `partial`, the remainder flips it to `paid`
- *   - payment splits are pro-rated against the OUTSTANDING balance, and stored
+ *   - payment splits fill trust first against the OUTSTANDING balance, and are
+ *     stored rather than derived at read time
  *   - a time entry can be billed exactly once
  *   - overdue outranks partial in the status buckets
  *   - billing rates resolve by the entry's date, not today's
@@ -37,10 +38,16 @@ import { leads } from "../../src/db/schema/leads";
 import { practiceAreaCaseTypes } from "../../src/db/schema/practice-area-case-types";
 import { practiceAreaSubcategories } from "../../src/db/schema/practice-area-subcategories";
 import { practiceAreas } from "../../src/db/schema/practice-areas";
+import { financialAccessControls } from "../../src/db/schema/financial-access-controls";
+import { seedFinancialAccessControls } from "../../src/db/seeds/financial-access-controls.seed";
+import { FinancialAccessService } from "../../src/modules/settings/financial-access/financial-access.service";
 import { staff } from "../../src/db/schema/staff";
 import { teamMembers } from "../../src/db/schema/team-members";
 import { timeEntries } from "../../src/db/schema/time-entries";
-import { pickFinanceRole } from "../../src/modules/finance/account-access";
+import {
+  pickFinanceRole,
+  resolveAccountAccess,
+} from "../../src/modules/finance/account-access";
 import {
   resolveBillingRate,
   setBillingRate,
@@ -75,6 +82,8 @@ import {
   silenceEmail,
   withOrgContext,
 } from "./_bootstrap";
+
+const financialAccess = new FinancialAccessService();
 
 const FULL: AccountAccess = { operating: "full_access", trust: "full_access" };
 const NO_TRUST: AccountAccess = { operating: "full_access", trust: "no_access" };
@@ -3189,6 +3198,333 @@ const main = async () => {
         feed.some((e) => e.description != null),
         "description is null throughout — logFinanceEvent is dropping it again",
       );
+
+      // ── Fee-agreement payment ─────────────────────────────────────────────
+      // Placed last on purpose: the money assertions above are chained and
+      // absolute, so an invoice created earlier would shift every one of them.
+      section("fee-agreement payment");
+
+      // A pay-in-full agreement has no schedule, so nothing is past due until
+      // the header date falls. The gate used to ask only "is anything overdue?",
+      // which let a token payment open a case for the whole terms window.
+      const fullInvoice = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(0),
+        dueDate: daysFromNow(14),
+        status: "draft",
+        lineItems: [
+          { description: "Retainer in full", quantity: 1, rate: 2400, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      await deliveriesService.sendInvoice(orgId, fullInvoice.id, staffBId, FULL);
+
+      await paymentsService.recordPayment(orgId, fullInvoice.id, staffBId, FULL, {
+        amount: 1,
+        paymentDate: daysFromNow(0),
+        method: "cash",
+      });
+      checkEqual(
+        "a token payment does NOT open a case on a pay-in-full agreement",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, fullInvoice.id),
+        false,
+      );
+
+      await paymentsService.recordPayment(orgId, fullInvoice.id, staffBId, FULL, {
+        amount: 2399,
+        paymentDate: daysFromNow(0),
+        method: "bank_transfer",
+      });
+      checkEqual(
+        "paying it in full does",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, fullInvoice.id),
+        true,
+      );
+
+      // ── Absence of evidence vs evidence of failure ────────────────────────
+      const undelivered = await invoicesService.create(orgId, staffBId, FULL, {
+        clientId,
+        caseId,
+        issueDate: daysFromNow(0),
+        dueDate: daysFromNow(14),
+        status: "draft",
+        lineItems: [
+          { description: "Retainer", quantity: 1, rate: 900, account: "operating" },
+        ],
+        timeEntryIds: [],
+      });
+      checkEqual(
+        "a draft nobody tried to send does not block the case",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, undelivered.id),
+        true,
+      );
+
+      await systemDb
+        .update(clients)
+        .set({ email: "not a valid address" })
+        .where(eq(clients.id, clientId));
+
+      const sysFailed = await deliveriesService.sendSystemInvoice(
+        orgId,
+        undelivered.id,
+        staffBId,
+      );
+      checkEqual("a system send reports failure rather than throwing", sysFailed.outcome, "failed");
+      checkEqual(
+        "and a failed send DOES block the case",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, undelivered.id),
+        false,
+      );
+
+      // Attesting against an undeliverable invoice must record nothing: a case
+      // opened on money the client was never asked for is worse than a refusal.
+      const attestUndelivered = await paymentsService.settleByAttestation(
+        orgId,
+        undelivered.id,
+        staffBId,
+      );
+      checkEqual(
+        "attestation refuses an undeliverable invoice",
+        attestUndelivered.reason,
+        "undelivered",
+      );
+      checkEqual("recording nothing", attestUndelivered.recorded, false);
+      const [undeliveredLedger] = await systemDb
+        .select({ n: sql<number>`count(*)::int` })
+        .from(invoicePayments)
+        .where(eq(invoicePayments.invoiceId, undelivered.id));
+      checkEqual("and writing no ledger row", undeliveredLedger?.n, 0);
+
+      await systemDb
+        .update(clients)
+        .set({ email: CLIENT_EMAIL })
+        .where(eq(clients.id, clientId));
+
+      // ── The system send is idempotent ─────────────────────────────────────
+      const resentOk = await deliveriesService.sendSystemInvoice(
+        orgId,
+        undelivered.id,
+        staffBId,
+      );
+      checkEqual("a retry after fixing the address sends", resentOk.outcome, "sent");
+      const sentAgain = await deliveriesService.sendSystemInvoice(
+        orgId,
+        undelivered.id,
+        staffBId,
+      );
+      checkEqual(
+        "and sending an already-sent invoice is refused, not repeated",
+        sentAgain.outcome,
+        "refused",
+      );
+
+      // ── Attestation on a delivered invoice ────────────────────────────────
+      const attested = await paymentsService.settleByAttestation(
+        orgId,
+        undelivered.id,
+        staffBId,
+      );
+      checkEqual("attestation records the balance", attested.recorded, true);
+      const attestedInvoice = await invoicesService.getById(orgId, undelivered.id, FULL);
+      checkEqual("clearing the invoice", attestedInvoice.totals.balanceDue, 0);
+      checkEqual(
+        "and opening the gate",
+        await feeAgreementBilling.feeInvoiceSatisfied(orgId, undelivered.id),
+        true,
+      );
+
+      const attestedTwice = await paymentsService.settleByAttestation(
+        orgId,
+        undelivered.id,
+        staffBId,
+      );
+      checkEqual(
+        "a second attestation records nothing",
+        attestedTwice.reason,
+        "already_settled",
+      );
+      const [ledgerRows] = await systemDb
+        .select({ n: sql<number>`count(*)::int` })
+        .from(invoicePayments)
+        .where(eq(invoicePayments.invoiceId, undelivered.id));
+      checkEqual("leaving exactly one ledger row", ledgerRows?.n, 1);
+
+      // ── The summary the agreement card renders ────────────────────────────
+      const feeSummary = await feeAgreementBilling.feeAgreementInvoiceSummary(
+        orgId,
+        undelivered.id,
+      );
+      checkEqual("the summary reports delivery", feeSummary?.delivery, "sent");
+      checkEqual("what is still owed", feeSummary?.balanceDue, 0);
+      checkEqual("and whether the gate is open", feeSummary?.satisfiesGate, true);
+      checkEqual(
+        "no invoice means no summary",
+        await feeAgreementBilling.feeAgreementInvoiceSummary(orgId, null),
+        null,
+      );
+
+      // ── Financial access ──────────────────────────────────────────────────
+      // The gate that decides who may see and touch trust money. Every
+      // assertion above passes a hardcoded `AccountAccess`, so until now
+      // NOTHING exercised the resolver that produces one in a real request —
+      // which is how a firm could be locked out of its own trust data by an
+      // empty table, with no way to grant access from inside the product.
+      section("financial access");
+
+      // Deny-by-default, before anything is configured. Trust money is the
+      // money a firm gets disbarred for mishandling, so an unconfigured firm
+      // sees none of it; operating is the firm's own revenue and stays open.
+      const bare = await resolveAccountAccess(orgId, "admin");
+      checkEqual("an unconfigured firm grants no trust access", bare.trust, "no_access");
+      checkEqual("but operating stays open", bare.operating, "full_access");
+
+      // An unrecognised role never reached the table at all — it returns the
+      // defaults early. Worth pinning: it is why "Super admin" had to map onto
+      // a `permission_role_enum` value rather than being passed through.
+      const unknownRole = await resolveAccountAccess(orgId, "receptionist");
+      checkEqual("an unmapped role gets the defaults", unknownRole.trust, "no_access");
+
+      await seedFinancialAccessControls(orgId);
+
+      const seededAdmin = await resolveAccountAccess(orgId, "admin");
+      checkEqual("a seeded firm grants admins trust access", seededAdmin.trust, "full_access");
+      // The Super admin path this was reported through: `member.role = owner`
+      // is mapped onto `admin` for the lookup, because permission_role_enum has
+      // no `owner` value and an owner may have no staff row at all.
+      const seededOwner = await resolveAccountAccess(orgId, "owner");
+      checkEqual("and resolves an owner as an admin", seededOwner.trust, "full_access");
+      checkEqual(
+        "attorneys see trust but cannot write it",
+        (await resolveAccountAccess(orgId, "attorney")).trust,
+        "view_only",
+      );
+      checkEqual(
+        "paralegals see none of it",
+        (await resolveAccountAccess(orgId, "paralegal")).trust,
+        "no_access",
+      );
+
+      // Re-seeding must not disturb a firm that has since changed its matrix.
+      await financialAccess.updateFinancialAccess(orgId, [
+        { accountType: "trust_iolta", role: "attorney", permission: "no_access" },
+      ]);
+      await seedFinancialAccessControls(orgId);
+      checkEqual(
+        "re-seeding does not overwrite a firm's own choice",
+        (await resolveAccountAccess(orgId, "attorney")).trust,
+        "no_access",
+      );
+
+      // The regression this fix exists for. `updateFinancialAccess` was an
+      // UPDATE, so on a firm with no rows it matched nothing, wrote nothing,
+      // recorded an audit event and returned success — leaving the firm locked
+      // out with no indication why.
+      const emptyOrgId = `fin-check-fa-${randomUUID()}`;
+      await systemDb.insert(organization).values({
+        id: emptyOrgId,
+        name: "Empty Financial Access Firm",
+        slug: emptyOrgId,
+        createdAt: new Date(),
+      });
+
+      checkEqual(
+        "a firm starts with no controls at all",
+        (
+          await systemDb
+            .select({ n: sql<number>`count(*)::int` })
+            .from(financialAccessControls)
+            .where(eq(financialAccessControls.organizationId, emptyOrgId))
+        )[0]?.n,
+        0,
+      );
+
+      await financialAccess.updateFinancialAccess(emptyOrgId, [
+        { accountType: "trust_iolta", role: "admin", permission: "full_access" },
+      ]);
+      const createdByUpsert = await resolveAccountAccess(emptyOrgId, "admin");
+      check(
+        "updating a firm with no rows CREATES the row",
+        createdByUpsert.trust === "full_access",
+        "the upsert regressed to an UPDATE — a firm with no rows cannot grant " +
+          `itself access (trust resolved to ${createdByUpsert.trust})`,
+      );
+
+      await financialAccess.updateFinancialAccess(emptyOrgId, [
+        { accountType: "trust_iolta", role: "admin", permission: "view_only" },
+      ]);
+      checkEqual(
+        "and updating it again changes rather than duplicates",
+        (await resolveAccountAccess(emptyOrgId, "admin")).trust,
+        "view_only",
+      );
+      checkEqual(
+        "leaving exactly one row",
+        (
+          await systemDb
+            .select({ n: sql<number>`count(*)::int` })
+            .from(financialAccessControls)
+            .where(eq(financialAccessControls.organizationId, emptyOrgId))
+        )[0]?.n,
+        1,
+      );
+
+      // Enum values are checked before the write: the route validates that the
+      // body holds a non-empty array, not what is inside it, so an unrecognised
+      // string would otherwise reach Postgres as a 500.
+      let badEnumRejected = false;
+      try {
+        await financialAccess.updateFinancialAccess(emptyOrgId, [
+          { accountType: "trust_iolta", role: "admin", permission: "sudo" },
+        ]);
+      } catch {
+        badEnumRejected = true;
+      }
+      check("an unknown permission is refused, not sent to Postgres", badEnumRejected);
+
+      await systemDb
+        .delete(financialAccessControls)
+        .where(eq(financialAccessControls.organizationId, emptyOrgId));
+
+      // ── The widened role enum ─────────────────────────────────────────────
+      // `staff_role` has six values and `permission_role` had four, so these
+      // two returned null from `toPermissionRole` — and a null returns the
+      // DEFAULTS without reading the table, making them unconfigurable however
+      // the firm set things up.
+      checkEqual(
+        "legal assistants resolve from the table, not the defaults",
+        (await resolveAccountAccess(orgId, "legal_assistant")).trust,
+        "no_access",
+      );
+      await financialAccess.updateFinancialAccess(orgId, [
+        { accountType: "trust_iolta", role: "legal_assistant", permission: "view_only" },
+      ]);
+      checkEqual(
+        "and can now be granted trust access at all",
+        (await resolveAccountAccess(orgId, "legal_assistant")).trust,
+        "view_only",
+        );
+      checkEqual(
+        "receptionists too",
+        (await resolveAccountAccess(orgId, "receptionist")).trust,
+        "no_access",
+      );
+
+      // Widening must be purely additive: both roles resolved to no trust
+      // before they were mappable, and the seed keeps them there.
+      checkEqual(
+        "the seed leaves operating as it effectively was",
+        (await resolveAccountAccess(orgId, "receptionist")).operating,
+        "full_access",
+      );
+
+      // A role still outside the enum falls through without touching the table.
+      checkEqual(
+        "an unmapped role still gets the defaults",
+        (await resolveAccountAccess(orgId, "bookkeeper")).trust,
+        "no_access",
+      );
+      await systemDb.delete(organization).where(eq(organization.id, emptyOrgId));
     });
   } finally {
     // ── Cleanup ──────────────────────────────────────────────────────────────
@@ -3245,6 +3581,9 @@ const main = async () => {
     await systemDb
       .delete(paymentWebhookEvents)
       .where(eq(paymentWebhookEvents.eventId, "evt_check_1"));
+    await systemDb
+      .delete(financialAccessControls)
+      .where(eq(financialAccessControls.organizationId, orgId));
     await systemDb.delete(auditEvents).where(eq(auditEvents.organizationId, orgId));
     await systemDb.delete(invoices).where(eq(invoices.organizationId, orgId));
     await systemDb

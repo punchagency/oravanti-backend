@@ -15,6 +15,12 @@ export const permissionRoleEnum = pgEnum('permission_role', [
   'admin',
   'attorney',
   'paralegal',
+  // Added once the settings UI made the gap visible: `staff_role` has six
+  // values and this had four, so `toPermissionRole` returned null for these two
+  // — and a null returns the DEFAULTS without reading this table at all. A firm
+  // could neither grant nor restrict them, whatever it configured.
+  'legal_assistant',
+  'receptionist',
   'client',
 ]);
 
@@ -42,6 +48,12 @@ export const financialAccessControls = pgTable(
   },
   (t) => [unique().on(t.organizationId, t.accountType, t.role)]
 );
+
+// Derived from the enums rather than restated, so a value added above cannot
+// drift from the types that gate on it.
+export type AccountType = (typeof accountTypeEnum.enumValues)[number];
+export type PermissionRole = (typeof permissionRoleEnum.enumValues)[number];
+export type PermissionLevel = (typeof permissionLevelEnum.enumValues)[number];
 
 export type FinancialAccessControl = typeof financialAccessControls.$inferSelect;
 export type NewFinancialAccessControl = typeof financialAccessControls.$inferInsert;

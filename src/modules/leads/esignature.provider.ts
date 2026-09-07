@@ -1,13 +1,25 @@
 import { randomUUID } from "crypto";
 import { env } from "../../config/env";
 
+/** Which party a signer is. Also the PDF text-tag role: signer1 / signer2. */
+export type ESignatureSignerRole = "client" | "firm";
+
 export interface ESignatureSigner {
   email: string;
   name: string;
+  role: ESignatureSignerRole;
+  /**
+   * Signing position. Distinct positions make the provider enforce the
+   * sequence: a signer's sign URL is not released until every lower order has
+   * signed. That enforcement is the whole guarantee behind "the firm
+   * counter-signs what the client accepted" — nothing in our code polices it.
+   */
+  order: number;
 }
 
 export interface CreateEmbeddedRequestInput {
-  signer: ESignatureSigner;
+  /** One entry for a client-only agreement, two when the firm counter-signs. */
+  signers: ESignatureSigner[];
   /** The generated (unsigned) fee-agreement PDF. */
   file: Buffer;
   fileName: string;
@@ -20,8 +32,14 @@ export interface CreateEmbeddedRequestInput {
 export interface CreateEmbeddedRequestResult {
   /** Dropbox Sign signature_request_id → fee_agreements.envelopeId. */
   signatureRequestId: string;
-  /** The client signer's signature_id → fee_agreements.signerSignatureId. */
-  signerSignatureId: string;
+  /**
+   * signature_id per role → fee_agreements.signerSignatureId /
+   * firmSignerSignatureId. Keyed by role rather than positional because the
+   * order the two are sent in is a firm setting, and a positional result would
+   * silently swap the client's and the firm's identifiers when a firm chose
+   * firm-first.
+   */
+  signatureIds: Partial<Record<ESignatureSignerRole, string>>;
 }
 
 export interface EmbeddedSignUrl {
@@ -45,6 +63,12 @@ export interface ESignatureProvider {
   downloadSignedPdf(signatureRequestId: string): Promise<Buffer>;
   /** Verify a webhook callback's authenticity (HMAC over event fields). */
   verifyWebhook(eventTime: string, eventType: string, eventHash: string): boolean;
+  /**
+   * Withdraw an incomplete signature request. Used when the firm signer is
+   * reassigned: the document names them, so the outstanding request is void and
+   * a fresh one takes its place.
+   */
+  cancelSignatureRequest(signatureRequestId: string): Promise<void>;
 }
 
 const stubBaseUrl = () =>
@@ -57,12 +81,11 @@ const stubBaseUrl = () =>
  */
 export class StubESignatureProvider implements ESignatureProvider {
   async createEmbeddedRequest(
-    _input: CreateEmbeddedRequestInput,
+    input: CreateEmbeddedRequestInput,
   ): Promise<CreateEmbeddedRequestResult> {
-    return {
-      signatureRequestId: randomUUID(),
-      signerSignatureId: randomUUID(),
-    };
+    const signatureIds: CreateEmbeddedRequestResult["signatureIds"] = {};
+    for (const signer of input.signers) signatureIds[signer.role] = randomUUID();
+    return { signatureRequestId: randomUUID(), signatureIds };
   }
 
   async getEmbeddedSignUrl(signatureId: string): Promise<EmbeddedSignUrl> {
@@ -85,6 +108,10 @@ export class StubESignatureProvider implements ESignatureProvider {
 
   verifyWebhook(): boolean {
     return true;
+  }
+
+  async cancelSignatureRequest(_signatureRequestId: string): Promise<void> {
+    // Nothing to withdraw — the stub never created anything at a provider.
   }
 }
 

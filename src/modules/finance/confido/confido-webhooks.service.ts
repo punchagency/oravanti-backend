@@ -21,7 +21,10 @@ import {
   refreshStatus,
 } from "../../settings/payments/payment-settings.service";
 import { getConfidoClient, isConfidoConfigured } from "./confido.client";
-import { settleConsultationForInvoice } from "../../leads/leads.service";
+import {
+  settleConsultationForInvoice,
+  settleFeeAgreementForInvoice,
+} from "../../leads/leads.service";
 import { syncStatements } from "./statements.service";
 import type {
   ConfidoTransaction,
@@ -462,6 +465,20 @@ const recordConfidoTransaction = async (
   } catch (err) {
     log.failure(
       LogEvent.PAYMENT_WEBHOOK_CONSULTATION_SETTLEMENT_FAILED,
+      err,
+      { invoiceId, organizationId },
+    );
+  }
+
+  // And the same for a signed fee agreement, whose invoice being paid is the
+  // remaining half of the case-opening gate. Separately caught: these are two
+  // unrelated workflows that happen to share a payment path, and one failing
+  // must not stop the other being tried.
+  try {
+    await settleFeeAgreementForInvoice(organizationId, invoiceId);
+  } catch (err) {
+    log.failure(
+      LogEvent.PAYMENT_WEBHOOK_FEE_AGREEMENT_SETTLEMENT_FAILED,
       err,
       { invoiceId, organizationId },
     );

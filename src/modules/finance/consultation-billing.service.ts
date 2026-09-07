@@ -138,6 +138,10 @@ export const raiseConsultationInvoice = async (
 
   const invoice = await create(organizationId, actorStaffId, systemAccess(), {
     leadId: input.leadId,
+    // Read from the lead on purpose, unlike `raiseFeeAgreementInvoice`, which
+    // takes the agreement's snapshot. A consultation is billed against the lead
+    // as it stands now; there is no signed document here fixing what the matter
+    // was. Don't "fix" this to match the other one.
     practiceAreaId: lead.practiceAreaId,
     issueDate: today,
     dueDate: input.dueImmediately ? today : addDays(today, TERMS_DAYS),

@@ -2,9 +2,9 @@ import { and, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { tasks } from "../../db/schema/tasks";
-import { env } from "../../config/env";
 import { createModuleLogger, LogEvent } from "../../lib/logging/log";
 import { notify } from "../../notifications/notification.service";
+import { caseUrl, myTasksUrl } from "../../lib/app-links";
 
 const log = createModuleLogger("workflow.reminders");
 
@@ -207,9 +207,10 @@ export async function taskDeadlineSweep(): Promise<{ scanned: number; notified: 
         context: {
           title: task.title,
           dueDate: task.dueDate ?? undefined,
-          link: task.caseId
-            ? `${env.FRONTEND_APP_URL}/admin/cases/${task.caseId}`
-            : `${env.FRONTEND_APP_URL}/admin/my-tasks`,
+          // A lead task has no page of its own to point at, so it falls back
+          // to the assignee's queue — the split one, because the app has no
+          // combined view and the old `/my-tasks` was never a route.
+          link: task.caseId ? caseUrl(task.caseId) : myTasksUrl(task),
         },
         scenario: { caseId: task.caseId ?? undefined },
         // One per task per threshold, so a sweep that runs twice in a day —

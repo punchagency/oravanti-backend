@@ -1,4 +1,5 @@
 import {
+  boolean,
   jsonb,
   pgEnum,
   pgTable,
@@ -7,6 +8,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { organization } from "./auth-schema";
+import { feeAgreementSigningOrderEnum } from "./fee-agreement-settings";
 import { leads } from "./leads";
 import { practiceAreaCaseTypes } from "./practice-area-case-types";
 import { practiceAreas } from "./practice-areas";
@@ -46,6 +48,26 @@ export type FeeAgreementDetails = {
   // Who fronts government fees. Absent on old rows → treated as "client_upfront".
   governmentFeesPaidBy?: "client_upfront" | "firm_advanced";
   paymentPlan: "pay_in_full" | "two_payments" | "installments";
+  /**
+   * How the firm collects what this agreement charges upfront.
+   *
+   * Mirrors `consultations.payment_timing`, deliberately — a firm that takes a
+   * card at signing for consultations does the same for retainers, and two
+   * vocabularies for one question would be two things to keep in step.
+   *
+   *   pay_at_signing — the invoice is emailed the moment the agreement is
+   *                    signed, and the signing page offers to take payment
+   *                    there and then
+   *   invoice_after  — put on the books at signing but not emailed; staff send
+   *                    it from Finance when they are ready
+   *   pay_in_person  — never emailed; staff attest the payment when it arrives
+   *
+   * Absent on rows generated before this existed → treated as
+   * `pay_at_signing`. Safe because sending only ever happens inside
+   * `billSignedFeeAgreement`, which runs at signing: an agreement signed before
+   * this shipped never re-enters that path and is never retroactively billed.
+   */
+  paymentTiming?: "pay_at_signing" | "invoice_after" | "pay_in_person";
   // Concrete schedules — present iff the matching paymentPlan was chosen.
   twoPaymentsSchedule?: {
     // First payment is due at signing.
@@ -93,8 +115,34 @@ export const feeAgreements = pgTable("fee_agreements", {
   leadId: uuid("lead_id")
     .notNull()
     .references(() => leads.id, { onDelete: "cascade" }),
-  practiceAreaId: uuid("practice_area_id").references(() => practiceAreas.id),
-  caseTypeId: uuid("case_type_id").references(() => practiceAreaCaseTypes.id),
+  /**
+   * What the agreement is about, snapshotted off the lead at generation —
+   * NOT a pointer to be dereferenced through `leads` at read time, which is
+   * mutable and would silently restate a signed document the moment someone
+   * re-classified the lead behind it.
+   *
+   * `generateFeeAgreement` is the single writer. Regeneration goes through it
+   * too: `discardDraftFeeAgreement` hard-deletes the draft rather than updating
+   * it, so a re-generated agreement re-snapshots from the lead as it stands
+   * then, which is the intent.
+   *
+   * The FKs guarantee each id exists, NOT that the two agree — a case type
+   * reaches its practice area only through its subcategory. They are consistent
+   * here because the lead's own pair is validated by
+   * `ensureCaseTypeIdBelongsToPracticeArea` and both are copied together.
+   *
+   * NOT NULL, like `cases.practice_area_id` and `cases.case_type_id` — the same
+   * snapshot one pipeline stage further on — and like the `leads` columns they
+   * are copied from. Existing rows were filled by
+   * `npm run backfill:fee-agreement-classification`, which has to run before the
+   * migration that adds the constraint.
+   */
+  practiceAreaId: uuid("practice_area_id")
+    .notNull()
+    .references(() => practiceAreas.id),
+  caseTypeId: uuid("case_type_id")
+    .notNull()
+    .references(() => practiceAreaCaseTypes.id),
   agreementType: text("agreement_type"),
   // Structured form captured before generation (attorney/government fees,
   // payment plan, consultation credit, account split, docRef).
@@ -121,6 +169,43 @@ export const feeAgreements = pgTable("fee_agreements", {
   lastWebhookEventAt: timestamp("last_webhook_event_at"),
   clientSignedAt: timestamp("client_signed_at"),
   /**
+   * Who signs on the firm's behalf, chosen when the agreement is generated.
+   *
+   * Persisted rather than re-resolved through `consultations.leadAttorneyId` at
+   * read time, for the same reason `practiceAreaId` is snapshotted above: the
+   * consultation's attorney can change after the document has gone out, and the
+   * name printed on a signature block must not.
+   */
+  firmSignerStaffId: uuid("firm_signer_staff_id").references(() => staff.id),
+  /**
+   * Dropbox Sign signature_id for the firm signer.
+   *
+   * NULL is the load-bearing state: it means this agreement is a single-signer
+   * agreement and always was. Every counter-signature branch keys off this
+   * column rather than off the firm's live setting, which is what makes two
+   * different situations one code path — a firm that has counter-signing turned
+   * off, and an agreement that was already out for signature when the feature
+   * shipped. The latter cannot be fixed by any setting: its signature request
+   * exists at the provider with one signer and can never gain a second.
+   */
+  firmSignerSignatureId: text("firm_signer_signature_id"),
+  firmSignedAt: timestamp("firm_signed_at"),
+  /**
+   * The firm's signing policy as it stood when the agreement was dispatched.
+   *
+   * Snapshotted, not dereferenced. An admin who flips the order or the invoice
+   * gate must not change the rules under a document already in front of a
+   * client — and with sequential signing the order is fixed at the provider the
+   * moment the request is created, so a live read could disagree with what
+   * Dropbox Sign will actually do.
+   *
+   * Both null on single-signer agreements, where neither says anything.
+   */
+  signingOrder: feeAgreementSigningOrderEnum("signing_order"),
+  invoiceWaitsForFirmSignature: boolean("invoice_waits_for_firm_signature"),
+  /** When the firm signer was last reminded that a signature is outstanding. */
+  firmSignerRemindedAt: timestamp("firm_signer_reminded_at"),
+  /**
    * The invoice raised for what this agreement charges upfront, minted when it
    * is signed. Null when the agreement bills nothing then — a pure contingency
    * with firm-advanced costs — and on every agreement signed before invoicing
@@ -133,7 +218,9 @@ export const feeAgreements = pgTable("fee_agreements", {
   invoiceId: uuid("invoice_id"),
   nudgedAt: timestamp("nudged_at"),
   // Actors. The client signs via the provider, so there is no staff actor for
-  // the signature itself — receivedById records who *marked* it received manually.
+  // *their* signature — receivedById records who marked it received manually,
+  // and firmSignerStaffId above is the one staff member who signs rather than
+  // administers.
   generatedById: uuid("generated_by_id").references(() => staff.id),
   sentById: uuid("sent_by_id").references(() => staff.id),
   receivedById: uuid("received_by_id").references(() => staff.id),

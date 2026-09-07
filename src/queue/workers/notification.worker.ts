@@ -11,6 +11,8 @@ import {
 } from "../../notifications/sms/sms.provider";
 import { TEMPLATES, type TemplateMeta } from "../../notifications/templates";
 import type { NotificationEventKey } from "../../notifications/events";
+import { splitAttachments } from "../../notifications/types";
+import { storageService } from "../../utils/storage/storage.service";
 import { emailService } from "../../utils/email/email.service";
 import { redisConnection } from "../connection";
 import {
@@ -72,7 +74,9 @@ export const dispatchNotification = async (
   try {
     const meta = await loadMeta(claimed.organizationId, claimed.recipientName);
     const template = TEMPLATES[claimed.event as NotificationEventKey];
-    const context = (claimed.payload ?? {}) as Record<string, unknown>;
+    const { context, attachments } = splitAttachments(
+      (claimed.payload ?? {}) as Record<string, unknown>,
+    );
 
     switch (claimed.channel) {
       case "email": {
@@ -85,10 +89,30 @@ export const dispatchNotification = async (
         // fixed one.
         const { subject, html } = template.email(context, meta);
 
+        // Fetched here, not when the notification was created: the bytes never
+        // sit in Redis or in a database row, and a retry attaches the file as
+        // it stands now rather than a stale copy of it.
+        //
+        // A file that cannot be fetched fails the send rather than quietly
+        // posting the email without it. The attachment is the point of these
+        // messages — the link in the body is the fallback for a client whose
+        // mail client strips it, not for us.
+        const files = await Promise.all(
+          attachments.map(async (file) => ({
+            filename: file.filename,
+            content: await storageService.download(file.storageKey),
+            // Attachments are stored files, so a missing type is a gap in the
+            // caller rather than a reason to send an untyped part; octet-stream
+            // at least prompts the client to download it.
+            contentType: file.contentType ?? "application/octet-stream",
+          })),
+        );
+
         const { providerMessageId } = await emailService.sendEmail({
           to: claimed.recipientAddress,
           subject,
           html,
+          ...(files.length ? { attachments: files } : {}),
         });
 
         await systemDb

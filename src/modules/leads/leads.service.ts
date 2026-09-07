@@ -50,8 +50,12 @@ import {
   refundInvoiceInFull,
 } from "../finance/refunds.service";
 import {
+  feeAgreementInvoiceSummary,
   feeInvoiceSatisfied,
+  issueFeeAgreementInvoice,
   raiseFeeAgreementInvoice,
+  sendFeeAgreementInvoice,
+  settleFeeAgreementInvoice,
 } from "../finance/fee-agreement-billing.service";
 import { consultationLocations } from "../../db/schema/consultation-locations";
 import { consultationSettings } from "../../db/schema/consultation-settings";
@@ -89,6 +93,7 @@ import {
 } from "../../queue/queues";
 import { formatDualZone, formatWithZone, nextAsapSlot } from "../../utils/date";
 import {
+  invoiceByPaymentToken,
   mintPaymentLink,
   startCheckout,
 } from "../finance/payment-links.service";
@@ -120,7 +125,17 @@ import { generateCaseNumber } from "../cases/cases.service";
 import { materializeCaseTypeRequirements } from "../document-requirements/document-requirements.service";
 import { relinkLeadDocumentsToCase } from "../documents/document-ingest";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
+import {
+  assertStaffMaySign,
+  getFeeAgreementSettings,
+  resolveDefaultFirmSigner,
+} from "../settings/fee-agreements/fee-agreement-settings.service";
 import { createModuleLogger, LogEvent } from "../../lib/logging/log";
+import {
+  caseUrl,
+  leadConsultationUrl,
+  leadUrl,
+} from "../../lib/app-links";
 // `hydrateCaseWorkflow` is deliberately not imported here any more. It is the
 // previous engine — `case_workflow_steps`, templates keyed by practice area —
 // which this branch replaces with per-case-type templates materialized into
@@ -128,6 +143,7 @@ import { createModuleLogger, LogEvent } from "../../lib/logging/log";
 import { materializeTasksForCase } from "../workflow/task-materialization.service";
 import { generateConsultationSlots } from "./consultation-slots.service";
 import { getESignatureProvider } from "./dropbox-sign.provider";
+import type { ESignatureSigner } from "./esignature.provider";
 import { assembleFeeAgreementDocument } from "./fee-agreement-document";
 import { renderFeeAgreementPdf } from "./fee-agreement-pdf";
 import {
@@ -530,7 +546,7 @@ export const createLead = async (
     context: {
       leadName: `${lead.firstName} ${lead.lastName}`.trim(),
       source: data.source,
-      link: `${env.FRONTEND_APP_URL}/admin/leads/${lead.id}`,
+      link: leadUrl(lead.id),
     },
     scenario: { leadId: lead.id },
     actorStaffId: creatorStaffId,
@@ -707,7 +723,15 @@ const getAllLeads = async (
   );
 };
 
-const getLeadById = async (id: string, organizationId: string) => {
+const getLeadById = async (
+  id: string,
+  organizationId: string,
+  // Only used to resolve `canSign` on the embedded fee agreement — the card
+  // list renders from this payload rather than from `getFeeAgreement`, so the
+  // two must carry the same fields or the signing button appears in one place
+  // and not the other.
+  actorStaffId?: string | null,
+) => {
   const [lead] = await db
     .select({
       ...getTableColumns(leads),
@@ -798,7 +822,9 @@ const getLeadById = async (id: string, organizationId: string) => {
     questionnaireSend,
     consultation: consultationWithFee,
     consultationHistory,
-    feeAgreement,
+    feeAgreement: feeAgreement
+      ? await withFirmSignerFields(feeAgreement, actorStaffId)
+      : null,
   };
 };
 
@@ -4856,11 +4882,18 @@ const generateFeeAgreement = async (
     otherCosts?: FeeAgreementDetails["otherCosts"];
     governmentFeesPaidBy?: FeeAgreementDetails["governmentFeesPaidBy"];
     paymentPlan?: FeeAgreementDetails["paymentPlan"];
+    paymentTiming?: FeeAgreementDetails["paymentTiming"];
     twoPaymentsSchedule?: FeeAgreementDetails["twoPaymentsSchedule"];
     installmentSchedule?: FeeAgreementDetails["installmentSchedule"];
     paymentAllocation?: FeeAgreementDetails["paymentAllocation"];
     applyConsultationCredit?: boolean;
     accountSplit?: FeeAgreementDetails["accountSplit"];
+    /**
+     * Who signs for the firm. Honoured only when the firm allows the generating
+     * attorney to override the resolved default; otherwise it is ignored rather
+     * than rejected, so a stale client cannot fail an otherwise valid draft.
+     */
+    firmSignerStaffId?: string;
   },
   actorId?: string,
 ) => {
@@ -4938,6 +4971,7 @@ const generateFeeAgreement = async (
     ...(data.otherCosts?.length ? { otherCosts: data.otherCosts } : {}),
     governmentFeesPaidBy: data.governmentFeesPaidBy ?? "client_upfront",
     paymentPlan: data.paymentPlan ?? "pay_in_full",
+    paymentTiming: data.paymentTiming ?? "pay_at_signing",
     // Schedules persist only when they match the chosen plan; anything else
     // sent by a stale client is dropped.
     ...(data.paymentPlan === "two_payments" && data.twoPaymentsSchedule
@@ -4955,6 +4989,23 @@ const generateFeeAgreement = async (
     docRef,
   };
 
+  // Who counter-signs. Resolved at generation rather than at send, because the
+  // name goes into the document the attorney is about to preview — deciding it
+  // later would mean previewing one document and sending another.
+  const signingSettings = await getFeeAgreementSettings(organizationId);
+  let firmSignerStaffId: string | null = null;
+  if (signingSettings.requiresFirmSignature) {
+    if (signingSettings.allowSignerOverride && data.firmSignerStaffId) {
+      await assertStaffMaySign(organizationId, data.firmSignerStaffId);
+      firmSignerStaffId = data.firmSignerStaffId;
+    } else {
+      firmSignerStaffId = await resolveDefaultFirmSigner(
+        organizationId,
+        leadId,
+      );
+    }
+  }
+
   // Create the agreement as a draft only. The signing envelope is minted and the
   // client is emailed at the separate "send" step; the lead stays in the
   // consultation stage until the signed document is received.
@@ -4963,12 +5014,18 @@ const generateFeeAgreement = async (
     .values({
       organizationId,
       leadId,
-      practiceAreaId: undefined,
-      caseTypeId: undefined,
+      // Snapshotted off the lead, not left to be resolved through it later: an
+      // agreement is a legal document, and a lead re-classified afterwards must
+      // not restate what a signed one was about. The lead's pair is already
+      // validated by `ensureCaseTypeIdBelongsToPracticeArea` at creation, so
+      // copying both together inherits a consistent pair and needs no re-check.
+      practiceAreaId: lead.practiceAreaId,
+      caseTypeId: lead.caseTypeId,
       agreementType: data.agreementType ?? "retainer",
       details,
       generatedFrom: (data.generatedFrom ?? "manual") as any,
       status: "draft",
+      firmSignerStaffId,
       generatedById: actorId ?? null,
     })
     .returning();
@@ -4993,7 +5050,10 @@ const generateFeeAgreement = async (
     agreement,
     organizationId,
   );
-  return { agreement, document };
+  return {
+    agreement: await withFirmSignerFields(agreement, actorId),
+    document,
+  };
 };
 
 // Discard a drafted agreement so it can be reconfigured and regenerated.
@@ -5050,6 +5110,235 @@ const discardDraftFeeAgreement = async (
   };
 };
 
+/**
+ * The staff member who signs for the firm, resolved for display and messaging.
+ * Null on a client-only agreement.
+ */
+const loadFirmSigner = async (
+  firmSignerStaffId: string | null,
+): Promise<{ id: string; name: string; email: string | null } | null> => {
+  if (!firmSignerStaffId) return null;
+  const [row] = await db
+    .select({
+      id: staff.id,
+      firstName: staff.firstName,
+      lastName: staff.lastName,
+      orgEmail: staff.orgEmail,
+      email: staff.email,
+    })
+    .from(staff)
+    .where(eq(staff.id, firmSignerStaffId))
+    .limit(1);
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: `${row.firstName} ${row.lastName}`.trim(),
+    email: row.orgEmail ?? row.email,
+  };
+};
+
+/**
+ * Add the counter-signature fields every staff-facing read of an agreement
+ * needs: who signs for the firm, and whether the caller can sign it right now.
+ *
+ * One helper for all four read paths — the lead detail, the agreement endpoint,
+ * generation and preview — because the card is rendered from more than one of
+ * them. `canSign` in particular cannot be derived in the UI: it depends on the
+ * signing order and on the other party's progress, so a client-side guess would
+ * offer a button that 409s.
+ */
+const withFirmSignerFields = async <T extends typeof feeAgreements.$inferSelect>(
+  agreement: T,
+  actorStaffId?: string | null,
+) => {
+  const firmSigner = await loadFirmSigner(agreement.firmSignerStaffId);
+  return {
+    ...agreement,
+    firmSigner: firmSigner
+      ? { staffId: firmSigner.id, name: firmSigner.name }
+      : null,
+    canSign:
+      Boolean(agreement.firmSignerSignatureId) &&
+      !agreement.firmSignedAt &&
+      agreement.status === "pending_signature" &&
+      actorStaffId != null &&
+      actorStaffId === agreement.firmSignerStaffId &&
+      (agreement.signingOrder === "firm_first"
+        ? true
+        : Boolean(agreement.clientSignedAt)),
+  };
+};
+
+/**
+ * Tell the assigned signer that the firm's signature is outstanding.
+ *
+ * Addressed to one person, not to the firm — unlike `notifyAgreementOutcome`,
+ * which broadcasts an outcome. A counter-signature is somebody's job, and a
+ * message to everybody is a message to nobody.
+ */
+const notifyFirmSigner = async (
+  agreement: typeof feeAgreements.$inferSelect,
+  event: "fee_agreement_awaiting_firm_signature" | "fee_agreement_signer_reassigned",
+  dedupeKey: string,
+) => {
+  if (!agreement.firmSignerStaffId) return;
+  try {
+    const [lead] = await db
+      .select({ firstName: leads.firstName, lastName: leads.lastName })
+      .from(leads)
+      .where(eq(leads.id, agreement.leadId))
+      .limit(1);
+
+    await notify({
+      organizationId: agreement.organizationId,
+      event,
+      recipients: [{ type: "staff", id: agreement.firmSignerStaffId }],
+      context: {
+        leadName: lead ? `${lead.firstName} ${lead.lastName}`.trim() : undefined,
+        // The consultation page, not the lead overview: the fee-agreement card
+        // and its sign button live there. And no `/admin` prefix — the frontend
+        // has no such route, so the ten links elsewhere in this file that use
+        // one have always 404'd. Not fixing those here; a signature request that
+        // links nowhere is the one that cannot wait.
+        link: `${env.FRONTEND_APP_URL}/leads/${agreement.leadId}/consultation`,
+      },
+      scenario: { leadId: agreement.leadId },
+      dedupeKey,
+    });
+  } catch (err) {
+    log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+      leadId: agreement.leadId,
+      event,
+    });
+  }
+};
+
+/** The email that puts the signing link in the client's hands. */
+const emailClientSigningLink = (
+  lead: { email: string; firstName: string },
+  leadId: string,
+  signingLink: string,
+) => {
+  emailService
+    .sendEmail({
+      to: lead.email,
+      subject: "Please sign your fee agreement",
+      html: `<p>Dear ${lead.firstName},</p>
+        <p>Your fee agreement is ready for signature. Please click the link below to review and sign:</p>
+        <p><a href="${signingLink}">Sign Agreement</a></p>
+        <p>Please complete this at your earliest convenience.</p>`,
+    })
+    .catch((err) => log.failure("email.send_failed", err, { leadId }));
+};
+
+/**
+ * Build, upload and dispatch the signature request for an agreement.
+ *
+ * Shared by the first send and by a signer reassignment, which is the same act
+ * with a different signer: render the document naming whoever signs, put it at
+ * the provider, and hand out a fresh signing token. Pulling it out is what stops
+ * the two drifting — a reassignment that rebuilt the request slightly
+ * differently would produce a second document under the same docRef.
+ */
+const dispatchSignatureRequest = async (
+  agreement: typeof feeAgreements.$inferSelect,
+  lead: typeof leads.$inferSelect,
+  organizationId: string,
+) => {
+  const settings = await getFeeAgreementSettings(organizationId);
+  // The row is the authority, not the setting: an agreement generated without a
+  // firm signer keeps one signer even if the firm has since turned counter-
+  // signing on, because that is the document the attorney already reviewed.
+  const firmSigner = await loadFirmSigner(agreement.firmSignerStaffId);
+  const firmFirst = settings.signingOrder === "firm_first";
+
+  const documentData = await assembleFeeAgreementDocument(
+    agreement,
+    organizationId,
+  );
+
+  // Text-tag ids are positional — Dropbox Sign matches `signerN` to the signer
+  // at index N-1 — so they follow the order, not the party.
+  const clientTagId = firmSigner && firmFirst ? "signer2" : "signer1";
+  const firmTagId = firmSigner ? (firmFirst ? "signer1" : "signer2") : undefined;
+
+  const pdfBuffer = await renderFeeAgreementPdf(documentData, {
+    signerId: clientTagId,
+    firmSignerId: firmTagId,
+    firmSignerName: firmSigner?.name,
+  });
+  const documentKey = `fee-agreements/${organizationId}/${agreement.id}/generated.pdf`;
+  await storageService.upload({
+    key: documentKey,
+    body: pdfBuffer,
+    contentType: "application/pdf",
+  });
+
+  const leadName = `${lead.firstName} ${lead.lastName}`;
+  const signers: ESignatureSigner[] = firmSigner
+    ? [
+        {
+          email: lead.email,
+          name: leadName,
+          role: "client",
+          order: firmFirst ? 1 : 0,
+        },
+        {
+          // A signer with no email cannot be sent to the provider at all, and
+          // `assertStaffMaySign` cannot catch that — a staff member may hold the
+          // grant and still have no address on file.
+          email: firmSigner.email ?? "",
+          name: firmSigner.name,
+          role: "firm",
+          order: firmFirst ? 0 : 1,
+        },
+      ]
+    : [{ email: lead.email, name: leadName, role: "client", order: 0 }];
+
+  if (firmSigner && !firmSigner.email) {
+    throw new BadRequestError(
+      `${firmSigner.name} has no email address on file, so they cannot be sent the agreement to sign. Add one, or choose a different signer.`,
+    );
+  }
+
+  const provider = getESignatureProvider();
+  const { signatureRequestId, signatureIds } =
+    await provider.createEmbeddedRequest({
+      signers,
+      file: pdfBuffer,
+      fileName: `${documentData.docRef || agreement.id}.pdf`,
+      title: `Fee Agreement — ${leadName}`,
+      subject: "Please sign your fee agreement",
+      metadata: {
+        agreementId: agreement.id,
+        leadId: agreement.leadId,
+        organizationId,
+      },
+      testMode: env.DROPBOX_SIGN_TEST_MODE,
+    });
+
+  // Opaque token backing the public, client-facing signing page URL (the raw
+  // embedded sign URL is minted on demand and never emailed — it expires fast).
+  const signingToken = randomUUID();
+
+  return {
+    signingToken,
+    signingLink: `${env.FRONTEND_APP_URL}/sign/${signingToken}`,
+    documentKey,
+    signatureRequestId,
+    signatureIds,
+    firmSigner,
+    // Snapshotted onto the row by the caller. The order especially: sequential
+    // signing is fixed at the provider the moment the request exists, so a later
+    // read of the live setting could disagree with what will actually happen.
+    signingOrder: firmSigner ? settings.signingOrder : null,
+    invoiceWaitsForFirmSignature: firmSigner
+      ? settings.invoiceWaitsForFirmSignature
+      : null,
+    firmFirst,
+  };
+};
+
 // Dispatch a drafted agreement: mint the e-signature envelope, email the client
 // the signing link, and move the agreement to pending_signature. The lead stays
 // in the consultation stage.
@@ -5080,55 +5369,28 @@ const sendFeeAgreement = async (
     .limit(1);
   if (!lead) throw new NotFoundError("Lead not found");
 
-  // Render the fee-agreement PDF server-side and persist it to R2. This is the
-  // document that gets sent for signature; the stub provider is still used to
-  // mint the (fake) envelope until the Dropbox Sign provider is wired in.
-  const documentData = await assembleFeeAgreementDocument(
+  // Render the document, put it at the provider, and mint the signing token.
+  // Shared with a signer reassignment, which is the same act with a different
+  // firm signer.
+  const dispatch = await dispatchSignatureRequest(
     agreement,
+    lead,
     organizationId,
   );
-  const pdfBuffer = await renderFeeAgreementPdf(documentData);
-  const documentKey = `fee-agreements/${organizationId}/${agreement.id}/generated.pdf`;
-  await storageService.upload({
-    key: documentKey,
-    body: pdfBuffer,
-    contentType: "application/pdf",
-  });
-
-  // Create the embedded signature request (Dropbox Sign, or the stub fallback).
-  // No email is sent by the provider — the client signs on our own signing page.
-  const provider = getESignatureProvider();
-  const leadName = `${lead.firstName} ${lead.lastName}`;
-  const { signatureRequestId, signerSignatureId } =
-    await provider.createEmbeddedRequest({
-      signer: { email: lead.email, name: leadName },
-      file: pdfBuffer,
-      fileName: `${documentData.docRef || agreement.id}.pdf`,
-      title: `Fee Agreement — ${leadName}`,
-      subject: "Please sign your fee agreement",
-      metadata: {
-        agreementId: agreement.id,
-        leadId: agreement.leadId,
-        organizationId,
-      },
-      testMode: env.DROPBOX_SIGN_TEST_MODE,
-    });
-
-  // Opaque token backing the public, client-facing signing page URL (the raw
-  // embedded sign URL is minted on demand and never emailed — it expires fast).
-  const signingToken = randomUUID();
-  const signingLink = `${env.FRONTEND_APP_URL}/sign/${signingToken}`;
 
   const now = new Date();
   const [updated] = await db
     .update(feeAgreements)
     .set({
       status: "pending_signature",
-      envelopeId: signatureRequestId,
-      signerSignatureId,
-      signingToken,
-      signingLink,
-      documentUrl: documentKey,
+      envelopeId: dispatch.signatureRequestId,
+      signerSignatureId: dispatch.signatureIds.client ?? null,
+      firmSignerSignatureId: dispatch.signatureIds.firm ?? null,
+      signingOrder: dispatch.signingOrder,
+      invoiceWaitsForFirmSignature: dispatch.invoiceWaitsForFirmSignature,
+      signingToken: dispatch.signingToken,
+      signingLink: dispatch.signingLink,
+      documentUrl: dispatch.documentKey,
       sentById: actorId ?? null,
       updatedAt: now,
     })
@@ -5140,21 +5402,37 @@ const sendFeeAgreement = async (
     leadId: agreement.leadId,
     action: "lead.fee_agreement_sent",
     actorId,
-    metadata: { agreementId },
+    metadata: {
+      agreementId,
+      firmSignerStaffId: agreement.firmSignerStaffId,
+      signingOrder: dispatch.signingOrder,
+    },
   });
 
-  emailService
-    .sendEmail({
-      to: lead.email,
-      subject: "Please sign your fee agreement",
-      html: `<p>Dear ${lead.firstName},</p>
-        <p>Your fee agreement is ready for signature. Please click the link below to review and sign:</p>
-        <p><a href="${signingLink}">Sign Agreement</a></p>
-        <p>Please complete this at your earliest convenience.</p>`,
-    })
-    .catch((err) => log.failure("email.send_failed", err, { leadId: agreement.leadId }));
+  if (dispatch.firmFirst && dispatch.firmSigner) {
+    // The client is deliberately not emailed yet. On a firm-first agreement the
+    // point is that the client only ever sees a document the attorney has
+    // already executed — and the provider would refuse them a signing session
+    // anyway until the firm has signed, so a link now would be a dead end.
+    await notifyFirmSigner(
+      updated,
+      "fee_agreement_awaiting_firm_signature",
+      `awaiting-firm-signature-${updated.id}`,
+    );
+  } else {
+    emailClientSigningLink(lead, agreement.leadId, dispatch.signingLink);
+    if (dispatch.firmSigner) {
+      // Not their turn yet, but their queue should show the work before it
+      // lands, not the moment it becomes urgent.
+      await notifyFirmSigner(
+        updated,
+        "fee_agreement_signer_reassigned",
+        `assigned-firm-signer-${updated.id}`,
+      );
+    }
+  }
 
-  return { ...updated, clientSigningLink: signingLink };
+  return { ...updated, clientSigningLink: dispatch.signingLink };
 };
 
 /**
@@ -5165,9 +5443,15 @@ const sendFeeAgreement = async (
  * received by hand — and a billing step that only one of them performed would
  * be a gap nobody notices until a case opens unpaid.
  *
- * Idempotent on `invoiceId`: the webhook retries, and the manual path can run
- * after it. A second invoice for the same agreement would be a second demand
- * for the same money.
+ * ## Idempotency is per-step, not for the whole function
+ *
+ * It used to bail whenever `invoiceId` was set, which meant a successful raise
+ * followed by a failed send was never retried — one transient SMTP failure left
+ * a permanent draft, and a permanent draft is an invoice the client never sees.
+ * The RAISE is skipped when an invoice already exists (a second invoice would be
+ * a second demand for the same money); the SEND is attempted regardless.
+ * `sendSystemInvoice` refuses an already-sent invoice, so re-entering on every
+ * webhook retry costs nothing and self-heals a send that failed the first time.
  *
  * Failure is logged, not thrown. The signature is valid and recorded; refusing
  * to acknowledge it because an invoice could not be raised would lose the more
@@ -5190,24 +5474,58 @@ const billSignedFeeAgreement = async (
       )
       .limit(1);
 
-    if (!agreement || agreement.invoiceId) return;
+    if (!agreement) return;
 
-    const document = await assembleFeeAgreementDocument(
-      agreement,
-      organizationId,
-    );
+    let invoiceId = agreement.invoiceId;
 
-    await raiseFeeAgreementInvoice(organizationId, actorId ?? null, {
-      agreementId,
-      leadId: agreement.leadId,
-      feeLines: document.feeLines,
-      totalDue: document.totalDue,
-      paymentPlan: document.paymentPlan,
-      twoPaymentsSchedule: document.twoPaymentsSchedule,
-      installmentSchedule: document.installmentSchedule,
-      applyConsultationCredit: document.applyConsultationCredit,
-      consultationFeeAmount: document.consultationFeeAmount,
-    });
+    if (!invoiceId) {
+      const document = await assembleFeeAgreementDocument(
+        agreement,
+        organizationId,
+      );
+
+      invoiceId = await raiseFeeAgreementInvoice(
+        organizationId,
+        actorId ?? null,
+        {
+          agreementId,
+          leadId: agreement.leadId,
+          practiceAreaId: agreement.practiceAreaId,
+          feeLines: document.feeLines,
+          totalDue: document.totalDue,
+          paymentPlan: document.paymentPlan,
+          twoPaymentsSchedule: document.twoPaymentsSchedule,
+          installmentSchedule: document.installmentSchedule,
+          applyConsultationCredit: document.applyConsultationCredit,
+          consultationFeeAmount: document.consultationFeeAmount,
+        },
+      );
+    }
+
+    // Nothing to bill — a pure contingency with firm-advanced costs. The gate
+    // treats a null invoice as satisfied, which is correct: no money is owed.
+    if (!invoiceId) return;
+
+    // Resolve timing once and act on it once, so the send decision and the
+    // invoice's resulting status cannot disagree. Absent means pay_at_signing:
+    // see the note on `FeeAgreementDetails.paymentTiming`.
+    const timing = agreement.details?.paymentTiming ?? "pay_at_signing";
+
+    if (timing === "pay_at_signing") {
+      await sendFeeAgreementInvoice(organizationId, invoiceId, actorId ?? null);
+    } else {
+      // On the books, but not emailed. Never left as a draft: a lead's draft
+      // invoice is invisible to the finance tab and uneditable in a dialog that
+      // expects a client, so it is a dead end for the staff who have to chase it.
+      await issueFeeAgreementInvoice(
+        organizationId,
+        invoiceId,
+        actorId ?? null,
+        timing === "invoice_after"
+          ? "Fee agreement — invoiced after signing"
+          : "Fee agreement — payable in person",
+      );
+    }
   } catch (err) {
     log.failure("leads.fee_agreement_invoice_failed", err, { agreementId });
   }
@@ -5247,6 +5565,70 @@ const advanceLeadToCaseOpening = async (
   }
 };
 
+/**
+ * Open the case now that the fee agreement's own invoice has been paid.
+ *
+ * The fee-agreement counterpart to `settleConsultationForInvoice`, and called
+ * from the same place — the tail of `recordConfidoTransaction` — for the same
+ * reason: this must be downstream of money actually arriving, not of a button
+ * being clicked. Without it, a client who signed and then paid online stayed at
+ * `fee_agreement` forever, because the only paths that re-checked the gate were
+ * the signature webhook (which fires before payment) and a staff member marking
+ * it received by hand.
+ *
+ * Deliberately re-asks `feeAgreementPaymentSatisfied` rather than assuming the
+ * money is enough. This fires on every leg of every payment: a part payment
+ * against an instalment plan lands here too, and only the gate knows whether it
+ * cleared the threshold or whether the firm's clearing policy is still waiting
+ * on an ACH.
+ *
+ * Idempotent — `advanceLeadToCaseOpening` on a lead already there is a no-op
+ * write plus a stage-change event from `case_opening` to itself, which
+ * `logStageChange` filters.
+ */
+export const settleFeeAgreementForInvoice = async (
+  organizationId: string,
+  invoiceId: string,
+): Promise<void> => {
+  const [agreement] = await db
+    .select({
+      id: feeAgreements.id,
+      leadId: feeAgreements.leadId,
+      status: feeAgreements.status,
+      invoiceId: feeAgreements.invoiceId,
+      details: feeAgreements.details,
+    })
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.organizationId, organizationId),
+        eq(feeAgreements.invoiceId, invoiceId),
+      ),
+    )
+    .limit(1);
+
+  // Not a fee-agreement invoice, or the client paid before signing — which is
+  // allowed (firms collect at signing), but the signature is the other half of
+  // the gate and the e-signature webhook will re-check it.
+  if (!agreement || agreement.status !== "signed") return;
+
+  if (!(await feeAgreementPaymentSatisfied(organizationId, agreement))) return;
+
+  await advanceLeadToCaseOpening(
+    agreement.leadId,
+    organizationId,
+    new Date(),
+    // The client paid through the provider, so there is no staff actor. Leave it
+    // null rather than attributing the advance to whoever sent the invoice.
+    null,
+  );
+
+  log.action(LogEvent.LEADS_FEE_AGREEMENT_PAYMENT_SETTLED, {
+    agreementId: agreement.id,
+    invoiceId,
+  });
+};
+
 // Staff manually confirms receipt of the signed document: mark the agreement
 // signed and advance the lead to the case-opening stage (the manual equivalent
 // of the e-signature webhook).
@@ -5278,7 +5660,14 @@ const markFeeAgreementReceived = async (
       .update(feeAgreements)
       .set({
         status: "signed",
-        clientSignedAt: now,
+        clientSignedAt: agreement.clientSignedAt ?? now,
+        // A received executed copy is executed by both parties — that is what
+        // "received" means for a paper signature. Stamped only when the
+        // agreement actually carries a firm signer, so a client-only agreement
+        // does not acquire a counter-signature it never had.
+        ...(agreement.firmSignerStaffId && !agreement.firmSignedAt
+          ? { firmSignedAt: now }
+          : {}),
         receivedById: actorId ?? null,
         updatedAt: now,
       })
@@ -5325,6 +5714,13 @@ const markFeeAgreementPaymentReceived = async (
   agreementId: string,
   organizationId: string,
   actorId?: string,
+  /**
+   * How many instalments the firm is attesting to. One by default — on a plan,
+   * "payment received" almost never means the whole plan, and booking it that
+   * way marks every future instalment paid and stops the reminders chasing
+   * them. Ignored when the invoice has no schedule.
+   */
+  instalmentCount = 1,
 ) => {
   const [agreement] = await db
     .select()
@@ -5342,6 +5738,33 @@ const markFeeAgreementPaymentReceived = async (
     throw new BadRequestError("A voided agreement cannot be marked as paid");
   if (!agreement.details)
     throw new BadRequestError("This agreement predates payment tracking");
+
+  // The ledger write comes FIRST, and its failures propagate.
+  //
+  // A send is best-effort decoration on a workflow step; an attestation is the
+  // entire content of this request. Flipping the flag first and recording the
+  // money afterwards on a best-effort basis is exactly how the old version
+  // drifted: it wrote `paymentReceivedAt`, advanced the lead, and left the
+  // invoice outstanding forever beside a case already being worked. Either both
+  // move or neither does.
+  if (agreement.invoiceId) {
+    const settled = await settleFeeAgreementInvoice(
+      organizationId,
+      agreement.invoiceId,
+      actorId ?? null,
+      instalmentCount,
+    );
+
+    // `settleByAttestation` sends a draft before recording, so reaching here
+    // means the send was refused or failed and the client genuinely has no bill.
+    // Recording a payment against an invoice nobody received would open a case
+    // on money the client was never asked for.
+    if (!settled.recorded && settled.reason === "undelivered") {
+      throw new BadRequestError(
+        "This agreement's invoice could not be delivered to the client, so a payment cannot be recorded against it. Resend the invoice from Finance, then try again.",
+      );
+    }
+  }
 
   // Idempotent: repeat calls keep the original timestamp.
   let paymentReceivedAt = agreement.details.paymentReceivedAt ?? null;
@@ -5367,14 +5790,37 @@ const markFeeAgreementPaymentReceived = async (
     });
   }
 
-  // Payment was the last missing gate condition once signed.
+  // Payment was the last missing gate condition once signed — but ask the gate
+  // rather than assuming, so all four advance paths agree on one predicate.
+  // A bare `status === "signed"` was how this path jumped the invoice check
+  // entirely: it advanced on the flag it had just written, which is not what the
+  // gate consults once an invoice exists.
+  //
+  // Re-read: `settleFeeAgreementInvoice` has just written to the ledger, and the
+  // gate is about to count it.
   if (agreement.status === "signed") {
-    await advanceLeadToCaseOpening(
-      agreement.leadId,
-      organizationId,
-      now,
-      actorId,
-    );
+    const [settledAgreement] = await db
+      .select({
+        invoiceId: feeAgreements.invoiceId,
+        details: feeAgreements.details,
+      })
+      .from(feeAgreements)
+      .where(eq(feeAgreements.id, agreementId))
+      .limit(1);
+
+    if (
+      await feeAgreementPaymentSatisfied(
+        organizationId,
+        settledAgreement ?? agreement,
+      )
+    ) {
+      await advanceLeadToCaseOpening(
+        agreement.leadId,
+        organizationId,
+        now,
+        actorId,
+      );
+    }
   }
 
   return {
@@ -5385,7 +5831,11 @@ const markFeeAgreementPaymentReceived = async (
   };
 };
 
-const getFeeAgreement = async (leadId: string, organizationId: string) => {
+const getFeeAgreement = async (
+  leadId: string,
+  organizationId: string,
+  actorStaffId?: string | null,
+) => {
   const [lead] = await db
     .select()
     .from(leads)
@@ -5401,7 +5851,18 @@ const getFeeAgreement = async (leadId: string, organizationId: string) => {
     .where(eq(feeAgreements.id, lead.feeAgreementId))
     .limit(1);
 
-  return agreement ?? null;
+  if (!agreement) return null;
+
+  // Additive: the agreement row is returned unchanged and the money hangs off
+  // it, so the tracker can render what was billed and whether it reached the
+  // client without a second request.
+  return {
+    ...(await withFirmSignerFields(agreement, actorStaffId)),
+    invoice: await feeAgreementInvoiceSummary(
+      organizationId,
+      agreement.invoiceId,
+    ),
+  };
 };
 
 // Returns a drafted agreement plus its assembled preview document (so the
@@ -5427,7 +5888,10 @@ const getFeeAgreementPreview = async (
     agreement,
     organizationId,
   );
-  return { agreement, document };
+  // The preview and the PDF must name the same signer. The document payload
+  // carries `attorneyName` — the consultation attorney — which is not
+  // necessarily who signs, so the signer travels alongside it.
+  return { agreement: await withFirmSignerFields(agreement), document };
 };
 
 const nudgeClient = async (agreementId: string, organizationId: string) => {
@@ -5445,6 +5909,17 @@ const nudgeClient = async (agreementId: string, organizationId: string) => {
   if (!agreement) throw new NotFoundError("Agreement not found");
   if (agreement.status === "signed")
     throw new ConflictError("Agreement is already signed");
+  // Nothing to chase the client for. Both cases send them to a page that will
+  // refuse them: they have signed and are waiting on the firm, or the firm has
+  // not signed yet on a firm-first agreement and their turn has not come.
+  if (agreement.clientSignedAt)
+    throw new ConflictError(
+      "The client has already signed. The firm's counter-signature is what is outstanding.",
+    );
+  if (agreement.signingOrder === "firm_first" && !agreement.firmSignedAt)
+    throw new ConflictError(
+      "The firm signs first on this agreement. The client is emailed once it has been signed.",
+    );
 
   const [lead] = await db
     .select()
@@ -5501,12 +5976,491 @@ const getEmbeddedSignSession = async (signingToken: string) => {
     throw new BadRequestError(
       "This agreement has not been sent for signature yet",
     );
+  // Their signature, not the document's completion. On a counter-signed
+  // agreement the row stays `pending_signature` while the firm signs, so the
+  // status check above stops being the thing that says "you are done" — without
+  // this the client could reopen a session for a signature they already gave.
+  if (agreement.clientSignedAt)
+    throw new ConflictError("You have already signed this agreement");
+  // Firm-first: the provider will not release a sign URL until the attorney has
+  // signed, so say why rather than surfacing a provider error.
+  if (agreement.signingOrder === "firm_first" && !agreement.firmSignedAt)
+    throw new ConflictError(
+      "This agreement is still being signed by the firm. You will be emailed as soon as it is ready.",
+    );
 
   const provider = getESignatureProvider();
   const { signUrl, expiresAt } = await provider.getEmbeddedSignUrl(
     agreement.signerSignatureId,
   );
   return { signUrl, clientId: env.DROPBOX_SIGN_CLIENT_ID ?? null, expiresAt };
+};
+
+/**
+ * The signed copy, for the client, from the token in their email.
+ *
+ * Minted on demand rather than emailed directly: a presigned URL lasts an hour
+ * and an email is read whenever it is read, so the durable thing to send is the
+ * token, which is already the credential they used to sign.
+ */
+const getAgreementSignedDocument = async (signingToken: string) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(eq(feeAgreements.signingToken, signingToken))
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+  if (agreement.status !== "signed" || !agreement.signedDocumentUrl)
+    throw new NotFoundError(
+      "This agreement has not been fully signed yet, so there is no final copy to download.",
+    );
+
+  return {
+    url: await storageService.getSignedDownloadUrl(agreement.signedDocumentUrl),
+  };
+};
+
+/** The same file, for staff, from the agreement id. */
+const getFeeAgreementSignedDocument = async (
+  agreementId: string,
+  organizationId: string,
+) => {
+  const [agreement] = await db
+    .select({
+      signedDocumentUrl: feeAgreements.signedDocumentUrl,
+      status: feeAgreements.status,
+    })
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+  if (!agreement.signedDocumentUrl)
+    throw new NotFoundError(
+      "No signed copy has been archived for this agreement.",
+    );
+
+  return {
+    url: await storageService.getSignedDownloadUrl(agreement.signedDocumentUrl),
+  };
+};
+
+// ─── Firm counter-signature ─────────────────────────────────────────────────
+
+/**
+ * Every agreement waiting on the signed-in staff member's signature.
+ *
+ * The surface that answers "what is on me". Without it the only route to the
+ * sign button is a notification and prior knowledge of which lead it belongs to
+ * — which is no answer at all for an attorney coming back from a week away.
+ *
+ * Deliberately includes agreements whose turn has not come. On a client-first
+ * agreement the attorney can do nothing until the client signs, but seeing it
+ * queued is the point: it is what the week looks like, not just what is
+ * actionable this second. `canSign` separates the two.
+ */
+const listAgreementsAwaitingFirmSignature = async (
+  organizationId: string,
+  actorStaffId: string | null,
+) => {
+  if (!actorStaffId) return [];
+
+  const rows = await db
+    .select({
+      id: feeAgreements.id,
+      leadId: feeAgreements.leadId,
+      status: feeAgreements.status,
+      details: feeAgreements.details,
+      signingOrder: feeAgreements.signingOrder,
+      clientSignedAt: feeAgreements.clientSignedAt,
+      firmSignedAt: feeAgreements.firmSignedAt,
+      firmSignerSignatureId: feeAgreements.firmSignerSignatureId,
+      firmSignerRemindedAt: feeAgreements.firmSignerRemindedAt,
+      createdAt: feeAgreements.createdAt,
+      updatedAt: feeAgreements.updatedAt,
+      leadFirstName: leads.firstName,
+      leadLastName: leads.lastName,
+      caseTypeName: practiceAreaCaseTypes.name,
+    })
+    .from(feeAgreements)
+    .innerJoin(leads, eq(leads.id, feeAgreements.leadId))
+    .leftJoin(
+      practiceAreaCaseTypes,
+      eq(practiceAreaCaseTypes.id, feeAgreements.caseTypeId),
+    )
+    .where(
+      and(
+        eq(feeAgreements.organizationId, organizationId),
+        eq(feeAgreements.firmSignerStaffId, actorStaffId),
+        eq(feeAgreements.status, "pending_signature"),
+        isNull(feeAgreements.firmSignedAt),
+        // Null here means a single-signer agreement, which has no firm
+        // signature outstanding however the row is otherwise assigned.
+        isNotNull(feeAgreements.firmSignerSignatureId),
+      ),
+    )
+    // The ones the attorney can act on now, first; then oldest, because an
+    // agreement outstanding for a fortnight is the one to worry about.
+    .orderBy(desc(feeAgreements.clientSignedAt), asc(feeAgreements.updatedAt));
+
+  return rows.map((row) => ({
+    id: row.id,
+    leadId: row.leadId,
+    leadName: `${row.leadFirstName} ${row.leadLastName}`.trim(),
+    matterType: row.caseTypeName,
+    docRef: row.details?.docRef ?? null,
+    signingOrder: row.signingOrder,
+    clientSignedAt: row.clientSignedAt,
+    remindedAt: row.firmSignerRemindedAt,
+    sentAt: row.updatedAt,
+    canSign:
+      row.signingOrder === "firm_first" ? true : Boolean(row.clientSignedAt),
+  }));
+};
+
+/**
+ * Mint an embedded sign URL for the firm's own signer.
+ *
+ * The staff counterpart to `getEmbeddedSignSession`, and deliberately not the
+ * same route: the client's session is authenticated by an opaque token in an
+ * email, whereas the firm's is authenticated by a session and then narrowed to
+ * one person. Holding `fee_agreements:sign` says you may sign agreements; it
+ * does not say you may sign *this* one, which names somebody.
+ */
+const getFirmSignSession = async (
+  agreementId: string,
+  organizationId: string,
+  actorStaffId: string | null,
+) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+  if (!agreement.firmSignerSignatureId)
+    throw new BadRequestError(
+      "This agreement does not require a firm signature",
+    );
+  if (agreement.status === "voided")
+    throw new BadRequestError("This agreement has been voided");
+  if (agreement.firmSignedAt)
+    throw new ConflictError("This agreement has already been counter-signed");
+  if (!actorStaffId || actorStaffId !== agreement.firmSignerStaffId)
+    throw new AuthorizationError(
+      "Only the assigned signer can sign this agreement",
+    );
+  // Client-first: the provider would refuse the sign URL anyway, but an
+  // explanation beats a 502 from someone else's API.
+  if (agreement.signingOrder !== "firm_first" && !agreement.clientSignedAt)
+    throw new ConflictError(
+      "The client has not signed yet. You will be notified when your signature is needed.",
+    );
+
+  const provider = getESignatureProvider();
+  const { signUrl, expiresAt } = await provider.getEmbeddedSignUrl(
+    agreement.firmSignerSignatureId,
+  );
+  return { signUrl, clientId: env.DROPBOX_SIGN_CLIENT_ID ?? null, expiresAt };
+};
+
+/** Re-send the outstanding-signature notice to the assigned firm signer. */
+const remindFirmSigner = async (
+  agreementId: string,
+  organizationId: string,
+) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+  if (!agreement.firmSignerStaffId)
+    throw new BadRequestError(
+      "This agreement does not require a firm signature",
+    );
+  if (agreement.firmSignedAt)
+    throw new BadRequestError("This agreement has already been counter-signed");
+
+  const now = new Date();
+  await notifyFirmSigner(
+    agreement,
+    "fee_agreement_awaiting_firm_signature",
+    // Distinct from the automatic notice, and from every previous reminder —
+    // a reminder that dedupes against the message it is reminding about would
+    // never send.
+    `firm-signature-reminder-${agreement.id}-${now.getTime()}`,
+  );
+
+  await db
+    .update(feeAgreements)
+    .set({ firmSignerRemindedAt: now, updatedAt: now })
+    .where(eq(feeAgreements.id, agreementId));
+
+  return { reminderSentAt: now };
+};
+
+/**
+ * Hand the firm's signature to somebody else.
+ *
+ * The document names its signer, so this cannot be a column update: the
+ * outstanding signature request is withdrawn and a fresh one takes its place,
+ * with a new PDF and a new signing token. If the client had already signed,
+ * they are asked again — that is the cost of changing who the firm's signatory
+ * is, and it is why the old signing link stops working rather than quietly
+ * pointing at a superseded document.
+ *
+ * The agreement row and its `docRef` survive, so the lead's history reads as one
+ * agreement that changed hands rather than two agreements.
+ */
+const reassignFirmSigner = async (
+  agreementId: string,
+  organizationId: string,
+  newSignerStaffId: string,
+  actorId?: string,
+) => {
+  const [agreement] = await db
+    .select()
+    .from(feeAgreements)
+    .where(
+      and(
+        eq(feeAgreements.id, agreementId),
+        eq(feeAgreements.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Agreement not found");
+  if (agreement.status === "signed")
+    throw new BadRequestError(
+      "This agreement is fully executed; there is nothing left to sign",
+    );
+  if (agreement.status === "voided")
+    throw new BadRequestError("This agreement has been voided");
+  if (!agreement.firmSignerStaffId)
+    throw new BadRequestError(
+      "This agreement does not require a firm signature",
+    );
+
+  await assertStaffMaySign(organizationId, newSignerStaffId);
+
+  const [lead] = await db
+    .select()
+    .from(leads)
+    .where(eq(leads.id, agreement.leadId))
+    .limit(1);
+  if (!lead) throw new NotFoundError("Lead not found");
+
+  const previousSignerStaffId = agreement.firmSignerStaffId;
+  const clientHadSigned = Boolean(agreement.clientSignedAt);
+
+  // Withdraw first. A second live request against the same document would let
+  // the old signer execute an agreement the firm has already moved on from.
+  if (agreement.status === "pending_signature" && agreement.envelopeId) {
+    await getESignatureProvider().cancelSignatureRequest(agreement.envelopeId);
+  }
+
+  const now = new Date();
+  const [withNewSigner] = await db
+    .update(feeAgreements)
+    .set({ firmSignerStaffId: newSignerStaffId, updatedAt: now })
+    .where(eq(feeAgreements.id, agreementId))
+    .returning();
+
+  // A draft has nothing at the provider yet — swapping the signer is the whole
+  // job, and the document is built when it is sent.
+  if (withNewSigner.status === "draft") {
+    await logLeadEvent({
+      organizationId,
+      leadId: agreement.leadId,
+      action: "lead.fee_agreement_signer_reassigned",
+      actorId,
+      metadata: { agreementId, previousSignerStaffId, newSignerStaffId },
+    });
+    await notifyFirmSigner(
+      withNewSigner,
+      "fee_agreement_signer_reassigned",
+      `signer-reassigned-${agreementId}-${now.getTime()}`,
+    );
+    return { reassigned: true, agreementId, clientMustResign: false };
+  }
+
+  const dispatch = await dispatchSignatureRequest(
+    withNewSigner,
+    lead,
+    organizationId,
+  );
+
+  const [updated] = await db
+    .update(feeAgreements)
+    .set({
+      envelopeId: dispatch.signatureRequestId,
+      signerSignatureId: dispatch.signatureIds.client ?? null,
+      firmSignerSignatureId: dispatch.signatureIds.firm ?? null,
+      signingOrder: dispatch.signingOrder,
+      invoiceWaitsForFirmSignature: dispatch.invoiceWaitsForFirmSignature,
+      signingToken: dispatch.signingToken,
+      signingLink: dispatch.signingLink,
+      documentUrl: dispatch.documentKey,
+      // Both signatures are void — the document they were given is not the one
+      // now outstanding.
+      clientSignedAt: null,
+      firmSignedAt: null,
+      firmSignerRemindedAt: null,
+      providerStatus: null,
+      updatedAt: now,
+    })
+    .where(eq(feeAgreements.id, agreementId))
+    .returning();
+
+  await logLeadEvent({
+    organizationId,
+    leadId: agreement.leadId,
+    action: "lead.fee_agreement_signer_reassigned",
+    actorId,
+    metadata: {
+      agreementId,
+      previousSignerStaffId,
+      newSignerStaffId,
+      clientMustResign: clientHadSigned,
+    },
+  });
+
+  if (dispatch.firmFirst) {
+    await notifyFirmSigner(
+      updated,
+      "fee_agreement_signer_reassigned",
+      `signer-reassigned-${agreementId}-${now.getTime()}`,
+    );
+  } else {
+    emailClientSigningLink(lead, agreement.leadId, dispatch.signingLink);
+    await notifyFirmSigner(
+      updated,
+      "fee_agreement_signer_reassigned",
+      `signer-reassigned-${agreementId}-${now.getTime()}`,
+    );
+  }
+
+  return {
+    reassigned: true,
+    agreementId,
+    clientMustResign: clientHadSigned,
+    clientSigningLink: dispatch.signingLink,
+  };
+};
+
+/**
+ * Take payment on the signing page, right after the client signs.
+ *
+ * The client is never more willing to pay than in the seconds after signing, and
+ * until now the page thanked them and stopped. The emailed invoice is still the
+ * durable record — it is what instalments and reminders hang off, and what
+ * catches anyone who closes the tab — but making them wait for it loses the
+ * moment.
+ *
+ * ## Why this polls
+ *
+ * The invoice is raised by the Dropbox Sign webhook, which is not synchronous
+ * with the signature: the embedded client fires `sign` locally while the webhook
+ * is still in flight. So `pending` is a normal, expected state and the page
+ * renders it as "preparing your invoice" rather than an error.
+ *
+ * ## Scope
+ *
+ * Only `pay_at_signing`. The other two timings are firm decisions to collect
+ * elsewhere, and offering a card anyway would contradict what the attorney
+ * agreed with the client.
+ *
+ * The signing token is the credential here, and it is a plaintext `randomUUID()`
+ * with no expiry — a weaker secret than `invoices.payment_token_hash`, which is
+ * hashed and rotated precisely because it takes money. What that buys an
+ * attacker holding a signing link is bounded: they can only ever reach this one
+ * agreement's own invoice, they cannot read it, and `startCheckout` refuses a
+ * draft or a settled invoice. Rotating `signing_token` onto the hash-only
+ * pattern is worth doing, and is deliberately not bundled into this change.
+ */
+const getAgreementPaymentSession = async (signingToken: string) => {
+  const [agreement] = await db
+    .select({
+      status: feeAgreements.status,
+      invoiceId: feeAgreements.invoiceId,
+      details: feeAgreements.details,
+      organizationId: feeAgreements.organizationId,
+    })
+    .from(feeAgreements)
+    .where(eq(feeAgreements.signingToken, signingToken))
+    .limit(1);
+
+  if (!agreement) throw new NotFoundError("Signing session not found");
+
+  const unavailable = (reason: string) => ({
+    state: "unavailable" as const,
+    reason,
+    url: null,
+    amountDueNow: null,
+  });
+
+  if (agreement.status !== "signed") {
+    return unavailable("This agreement has not been signed yet");
+  }
+
+  const timing = agreement.details?.paymentTiming ?? "pay_at_signing";
+  if (timing !== "pay_at_signing") {
+    return unavailable(
+      timing === "pay_in_person"
+        ? "Your firm will collect this payment directly."
+        : "Your firm will send an invoice for this shortly.",
+    );
+  }
+
+  // The webhook has not raised it yet. Not an error — the page polls.
+  if (!agreement.invoiceId) {
+    return { state: "pending" as const, reason: null, url: null, amountDueNow: null };
+  }
+
+  const token = await mintPaymentLink(
+    agreement.organizationId,
+    agreement.invoiceId,
+  );
+
+  // Reuses the public payment link path wholesale, so the amount asked for,
+  // the trust/operating split and the settled/void refusals are all decided in
+  // exactly one place — the same one the emailed link goes through.
+  const invoice = await invoiceByPaymentToken(token);
+  if (invoice.settled) {
+    return { state: "settled" as const, reason: null, url: null, amountDueNow: 0 };
+  }
+  if (!invoice.paymentsEnabled) {
+    return unavailable(
+      "Online payment is not available yet. Please contact the firm to arrange payment.",
+    );
+  }
+
+  const session = await startCheckout(token);
+  return {
+    state: "ready" as const,
+    reason: null,
+    url: session.url,
+    amountDueNow: invoice.amountDueNow,
+  };
 };
 
 // ─── Dropbox Sign Webhook ───────────────────────────────────────────────────
@@ -5519,6 +6473,17 @@ type DropboxSignEvent = {
   };
   signature_request?: {
     signature_request_id?: string;
+    /**
+     * Every signer on the request, with `signed_at` set once they have signed.
+     * The event does not say *who* just signed, so the per-signature events are
+     * read as a snapshot of the whole request rather than as a delta — which is
+     * also what makes them idempotent under redelivery.
+     */
+    signatures?: {
+      signature_id?: string;
+      signed_at?: number | null;
+      status_code?: string;
+    }[];
   };
 };
 
@@ -5565,7 +6530,9 @@ const notifyAgreementOutcome = async (
       recipients,
       context: {
         leadName: `${lead.firstName} ${lead.lastName}`.trim(),
-        link: `${env.FRONTEND_APP_URL}/admin/leads/${agreement.leadId}`,
+        // The consultation page, not the lead overview: this is about a fee
+        // agreement, and the agreement card lives there.
+        link: leadConsultationUrl(agreement.leadId),
         ...extra,
       },
       scenario: { leadId: agreement.leadId },
@@ -5576,6 +6543,98 @@ const notifyAgreementOutcome = async (
     log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
       leadId: agreement.leadId,
       event,
+    });
+  }
+};
+
+/**
+ * Fill in whichever signature timestamps the provider now reports as signed.
+ *
+ * Reads the event's `signatures` array as a snapshot rather than a delta,
+ * because the event never says who just signed. Only ever writes a null, so a
+ * redelivered webhook — Dropbox Sign retries, and does deliver duplicates —
+ * reports nothing new the second time and cannot re-trigger the work that hangs
+ * off "just signed".
+ */
+const applySignatureTimestamps = async (
+  agreement: typeof feeAgreements.$inferSelect,
+  signatures: NonNullable<
+    NonNullable<DropboxSignEvent["signature_request"]>["signatures"]
+  >,
+  now: Date,
+): Promise<{ clientJustSigned: boolean; firmJustSigned: boolean }> => {
+  const signedIds = new Set(
+    signatures
+      .filter((sig) => sig.signed_at != null && sig.signature_id)
+      .map((sig) => sig.signature_id as string),
+  );
+
+  const clientJustSigned =
+    !agreement.clientSignedAt &&
+    Boolean(agreement.signerSignatureId) &&
+    signedIds.has(agreement.signerSignatureId as string);
+  const firmJustSigned =
+    !agreement.firmSignedAt &&
+    Boolean(agreement.firmSignerSignatureId) &&
+    signedIds.has(agreement.firmSignerSignatureId as string);
+
+  if (!clientJustSigned && !firmJustSigned) {
+    return { clientJustSigned: false, firmJustSigned: false };
+  }
+
+  await db
+    .update(feeAgreements)
+    .set({
+      ...(clientJustSigned ? { clientSignedAt: now } : {}),
+      ...(firmJustSigned ? { firmSignedAt: now } : {}),
+      updatedAt: now,
+    })
+    .where(eq(feeAgreements.id, agreement.id));
+
+  return { clientJustSigned, firmJustSigned };
+};
+
+/**
+ * Send the lead their executed copy.
+ *
+ * Guarded on the archive having succeeded, which is deliberately non-fatal
+ * upstream: telling a client their copy is ready and handing them a link that
+ * 404s is worse than staying quiet and letting the staff-side download be the
+ * fallback.
+ */
+const deliverExecutedAgreement = async (
+  agreement: typeof feeAgreements.$inferSelect,
+  signedKey: string | null,
+) => {
+  if (!signedKey || !agreement.signingToken) return;
+  try {
+    await notify({
+      organizationId: agreement.organizationId,
+      event: "fee_agreement_executed",
+      recipients: [{ type: "lead", id: agreement.leadId }],
+      context: {
+        link: `${env.FRONTEND_APP_URL}/sign/${agreement.signingToken}`,
+      },
+      // The contract itself, attached. A client should not have to follow a
+      // link and trust it to get the document they are a party to — the link
+      // stays as the fallback for a mail client that strips attachments, and
+      // for anyone who comes back to it after the file is gone from their inbox.
+      attachments: [
+        {
+          storageKey: signedKey,
+          filename: `${agreement.details?.docRef ?? "fee-agreement"}.pdf`,
+          contentType: "application/pdf",
+        },
+      ],
+      scenario: { leadId: agreement.leadId },
+      // The agreement is executed exactly once, so a redelivered webhook must
+      // not send a second copy.
+      dedupeKey: `fee-agreement-executed-${agreement.id}`,
+    });
+  } catch (err) {
+    log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+      leadId: agreement.leadId,
+      event: "fee_agreement_executed",
     });
   }
 };
@@ -5627,6 +6686,76 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
     })
     .where(eq(feeAgreements.id, agreement.id));
 
+  // Per-signature progress. Only meaningful on a counter-signed agreement — a
+  // single-signer one reaches `all_signed` in the same breath — but stamping the
+  // client's timestamp from here on both is more accurate than waiting, and
+  // costs nothing.
+  if (event.event_type === "signature_request_signed") {
+    const applied = await applySignatureTimestamps(
+      agreement,
+      payload.signature_request?.signatures ?? [],
+      now,
+    );
+
+    if (applied.clientJustSigned) {
+      await logLeadEvent({
+        organizationId: agreement.organizationId,
+        leadId: agreement.leadId,
+        action: "lead.fee_agreement_client_signed",
+        actorId: null,
+        metadata: { agreementId: agreement.id },
+      });
+    }
+    if (applied.firmJustSigned) {
+      await logLeadEvent({
+        organizationId: agreement.organizationId,
+        leadId: agreement.leadId,
+        action: "lead.fee_agreement_firm_signed",
+        actorId: agreement.firmSignerStaffId,
+        metadata: { agreementId: agreement.id },
+      });
+    }
+
+    // Only on a counter-signed agreement; a single-signer one has nothing
+    // outstanding and is about to be finished by `all_signed`.
+    if (agreement.firmSignerSignatureId) {
+      if (applied.clientJustSigned && agreement.signingOrder !== "firm_first") {
+        await notifyFirmSigner(
+          agreement,
+          "fee_agreement_awaiting_firm_signature",
+          `awaiting-firm-signature-${agreement.id}`,
+        );
+
+        // The firm chose not to hold the invoice for its own signature. This is
+        // the only path that bills a document that is not yet fully executed —
+        // the case-opening gate still refuses to open a matter until it is.
+        if (agreement.invoiceWaitsForFirmSignature === false) {
+          await billSignedFeeAgreement(
+            agreement.id,
+            agreement.organizationId,
+            null,
+          );
+        }
+      }
+
+      if (applied.firmJustSigned && agreement.signingOrder === "firm_first") {
+        // The client has been waiting on this: the attorney has executed their
+        // side, so now the client gets the link that was deliberately withheld
+        // at send time.
+        const [lead] = await db
+          .select({ email: leads.email, firstName: leads.firstName })
+          .from(leads)
+          .where(eq(leads.id, agreement.leadId))
+          .limit(1);
+        if (lead && agreement.signingLink) {
+          emailClientSigningLink(lead, agreement.leadId, agreement.signingLink);
+        }
+      }
+    }
+
+    return { processed: true, ...applied };
+  }
+
   if (event.event_type === "signature_request_all_signed") {
     if (agreement.status === "signed") {
       return { ignored: true, reason: "Already signed" };
@@ -5651,11 +6780,24 @@ const handleDropboxSignWebhook = async (payload: DropboxSignEvent) => {
       .update(feeAgreements)
       .set({
         status: "signed",
-        clientSignedAt: now,
+        // Backstops, not the primary record: on a counter-signed agreement both
+        // are normally stamped by `signature_request_signed` as each party
+        // signs. Filling only what is still null keeps the real signing times
+        // when those events arrived, and still closes the row out if one was
+        // missed or never sent (a single-signer agreement gets no per-signature
+        // event of its own worth waiting for).
+        ...(agreement.clientSignedAt ? {} : { clientSignedAt: now }),
+        ...(agreement.firmSignerSignatureId && !agreement.firmSignedAt
+          ? { firmSignedAt: now }
+          : {}),
         ...(signedKey ? { signedDocumentUrl: signedKey } : {}),
         updatedAt: now,
       })
       .where(eq(feeAgreements.id, agreement.id));
+
+    // The client's own copy of the contract they are a party to. Before this,
+    // the signed PDF was archived to R2 and shown to nobody.
+    await deliverExecutedAgreement(agreement, signedKey);
 
     // The client signed through the provider, so there is no staff actor here.
     // Leave it null rather than attributing the signature to whoever sent it.
@@ -6050,7 +7192,7 @@ const openCase = async (
         context: {
           caseNumber: newCase.caseNumber,
           clientName: leadName,
-          link: `${env.FRONTEND_APP_URL}/admin/cases/${newCase.id}`,
+          link: caseUrl(newCase.id),
         },
         scenario: { leadId: lead.id, caseId: newCase.id },
         actorStaffId: creatorStaffId,
@@ -6408,6 +7550,13 @@ export class LeadsService {
   getFeeAgreement = getFeeAgreement;
   nudgeClient = nudgeClient;
   getEmbeddedSignSession = getEmbeddedSignSession;
+  listAgreementsAwaitingFirmSignature = listAgreementsAwaitingFirmSignature;
+  getFirmSignSession = getFirmSignSession;
+  remindFirmSigner = remindFirmSigner;
+  reassignFirmSigner = reassignFirmSigner;
+  getAgreementSignedDocument = getAgreementSignedDocument;
+  getFeeAgreementSignedDocument = getFeeAgreementSignedDocument;
+  getAgreementPaymentSession = getAgreementPaymentSession;
   handleDropboxSignWebhook = handleDropboxSignWebhook;
   openCase = openCase;
   getEligibleTeamsForLead = getEligibleTeamsForLead;
