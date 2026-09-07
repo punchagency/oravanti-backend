@@ -73,6 +73,11 @@ export const linesFromDocument = (
       quantity: 1,
       rate: l.amount!,
       account: l.kind === "government" ? ("trust_iolta" as const) : ("operating" as const),
+      // The fee/cost axis the agreement's application clause talks about, which
+      // `account` cannot express: a government filing fee is a cost held in
+      // trust, and "other costs" are costs that land in operating beside the
+      // firm's fee. Both are "costs and disbursements" to the client.
+      category: l.kind === "fee" ? ("fee" as const) : ("cost" as const),
     }));
 
 /**
@@ -160,6 +165,15 @@ export type FeeAgreementInvoiceInput = {
   installmentSchedule: { numberOfPayments: number; firstPaymentDate: string } | null;
   applyConsultationCredit: boolean;
   consultationFeeAmount: number | null;
+  /**
+   * The application order the agreement promised the client, snapshotted onto
+   * the invoice. Null where the agreement said nothing, which leaves the
+   * invoice on the trust-first default.
+   */
+  paymentAllocation: {
+    order: "fees_first" | "costs_first" | "custom";
+    customFeePercent?: number | null;
+  } | null;
 };
 
 /**
@@ -193,6 +207,11 @@ export const raiseFeeAgreementInvoice = async (
         quantity: 1,
         rate: -credit,
         account: "operating",
+        // A credit against the firm's fee, not a cost. Classified rather than
+        // left null because one unclassified line makes the whole invoice fall
+        // back to the trust-first split — an agreement applying a consultation
+        // credit would silently stop honouring its own application clause.
+        category: "fee",
       });
     }
   }
@@ -219,6 +238,15 @@ export const raiseFeeAgreementInvoice = async (
     lineItems: lines,
     timeEntryIds: [],
     ...(schedule ? { instalments: schedule } : {}),
+    // Snapshotted, not dereferenced later: the splitter runs from an invoice,
+    // and editing an agreement must not restate money already booked.
+    ...(input.paymentAllocation
+      ? {
+          paymentApplicationOrder: input.paymentAllocation.order,
+          paymentApplicationFeePercent:
+            input.paymentAllocation.customFeePercent ?? null,
+        }
+      : {}),
   });
 
   await db
