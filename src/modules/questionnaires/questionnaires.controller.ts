@@ -4,7 +4,34 @@ import asyncWrap from "../../utils/asyncWrapper";
 import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
 import { parsePaginationQuery } from "../../utils/pagination";
 import { sendSuccess } from "../../utils/send-success";
+import type { QuestionnaireStage } from "../../db/schema/questionnaires";
+import type { AuditActionName } from "../../lib/audit/actions";
+import { recordAuditEvent } from "../shared/audit.service";
+import { fieldVocabulary } from "../workflow/form-catalogue.service";
 import { QuestionnairesService } from "./questionnaires.service";
+
+/**
+ * Records a change to the questionnaire backbone.
+ *
+ * `organizationId: null` because the change belongs to no firm — one of these
+ * alters what every firm's clients are asked. Filing it under whichever tenant
+ * happened to be in context would hide exactly that; a platform request has no
+ * tenant in context anyway, and this makes the absence deliberate rather than
+ * incidental. Mirrors the helper in `platform.controller.ts`.
+ */
+const auditPlatform = (
+  action: AuditActionName,
+  entityId: string | null,
+  summary: string,
+  metadata: Record<string, unknown> = {},
+) =>
+  recordAuditEvent({
+    action,
+    entityId,
+    organizationId: null,
+    summary,
+    metadata,
+  });
 
 export class QuestionnairesController {
   private svc: QuestionnairesService;
@@ -13,10 +40,24 @@ export class QuestionnairesController {
     this.svc = questionnairesService;
   }
 
+  /**
+   * What a question can be wired to.
+   *
+   * One handler behind two routes — a firm's and the platform's — because the
+   * answer is the same catalogue either way. The guards differ, and that is
+   * the only thing that does: a firm admin naming one of its own questions and
+   * an operator naming one of Oravanti's are both choosing from what the
+   * forms actually print.
+   */
+  getFieldVocabulary = asyncWrap(async (_req: Request, res: Response) => {
+    const fields = await fieldVocabulary();
+    sendSuccess(res, fields, "Form field vocabulary retrieved successfully");
+  });
+
   // System Questionnaire Read
 
-  getSystemQuestionnaires = asyncWrap(async (_req: Request, res: Response) => {
-    const result = await this.svc.getSystemQuestionnaires();
+  getSystemQuestionnaires = asyncWrap(async (req: Request, res: Response) => {
+    const result = await this.svc.getSystemQuestionnaires(req.query as never);
     sendSuccess(res, result, "System questionnaires retrieved successfully");
   });
 
@@ -35,14 +76,30 @@ export class QuestionnairesController {
   // System Questionnaire Management (admin only)
 
   createSystemQuestionnaire = asyncWrap(async (req: Request, res: Response) => {
-    const { caseTypeId, title, description, sections } = req.body;
-    const result = await this.svc.createSystemQuestionnaire({ caseTypeId, title, description, sections });
+    const { caseTypeId, stage, title, description, sections } = req.body;
+    const result = await this.svc.createSystemQuestionnaire({ caseTypeId, stage, title, description, sections });
+
+    await auditPlatform(
+      "platform.questionnaire_created",
+      result.id,
+      `"${title}" published for every firm`,
+      { caseTypeId, stage: stage ?? "intake" },
+    );
+
     sendSuccess(res, result, "System questionnaire created successfully", 201);
   });
 
   addSystemSection = asyncWrap(async (req: Request, res: Response) => {
     const { title, description, orderIndex } = req.body;
     const result = await this.svc.addSystemSection(req.params.id as string, { title, description, orderIndex });
+
+    await auditPlatform(
+      "platform.questionnaire_section_created",
+      result.id,
+      `"${title}" added to the questionnaire for every firm`,
+      { questionnaireId: req.params.id },
+    );
+
     sendSuccess(res, result, "Section added successfully", 201);
   });
 
@@ -52,60 +109,259 @@ export class QuestionnairesController {
       req.params.sectionId as string,
       req.body,
     );
+    await auditPlatform(
+      "platform.questionnaire_question_created",
+      result.id,
+      `"${result.label}" asked of every firm's clients`,
+      { questionnaireId: req.params.id, sectionId: req.params.sectionId },
+    );
+
     sendSuccess(res, result, "Question added successfully", 201);
   });
 
-  // Firm Questionnaire Additions
+  updateSystemQuestionnaire = asyncWrap(async (req: Request, res: Response) => {
+    const result = await this.svc.updateSystemQuestionnaire(
+      req.params.id as string,
+      req.body,
+    );
+
+    await auditPlatform(
+      "platform.questionnaire_updated",
+      result.id,
+      `Questionnaire reworded to "${result.title}"`,
+    );
+
+    sendSuccess(res, result, "Questionnaire updated successfully");
+  });
+
+  updateSystemSection = asyncWrap(async (req: Request, res: Response) => {
+    const result = await this.svc.updateSystemSection(
+      req.params.sectionId as string,
+      req.body,
+    );
+
+    await auditPlatform(
+      "platform.questionnaire_section_updated",
+      result.id,
+      `Section reworded to "${result.title}"`,
+      { questionnaireId: req.params.id },
+    );
+
+    sendSuccess(res, result, "Section updated successfully");
+  });
+
+  deleteSystemSection = asyncWrap(async (req: Request, res: Response) => {
+    const sectionId = req.params.sectionId as string;
+    const deleted = await this.svc.deleteSystemSection(sectionId);
+
+    await auditPlatform(
+      "platform.questionnaire_section_deleted",
+      sectionId,
+      `"${deleted.title}" removed from every firm's questionnaire, with its questions and their answers`,
+      { questionnaireId: req.params.id },
+    );
+
+    sendSuccess(res, null, "Section removed for every firm");
+  });
+
+  updateSystemQuestion = asyncWrap(async (req: Request, res: Response) => {
+    const result = await this.svc.updateSystemQuestion(
+      req.params.questionId as string,
+      req.body,
+    );
+
+    await auditPlatform(
+      "platform.questionnaire_question_updated",
+      result.id,
+      `Question reworded to "${result.label}"`,
+      { questionnaireId: req.params.id, sectionId: req.params.sectionId },
+    );
+
+    sendSuccess(res, result, "Question updated successfully");
+  });
+
+  deleteSystemQuestion = asyncWrap(async (req: Request, res: Response) => {
+    const questionId = req.params.questionId as string;
+    const deleted = await this.svc.deleteSystemQuestion(questionId);
+
+    await auditPlatform(
+      "platform.questionnaire_question_deleted",
+      questionId,
+      `"${deleted.label}" no longer asked, and its answers removed`,
+      { questionnaireId: req.params.id, sectionId: req.params.sectionId },
+    );
+
+    sendSuccess(res, null, "Question removed for every firm");
+  });
+
+  // Firm and per-matter additions
+  //
+  // One set of handlers serves both tiers. The scope comes from the route —
+  // `/case-types/:caseTypeId/...` writes firm-wide content, `/cases/:caseId/...`
+  // writes content for that matter alone — so no request can nominate its own
+  // reach, and neither can name `system`.
 
   getMergedQuestionnaire = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
     const result = await this.svc.getMergedQuestionnaire(
       organizationId!,
       req.params.caseTypeId as string,
+      { stage: req.query.stage as QuestionnaireStage | undefined },
     );
     sendSuccess(res, result, "Questionnaire retrieved successfully");
   });
 
-  addFirmSection = asyncWrap(async (req: Request, res: Response) => {
+  /**
+   * The case questionnaire as the matter's own team sees it: the platform's
+   * backbone, the firm's standing additions, and this matter's custom sections.
+   */
+  getCaseQuestionnaire = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
-    const { title, description, orderIndex } = req.body;
-    const result = await this.svc.addFirmSection(
+    const result = await this.svc.getCaseQuestionnaire(
       organizationId!,
-      req.params.caseTypeId as string,
-      { title, description, orderIndex },
+      req.params.caseId as string,
     );
-    sendSuccess(res, result, "Firm section added successfully", 201);
+    sendSuccess(res, result, "Case questionnaire retrieved successfully");
   });
 
-  updateFirmSection = asyncWrap(async (req: Request, res: Response) => {
+
+  getIntakeResponseForCase = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
-    const result = await this.svc.updateFirmSection(
+    const result = await this.svc.getIntakeResponseForCase(
+      organizationId!,
+      req.params.caseId as string,
+    );
+    sendSuccess(res, result, "Intake response retrieved successfully");
+  });
+  getCaseResponse = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.svc.getCaseResponse(
+      organizationId!,
+      req.params.caseId as string,
+    );
+    sendSuccess(res, result, "Case response retrieved successfully");
+  });
+
+  saveCaseAnswers = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId, staffId } = getRequestContext();
+    const result = await this.svc.saveCaseAnswers(
+      organizationId!,
+      req.params.caseId as string,
+      staffId ?? undefined,
+      req.body,
+    );
+    sendSuccess(res, result, "Answers saved successfully");
+  });
+
+  sendCaseQuestionnaire = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId, staffId } = getRequestContext();
+    const result = await this.svc.sendCaseQuestionnaire(
+      organizationId!,
+      req.params.caseId as string,
+      staffId ?? undefined,
+      req.body,
+    );
+    sendSuccess(res, result, "Questionnaire sent to the client");
+  });
+
+  // ── Answer history ─────────────────────────────────────────────────────────
+
+  getCaseVersions = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.svc.getCaseVersions(
+      organizationId!,
+      req.params.caseId as string,
+    );
+    sendSuccess(res, result, "Saves retrieved successfully");
+  });
+
+  getCaseVersion = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.svc.getCaseVersion(
+      organizationId!,
+      req.params.versionId as string,
+    );
+    sendSuccess(res, result, "Save retrieved successfully");
+  });
+
+  getAnswerHistory = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.svc.getAnswerHistory(
+      organizationId!,
+      req.params.caseId as string,
+      req.params.questionId as string,
+    );
+    sendSuccess(res, result, "Answer history retrieved successfully");
+  });
+
+  restoreAnswer = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId, staffId } = getRequestContext();
+    const result = await this.svc.restoreAnswer(
+      organizationId!,
+      req.params.caseId as string,
+      req.params.revisionId as string,
+      staffId ?? undefined,
+    );
+    sendSuccess(res, result, "Answer restored successfully");
+  });
+
+  restoreVersion = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId, staffId } = getRequestContext();
+    const result = await this.svc.restoreVersion(
+      organizationId!,
+      req.params.caseId as string,
+      req.params.versionId as string,
+      staffId ?? undefined,
+    );
+    sendSuccess(res, result, "Questionnaire restored successfully");
+  });
+
+  addSection = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const { title, description, orderIndex, stage } = req.body;
+    const result = await this.svc.addSection({
+      organizationId: organizationId!,
+      ...(await this.scopeFromRoute(req)),
+      stage,
+      title,
+      description,
+      orderIndex,
+    });
+    sendSuccess(res, result, "Section added successfully", 201);
+  });
+
+  updateSection = asyncWrap(async (req: Request, res: Response) => {
+    const { organizationId } = getRequestContext();
+    const result = await this.svc.updateSection(
       organizationId!,
       req.params.sectionId as string,
       req.body,
     );
-    sendSuccess(res, result, "Firm section updated successfully");
+    sendSuccess(res, result, "Section updated successfully");
   });
 
-  deleteFirmSection = asyncWrap(async (req: Request, res: Response) => {
+  deleteSection = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
-    await this.svc.deleteFirmSection(organizationId!, req.params.sectionId as string);
+    await this.svc.deleteSection(
+      organizationId!,
+      req.params.sectionId as string,
+    );
     sendSuccess(res, null, "Section deleted successfully");
   });
 
-  addFirmQuestion = asyncWrap(async (req: Request, res: Response) => {
+  addQuestion = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
-    const result = await this.svc.addFirmQuestion(
-      organizationId!,
-      req.params.caseTypeId as string,
-      req.body,
-    );
+    const result = await this.svc.addQuestion({
+      organizationId: organizationId!,
+      ...(await this.scopeFromRoute(req)),
+      ...req.body,
+    });
     sendSuccess(res, result, "Question added successfully", 201);
   });
 
-  updateFirmQuestion = asyncWrap(async (req: Request, res: Response) => {
+  updateQuestion = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
-    const result = await this.svc.updateFirmQuestion(
+    const result = await this.svc.updateQuestion(
       organizationId!,
       req.params.questionId as string,
       req.body,
@@ -113,11 +369,36 @@ export class QuestionnairesController {
     sendSuccess(res, result, "Question updated successfully");
   });
 
-  deleteFirmQuestion = asyncWrap(async (req: Request, res: Response) => {
+  deleteQuestion = asyncWrap(async (req: Request, res: Response) => {
     const { organizationId } = getRequestContext();
-    await this.svc.deleteFirmQuestion(organizationId!, req.params.questionId as string);
+    await this.svc.deleteQuestion(
+      organizationId!,
+      req.params.questionId as string,
+    );
     sendSuccess(res, null, "Question deleted successfully");
   });
+
+  /**
+   * Read the write's reach off the URL, never off the body.
+   *
+   * A `:caseId` route resolves the matter's own case type, so a per-matter
+   * question cannot be filed against a case type the matter does not belong to
+   * — which is the one way a caller could otherwise have reached across.
+   */
+  private scopeFromRoute = async (
+    req: Request,
+  ): Promise<{ scope: "firm" | "case"; caseTypeId: string; caseId?: string }> => {
+    const caseId = req.params.caseId as string | undefined;
+    if (!caseId) {
+      return { scope: "firm", caseTypeId: req.params.caseTypeId as string };
+    }
+    const { organizationId } = getRequestContext();
+    const caseTypeId = await this.svc.getCaseTypeIdForCase(
+      organizationId!,
+      caseId,
+    );
+    return { scope: "case", caseTypeId, caseId };
+  };
 
   // Responses
 
@@ -255,12 +536,11 @@ export class QuestionnairesController {
     const file = req.file;
     if (!file) throw new BadRequestError("File is required");
 
-    const { responseId, questionId, questionSource } = req.body;
+    const { responseId, questionId } = req.body;
 
     const result = await this.svc.uploadResponseFileByToken(req.params.token as string, {
       responseId,
       questionId,
-      questionSource: questionSource ?? undefined,
       fileBuffer: file.buffer,
       mimeType: file.mimetype,
       fileSize: file.size,
@@ -276,14 +556,13 @@ export class QuestionnairesController {
       const file = req.file;
       if (!file) throw new BadRequestError("File is required");
 
-      const { questionId, questionSource } = req.body;
+      const { questionId } = req.body;
 
       const result = await this.svc.uploadResponseFileByStaff(
         organizationId!,
         {
           responseId: req.params.responseId as string,
           questionId,
-          questionSource: questionSource ?? undefined,
           fileBuffer: file.buffer,
           mimeType: file.mimetype,
           fileSize: file.size,
