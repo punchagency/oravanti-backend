@@ -1,6 +1,8 @@
-import { createHash } from "crypto";
-import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
+import { createHash, randomBytes } from "crypto";
+import { and, asc, count, desc, eq, ilike, isNull, or } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
 import PDFDocument from "pdfkit";
+import { env } from "../../config/env";
 import { db } from "../../db/client";
 import { withTransaction } from "../../db/transaction-context";
 import { cases } from "../../db/schema/cases";
@@ -11,17 +13,19 @@ import { leadDocumentLinks } from "../../db/schema/lead-document-links";
 import { leads } from "../../db/schema/leads";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import {
-  caseTypeQuestionnaireLogicRules,
-  caseTypeQuestionnaireQuestions,
-  caseTypeQuestionnaires,
-  caseTypeQuestionnaireSections,
-  firmQuestionnaireQuestions,
-  firmQuestionnaireSections,
+  questionnaireAnswerRevisions,
   questionnaireAnswers,
+  questionnaireLogicRules,
+  questionnaireQuestions,
   questionnaireResponseFiles,
   questionnaireResponses,
+  questionnaires,
+  questionnaireSections,
   questionnaireSends,
+  type QuestionnaireScope,
+  type QuestionnaireStage,
 } from "../../db/schema/questionnaires";
+import { hiddenQuestions, type LogicRule } from "../../lib/questionnaire/logic";
 import { cancelQuestionnaireReminder } from "../../queue/queues";
 import { sendQuestionnaireReminder } from "../../queue/workers/reminder.worker";
 import { formatWithZone } from "../../utils/date";
@@ -48,14 +52,43 @@ import {
   ingestDocument,
 } from "../documents/document-ingest";
 import { logLeadEvent } from "../leads/lead-events.service";
+import { populateCaseForms } from "../workflow/form-population.service";
+import {
+  answersFromVersion,
+  commitAnswers,
+  getVersion,
+  listAnswerRevisions,
+  listVersions,
+} from "./answer-history.service";
 import { getFirmTimezone } from "../settings/consultation/consultation-settings.service";
 
 type JsonObject = Record<string, unknown>;
 type AnswerInput = { questionId: string; value: unknown };
 
+/**
+ * The scopes a tenant request may write. `system` is absent deliberately —
+ * those rows belong to the platform and are created only by the seeds and the
+ * platform-admin endpoints, never by a firm.
+ */
+type FirmScope = Exclude<QuestionnaireScope, "system">;
+
+/** Platform questions first, then the firm's, then this matter's. */
+const SCOPE_ORDER: Record<QuestionnaireScope, number> = {
+  system: 0,
+  firm: 1,
+  case: 2,
+};
+
+const byScopeThenOrder = (
+  a: { scope: QuestionnaireScope; orderIndex: number },
+  b: { scope: QuestionnaireScope; orderIndex: number },
+) => SCOPE_ORDER[a.scope] - SCOPE_ORDER[b.scope] || a.orderIndex - b.orderIndex;
+
 type QuestionInput = {
   label: string;
   description?: string | null;
+  /** Stable name a form-field mapping can point at. See the schema. */
+  fieldKey?: string | null;
   type:
     | "short_text"
     | "long_text"
@@ -71,7 +104,8 @@ type QuestionInput = {
     | "file_upload"
     | "yes_no"
     | "matrix_grid"
-    | "signature";
+    | "signature"
+    | "repeat_group";
   isRequired?: boolean;
   config?: JsonObject;
 };
@@ -84,6 +118,9 @@ type SectionInput = {
 
 const tokenHash = (token: string) =>
   createHash("sha256").update(token).digest("hex");
+
+/** Raw token for the client link; only its hash is stored. */
+const generateAccessToken = () => randomBytes(32).toString("base64url");
 
 
 const isEmptyAnswer = (value: unknown) => {
@@ -113,7 +150,6 @@ const responseFileColumns = {
   organizationId: questionnaireResponseFiles.organizationId,
   responseId: questionnaireResponseFiles.responseId,
   questionId: questionnaireResponseFiles.questionId,
-  questionSource: questionnaireResponseFiles.questionSource,
   documentId: questionnaireResponseFiles.documentId,
   createdAt: questionnaireResponseFiles.createdAt,
   storagePath: documentVersions.filePath,
@@ -151,21 +187,46 @@ const presignResponseFiles = <T extends { storagePath: string }>(files: T[]) =>
     })),
   );
 
-const getQuestionSourceFromSnapshot = (
+/** A questionnaire as the client was served it: sections, questions, rules. */
+type ClientSchema = {
+  sections?: Array<{
+    id?: string;
+    questions?: Array<{ id: string; isRequired?: boolean }>;
+  }>;
+  logicRules?: LogicRule[];
+};
+
+/**
+ * Which of a schema's questions the answers so far put out of sight.
+ *
+ * The single place the server asks that. Required-validation, the completion
+ * count and the save all need the same answer — a question the client was never
+ * shown must not block their submission, must not count against their progress,
+ * and must not carry a stale answer onto a form — and three separate readings
+ * of the rules would disagree on the day one of them was changed.
+ */
+const hiddenInSchema = (
   snapshot: unknown,
-  questionId: string,
-): "system" | "firm" => {
-  if (!snapshot || typeof snapshot !== "object") return "system";
-  const s = snapshot as {
-    sections?: Array<{ questions?: Array<{ id: string; source?: string }> }>;
-  };
-  for (const section of s.sections ?? []) {
-    for (const q of section.questions ?? []) {
-      if (q.id === questionId)
-        return (q.source as "system" | "firm") ?? "system";
+  answers: { questionId: string; value: unknown }[],
+): Set<string> => {
+  if (!snapshot || typeof snapshot !== "object") return new Set();
+
+  const schema = snapshot as ClientSchema;
+  const rules = schema.logicRules ?? [];
+  if (rules.length === 0) return new Set();
+
+  const sectionOfQuestion = new Map<string, string>();
+  for (const section of schema.sections ?? []) {
+    for (const question of section.questions ?? []) {
+      if (section.id) sectionOfQuestion.set(question.id, section.id);
     }
   }
-  return "system";
+
+  return hiddenQuestions(
+    rules,
+    new Map(answers.map((a) => [a.questionId, a.value])),
+    sectionOfQuestion,
+  );
 };
 
 const validateSubmissionAnswers = (
@@ -173,15 +234,18 @@ const validateSubmissionAnswers = (
   answers: AnswerInput[],
 ) => {
   if (!snapshot || typeof snapshot !== "object") return;
-  const s = snapshot as {
-    sections?: Array<{
-      questions?: Array<{ id: string; isRequired?: boolean }>;
-    }>;
-  };
+  const s = snapshot as ClientSchema;
   const allQuestions = (s.sections ?? []).flatMap((sec) => sec.questions ?? []);
   const answerMap = new Map(answers.map((a) => [a.questionId, a.value]));
+
+  // A required question inside a branch the client collapsed is not missing —
+  // it was never asked. Without this, answering "No" to "have you been married
+  // before" makes the submit button fail with an error pointing at an
+  // ex-spouse field that is not on the screen.
+  const hidden = hiddenInSchema(snapshot, answers);
+
   const missing = allQuestions
-    .filter((q) => q.isRequired)
+    .filter((q) => q.isRequired && !hidden.has(q.id))
     .filter((q) => isEmptyAnswer(answerMap.get(q.id)));
 
   if (missing.length) {
@@ -199,10 +263,15 @@ const computeCompletion = (
   if (!snapshot || typeof snapshot !== "object") {
     return { answered: 0, total: 0 };
   }
-  const s = snapshot as {
-    sections?: Array<{ questions?: Array<{ id: string }> }>;
-  };
-  const allQuestions = (s.sections ?? []).flatMap((sec) => sec.questions ?? []);
+  const s = snapshot as ClientSchema;
+
+  // Out of the denominator as well as the numerator. "14 of 30" against a
+  // screen showing 22 questions is a client wondering what they have missed.
+  const hidden = hiddenInSchema(snapshot, answers);
+  const allQuestions = (s.sections ?? [])
+    .flatMap((sec) => sec.questions ?? [])
+    .filter((q) => !hidden.has(q.id));
+
   const answeredIds = new Set<string>();
   for (const a of answers) {
     if (!isEmptyAnswer(a.value)) answeredIds.add(a.questionId);
@@ -213,68 +282,131 @@ const computeCompletion = (
 };
 
 export class QuestionnairesService {
-  // ── System Questionnaire Read ──────────────────────────────────────────────
+  // ── Questionnaire Read ─────────────────────────────────────────────────────
 
-  getSystemQuestionnaires = async () => {
-    return db
-      .select()
-      .from(caseTypeQuestionnaires)
-      .orderBy(asc(caseTypeQuestionnaires.createdAt));
+  /**
+   * Every questionnaire Oravanti ships, a page at a time.
+   *
+   * Paginated and joined to the taxonomy for the same reason: this is the
+   * CRM's list, and a bare row was neither. It returned every questionnaire in
+   * the deployment and named its case type only by uuid, so the page had to
+   * fetch all 687 case types to render one column.
+   */
+  getSystemQuestionnaires = async (params: {
+    stage?: QuestionnaireStage;
+    page?: number;
+    limit?: number;
+    search?: string;
+  } = {}) => {
+    const page = Math.max(1, Math.floor(params.page ?? 1));
+    const limit = Math.min(100, Math.max(1, Math.floor(params.limit ?? 25)));
+
+    const where = and(
+      params.stage ? eq(questionnaires.stage, params.stage) : undefined,
+      // Wildcards in the caller's own term are escaped, so searching for "%"
+      // finds a literal one rather than everything.
+      params.search
+        ? ilike(
+            questionnaires.title,
+            `%${params.search.trim().replace(/([%_\\])/g, "\\$1")}%`,
+          )
+        : undefined,
+    );
+
+    const [rows, [totals]] = await Promise.all([
+      db
+        .select({
+          id: questionnaires.id,
+          caseTypeId: questionnaires.caseTypeId,
+          caseTypeName: practiceAreaCaseTypes.name,
+          stage: questionnaires.stage,
+          title: questionnaires.title,
+          description: questionnaires.description,
+          createdAt: questionnaires.createdAt,
+        })
+        .from(questionnaires)
+        .innerJoin(
+          practiceAreaCaseTypes,
+          eq(practiceAreaCaseTypes.id, questionnaires.caseTypeId),
+        )
+        .where(where)
+        .orderBy(asc(questionnaires.createdAt))
+        .limit(limit)
+        .offset((page - 1) * limit),
+      db.select({ total: count() }).from(questionnaires).where(where),
+    ]);
+
+    const total = totals?.total ?? 0;
+    return {
+      data: rows,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
   };
 
-  getSystemQuestionnaireByCaseType = async (caseTypeId: string) => {
+  getSystemQuestionnaireByCaseType = async (
+    caseTypeId: string,
+    stage: QuestionnaireStage = "intake",
+  ) => {
     const [questionnaire] = await db
       .select()
-      .from(caseTypeQuestionnaires)
-      .where(eq(caseTypeQuestionnaires.caseTypeId, caseTypeId))
+      .from(questionnaires)
+      .where(
+        and(
+          eq(questionnaires.caseTypeId, caseTypeId),
+          eq(questionnaires.stage, stage),
+        ),
+      )
       .limit(1);
 
     if (!questionnaire) return null;
-    return this.buildSystemQuestionnaireStructure(questionnaire.id);
+    return this.buildQuestionnaire(questionnaire.id);
   };
 
   getSystemQuestionnaireById = async (id: string) => {
-    const [questionnaire] = await db
-      .select()
-      .from(caseTypeQuestionnaires)
-      .where(eq(caseTypeQuestionnaires.id, id))
-      .limit(1);
-
-    if (!questionnaire) return null;
-    return this.buildSystemQuestionnaireStructure(id);
+    return this.buildQuestionnaire(id);
   };
 
   // ── System Questionnaire Management (platform admin) ─────────────────────
 
+  /**
+   * Platform-admin only. The one writer of `scope: "system"` rows, which carry
+   * a NULL `organizationId` that database policy forbids any tenant connection
+   * from inserting. Firms extend a questionnaire through `addSection` /
+   * `addQuestion` below instead.
+   */
   createSystemQuestionnaire = async (data: {
     caseTypeId: string;
+    stage?: QuestionnaireStage;
     title: string;
     description?: string | null;
     sections?: SectionInput[];
   }) => {
+    const stage = data.stage ?? "intake";
+
     return withTransaction(db, async () => {
-      const [ct] = await db
-        .select()
-        .from(practiceAreaCaseTypes)
-        .where(eq(practiceAreaCaseTypes.id, data.caseTypeId))
-        .limit(1);
-      if (!ct) throw new BadRequestError("Case type not found");
+      await this.ensureCaseTypeExists(data.caseTypeId);
 
       const [existing] = await db
         .select()
-        .from(caseTypeQuestionnaires)
-        .where(eq(caseTypeQuestionnaires.caseTypeId, data.caseTypeId))
+        .from(questionnaires)
+        .where(
+          and(
+            eq(questionnaires.caseTypeId, data.caseTypeId),
+            eq(questionnaires.stage, stage),
+          ),
+        )
         .limit(1);
       if (existing) {
         throw new ConflictError(
-          "A questionnaire already exists for this case type",
+          `A ${stage} questionnaire already exists for this case type`,
         );
       }
 
       const [questionnaire] = await db
-        .insert(caseTypeQuestionnaires)
+        .insert(questionnaires)
         .values({
           caseTypeId: data.caseTypeId,
+          stage,
           title: data.title,
           description: data.description,
         })
@@ -282,9 +414,10 @@ export class QuestionnairesService {
 
       for (const [i, section] of (data.sections ?? []).entries()) {
         const [s] = await db
-          .insert(caseTypeQuestionnaireSections)
+          .insert(questionnaireSections)
           .values({
             questionnaireId: questionnaire.id,
+            scope: "system",
             title: section.title,
             description: section.description,
             orderIndex: i,
@@ -292,20 +425,28 @@ export class QuestionnairesService {
           .returning();
 
         for (const [j, question] of (section.questions ?? []).entries()) {
-          await db.insert(caseTypeQuestionnaireQuestions).values({
+          await db.insert(questionnaireQuestions).values({
             questionnaireId: questionnaire.id,
             sectionId: s.id,
+            scope: "system",
+            fieldKey: question.fieldKey ?? null,
             label: question.label,
             description: question.description,
             type: question.type,
             orderIndex: j,
             isRequired: question.isRequired ?? false,
-            config: (question.config ?? {}) as any,
+            config: (question.config ?? {}) as JsonObject,
           });
         }
       }
 
-      return this.buildSystemQuestionnaireStructure(questionnaire.id);
+      const built = await this.buildQuestionnaire(questionnaire.id);
+      // Unreachable: it was inserted three statements ago, inside this
+      // transaction. Asserted rather than returned nullable so every caller
+      // gets a non-nullable type instead of each re-checking what the insert
+      // already settled.
+      if (!built) throw new NotFoundError("Questionnaire not found");
+      return built;
     });
   };
 
@@ -313,20 +454,16 @@ export class QuestionnairesService {
     questionnaireId: string,
     data: { title: string; description?: string | null; orderIndex?: number },
   ) => {
-    const orderIndex =
-      data.orderIndex ??
-      (await this.getNextSectionOrderIndex(
-        caseTypeQuestionnaireSections,
-        questionnaireId,
-      ));
-
     const [created] = await db
-      .insert(caseTypeQuestionnaireSections)
+      .insert(questionnaireSections)
       .values({
         questionnaireId,
+        scope: "system",
         title: data.title,
         description: data.description,
-        orderIndex,
+        orderIndex:
+          data.orderIndex ??
+          (await this.nextSectionOrderIndex(questionnaireId, "system", null)),
       })
       .returning();
 
@@ -338,234 +475,974 @@ export class QuestionnairesService {
     sectionId: string,
     data: QuestionInput & { orderIndex?: number },
   ) => {
-    const orderIndex =
-      data.orderIndex ??
-      (await this.getNextQuestionOrderIndex(
-        caseTypeQuestionnaireQuestions,
-        questionnaireId,
-        sectionId,
-      ));
-
     const [created] = await db
-      .insert(caseTypeQuestionnaireQuestions)
+      .insert(questionnaireQuestions)
       .values({
         questionnaireId,
         sectionId,
+        scope: "system",
+        fieldKey: data.fieldKey ?? null,
         label: data.label,
         description: data.description,
         type: data.type,
-        orderIndex,
+        orderIndex:
+          data.orderIndex ?? (await this.nextQuestionOrderIndex(sectionId)),
         isRequired: data.isRequired ?? false,
-        config: (data.config ?? {}) as any,
+        config: (data.config ?? {}) as JsonObject,
       })
       .returning();
 
     return created;
   };
 
-  // ── Firm Questionnaire Additions ────────────────────────────────────────────
-
-  getMergedQuestionnaire = async (
-    organizationId: string,
-    caseTypeId: string,
+  /**
+   * Reword the questionnaire itself.
+   *
+   * `caseTypeId` and `stage` are absent on purpose. Together they are the
+   * questionnaire's identity — one per case type per stage, enforced by the
+   * conflict check in `createSystemQuestionnaire` — so changing either would
+   * not move a questionnaire but collide with the one already there.
+   */
+  updateSystemQuestionnaire = async (
+    id: string,
+    data: { title?: string; description?: string | null },
   ) => {
-    const systemQ = await this.getSystemQuestionnaireByCaseType(caseTypeId);
-
-    const firmSections = await db
-      .select()
-      .from(firmQuestionnaireSections)
-      .where(
-        and(
-          eq(firmQuestionnaireSections.organizationId, organizationId),
-          eq(firmQuestionnaireSections.caseTypeId, caseTypeId),
-        ),
-      )
-      .orderBy(asc(firmQuestionnaireSections.orderIndex));
-
-    const firmQuestions = await db
-      .select()
-      .from(firmQuestionnaireQuestions)
-      .where(
-        and(
-          eq(firmQuestionnaireQuestions.organizationId, organizationId),
-          eq(firmQuestionnaireQuestions.caseTypeId, caseTypeId),
-        ),
-      )
-      .orderBy(asc(firmQuestionnaireQuestions.orderIndex));
-
-    const systemSections = (systemQ?.sections ?? []).map((section: any) => ({
-      ...section,
-      source: "system" as const,
-      questions: [
-        ...section.questions.map((q: any) => ({
-          ...q,
-          source: "system" as const,
-          isLocked: true,
-        })),
-        ...firmQuestions
-          .filter((fq) => fq.systemSectionId === section.id)
-          .map((fq) => ({ ...fq, source: "firm" as const, isLocked: false })),
-      ],
-    }));
-
-    const appendedFirmSections = firmSections.map((fs) => ({
-      ...fs,
-      source: "firm" as const,
-      questions: firmQuestions
-        .filter((fq) => fq.firmSectionId === fs.id)
-        .map((fq) => ({ ...fq, source: "firm" as const, isLocked: false })),
-    }));
-
-    return {
-      systemQuestionnaire: systemQ,
-      sections: [...systemSections, ...appendedFirmSections],
-    };
-  };
-
-  addFirmSection = async (
-    organizationId: string,
-    caseTypeId: string,
-    data: { title: string; description?: string | null; orderIndex?: number },
-  ) => {
-    await this.ensureCaseTypeExists(caseTypeId);
-
-    const orderIndex =
-      data.orderIndex ??
-      (await this.getNextFirmSectionOrderIndex(organizationId, caseTypeId));
-
-    const [created] = await db
-      .insert(firmQuestionnaireSections)
-      .values({
-        organizationId,
-        caseTypeId,
-        title: data.title,
-        description: data.description,
-        orderIndex,
-      })
+    const [updated] = await db
+      .update(questionnaires)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(questionnaires.id, id))
       .returning();
 
-    return created;
+    if (!updated) throw new NotFoundError("Questionnaire not found");
+
+    return updated;
   };
 
-  updateFirmSection = async (
-    organizationId: string,
+  /**
+   * Edit one of Oravanti's own sections.
+   *
+   * The exact inverse of `updateSection`: that one matches rows carrying a
+   * firm's `organizationId`, this one matches rows carrying none. Between them
+   * every section is writable by exactly one tier, and neither can reach the
+   * other's — which is the whole ownership rule, expressed as two `where`
+   * clauses rather than as a scope column somebody has to remember to check.
+   */
+  updateSystemSection = async (
     sectionId: string,
     data: { title?: string; description?: string | null; orderIndex?: number },
   ) => {
     const [updated] = await db
-      .update(firmQuestionnaireSections)
+      .update(questionnaireSections)
       .set({ ...data, updatedAt: new Date() })
-      .where(
-        and(
-          eq(firmQuestionnaireSections.id, sectionId),
-          eq(firmQuestionnaireSections.organizationId, organizationId),
-        ),
-      )
+      .where(this.platformSection(sectionId))
       .returning();
 
-    if (!updated) throw new NotFoundError("Section not found");
+    if (!updated) {
+      throw new NotFoundError("Section not found, or it belongs to a firm");
+    }
+
     return updated;
   };
 
-  deleteFirmSection = async (organizationId: string, sectionId: string) => {
-    await db
-      .delete(firmQuestionnaireQuestions)
-      .where(
-        and(
-          eq(firmQuestionnaireQuestions.firmSectionId, sectionId),
-          eq(firmQuestionnaireQuestions.organizationId, organizationId),
-        ),
-      );
+  /**
+   * Remove one of Oravanti's own sections, with its questions.
+   *
+   * Worth stating plainly, because it is the most consequential call in this
+   * file: every firm loses the section, and the answers under it go with it by
+   * cascade. A section that has been asked for real is history somebody may
+   * need — reword it rather than delete it.
+   */
+  deleteSystemSection = async (sectionId: string) => {
+    const [deleted] = await db
+      .delete(questionnaireSections)
+      .where(this.platformSection(sectionId))
+      .returning();
 
-    await db
-      .delete(firmQuestionnaireSections)
-      .where(
-        and(
-          eq(firmQuestionnaireSections.id, sectionId),
-          eq(firmQuestionnaireSections.organizationId, organizationId),
-        ),
-      );
-  };
-
-  addFirmQuestion = async (
-    organizationId: string,
-    caseTypeId: string,
-    data: QuestionInput & {
-      systemSectionId?: string | null;
-      firmSectionId?: string | null;
-      orderIndex?: number;
-    },
-  ) => {
-    if (!data.systemSectionId && !data.firmSectionId) {
-      throw new BadRequestError(
-        "Either systemSectionId or firmSectionId must be provided",
-      );
+    if (!deleted) {
+      throw new NotFoundError("Section not found, or it belongs to a firm");
     }
 
-    const orderIndex =
-      data.orderIndex ??
-      (await this.getNextFirmQuestionOrderIndex(
-        organizationId,
-        caseTypeId,
-        data.systemSectionId ?? null,
-        data.firmSectionId ?? null,
-      ));
+    return deleted;
+  };
+
+  /** Edit one of Oravanti's own questions. Mirrors `updateSystemSection`. */
+  updateSystemQuestion = async (
+    questionId: string,
+    data: Partial<QuestionInput> & { orderIndex?: number },
+  ) => {
+    const [updated] = await db
+      .update(questionnaireQuestions)
+      .set({
+        ...data,
+        config: data.config as JsonObject | undefined,
+        updatedAt: new Date(),
+      })
+      .where(this.platformQuestion(questionId))
+      .returning();
+
+    if (!updated) {
+      throw new NotFoundError("Question not found, or it belongs to a firm");
+    }
+
+    return updated;
+  };
+
+  /** Remove one of Oravanti's own questions, and every answer to it. */
+  deleteSystemQuestion = async (questionId: string) => {
+    const [deleted] = await db
+      .delete(questionnaireQuestions)
+      .where(this.platformQuestion(questionId))
+      .returning();
+
+    if (!deleted) {
+      throw new NotFoundError("Question not found, or it belongs to a firm");
+    }
+
+    return deleted;
+  };
+
+  // ── Firm and per-matter additions ───────────────────────────────────────────
+
+  /**
+   * A questionnaire as one respondent will actually see it: the platform's
+   * system backbone, this firm's standing additions, and — when a `caseId` is
+   * given — the sections and questions a staff member wrote for that matter
+   * alone.
+   *
+   * All three tiers are rows in the same two tables, so assembling them is a
+   * single query per table and an ordering rule, where it used to be four
+   * queries and a merge that cast to `any` to reconcile two row shapes.
+   */
+  getMergedQuestionnaire = async (
+    organizationId: string,
+    caseTypeId: string,
+    opts: { stage?: QuestionnaireStage; caseId?: string | null } = {},
+  ) => {
+    const stage = opts.stage ?? "intake";
+    const caseId = opts.caseId ?? null;
+
+    const [questionnaire] = await db
+      .select()
+      .from(questionnaires)
+      .where(
+        and(
+          eq(questionnaires.caseTypeId, caseTypeId),
+          eq(questionnaires.stage, stage),
+        ),
+      )
+      .limit(1);
+
+    if (!questionnaire) {
+      return { systemQuestionnaire: null, sections: [] };
+    }
+
+    const structure = await this.buildQuestionnaire(questionnaire.id, {
+      organizationId,
+      caseId,
+    });
+
+    return {
+      systemQuestionnaire: structure,
+      sections: structure?.sections ?? [],
+      /*
+        Lifted out of the structure so the staff tab reads it in the same place
+        the client portal does. A branch is a property of the questionnaire, not
+        of whichever nested object happened to be fetched with it.
+      */
+      logicRules: structure?.logicRules ?? [],
+    };
+  };
+
+  /**
+   * The case questionnaire for one matter — the substantive one that feeds the
+   * forms, not the short intake questionnaire the prospect answered before the
+   * case existed.
+   *
+   * Resolves the matter's case type itself so callers pass only a `caseId`, and
+   * so a matter can never be shown another case type's questions.
+   */
+  getCaseQuestionnaire = async (organizationId: string, caseId: string) => {
+    const caseTypeId = await this.getCaseTypeIdForCase(organizationId, caseId);
+    return this.getMergedQuestionnaire(organizationId, caseTypeId, {
+      stage: "case",
+      caseId,
+    });
+  };
+
+  /** The matter's case type, scoped to the firm so it doubles as an access check. */
+  getCaseTypeIdForCase = async (organizationId: string, caseId: string) => {
+    const [row] = await db
+      .select({ caseTypeId: cases.caseTypeId })
+      .from(cases)
+      .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
+      .limit(1);
+
+    if (!row?.caseTypeId) {
+      throw new NotFoundError("Case not found, or it has no case type");
+    }
+    return row.caseTypeId;
+  };
+
+  addSection = async (input: {
+    organizationId: string;
+    caseTypeId: string;
+    scope: FirmScope;
+    caseId?: string | null;
+    stage?: QuestionnaireStage;
+    title: string;
+    description?: string | null;
+    orderIndex?: number;
+  }) => {
+    const { questionnaireId, caseId } = await this.resolveWriteTarget(input);
 
     const [created] = await db
-      .insert(firmQuestionnaireQuestions)
+      .insert(questionnaireSections)
       .values({
-        organizationId,
-        caseTypeId,
-        systemSectionId: data.systemSectionId ?? undefined,
-        firmSectionId: data.firmSectionId ?? undefined,
-        label: data.label,
-        description: data.description,
-        type: data.type,
-        orderIndex,
-        isRequired: data.isRequired ?? false,
-        config: (data.config ?? {}) as any,
+        questionnaireId,
+        scope: input.scope,
+        organizationId: input.organizationId,
+        caseId,
+        title: input.title,
+        description: input.description,
+        orderIndex:
+          input.orderIndex ??
+          (await this.nextSectionOrderIndex(
+            questionnaireId,
+            input.scope,
+            caseId,
+          )),
       })
       .returning();
 
     return created;
   };
 
-  updateFirmQuestion = async (
+  /**
+   * Edit a section the firm owns.
+   *
+   * `ownedSection` matches on `organization_id`, which a platform row does not
+   * carry — so a firm editing the backbone finds nothing and gets a 404. That
+   * used to fall through to a copy-on-write: the edit landed as a firm-scoped
+   * duplicate carrying `supersedes_id`, and the merge hid the original for
+   * that firm alone.
+   *
+   * It no longer does. Oravanti authors the questionnaire backbone and a firm
+   * extends it — `addSection` and `addQuestion` below are the whole of what a
+   * firm may write. See the scope note on `questionnaireScopeEnum`.
+   */
+  updateSection = async (
     organizationId: string,
-    questionId: string,
-    data: Partial<QuestionInput>,
+    sectionId: string,
+    data: { title?: string; description?: string | null; orderIndex?: number },
   ) => {
-    const [updated] = await db
-      .update(firmQuestionnaireQuestions)
-      .set({ ...data, config: data.config as any, updatedAt: new Date() })
-      .where(
-        and(
-          eq(firmQuestionnaireQuestions.id, questionId),
-          eq(firmQuestionnaireQuestions.organizationId, organizationId),
-        ),
-      )
+    const [owned] = await db
+      .update(questionnaireSections)
+      .set({ ...data, updatedAt: new Date() })
+      .where(this.ownedSection(organizationId, sectionId))
       .returning();
 
-    if (!updated) throw new NotFoundError("Question not found");
-    return updated;
+    if (!owned) {
+      throw new NotFoundError(
+        "Section not found, or it is one Oravanti maintains",
+      );
+    }
+
+    return owned;
   };
 
-  deleteFirmQuestion = async (organizationId: string, questionId: string) => {
-    await db
-      .delete(firmQuestionnaireQuestions)
+
+  /**
+   * Deleting a section takes its questions with it, and their answers after
+   * that — the cascade is declared on the foreign keys rather than run by hand
+   * here, which is the whole point of consolidating the question tables.
+   */
+  deleteSection = async (organizationId: string, sectionId: string) => {
+    const [deleted] = await db
+      .delete(questionnaireSections)
+      .where(this.ownedSection(organizationId, sectionId))
+      .returning();
+
+    if (!deleted) throw new NotFoundError("Section not found");
+  };
+
+  addQuestion = async (
+    input: QuestionInput & {
+      organizationId: string;
+      caseTypeId: string;
+      scope: FirmScope;
+      caseId?: string | null;
+      stage?: QuestionnaireStage;
+      sectionId: string;
+      orderIndex?: number;
+    },
+  ) => {
+    const { questionnaireId, caseId } = await this.resolveWriteTarget(input);
+
+    // The section may be a system one — adding a question to a standard section
+    // is the ordinary case — so this checks visibility, not ownership.
+    const [section] = await db
+      .select({ id: questionnaireSections.id })
+      .from(questionnaireSections)
       .where(
         and(
-          eq(firmQuestionnaireQuestions.id, questionId),
-          eq(firmQuestionnaireQuestions.organizationId, organizationId),
+          eq(questionnaireSections.id, input.sectionId),
+          eq(questionnaireSections.questionnaireId, questionnaireId),
         ),
+      )
+      .limit(1);
+    if (!section) throw new NotFoundError("Section not found");
+
+    const [created] = await db
+      .insert(questionnaireQuestions)
+      .values({
+        questionnaireId,
+        sectionId: input.sectionId,
+        scope: input.scope,
+        organizationId: input.organizationId,
+        caseId,
+        fieldKey: input.fieldKey ?? null,
+        label: input.label,
+        description: input.description,
+        type: input.type,
+        orderIndex:
+          input.orderIndex ??
+          (await this.nextQuestionOrderIndex(input.sectionId)),
+        isRequired: input.isRequired ?? false,
+        config: (input.config ?? {}) as JsonObject,
+      })
+      .returning();
+
+    return created;
+  };
+
+  /** Edit a question the firm owns. Mirrors `updateSection` — see its note. */
+  updateQuestion = async (
+    organizationId: string,
+    questionId: string,
+    data: Partial<QuestionInput> & { orderIndex?: number },
+  ) => {
+    const [owned] = await db
+      .update(questionnaireQuestions)
+      .set({
+        ...data,
+        config: data.config as JsonObject | undefined,
+        updatedAt: new Date(),
+      })
+      .where(this.ownedQuestion(organizationId, questionId))
+      .returning();
+
+    if (!owned) {
+      throw new NotFoundError(
+        "Question not found, or it is one Oravanti maintains",
       );
+    }
+
+    return owned;
+  };
+
+
+  deleteQuestion = async (organizationId: string, questionId: string) => {
+    const [deleted] = await db
+      .delete(questionnaireQuestions)
+      .where(this.ownedQuestion(organizationId, questionId))
+      .returning();
+
+    if (!deleted) throw new NotFoundError("Question not found");
+  };
+
+  // ── The case questionnaire, as answered ───────────────────────────────────
+  //
+  // A matter's questionnaire is answered two ways and usually both in turn:
+  // staff type what they already know from the file, then send the rest to the
+  // client. Both paths write the same one response row per matter, so the
+  // forms have a single thing to populate from and nobody has to reconcile two
+  // half-answered copies.
+
+  /**
+   * The matter's case-stage response, with its answers keyed by question.
+   *
+   * Null when nobody has answered anything yet — the tab renders the blank
+   * questionnaire in that case rather than an error.
+   */
+  getCaseResponse = async (organizationId: string, caseId: string) => {
+    const [response] = await db
+      .select()
+      .from(questionnaireResponses)
+      .innerJoin(
+        questionnaires,
+        eq(questionnaires.id, questionnaireResponses.questionnaireId),
+      )
+      .where(
+        and(
+          eq(questionnaireResponses.caseId, caseId),
+          eq(questionnaireResponses.organizationId, organizationId),
+          eq(questionnaires.stage, "case"),
+        ),
+      )
+      .orderBy(desc(questionnaireResponses.lastSavedAt))
+      .limit(1);
+
+    if (!response) return null;
+
+    const row = response.questionnaire_responses;
+    const answers = await db
+      .select({
+        questionId: questionnaireAnswers.questionId,
+        value: questionnaireAnswers.value,
+        updatedAt: questionnaireAnswers.updatedAt,
+      })
+      .from(questionnaireAnswers)
+      .where(eq(questionnaireAnswers.responseId, row.id));
+
+    return { ...row, answers };
+  };
+
+
+  /**
+   * The intake answers this matter came from, for reading only.
+   *
+   * A matter opens because somebody answered the short intake questionnaire
+   * weeks earlier, and those answers are the context an attorney wants when
+   * they first open the file. They are deliberately not editable here: intake
+   * happened, and re-writing it afterwards would misrepresent what the firm
+   * knew when it decided to take the case.
+   */
+  getIntakeResponseForCase = async (organizationId: string, caseId: string) => {
+    const [row] = await db
+      .select({
+        id: questionnaireResponses.id,
+        status: questionnaireResponses.status,
+        submittedAt: questionnaireResponses.submittedAt,
+        leadId: questionnaireResponses.leadId,
+      })
+      .from(questionnaireResponses)
+      .innerJoin(
+        questionnaires,
+        eq(questionnaires.id, questionnaireResponses.questionnaireId),
+      )
+      .where(
+        and(
+          eq(questionnaireResponses.caseId, caseId),
+          eq(questionnaireResponses.organizationId, organizationId),
+          eq(questionnaires.stage, "intake"),
+        ),
+      )
+      .orderBy(desc(questionnaireResponses.submittedAt))
+      .limit(1);
+
+    if (!row) return null;
+
+    // Joined to the questions rather than read from the send's schema snapshot:
+    // the snapshot is what the client was shown, but an answer with no question
+    // left to label it is not worth rendering, and the join drops it.
+    const answers = await db
+      .select({
+        questionId: questionnaireAnswers.questionId,
+        value: questionnaireAnswers.value,
+        label: questionnaireQuestions.label,
+        type: questionnaireQuestions.type,
+        sectionTitle: questionnaireSections.title,
+        sectionOrder: questionnaireSections.orderIndex,
+        orderIndex: questionnaireQuestions.orderIndex,
+      })
+      .from(questionnaireAnswers)
+      .innerJoin(
+        questionnaireQuestions,
+        eq(questionnaireQuestions.id, questionnaireAnswers.questionId),
+      )
+      .innerJoin(
+        questionnaireSections,
+        eq(questionnaireSections.id, questionnaireQuestions.sectionId),
+      )
+      .where(eq(questionnaireAnswers.responseId, row.id))
+      .orderBy(
+        asc(questionnaireSections.orderIndex),
+        asc(questionnaireQuestions.orderIndex),
+      );
+
+    return { ...row, answers };
+  };
+  /**
+   * Save answers a staff member typed in-house.
+   *
+   * Upserts onto whichever response the matter already has, including one a
+   * client started through a link — a paralegal correcting a client's answer
+   * on the phone is the ordinary case, not a conflict. `filledById` is stamped
+   * only on a response that has no send behind it, matching the schema's rule
+   * that it is set exactly when `questionnaireSendId` is null.
+   *
+   * Populating the forms afterwards is what makes this worth doing at all, so
+   * it runs on every save rather than only on submission: a paralegal filling
+   * the questionnaire wants to watch the forms fill in behind them.
+   */
+  /**
+   * The matter's one answer set, created on first use.
+   *
+   * A matter has exactly one case-stage response for its whole life, and every
+   * send, every staff edit and every client save writes to it. Anything else
+   * splits a client's answers across rows and leaves the forms reading whichever
+   * one a query happened to sort first — which is precisely what used to happen.
+   */
+  private ensureCaseResponse = async (
+    organizationId: string,
+    caseId: string,
+    filledById?: string,
+  ) => {
+    const existing = await this.getCaseResponse(organizationId, caseId);
+    if (existing) return existing;
+
+    const caseTypeId = await this.getCaseTypeIdForCase(organizationId, caseId);
+    const questionnaire = await this.requireCaseQuestionnaire(caseTypeId);
+
+    const [created] = await db
+      .insert(questionnaireResponses)
+      .values({
+        organizationId,
+        questionnaireId: questionnaire.id,
+        filledById,
+        caseId,
+        caseTypeId,
+        status: "draft",
+      })
+      .returning();
+
+    return { ...created, answers: [] };
+  };
+
+  /**
+   * Save answers a staff member typed, as one version.
+   *
+   * The unit is whatever the caller sends — in practice one section, because
+   * the tab has a Save button per section. That is what makes a version mean
+   * something a person recognises: "M. Chen saved Beneficiary details, 6
+   * answers changed", rather than one version per keystroke.
+   */
+  saveCaseAnswers = async (
+    organizationId: string,
+    caseId: string,
+    filledById: string | undefined,
+    data: {
+      status?: "draft" | "submitted";
+      answers: AnswerInput[];
+      sectionId?: string | null;
+    },
+  ) => {
+    const response = await this.ensureCaseResponse(
+      organizationId,
+      caseId,
+      filledById,
+    );
+
+    const result = await commitAnswers({
+      organizationId,
+      responseId: response.id,
+      answers: data.answers,
+      actor: "staff",
+      actorId: filledById,
+      sectionId: data.sectionId ?? null,
+    });
+
+    if (data.status && data.status !== response.status) {
+      const now = new Date();
+      await db
+        .update(questionnaireResponses)
+        .set({
+          status: data.status,
+          submittedAt:
+            data.status === "submitted" ? (response.submittedAt ?? now) : null,
+          updatedAt: now,
+        })
+        .where(eq(questionnaireResponses.id, response.id));
+    }
+
+    const fieldsPopulated = await this.syncForms(
+      organizationId,
+      caseId,
+      response.id,
+      filledById,
+    );
+
+    return {
+      response: await this.getCaseResponse(organizationId, caseId),
+      changed: result.changed,
+      version: result.version,
+      fieldsPopulated,
+    };
+  };
+
+  /**
+   * Carry the matter's answers onto its forms.
+   *
+   * Always outside the save transaction: filling a form is a consequence of a
+   * save, not a condition of one, and a failure here must never be able to lose
+   * the answers that caused it.
+   */
+  private syncForms = async (
+    organizationId: string,
+    caseId: string,
+    responseId: string,
+    actorId?: string,
+  ) => {
+    try {
+      const result = await populateCaseForms({
+        caseId,
+        organizationId,
+        updatedById: actorId,
+      });
+      return (result.filled ?? 0) + (result.updated ?? 0);
+    } catch (err) {
+      log.failure(LogEvent.QUESTIONNAIRE_FORM_POPULATION_FAILED, err, {
+        caseId,
+        responseId,
+      });
+      return 0;
+    }
+  };
+
+  /**
+   * Put one answer back to what it was at some point in the past.
+   *
+   * Written forward, as a new save, rather than by deleting the revisions after
+   * it. History that can be rewritten is not history — and a colleague's
+   * correction must not vanish because somebody rolled back past it.
+   */
+  restoreAnswer = async (
+    organizationId: string,
+    caseId: string,
+    revisionId: string,
+    actorId?: string,
+  ) => {
+    const response = await this.getCaseResponse(organizationId, caseId);
+    if (!response) throw new NotFoundError("This matter has no answers yet");
+
+    const [revision] = await db
+      .select()
+      .from(questionnaireAnswerRevisions)
+      .where(
+        and(
+          eq(questionnaireAnswerRevisions.id, revisionId),
+          eq(questionnaireAnswerRevisions.responseId, response.id),
+          eq(questionnaireAnswerRevisions.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+
+    if (!revision) throw new NotFoundError("That change is not on this matter");
+
+    const result = await commitAnswers({
+      organizationId,
+      responseId: response.id,
+      answers: [{ questionId: revision.questionId, value: revision.value }],
+      actor: "staff",
+      actorId,
+    });
+
+    const fieldsPopulated = await this.syncForms(
+      organizationId,
+      caseId,
+      response.id,
+      actorId,
+    );
+
+    log.action(LogEvent.QUESTIONNAIRE_ANSWERS_RESTORED, {
+      caseId,
+      responseId: response.id,
+      scope: "answer",
+      revisionId,
+    });
+
+    return { changed: result.changed, fieldsPopulated };
+  };
+
+  /**
+   * Put the whole questionnaire back to how it stood at a chosen save.
+   *
+   * Also forward-only: the restore is itself a new version, tagged with what it
+   * restored, so the list reads "version 9 — restored from version 4" and the
+   * intervening work is still there to look at.
+   *
+   * Answers added after the chosen version are cleared rather than left
+   * standing, because "restore to this point" has to mean the questionnaire
+   * looks like it did — a leftover answer from later would be neither state.
+   */
+  restoreVersion = async (
+    organizationId: string,
+    caseId: string,
+    versionId: string,
+    actorId?: string,
+  ) => {
+    const response = await this.getCaseResponse(organizationId, caseId);
+    if (!response) throw new NotFoundError("This matter has no answers yet");
+
+    const { version, answers } = await answersFromVersion(
+      organizationId,
+      versionId,
+    );
+
+    if (version.responseId !== response.id) {
+      throw new NotFoundError("That version is not on this matter");
+    }
+
+    const restoredIds = new Set(answers.map((a) => a.questionId));
+    const cleared = response.answers
+      .filter((a) => !restoredIds.has(a.questionId))
+      .map((a) => ({ questionId: a.questionId, value: null }));
+
+    const result = await commitAnswers({
+      organizationId,
+      responseId: response.id,
+      answers: [...answers, ...cleared],
+      actor: "staff",
+      actorId,
+      restoredFromVersionId: versionId,
+    });
+
+    const fieldsPopulated = await this.syncForms(
+      organizationId,
+      caseId,
+      response.id,
+      actorId,
+    );
+
+    log.action(LogEvent.QUESTIONNAIRE_ANSWERS_RESTORED, {
+      caseId,
+      responseId: response.id,
+      scope: "version",
+      versionId,
+      changed: result.changed,
+    });
+
+    return { changed: result.changed, fieldsPopulated };
+  };
+
+  /** The saves made against this matter's questionnaire, newest first. */
+  getCaseVersions = async (organizationId: string, caseId: string) => {
+    const response = await this.getCaseResponse(organizationId, caseId);
+    if (!response) return [];
+    return listVersions(organizationId, response.id);
+  };
+
+  /** One save, with the answers it changed. */
+  getCaseVersion = async (organizationId: string, versionId: string) =>
+    getVersion(organizationId, versionId);
+
+  /** One answer's timeline, newest first. */
+  getAnswerHistory = async (
+    organizationId: string,
+    caseId: string,
+    questionId: string,
+  ) => {
+    const response = await this.getCaseResponse(organizationId, caseId);
+    if (!response) return [];
+    return listAnswerRevisions(organizationId, response.id, questionId);
+  };
+
+  /**
+   * Send the case questionnaire to the matter's client.
+   *
+   * Deliberately smaller than the intake send in `leads.service`: the recipient
+   * is already known, there is no pipeline stage to advance, and no custom
+   * questions are authored here — those are added to the questionnaire itself
+   * and are therefore already in the snapshot below.
+   */
+  sendCaseQuestionnaire = async (
+    organizationId: string,
+    caseId: string,
+    sentById: string | undefined,
+    config: {
+      sectionIds?: string[];
+      autoReminderDays?: number | null;
+      language?: string;
+      dueInDays?: number | null;
+      reason?: "new" | "correction" | "attention";
+      reasonNote?: string | null;
+    } = {},
+  ) => {
+    const [matter] = await db
+      .select({
+        id: cases.id,
+        clientId: cases.clientId,
+        caseTypeId: cases.caseTypeId,
+      })
+      .from(cases)
+      .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
+      .limit(1);
+
+    if (!matter) throw new NotFoundError("Case not found");
+    if (!matter.clientId) {
+      throw new BadRequestError(
+        "This matter has no client on it, so there is nobody to send the questionnaire to",
+      );
+    }
+    if (!matter.caseTypeId) {
+      throw new BadRequestError("This matter has no case type");
+    }
+
+    const structure = await this.buildQuestionnaire(
+      (
+        await this.requireCaseQuestionnaire(matter.caseTypeId)
+      ).id,
+      { organizationId, caseId },
+    );
+
+    if (!structure) throw new NotFoundError("Case questionnaire not found");
+
+    // A send captures what the client was actually asked. Narrowing to chosen
+    // sections happens here, once, rather than being re-derived every time the
+    // link is opened — the questionnaire may be edited in the meantime.
+    const chosen = config.sectionIds?.length
+      ? structure.sections.filter((s) => config.sectionIds!.includes(s.id))
+      : structure.sections;
+
+    if (chosen.length === 0) {
+      throw new BadRequestError("Select at least one section to send");
+    }
+
+    const snapshot = {
+      id: structure.id,
+      title: structure.title,
+      description: structure.description,
+      sections: chosen.map((section) => ({
+        id: section.id,
+        title: section.title,
+        description: section.description,
+        scope: section.scope,
+        questions: section.questions.map((q) => ({
+          id: q.id,
+          label: q.label,
+          description: q.description,
+          type: q.type,
+          isRequired: q.isRequired,
+          config: q.config,
+          scope: q.scope,
+        })),
+      })),
+      /*
+        The rules travel with the questions, because both halves are needed to
+        know what the client was asked. A snapshot of questions alone makes
+        every branch look unconditional on the day it is read back — which is
+        exactly when submission validation demands an answer to something
+        nobody saw.
+      */
+      logicRules: structure.logicRules,
+    };
+
+    // Sending is a request for input, so it reopens a questionnaire staff had
+    // marked complete. Without this the client followed their link straight to
+    // "thank you, already submitted" — a dead end nobody could see from the
+    // firm's side, since pressing Send is exactly the act of saying the client
+    // should be able to answer.
+    await this.reopenForSending(organizationId, caseId, sentById);
+
+    const accessToken = generateAccessToken();
+    const dueInDays = config.dueInDays ?? null;
+
+    const [send] = await db
+      .insert(questionnaireSends)
+      .values({
+        organizationId,
+        questionnaireId: structure.id,
+        clientId: matter.clientId,
+        caseId,
+        caseTypeId: matter.caseTypeId,
+        sentById,
+        reason: config.reason ?? "new",
+        reasonNote: config.reasonNote?.trim() || null,
+        accessTokenHash: tokenHash(accessToken),
+        schemaSnapshot: snapshot as unknown as JsonObject,
+        deliveryChannels: ["email"],
+        language: config.language ?? "english",
+        autoReminderDays:
+          config.autoReminderDays && config.autoReminderDays > 0
+            ? config.autoReminderDays
+            : null,
+        expiresAt: dueInDays
+          ? new Date(Date.now() + dueInDays * 24 * 60 * 60 * 1000)
+          : null,
+      })
+      .returning();
+
+    const baseUrl = env.FRONTEND_APP_URL ?? "http://localhost:5173";
+    const clientLink = `${baseUrl}/questionnaire/${encodeURIComponent(
+      organizationId,
+    )}/${accessToken}`;
+
+    void notify({
+      organizationId,
+      event: "questionnaire_sent",
+      recipients: [{ type: "client", id: matter.clientId }],
+      context: {
+        link: clientLink,
+        reason: config.reason ?? "new",
+        reasonNote: config.reasonNote?.trim() || null,
+      },
+      channels: ["email"],
+      scenario: { caseId, clientId: matter.clientId },
+      actorStaffId: sentById,
+      dedupeKey: `questionnaire-sent-${send.id}`,
+    }).catch((err: unknown) =>
+      log.failure(LogEvent.NOTIFICATION_DISPATCH_FAILED, err, {
+        caseId,
+        event: "questionnaire_sent",
+      }),
+    );
+
+    return { send, clientLink, sectionsSent: chosen.length };
+  };
+
+  /**
+   * Put a completed questionnaire back to draft so a client can answer it.
+   *
+   * Recorded as a version like any other change of hands, because "who reopened
+   * this, and when" is exactly the kind of question a completed-then-reopened
+   * questionnaire invites. No answers move — only the status.
+   */
+  private reopenForSending = async (
+    organizationId: string,
+    caseId: string,
+    actorId?: string,
+  ) => {
+    const response = await this.getCaseResponse(organizationId, caseId);
+    if (!response || response.status !== "submitted") return;
+
+    await db
+      .update(questionnaireResponses)
+      .set({ status: "draft", submittedAt: null, updatedAt: new Date() })
+      .where(eq(questionnaireResponses.id, response.id));
+
+    log.action(LogEvent.QUESTIONNAIRE_REOPENED, {
+      caseId,
+      responseId: response.id,
+      staffId: actorId,
+    });
+  };
+
+  /** The case-stage questionnaire for a case type, or a 404 explaining which. */
+  private requireCaseQuestionnaire = async (caseTypeId: string) => {
+    const [questionnaire] = await db
+      .select({ id: questionnaires.id })
+      .from(questionnaires)
+      .where(
+        and(
+          eq(questionnaires.caseTypeId, caseTypeId),
+          eq(questionnaires.stage, "case"),
+        ),
+      )
+      .limit(1);
+
+    if (!questionnaire) {
+      throw new NotFoundError(
+        "No case questionnaire exists for this matter's case type",
+      );
+    }
+    return questionnaire;
   };
 
   // ── Responses ─────────────────────────────────────────────────────────────
 
   getResponses = async (
     organizationId: string,
-    caseTypeQuestionnaireId: string,
+    questionnaireId: string,
     filters: Partial<PaginationParams> & { caseTypeId?: string } = {},
   ) => {
     const page = filters.page ?? 1;
@@ -574,8 +1451,8 @@ export class QuestionnairesService {
     const conditions = [
       eq(questionnaireResponses.organizationId, organizationId),
       eq(
-        questionnaireResponses.caseTypeQuestionnaireId,
-        caseTypeQuestionnaireId,
+        questionnaireResponses.questionnaireId,
+        questionnaireId,
       ),
     ];
 
@@ -624,26 +1501,103 @@ export class QuestionnairesService {
 
   getClientQuestionnaireByToken = async (accessToken: string) => {
     const send = await this.getActiveSendByToken(accessToken, true);
-    const response = await this.getResponseForSend(send.id);
 
     return {
       send,
-      questionnaire: send.schemaSnapshot,
-      response,
+      questionnaire: await this.clientSchemaForSend(send),
+      response: await this.clientResponseForSend(send),
     };
+  };
+
+  /**
+   * What the client is shown, which is not always what the send recorded.
+   *
+   * For a **case** send the questionnaire is rebuilt live and narrowed to the
+   * sections that were sent. A snapshot froze the wording at the moment the
+   * link went out, so a typo staff fixed an hour later never reached the
+   * client and a question added to a sent section was invisible until somebody
+   * re-sent — and re-sending is what used to strand the answers. The send still
+   * decides the *scope*; the questionnaire decides the *content*.
+   *
+   * A superseding copy is followed through, so a firm rewording a seeded
+   * section after sending does not make that section vanish from the link.
+   *
+   * For an **intake** send the snapshot stands. It is not a view of a stored
+   * questionnaire at all: the custom questions a paralegal wrote into that one
+   * send exist nowhere else, so rebuilding would lose them.
+   */
+  private clientSchemaForSend = async (
+    send: typeof questionnaireSends.$inferSelect,
+  ) => {
+    if (!send.caseId) return send.schemaSnapshot;
+
+    const live = await this.buildQuestionnaire(send.questionnaireId, {
+      organizationId: send.organizationId,
+      caseId: send.caseId,
+    });
+    if (!live) return send.schemaSnapshot;
+
+    const snapshot = send.schemaSnapshot as {
+      sections?: { id: string }[];
+    } | null;
+    const sentIds = new Set(
+      (snapshot?.sections ?? []).map((section) => section.id),
+    );
+
+    // Matched by id alone. This used to also admit a section whose
+    // `supersedesId` was in the snapshot, so a firm editing a platform section
+    // after the send did not drop it from the client's copy. Nothing is
+    // superseded any more, so an id is an id.
+    const sections = live.sections.filter((section) => sentIds.has(section.id));
+
+    return {
+      id: live.id,
+      title: live.title,
+      description: live.description,
+      // A send that somehow matches nothing live falls back to every section
+      // rather than showing the client an empty questionnaire.
+      sections: sections.length > 0 ? sections : live.sections,
+      // Rebuilt live like the questions, and for the same reason: a rule added
+      // after the link went out is one the client should be branching on.
+      logicRules: live.logicRules,
+    };
+  };
+
+  /**
+   * The answers a client's link should open with.
+   *
+   * For a case send that is the matter's one answer set — everything staff have
+   * typed and everything the client said on any earlier link — so a client
+   * reviews and corrects rather than starting from blank. Reading this by
+   * `send.id` is what left them staring at an empty form: the answers were
+   * always there, on the response the previous send had created.
+   */
+  private clientResponseForSend = async (
+    send: typeof questionnaireSends.$inferSelect,
+  ) => {
+    if (!send.caseId) return this.getResponseForSend(send.id);
+
+    const response = await this.getCaseResponse(send.organizationId, send.caseId);
+    if (!response) return null;
+
+    const files = await responseFilesQuery().where(
+      eq(questionnaireResponseFiles.responseId, response.id),
+    );
+
+    return { ...response, files: await presignResponseFiles(files) };
   };
 
   saveDraftResponseByToken = async (
     accessToken: string,
     data: {
-      currentSectionRef?: { source: string; id: string } | null;
+      currentSectionId?: string | null;
       answers?: AnswerInput[];
     },
   ) => {
     const send = await this.getActiveSendByToken(accessToken);
     const result = await this.saveResponse(send, {
       status: "draft",
-      currentSectionRef: data.currentSectionRef,
+      currentSectionId: data.currentSectionId,
       answers: data.answers ?? [],
     });
 
@@ -662,14 +1616,14 @@ export class QuestionnairesService {
   submitResponseByToken = async (
     accessToken: string,
     data: {
-      currentSectionRef?: { source: string; id: string } | null;
+      currentSectionId?: string | null;
       answers?: AnswerInput[];
     },
   ) => {
     const send = await this.getActiveSendByToken(accessToken);
     const result = await this.saveResponse(send, {
       status: "submitted",
-      currentSectionRef: data.currentSectionRef,
+      currentSectionId: data.currentSectionId,
       answers: data.answers ?? [],
     });
 
@@ -697,7 +1651,6 @@ export class QuestionnairesService {
     data: {
       responseId: string;
       questionId: string;
-      questionSource?: "system" | "firm";
       fileBuffer: Buffer;
       mimeType: string;
       fileSize: number;
@@ -714,10 +1667,6 @@ export class QuestionnairesService {
     if (response.status === "submitted") {
       throw new ConflictError("Submitted responses cannot be changed");
     }
-
-    const questionSource =
-      data.questionSource ??
-      getQuestionSourceFromSnapshot(send.schemaSnapshot, data.questionId);
 
     const safeFilename = `${Date.now()}-${data.originalFilename.replace(/\s+/g, "_")}`;
     const storagePath = buildResponseFileStoragePath(
@@ -738,7 +1687,6 @@ export class QuestionnairesService {
       responseId: response.id,
       leadId: send.leadId ?? null,
       questionId: data.questionId,
-      questionSource,
       storagePath,
       fileBuffer: data.fileBuffer,
       mimeType: data.mimeType,
@@ -775,7 +1723,6 @@ export class QuestionnairesService {
     data: {
       responseId: string;
       questionId: string;
-      questionSource?: "system" | "firm";
       fileBuffer: Buffer;
       mimeType: string;
       fileSize: number;
@@ -794,15 +1741,7 @@ export class QuestionnairesService {
       .limit(1);
     if (!response) throw new NotFoundError("Response not found");
 
-    const [send] = await db
-      .select()
-      .from(questionnaireSends)
-      .where(eq(questionnaireSends.id, response.questionnaireSendId))
-      .limit(1);
-
-    const questionSource =
-      data.questionSource ??
-      getQuestionSourceFromSnapshot(send?.schemaSnapshot, data.questionId);
+    const send = await this.sendForResponse(response.questionnaireSendId);
 
     const safeFilename = `${Date.now()}-${data.originalFilename.replace(/\s+/g, "_")}`;
     const storagePath = buildResponseFileStoragePath(
@@ -823,7 +1762,6 @@ export class QuestionnairesService {
       responseId: response.id,
       leadId: send?.leadId ?? null,
       questionId: data.questionId,
-      questionSource,
       storagePath,
       fileBuffer: data.fileBuffer,
       mimeType: data.mimeType,
@@ -847,7 +1785,6 @@ export class QuestionnairesService {
     responseId: string;
     leadId: string | null;
     questionId: string;
-    questionSource: "system" | "firm";
     storagePath: string;
     fileBuffer: Buffer;
     mimeType: string;
@@ -871,6 +1808,16 @@ export class QuestionnairesService {
         )
         .limit(1);
 
+      // The platform's own questions are the ones that ask for identity
+      // documents; anything a firm or a matter added is supporting material.
+      // Read off the question rather than a snapshot — a real foreign key means
+      // it is always there to read.
+      const [question] = await db
+        .select({ scope: questionnaireQuestions.scope })
+        .from(questionnaireQuestions)
+        .where(eq(questionnaireQuestions.id, input.questionId))
+        .limit(1);
+
       const ingestInput = {
         organizationId: input.organizationId,
         storagePath: input.storagePath,
@@ -879,7 +1826,7 @@ export class QuestionnairesService {
         fileSize: input.fileSize,
         checksum,
         category:
-          input.questionSource === "system"
+          question?.scope === "system"
             ? ("identity" as const)
             : ("supporting" as const),
       };
@@ -898,7 +1845,6 @@ export class QuestionnairesService {
               responseId: input.responseId,
               documentId: ingested.documentId,
               questionId: input.questionId,
-              questionSource: input.questionSource,
             })
             .returning();
 
@@ -941,7 +1887,6 @@ export class QuestionnairesService {
       id: result.joinRow.id,
       responseId: input.responseId,
       questionId: input.questionId,
-      questionSource: input.questionSource,
       documentId: result.ingested.documentId,
       documentVersionId: result.ingested.documentVersionId,
       versionNumber: result.ingested.versionNumber,
@@ -1058,27 +2003,27 @@ export class QuestionnairesService {
   getQuestionBank = async () => {
     const rows = await db
       .select({
-        caseTypeId: caseTypeQuestionnaires.caseTypeId,
+        caseTypeId: questionnaires.caseTypeId,
         caseTypeName: practiceAreaCaseTypes.name,
-        questionnaireTitle: caseTypeQuestionnaires.title,
-        questionLabel: caseTypeQuestionnaireQuestions.label,
-        questionType: caseTypeQuestionnaireQuestions.type,
-        questionDescription: caseTypeQuestionnaireQuestions.description,
-        orderIndex: caseTypeQuestionnaireQuestions.orderIndex,
+        questionnaireTitle: questionnaires.title,
+        questionLabel: questionnaireQuestions.label,
+        questionType: questionnaireQuestions.type,
+        questionDescription: questionnaireQuestions.description,
+        orderIndex: questionnaireQuestions.orderIndex,
       })
-      .from(caseTypeQuestionnaireQuestions)
+      .from(questionnaireQuestions)
       .innerJoin(
-        caseTypeQuestionnaires,
+        questionnaires,
         eq(
-          caseTypeQuestionnaires.id,
-          caseTypeQuestionnaireQuestions.questionnaireId,
+          questionnaires.id,
+          questionnaireQuestions.questionnaireId,
         ),
       )
       .leftJoin(
         practiceAreaCaseTypes,
-        eq(practiceAreaCaseTypes.id, caseTypeQuestionnaires.caseTypeId),
+        eq(practiceAreaCaseTypes.id, questionnaires.caseTypeId),
       )
-      .orderBy(asc(caseTypeQuestionnaireQuestions.orderIndex));
+      .orderBy(asc(questionnaireQuestions.orderIndex));
 
     const grouped = new Map<
       string,
@@ -1129,11 +2074,7 @@ export class QuestionnairesService {
       .limit(1);
     if (!response) throw new NotFoundError("Response not found");
 
-    const [send] = await db
-      .select()
-      .from(questionnaireSends)
-      .where(eq(questionnaireSends.id, response.questionnaireSendId))
-      .limit(1);
+    const send = await this.sendForResponse(response.questionnaireSendId);
 
     const answers = await db
       .select()
@@ -1190,11 +2131,7 @@ export class QuestionnairesService {
       .limit(1);
     if (!response) throw new NotFoundError("Response not found");
 
-    const [send] = await db
-      .select()
-      .from(questionnaireSends)
-      .where(eq(questionnaireSends.id, response.questionnaireSendId))
-      .limit(1);
+    const send = await this.sendForResponse(response.questionnaireSendId);
 
     const answers = await db
       .select()
@@ -1458,55 +2395,218 @@ export class QuestionnairesService {
 
   // ── Private Helpers ────────────────────────────────────────────────────────
 
-  private buildSystemQuestionnaireStructure = async (
+  /**
+   * Assemble a questionnaire from every tier the caller is entitled to see.
+   *
+   * With no `visibility`, that is the system backbone alone — what a platform
+   * admin edits, and what the seeds write. With one, it additionally admits the
+   * firm's own sections and questions, and those written for a single matter.
+   *
+   * Ordering is `scope` first, then `orderIndex`: the platform's questions keep
+   * their authored sequence, the firm's follow, and anything written for this
+   * matter comes last. That is the order the two-table version produced by
+   * concatenating its arrays, now stated once as a sort rather than implied by
+   * the shape of the merge.
+   */
+  private buildQuestionnaire = async (
     id: string,
+    visibility?: { organizationId: string; caseId?: string | null },
   ) => {
     const [questionnaire] = await db
       .select()
-      .from(caseTypeQuestionnaires)
-      .where(eq(caseTypeQuestionnaires.id, id))
+      .from(questionnaires)
+      .where(eq(questionnaires.id, id))
       .limit(1);
 
     if (!questionnaire) return null;
 
-    const sections = await db
-      .select()
-      .from(caseTypeQuestionnaireSections)
-      .where(eq(caseTypeQuestionnaireSections.questionnaireId, id))
-      .orderBy(asc(caseTypeQuestionnaireSections.orderIndex));
+    // A row is visible when it is the platform's, or this firm's and either not
+    // tied to a matter or tied to *this* one. Another matter's questions stay
+    // out even though the firm owns them.
+    const visible = (col: {
+      organizationId: PgColumn;
+      caseId: PgColumn;
+    }) => {
+      if (!visibility) return isNull(col.organizationId);
+      return and(
+        or(
+          isNull(col.organizationId),
+          eq(col.organizationId, visibility.organizationId),
+        ),
+        visibility.caseId
+          ? or(isNull(col.caseId), eq(col.caseId, visibility.caseId))
+          : isNull(col.caseId),
+      );
+    };
 
-    const questions = await db
-      .select()
-      .from(caseTypeQuestionnaireQuestions)
-      .where(eq(caseTypeQuestionnaireQuestions.questionnaireId, id))
-      .orderBy(asc(caseTypeQuestionnaireQuestions.orderIndex));
+    const [sections, questions, logicRules] = await Promise.all([
+      db
+        .select()
+        .from(questionnaireSections)
+        .where(
+          and(
+            eq(questionnaireSections.questionnaireId, id),
+            visible(questionnaireSections),
+          ),
+        ),
+      db
+        .select()
+        .from(questionnaireQuestions)
+        .where(
+          and(
+            eq(questionnaireQuestions.questionnaireId, id),
+            visible(questionnaireQuestions),
+          ),
+        ),
+      db
+        .select()
+        .from(questionnaireLogicRules)
+        .where(
+          and(
+            eq(questionnaireLogicRules.questionnaireId, id),
+            visible(questionnaireLogicRules),
+          ),
+        )
+        .orderBy(asc(questionnaireLogicRules.priority)),
+    ]);
 
-    const logicRules = await db
-      .select()
-      .from(caseTypeQuestionnaireLogicRules)
-      .where(eq(caseTypeQuestionnaireLogicRules.questionnaireId, id))
-      .orderBy(asc(caseTypeQuestionnaireLogicRules.priority));
-
-    const questionsBySection = new Map<string, (typeof questions)[number][]>();
-    for (const q of questions) {
+    // There is no supersession step here any more.
+    //
+    // A firm's edit of a platform row used to be stored as a copy pointing
+    // back at the original, and this is where the original was dropped and its
+    // questions re-pointed at the copy. A firm no longer edits the backbone —
+    // it extends it — so every row read here is exactly one row, and
+    // `isLocked` is simply whose it is.
+    const questionsBySection = new Map<
+      string,
+      ((typeof questions)[number] & { isLocked: boolean })[]
+    >();
+    for (const q of [...questions].sort(byScopeThenOrder)) {
       const arr = questionsBySection.get(q.sectionId) ?? [];
-      arr.push(q);
+      arr.push({ ...q, isLocked: q.scope === "system" });
       questionsBySection.set(q.sectionId, arr);
     }
 
     return {
       ...questionnaire,
-      sections: sections.map((s: any) => ({
+      sections: [...sections].sort(byScopeThenOrder).map((s) => ({
         ...s,
+        isLocked: s.scope === "system",
         questions: questionsBySection.get(s.id) ?? [],
       })),
       logicRules,
     };
   };
 
-  private ensureCaseTypeExists = async (
-    caseTypeId: string,
-  ) => {
+  /**
+   * Resolve which questionnaire a firm-scope or per-matter write lands on, and
+   * validate the `caseId` against the scope, so every writer below gets the
+   * same answer to "is this request coherent?".
+   */
+  private resolveWriteTarget = async (input: {
+    caseTypeId: string;
+    scope: FirmScope;
+    caseId?: string | null;
+    stage?: QuestionnaireStage;
+  }) => {
+    const caseId = input.caseId ?? null;
+
+    if (input.scope === "case" && !caseId) {
+      throw new BadRequestError("A caseId is required for case-scoped content");
+    }
+    if (input.scope === "firm" && caseId) {
+      throw new BadRequestError(
+        "Firm-scoped content applies to every matter and cannot name one",
+      );
+    }
+
+    await this.ensureCaseTypeExists(input.caseTypeId);
+
+    // Per-matter questions only ever belong on the case questionnaire; firm
+    // additions default to intake, which is where they have always gone.
+    const stage: QuestionnaireStage =
+      input.stage ?? (input.scope === "case" ? "case" : "intake");
+
+    const [questionnaire] = await db
+      .select({ id: questionnaires.id })
+      .from(questionnaires)
+      .where(
+        and(
+          eq(questionnaires.caseTypeId, input.caseTypeId),
+          eq(questionnaires.stage, stage),
+        ),
+      )
+      .limit(1);
+
+    if (!questionnaire) {
+      throw new NotFoundError(
+        `No ${stage} questionnaire exists for this case type`,
+      );
+    }
+
+    return { questionnaireId: questionnaire.id, caseId };
+  };
+
+  /**
+   * The write guard, and the reason `system` rows are safe in the same table:
+   * matching on a non-null `organizationId` can never select one, so a firm
+   * cannot edit or delete the platform's questions through any of these
+   * methods. Database policy enforces the same rule a second time — see
+   * `rls_questionnaire_sections_org`.
+   */
+  private ownedSection = (organizationId: string, sectionId: string) =>
+    and(
+      eq(questionnaireSections.id, sectionId),
+      eq(questionnaireSections.organizationId, organizationId),
+    );
+
+  private ownedQuestion = (organizationId: string, questionId: string) =>
+    and(
+      eq(questionnaireQuestions.id, questionId),
+      eq(questionnaireQuestions.organizationId, organizationId),
+    );
+
+  /*
+    The platform's own rows: the inverse of `ownedSection`/`ownedQuestion`.
+
+    A NULL `organization_id` is what makes a row Oravanti's, and it is also
+    what stops a tenant connection writing it — the same fact enforced twice,
+    once in the query and once in database policy. `isNull` rather than a check
+    on `scope` because the column that decides the RLS outcome is the one worth
+    matching on; the two agree, and if they ever did not, this is the one that
+    would still be right.
+  */
+  private platformSection = (sectionId: string) =>
+    and(
+      eq(questionnaireSections.id, sectionId),
+      isNull(questionnaireSections.organizationId),
+    );
+
+  private platformQuestion = (questionId: string) =>
+    and(
+      eq(questionnaireQuestions.id, questionId),
+      isNull(questionnaireQuestions.organizationId),
+    );
+
+  /**
+   * The send a response arrived through, if it arrived through one.
+   *
+   * Undefined for a response staff filled in-house, which has no link, no
+   * token and no schema snapshot. Every caller already treats the send as
+   * optional — this makes the nullability explicit in one place instead of
+   * three lookups that quietly assumed it was always there.
+   */
+  private sendForResponse = async (sendId: string | null) => {
+    if (!sendId) return undefined;
+    const [send] = await db
+      .select()
+      .from(questionnaireSends)
+      .where(eq(questionnaireSends.id, sendId))
+      .limit(1);
+    return send;
+  };
+
+  private ensureCaseTypeExists = async (caseTypeId: string) => {
     const [ct] = await db
       .select()
       .from(practiceAreaCaseTypes)
@@ -1516,74 +2616,37 @@ export class QuestionnairesService {
     return ct;
   };
 
-  private getNextSectionOrderIndex = async (
-    table: any,
+  /** Next free slot at the end of this tier's own run of sections. */
+  private nextSectionOrderIndex = async (
     questionnaireId: string,
+    scope: QuestionnaireScope,
+    caseId: string | null,
   ) => {
     const [{ total }] = await db
       .select({ total: count() })
-      .from(table)
-      .where(eq(table.questionnaireId, questionnaireId));
-    return Number(total);
-  };
-
-  private getNextQuestionOrderIndex = async (
-    table: any,
-    questionnaireId: string,
-    sectionId: string,
-  ) => {
-    const [{ total }] = await db
-      .select({ total: count() })
-      .from(table)
+      .from(questionnaireSections)
       .where(
         and(
-          eq(table.questionnaireId, questionnaireId),
-          eq(table.sectionId, sectionId),
+          eq(questionnaireSections.questionnaireId, questionnaireId),
+          eq(questionnaireSections.scope, scope),
+          caseId
+            ? eq(questionnaireSections.caseId, caseId)
+            : isNull(questionnaireSections.caseId),
         ),
       );
     return Number(total);
   };
 
-  private getNextFirmSectionOrderIndex = async (
-    organizationId: string,
-    caseTypeId: string,
-  ) => {
+  /**
+   * Questions are numbered per section across all scopes, not per scope: a firm
+   * question added to a system section has to sort after the system ones, and
+   * `byScopeThenOrder` only breaks ties it is given distinctly.
+   */
+  private nextQuestionOrderIndex = async (sectionId: string) => {
     const [{ total }] = await db
       .select({ total: count() })
-      .from(firmQuestionnaireSections)
-      .where(
-        and(
-          eq(firmQuestionnaireSections.organizationId, organizationId),
-          eq(firmQuestionnaireSections.caseTypeId, caseTypeId),
-        ),
-      );
-    return Number(total);
-  };
-
-  private getNextFirmQuestionOrderIndex = async (
-    organizationId: string,
-    caseTypeId: string,
-    systemSectionId: string | null,
-    firmSectionId: string | null,
-  ) => {
-    const conditions: any[] = [
-      eq(firmQuestionnaireQuestions.organizationId, organizationId),
-      eq(firmQuestionnaireQuestions.caseTypeId, caseTypeId),
-    ];
-    if (systemSectionId)
-      conditions.push(
-        eq(firmQuestionnaireQuestions.systemSectionId, systemSectionId),
-      );
-    if (firmSectionId)
-      conditions.push(
-        eq(firmQuestionnaireQuestions.firmSectionId, firmSectionId),
-      );
-
-    const [{ total }] = await db
-      .select({ total: count() })
-      .from(firmQuestionnaireQuestions)
-      .where(and(...conditions));
-
+      .from(questionnaireQuestions)
+      .where(eq(questionnaireQuestions.sectionId, sectionId));
     return Number(total);
   };
 
@@ -1662,109 +2725,193 @@ export class QuestionnairesService {
     return response;
   };
 
+  /**
+   * A client saving progress, or submitting.
+   *
+   * ─── Which response this writes to ──────────────────────────────────────────
+   *
+   * For a **case** questionnaire, the matter's one answer set — never a fresh
+   * row per send. Sending the questionnaire a second time used to create a
+   * second response with nothing in it, so the client started from blank, their
+   * earlier answers were stranded, and the forms read whichever row a query
+   * happened to sort first. A send is a delivery, not a new questionnaire; the
+   * answers belong to the matter and outlive it.
+   *
+   * For an **intake** questionnaire there is no matter yet, so the response
+   * stays tied to its send exactly as before.
+   *
+   * Both routes write through `commitAnswers`, which is what gives every save —
+   * client or staff — a version and a per-answer change log.
+   */
   private saveResponse = async (
     send: typeof questionnaireSends.$inferSelect,
     data: {
       status: "draft" | "submitted";
-      currentSectionRef?: { source: string; id: string } | null;
+      currentSectionId?: string | null;
       answers: AnswerInput[];
     },
   ) => {
-    return withTransaction(db, async () => {
-      const existing = await this.getResponseForSend(send.id);
-      if (existing?.status === "submitted") {
-        throw new ConflictError("Client has already submitted a response");
-      }
+    const response = await this.responseForSave(send);
 
-      // Merge answers: existing base + incoming updates
-      const answerMap = new Map<
-        string,
-        { value: unknown; source: "system" | "firm" }
-      >();
-      for (const answer of existing?.answers ?? []) {
-        answerMap.set(answer.questionId, {
-          value: answer.value,
-          source: answer.questionSource as "system" | "firm",
-        });
+    if (response.status === "submitted") {
+      throw new ConflictError("Client has already submitted a response");
+    }
+
+    if (data.status === "submitted") {
+      // Validated against everything on file, not just this request: a client
+      // answering the last section must satisfy the required questions from the
+      // earlier ones too.
+      const merged = new Map<string, unknown>();
+      for (const answer of response.answers ?? []) {
+        merged.set(answer.questionId, answer.value);
       }
       for (const answer of data.answers) {
-        const source = getQuestionSourceFromSnapshot(
-          send.schemaSnapshot,
-          answer.questionId,
-        );
-        answerMap.set(answer.questionId, { value: answer.value, source });
+        merged.set(answer.questionId, answer.value);
       }
+      // Against what the client was actually shown, which for a case send is
+      // the live questionnaire. Validating against the snapshot would demand an
+      // answer to a question staff had since deleted, and let a newly required
+      // one through unanswered.
+      const schema = await this.clientSchemaForSend(send);
+      const mergedAnswers = Array.from(merged.entries()).map(
+        ([questionId, value]) => ({ questionId, value }),
+      );
+      validateSubmissionAnswers(schema, mergedAnswers);
 
-      const mergedAnswers = Array.from(answerMap.entries()).map(
-        ([questionId, a]) => ({
-          questionId,
-          value: a.value,
-        }),
+      /*
+        An answer inside a branch the client collapsed is withdrawn, and this is
+        where it goes.
+
+        A client who answers "Yes, I was married before", names an ex-spouse,
+        then changes the answer to "No" has told us there is no ex-spouse. The
+        row is still in the table, and nothing downstream would ever ask why —
+        `populateCaseForms` matches on field key and would print the name on the
+        I-130. Cleared at submission rather than at every keystroke, because a
+        client toggling back and forth mid-sitting must not lose their typing.
+
+        Through `commitAnswers` with the rest, so the withdrawal gets a version
+        and shows in the answer history like any other change. Silently deleting
+        something a client typed is not a thing to do without a record.
+      */
+      const withdrawn = hiddenInSchema(schema, mergedAnswers);
+      for (const questionId of withdrawn) {
+        if (!isEmptyAnswer(merged.get(questionId))) {
+          data.answers = [...data.answers, { questionId, value: null }];
+        }
+      }
+    }
+
+    await commitAnswers({
+      organizationId: send.organizationId,
+      responseId: response.id,
+      answers: data.answers,
+      actor: "client",
+      sectionId: data.currentSectionId ?? null,
+    });
+
+    const now = new Date();
+    await db
+      .update(questionnaireResponses)
+      .set({
+        status: data.status,
+        currentSectionId: data.currentSectionId,
+        lastSavedAt: now,
+        submittedAt: data.status === "submitted" ? now : null,
+        updatedAt: now,
+      })
+      .where(eq(questionnaireResponses.id, response.id));
+
+    await db
+      .update(questionnaireSends)
+      .set({
+        status: data.status === "submitted" ? "submitted" : "draft_response",
+        submittedAt: data.status === "submitted" ? now : null,
+        updatedAt: now,
+      })
+      .where(eq(questionnaireSends.id, send.id));
+
+    // Every save, not only submission.
+    //
+    // A client who answers half the questionnaire and closes the tab has still
+    // told the firm half of what it needed. Waiting for a submit that may never
+    // come left the forms reading "not started" while their answers sat in the
+    // database. `populateCaseForms` is safe to repeat and never overwrites a
+    // hand edit, so running it on drafts costs nothing and makes partial
+    // progress visible where the work happens.
+    //
+    // Outside any transaction, and failure is logged rather than raised: the
+    // client has done their part and their answers are saved.
+    if (send.caseId) {
+      await this.syncForms(send.organizationId, send.caseId, response.id);
+    }
+
+    return this.getResponseById(response.id);
+  };
+
+  /**
+   * The response a client's save should land on, created if this is the first.
+   *
+   * The case branch also re-points the response at the send that is currently
+   * delivering it, so "which link did they last answer through" stays
+   * answerable while the answers themselves stay put.
+   */
+  private responseForSave = async (
+    send: typeof questionnaireSends.$inferSelect,
+  ) => {
+    if (send.caseId) {
+      const response = await this.ensureCaseResponse(
+        send.organizationId,
+        send.caseId,
       );
 
-      if (data.status === "submitted") {
-        validateSubmissionAnswers(send.schemaSnapshot, mergedAnswers);
-      }
-
-      const now = new Date();
-      const [response] = existing
-        ? await db
-            .update(questionnaireResponses)
-            .set({
-              status: data.status,
-              currentSectionRef: data.currentSectionRef as any,
-              lastSavedAt: now,
-              submittedAt: data.status === "submitted" ? now : null,
-              updatedAt: now,
-            })
-            .where(eq(questionnaireResponses.id, existing.id))
-            .returning()
-        : await db
-            .insert(questionnaireResponses)
-            .values({
-              organizationId: send.organizationId,
-              questionnaireSendId: send.id,
-              caseTypeQuestionnaireId: send.caseTypeQuestionnaireId,
-              leadId: send.leadId,
-              clientId: send.clientId,
-              caseId: send.caseId,
-              caseTypeId: send.caseTypeId,
-              status: data.status,
-              currentSectionRef: data.currentSectionRef as any,
-              lastSavedAt: now,
-              submittedAt: data.status === "submitted" ? now : null,
-            })
-            .returning();
-
-      for (const [questionId, { value, source }] of answerMap.entries()) {
+      if (response.questionnaireSendId !== send.id) {
         await db
-          .insert(questionnaireAnswers)
-          .values({
-            responseId: response.id,
-            organizationId: send.organizationId,
-            questionId,
-            questionSource: source,
-            value: value as any,
-          })
-          .onConflictDoUpdate({
-            target: [
-              questionnaireAnswers.responseId,
-              questionnaireAnswers.questionId,
-            ],
-            set: { value: value as any, updatedAt: now },
-          });
+          .update(questionnaireResponses)
+          .set({ questionnaireSendId: send.id, updatedAt: new Date() })
+          .where(eq(questionnaireResponses.id, response.id));
       }
 
-      await db
-        .update(questionnaireSends)
-        .set({
-          status: data.status === "submitted" ? "submitted" : "draft_response",
-          submittedAt: data.status === "submitted" ? now : null,
-          updatedAt: now,
-        })
-        .where(eq(questionnaireSends.id, send.id));
+      return response;
+    }
 
-      return this.getResponseForSend(send.id);
-    });
+    const existing = await this.getResponseForSend(send.id);
+    if (existing) return existing;
+
+    const [created] = await db
+      .insert(questionnaireResponses)
+      .values({
+        organizationId: send.organizationId,
+        questionnaireSendId: send.id,
+        questionnaireId: send.questionnaireId,
+        leadId: send.leadId,
+        clientId: send.clientId,
+        caseId: send.caseId,
+        caseTypeId: send.caseTypeId,
+        status: "draft",
+      })
+      .returning();
+
+    return { ...created, answers: [] };
+  };
+
+  /** One response with its answers, by id. */
+  private getResponseById = async (responseId: string) => {
+    const [response] = await db
+      .select()
+      .from(questionnaireResponses)
+      .where(eq(questionnaireResponses.id, responseId))
+      .limit(1);
+
+    if (!response) throw new NotFoundError("Response not found");
+
+    const answers = await db
+      .select({
+        questionId: questionnaireAnswers.questionId,
+        value: questionnaireAnswers.value,
+      })
+      .from(questionnaireAnswers)
+      .where(eq(questionnaireAnswers.responseId, responseId));
+
+    return { ...response, answers };
   };
 }
