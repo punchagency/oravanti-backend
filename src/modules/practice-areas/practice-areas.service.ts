@@ -1,4 +1,5 @@
-import { and, asc, eq, ilike, inArray } from "drizzle-orm";
+import { and, asc, eq, ilike, inArray, ne } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { db } from "../../db/client";
 import { createModuleLogger } from "../../lib/logging/log";
 import { firmPracticeAreas } from "../../db/schema/firm-practice-areas";
@@ -75,9 +76,27 @@ const uniqueIds = (ids: string[]) => {
   return [...new Set(cleanedIds)];
 };
 
+/*
+  ─── Archived nodes are not offered ─────────────────────────────────────────
+
+  `status` is maintained in the Oravanti CRM, and `archived` means "kept, not
+  offered": every matter, lead and invoice already filed under the node keeps
+  working, and what stops is being listed when somebody opens a *new* one. This
+  module is where that happens, because this module is what the pickers read.
+
+  Stated as `!= 'archived'` rather than `= 'active'` on purpose. A value added
+  in a later deployment reaches a running one, and a picker that hid every row
+  it did not recognise would empty itself on deploy; a picker that shows an
+  unfamiliar-but-not-archived row is merely early.
+*/
+const isOffered = (status: AnyPgColumn) => ne(status, "archived");
+
 const getPracticeAreaWhere = (filters?: PracticeAreaFilters) => {
   const search = normalizeSearch(filters?.search);
-  return search ? ilike(practiceAreas.name, `%${search}%`) : undefined;
+  return and(
+    isOffered(practiceAreas.status),
+    search ? ilike(practiceAreas.name, `%${search}%`) : undefined,
+  );
 };
 
 const getSubcategoriesByPracticeArea = async (practiceAreaIds: string[]) => {
@@ -93,7 +112,12 @@ const getSubcategoriesByPracticeArea = async (practiceAreaIds: string[]) => {
       updatedAt: practiceAreaSubcategories.updatedAt,
     })
     .from(practiceAreaSubcategories)
-    .where(inArray(practiceAreaSubcategories.practiceAreaId, practiceAreaIds))
+    .where(
+      and(
+        inArray(practiceAreaSubcategories.practiceAreaId, practiceAreaIds),
+        isOffered(practiceAreaSubcategories.status),
+      ),
+    )
     .orderBy(asc(practiceAreaSubcategories.name));
 
   if (!subcategoryRows.length) return new Map<string, unknown[]>();
@@ -111,9 +135,12 @@ const getSubcategoriesByPracticeArea = async (practiceAreaIds: string[]) => {
     })
     .from(practiceAreaCaseTypes)
     .where(
-      inArray(
-        practiceAreaCaseTypes.subcategoryId,
-        subcategoryRows.map((subcategory) => subcategory.id),
+      and(
+        inArray(
+          practiceAreaCaseTypes.subcategoryId,
+          subcategoryRows.map((subcategory) => subcategory.id),
+        ),
+        isOffered(practiceAreaCaseTypes.status),
       ),
     )
     .orderBy(asc(practiceAreaCaseTypes.name));
@@ -299,7 +326,19 @@ export const createSubscriptions = async (
   const existingPracticeAreas = await db
     .select({ id: practiceAreas.id, name: practiceAreas.name })
     .from(practiceAreas)
-    .where(inArray(practiceAreas.id, requestedPracticeAreaIds));
+    /*
+      Archived areas are "not found" for a *new* subscription. A firm already
+      subscribed keeps it — `getFirmPracticeAreas` reads the same status and
+      simply stops listing it as available — but signing up for one Oravanti
+      has retired should fail here rather than succeed and puzzle somebody
+      later.
+    */
+    .where(
+      and(
+        inArray(practiceAreas.id, requestedPracticeAreaIds),
+        isOffered(practiceAreas.status),
+      ),
+    );
 
   const existingPracticeAreaIds = new Set(
     existingPracticeAreas.map((area) => area.id),
@@ -556,7 +595,12 @@ export const getTreeData = async (
   const areas = await db
     .select({ id: practiceAreas.id, name: practiceAreas.name })
     .from(practiceAreas)
-    .where(allowedIds ? inArray(practiceAreas.id, allowedIds) : undefined)
+    .where(
+      and(
+        allowedIds ? inArray(practiceAreas.id, allowedIds) : undefined,
+        isOffered(practiceAreas.status),
+      ),
+    )
     .orderBy(asc(practiceAreas.name));
 
   if (depth < 2 || areas.length === 0) {
@@ -571,9 +615,12 @@ export const getTreeData = async (
     })
     .from(practiceAreaSubcategories)
     .where(
-      inArray(
-        practiceAreaSubcategories.practiceAreaId,
-        areas.map((area) => area.id),
+      and(
+        inArray(
+          practiceAreaSubcategories.practiceAreaId,
+          areas.map((area) => area.id),
+        ),
+        isOffered(practiceAreaSubcategories.status),
       ),
     )
     .orderBy(asc(practiceAreaSubcategories.name));
@@ -588,9 +635,12 @@ export const getTreeData = async (
       })
       .from(practiceAreaCaseTypes)
       .where(
-        inArray(
-          practiceAreaCaseTypes.subcategoryId,
-          subcategoryRows.map((sub) => sub.id),
+        and(
+          inArray(
+            practiceAreaCaseTypes.subcategoryId,
+            subcategoryRows.map((sub) => sub.id),
+          ),
+          isOffered(practiceAreaCaseTypes.status),
         ),
       )
       .orderBy(asc(practiceAreaCaseTypes.name));

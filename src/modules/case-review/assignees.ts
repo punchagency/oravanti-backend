@@ -62,6 +62,40 @@ const onCaseTeam = (teamId: string) => sql`${staff.userId} IN (
 )`;
 
 /**
+ * Whether one staff member is an attorney.
+ *
+ * The same three-source question `isAttorney` asks, asked about a known person
+ * rather than used to filter a list — which is what an endpoint needs before
+ * letting somebody approve a filing package or mark it for correction. Kept
+ * here rather than in the module that calls it so there is one answer to "is
+ * this person an attorney" in the codebase; a second one would drift, and the
+ * two screens it drives (who may be assigned, who may approve) would then
+ * disagree about the same person.
+ *
+ * Null in, false out: an unauthenticated or non-staff actor is not an attorney.
+ */
+export const isActorAnAttorney = async (
+  staffId: string | null | undefined,
+): Promise<boolean> => {
+  if (!staffId) return false;
+
+  const [row] = await db
+    .select({ id: staff.id })
+    .from(staff)
+    .leftJoin(
+      member,
+      and(
+        eq(member.userId, staff.userId),
+        eq(member.organizationId, staff.organizationId),
+      ),
+    )
+    .where(and(eq(staff.id, staffId), isAttorney))
+    .limit(1);
+
+  return Boolean(row);
+};
+
+/**
  * Active attorneys who may take work on this matter, ordered by name.
  *
  * Narrowed to the case's team where one is assigned: a firm that has committed a

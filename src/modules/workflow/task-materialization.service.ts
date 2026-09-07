@@ -14,6 +14,7 @@ import {
 } from "./condition-evaluator";
 import { resolveDueDate } from "./due-date-resolver";
 import { resolveWorkflowTemplateId } from "./workflow-template.service";
+import { ensurePackageForms } from "./case-forms.service";
 import { pickBestAssignee } from "./assignment.service";
 import { recordAuditEvent } from "../shared/audit.service";
 import { createModuleLogger } from "../../lib/logging/log";
@@ -440,6 +441,21 @@ export async function materializeTasksForCase(caseId: string): Promise<void> {
       metadata: { templateId, taskCount: materializedCount, moduleCount: modules.length },
     });
   }
+
+  /*
+    Set up the matter's filing package alongside its tasks.
+
+    Here rather than at the four call sites, because the package is derived from
+    the same thing the tasks are — `defaultPackageFor` asks `caseFilingProfile`,
+    which reads this template. Anywhere the workflow is (re)materialized, the
+    package it implies should exist too, and one call site cannot drift from
+    three others.
+
+    `ensurePackageForms` is additive and idempotent: it creates what is missing
+    and never removes a form a firm added by hand, so the repeat passes this
+    function is built around cost one query.
+  */
+  await ensurePackageForms({ caseId, organizationId: caseRow.organizationId });
 
   log.action("workflow.materialized", {
     caseId,
