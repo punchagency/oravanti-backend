@@ -245,7 +245,10 @@ export const refundPaymentBodySchema = z.object({
 export const recordPaymentBodySchema = z
   .object({
     amount: z.coerce.number().positive(),
-    /** Optional explicit split; the service pro-rates when absent. */
+    /**
+     * Optional explicit split. Absent means the invoice's own application
+     * order, and trust-first where no agreement promised one.
+     */
     amountOperating: z.coerce.number().nonnegative().optional(),
     amountTrust: z.coerce.number().nonnegative().optional(),
     paymentDate: z.string().date(),
