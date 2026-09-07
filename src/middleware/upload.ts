@@ -88,6 +88,21 @@ export const documentUpload = (maxBytes = 25 * MB, maxFiles = 10) =>
   createUpload({ maxBytes, mime: DOCUMENT_MIME, maxFiles });
 
 /**
+ * The official blank of one USCIS form edition, uploaded in the CRM.
+ *
+ * PDF alone — not `DOCUMENT_MIME` — because the whole point of the file is that
+ * it is a fillable AcroForm somebody is about to read a catalogue off. A .docx
+ * accepted here fails several steps later with a message about page geometry.
+ *
+ * 30MB rather than 25: the I-485 is 1.2MB and the largest blank in the
+ * catalogue is under 2, but USCIS also publishes instruction-bundled editions
+ * that run to tens of megabytes, and a limit that rejects the real file is
+ * worse than one with headroom. One file, because an edition has one blank.
+ */
+export const formBlankUpload = () =>
+  createUpload({ maxBytes: 30 * MB, mime: ["application/pdf"], maxFiles: 1 });
+
+/**
  * Multipart requests that carry no files at all — used with `.none()`.
  * Still bounded, so a multipart body cannot be used to exhaust memory.
  */

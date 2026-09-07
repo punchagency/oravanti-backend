@@ -20,6 +20,7 @@ const ACTOR_TYPE_BY_ACCOUNT: Record<string, ActorType> = {
   staff: "staff",
   contractor: "contractor",
   client: "client",
+  platform_admin: "platform",
 };
 
 export async function resolveActorContext(
@@ -58,6 +59,27 @@ export async function resolveActorContext(
       // deleted account, which is the ambiguity this exists to prevent.
       actorName: userRecord?.name?.trim() || userRecord?.email || null,
     });
+
+    /*
+      A platform admin has no firm, and must never acquire one.
+
+      This is the second half of the guarantee `requireAuth` starts: it opens
+      no tenant connection for an operator, and this refuses to resolve one a
+      different way. Returning here means no `staffId`, no staff-table lookup,
+      and no path by which an Oravanti account comes to be treated as a member
+      of somebody's firm. **Oravanti staff see no firm data** — that is a claim
+      the firms buying this product will ask about, and these two lines are
+      where it is true rather than merely intended.
+
+      The audit trail still names them: `actorType` is "platform" and
+      `actorName` was set above, so a catalogue edit is attributed to the
+      person who made it.
+    */
+    if (accountType === "platform_admin") {
+      setRequestContext({ organizationId: null, staffId: null });
+      refreshServiceLogger();
+      return next();
+    }
 
     // Staff/firm_admin: resolve staffId from staff table
     if ((accountType === "staff" || accountType === "firm_admin") && organizationId) {

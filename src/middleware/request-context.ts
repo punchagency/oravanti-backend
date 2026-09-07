@@ -4,8 +4,22 @@ import { Request, Response, NextFunction, RequestHandler } from "express";
 import { clientIp, userAgentOf } from "../utils/request-info";
 import { annotateSpan } from "../telemetry/span";
 
-/** Mirrors the user.accountType enum, plus the two non-human origins. */
-export type ActorType = "staff" | "client" | "contractor" | "system" | "anonymous";
+/**
+ * Mirrors the user.accountType enum, plus the two non-human origins.
+ *
+ * `platform` is Oravanti's own staff operating the form and questionnaire
+ * catalogue. It is deliberately not folded into `staff` the way `firm_admin`
+ * is: the whole point of the audit trail on catalogue edits is to tell "the
+ * platform changed what this form asks" apart from "somebody at the firm did",
+ * and those are the two readings a single value would merge.
+ */
+export type ActorType =
+  | "staff"
+  | "client"
+  | "contractor"
+  | "platform"
+  | "system"
+  | "anonymous";
 
 /** Where the work came from. Everything that is not an HTTP request has no `req`. */
 export type RequestSource = "http" | "queue" | "webhook" | "cli" | "system";
