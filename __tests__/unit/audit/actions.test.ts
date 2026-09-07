@@ -195,7 +195,14 @@ describe("the storage enums track their sources", () => {
   it("stores every actor type the request context can produce", () => {
     // The writer copies `ctx.actorType` straight into the column. A type the
     // context can hold and the enum cannot is an insert failure at runtime.
-    const contextActorTypes = ["staff", "client", "contractor", "system", "anonymous"];
+    const contextActorTypes = [
+      "staff",
+      "client",
+      "contractor",
+      "platform",
+      "system",
+      "anonymous",
+    ];
 
     expect([...auditActorTypeEnum.enumValues].sort()).toEqual(contextActorTypes.sort());
   });

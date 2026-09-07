@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { getTableName } from "drizzle-orm";
 
 /*
   Per-form tracking for a filing package.
@@ -25,25 +26,36 @@ const mockDb = {
 
 const recordAuditEvent = jest.fn<(...args: any[]) => Promise<void>>();
 
-/*
-  Which package a matter files is the workflow template's answer, and
-  `case-capabilities.service` is where that is derived and separately tested.
-  Stubbed here so these tests stay about assembling a package rather than about
-  resolving a template.
-*/
-type Profile = { adjustment: boolean; naturalization: boolean; mandamus: boolean };
-const caseFilingProfile = jest.fn<(...args: any[]) => Promise<Profile>>();
-
 jest.mock("../../../src/db/client", () => ({ db: mockDb }));
 jest.mock("../../../src/modules/shared/audit.service", () => ({ recordAuditEvent }));
-jest.mock("../../../src/modules/workflow/case-capabilities.service", () => ({ caseFilingProfile }));
 
-const CASE = { id: "case-1", caseNumber: "2026-I4AO-001" };
+const CASE = { id: "case-1", caseNumber: "2026-I4AO-001", caseTypeId: "case-type-1" };
+
+/*
+  The package the matter's case type files, as `case_type_forms` rows.
+
+  This used to be a constant in the service, picked by a boolean profile
+  inferred from the workflow template — so these tests stubbed
+  `case-capabilities.service` and set booleans. It is data now: the CRM writes
+  these rows and `defaultPackageFor` reads them, so a test says which package a
+  case type has by handing over the rows.
+*/
+const ADJUSTMENT = [
+  { formCode: "I-130", role: "core" },
+  { formCode: "I-485", role: "core" },
+  { formCode: "I-765", role: "core" },
+  { formCode: "I-131", role: "core" },
+  { formCode: "I-864", role: "supporting" },
+  { formCode: "I-693", role: "supporting" },
+];
 const ORG = "firm-1";
 
 let updated: Record<string, unknown>[] = [];
 let inserted: Record<string, unknown>[] = [];
-let deleted = 0;
+/** Which tables a run deleted from, in order — see the removal tests. */
+let deleted: string[] = [];
+/** Which tables a run read, so a test can assert one was never consulted. */
+let selectedFrom: string[] = [];
 
 const form = (over: Record<string, unknown> = {}) => ({
   id: "form-1",
@@ -60,20 +72,43 @@ const form = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-/** `selects` are consumed in call order: the case first, then whatever follows. */
-function arrange(selects: unknown[][]) {
+/**
+ * Arranges what each `select` answers.
+ *
+ * Dispatched on the table rather than on call order, which is what the queue
+ * used to do. Two reads are now fixed points — the matter itself, and the
+ * package its case type files — and they are interleaved differently by
+ * `ensurePackageForms` (package first) and `listCaseForms` (package last). A
+ * positional queue makes every test in this file depend on that ordering, and
+ * a reordered query inside the service breaks tests that are about something
+ * else entirely.
+ *
+ * @param selects Rows for everything else, in call order — in practice the
+ *   matter's own `case_forms`.
+ * @param pkg What the matter's case type files. Adjustment unless a test says
+ *   otherwise.
+ */
+function arrange(selects: unknown[][], pkg: unknown[] = ADJUSTMENT) {
   updated = [];
   inserted = [];
-  deleted = 0;
+  deleted = [];
+  selectedFrom = [];
   recordAuditEvent.mockReset();
 
-  const queue = [[CASE], ...selects];
+  const queue = [...selects];
   let call = 0;
 
   mockDb.select.mockImplementation(() => {
-    const rows = queue[Math.min(call++, queue.length - 1)];
+    let rows: unknown[] = [];
     const chain: any = {
-      from: jest.fn(() => chain),
+      from: jest.fn((table: any) => {
+        const name = getTableName(table);
+        selectedFrom.push(name);
+        if (name === "cases") rows = [CASE];
+        else if (name === "case_type_forms") rows = pkg;
+        else rows = queue[Math.min(call++, queue.length - 1)] ?? [];
+        return chain;
+      }),
       where: jest.fn(() => chain),
       limit: jest.fn(() => Promise.resolve(rows)),
       orderBy: jest.fn(() => Promise.resolve(rows)),
@@ -101,9 +136,9 @@ function arrange(selects: unknown[][]) {
     }),
   }));
 
-  mockDb.delete.mockImplementation(() => ({
+  mockDb.delete.mockImplementation((table: any) => ({
     where: jest.fn(() => {
-      deleted++;
+      deleted.push(getTableName(table));
       return Promise.resolve(undefined);
     }),
   }));
@@ -116,32 +151,9 @@ beforeEach(() => {
   mockDb.insert.mockReset();
   mockDb.update.mockReset();
   mockDb.delete.mockReset();
-  caseFilingProfile.mockReset();
-  caseFilingProfile.mockResolvedValue({
-    adjustment: true,
-    naturalization: false,
-    mandamus: false,
-  });
 });
 
 describe("the adjustment package", () => {
-  it("is four core forms plus two supporting documents", async () => {
-    // The distinction decides whether a receipt number is expected, so it is
-    // part of the definition rather than a UI detail.
-    const { ADJUSTMENT_PACKAGE } = await svc();
-
-    expect(ADJUSTMENT_PACKAGE.filter((f) => f.role === "core").map((f) => f.formCode)).toStrictEqual([
-      "I-130",
-      "I-485",
-      "I-765",
-      "I-131",
-    ]);
-    expect(ADJUSTMENT_PACKAGE.filter((f) => f.role === "supporting").map((f) => f.formCode)).toStrictEqual([
-      "I-864",
-      "I-693",
-    ]);
-  });
-
   it("creates only the forms not already on the matter", async () => {
     // Additive on purpose: a form that has reached `receipted` must not be
     // reset to `not_started` by someone re-running setup.
@@ -164,42 +176,39 @@ describe("the adjustment package", () => {
   });
 });
 
-describe("which package a matter files comes from its workflow", () => {
+describe("which package a matter files comes from its case type", () => {
   /*
     This replaced a `filing_type` column someone had to pick a value for. The
     question it asked had no true answer — a concurrent filing is six forms —
-    and every reader downstream inherited whichever one got chosen. The template
-    already declares what kind of filing the matter is, so it answers instead.
+    and every reader downstream inherited whichever one got chosen.
+
+    It was then answered by inference: two constants in the service, picked by
+    what the matter's workflow template implied. That worked for the two
+    packages that existed and could not grow — a third meant a third constant
+    and a deploy. The matter's own `case_type_id` answers now, against rows
+    Oravanti maintains in the CRM.
   */
   it("gives a naturalization matter the N-400 alone", async () => {
-    caseFilingProfile.mockResolvedValue({
-      adjustment: false,
-      naturalization: true,
-      mandamus: false,
-    });
-    arrange([[]]);
+    arrange([[]], [{ formCode: "N-400", role: "core" }]);
     const { ensurePackageForms } = await svc();
 
     expect(await ensurePackageForms({ caseId: CASE.id, organizationId: ORG })).toBe(1);
     expect(inserted.map((f) => f.formCode)).toStrictEqual(["N-400"]);
   });
 
-  it("gives a matter whose workflow files nothing an empty package", async () => {
+  it("gives a case type nobody has configured an empty package", async () => {
     // Guessing here would put an I-864 on a matter with no sponsor. A firm
-    // filing something non-standard names its own list instead.
-    caseFilingProfile.mockResolvedValue({
-      adjustment: false,
-      naturalization: false,
-      mandamus: true,
-    });
-    arrange([[]]);
+    // filing something non-standard names its own list instead — and 685 of
+    // the 687 case types in the taxonomy have no package yet, so this is the
+    // common path rather than the edge.
+    arrange([[]], []);
     const { ensurePackageForms } = await svc();
 
     expect(await ensurePackageForms({ caseId: CASE.id, organizationId: ORG })).toBe(0);
     expect(inserted).toHaveLength(0);
   });
 
-  it("still honours an explicit list without consulting the workflow", async () => {
+  it("still honours an explicit list without reading the case type's package", async () => {
     arrange([[]]);
     const { ensurePackageForms } = await svc();
 
@@ -211,7 +220,11 @@ describe("which package a matter files comes from its workflow", () => {
 
     expect(created).toBe(1);
     expect(inserted.map((f) => f.formCode)).toStrictEqual(["I-601"]);
-    expect(caseFilingProfile).not.toHaveBeenCalled();
+    // A caller who names the forms has already decided. Reading the package
+    // anyway would be a query whose answer is discarded — and, worse, would
+    // make a caller's explicit list look like it had been checked against
+    // something.
+    expect(selectedFrom).not.toContain("case_type_forms");
   });
 });
 
@@ -335,7 +348,7 @@ describe("a form that reached USCIS is withdrawn, never deleted", () => {
       await expect(
         removeCaseForm({ caseId: CASE.id, formCode: "I-485", organizationId: ORG }),
       ).rejects.toThrow(/withdrawn/i);
-      expect(deleted).toBe(0);
+      expect(deleted).toEqual([]);
     },
   );
 
@@ -345,7 +358,13 @@ describe("a form that reached USCIS is withdrawn, never deleted", () => {
 
     await removeCaseForm({ caseId: CASE.id, formCode: "I-131", organizationId: ORG });
 
-    expect(deleted).toBe(1);
+    // The `case_forms` row and nothing else.
+    //
+    // This used to take the catalogue entry with it, because a matter could
+    // own one — a form defined for that matter alone. The catalogue is now
+    // Oravanti's, identical for every firm, so taking a form off one matter
+    // must not remove it from the product.
+    expect(deleted).toEqual(["case_forms"]);
     expect((recordAuditEvent.mock.calls[0][0] as any).action).toBe("case.form_removed");
   });
 });
