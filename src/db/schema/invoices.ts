@@ -71,6 +71,47 @@ export const paymentMethodEnum = pgEnum("payment_method", [
  * 2dp at write time, so line sums stay exact and no client is billed a
  * fraction of a cent.
  */
+/**
+ * Which half of the bill a line is: the firm's own fee, or a cost passed
+ * through to the client.
+ *
+ * A different axis from `account`, and the reason this exists. `account` says
+ * which bank the money sits in (operating vs IOLTA); this says what the client
+ * is being charged for. They overlap but do not agree: government filing fees
+ * are a cost held in trust, while "other costs and disbursements" are a cost
+ * that lands in operating alongside the firm's fee.
+ *
+ * A fee agreement can promise the client an application order along this axis
+ * ("payments are applied first to attorney fees, then to costs"), which is
+ * unrepresentable without it.
+ *
+ * Nullable on purpose. Null means "not classified" — every line written before
+ * this existed, and every line from a source with no fee/cost distinction to
+ * make. The allocator treats a single null on an invoice as a signal to fall
+ * back to the trust-first default rather than guess.
+ */
+export const invoiceLineCategoryEnum = pgEnum("invoice_line_category", [
+  "fee",
+  "cost",
+]);
+
+/**
+ * How payments against an invoice are applied across `invoice_line_category`.
+ *
+ * Snapshotted onto the invoice from the fee agreement that raised it, rather
+ * than read back through the agreement at payment time: the splitter runs from
+ * an invoice, a consultation invoice has no agreement at all, and editing an
+ * agreement must not restate money already booked.
+ *
+ * Null means the trust-first default — every invoice raised before this
+ * existed, and every invoice with no agreement behind it.
+ */
+export const paymentApplicationOrderEnum = pgEnum("payment_application_order", [
+  "fees_first",
+  "costs_first",
+  "custom",
+]);
+
 export const invoices = pgTable(
   "invoices",
   {
@@ -175,6 +216,18 @@ export const invoices = pgTable(
     totalAmount: numeric("total_amount", { precision: 15, scale: 4 })
       .notNull()
       .default("0"),
+    /**
+     * The application order this invoice's agreement promised the client, and
+     * the fee share when that promise was a percentage split.
+     *
+     * Null on anything without such a promise, which is what makes it safe:
+     * the allocator reads null as "use the trust-first default", so no existing
+     * row changes behaviour and no backfill is needed.
+     */
+    paymentApplicationOrder: paymentApplicationOrderEnum(
+      "payment_application_order",
+    ),
+    paymentApplicationFeePercent: integer("payment_application_fee_percent"),
     amountPaid: numeric("amount_paid", { precision: 15, scale: 4 })
       .notNull()
       .default("0"),
@@ -284,6 +337,12 @@ export const invoiceLineItems = pgTable(
 
     /** The operating/trust tag that drives the two column totals. */
     account: accountTypeEnum("account").notNull().default("operating"),
+
+    /**
+     * Fee or cost — see `invoiceLineCategoryEnum`. Null where the source made
+     * no such distinction, and on every line written before this column.
+     */
+    category: invoiceLineCategoryEnum("category"),
 
     /** Set when this line was converted from an approved time entry. */
     timeEntryId: uuid("time_entry_id").references(() => timeEntries.id, {

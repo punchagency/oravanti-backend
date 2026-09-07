@@ -80,6 +80,12 @@ const lineItemSchema = z.object({
   rate: z.coerce.number().nonnegative(),
   account: z.enum(["operating", "trust_iolta"]).default("operating"),
   /**
+   * Fee or cost — a different axis from `account`, and optional because most
+   * callers have no basis to say. Omitting it on any line of an invoice leaves
+   * that invoice on the trust-first split, which is the safe default.
+   */
+  category: z.enum(["fee", "cost"]).optional(),
+  /**
    * Which catalog preset this line was composed from. Provenance only — the
    * billed figures are the three fields above, and the server never reads the
    * preset to fill them in. A stale or unknown id would therefore change
@@ -239,7 +245,10 @@ export const refundPaymentBodySchema = z.object({
 export const recordPaymentBodySchema = z
   .object({
     amount: z.coerce.number().positive(),
-    /** Optional explicit split; the service applies trust-first when absent. */
+    /**
+     * Optional explicit split. Absent means the invoice's own application
+     * order, and trust-first where no agreement promised one.
+     */
     amountOperating: z.coerce.number().nonnegative().optional(),
     amountTrust: z.coerce.number().nonnegative().optional(),
     paymentDate: z.string().date(),

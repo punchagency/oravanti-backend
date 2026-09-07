@@ -12,7 +12,8 @@ import { onClient, onLead, partyEmail, partyName } from "./party";
 import { clients } from "../../db/schema/clients";
 import { leads } from "../../db/schema/leads";
 import { allocate } from "./instalments";
-import { num, trustFirstSplit } from "./money";
+import { num } from "./money";
+import { agreedSplit } from "./allocation.service";
 import { paymentsEnabledFor } from "./confido/payments-enabled";
 import { getConfidoClient } from "./confido/confido.client";
 import { confidoCredentialFor } from "../settings/payments/payment-settings.service";
@@ -299,15 +300,19 @@ const ensurePaymentLink = async (invoice: PayableInvoice) => {
   );
   const client = getConfidoClient();
 
-  // What to ask for: the next unpaid instalment, or the whole balance. Split
-  // trust-first, the same rule `recordPayment` uses when the money lands, so
-  // the link asks for the legs the payment will be allocated to.
+  // What to ask for: the next unpaid instalment, or the whole balance. Split by
+  // the same rule `recordPayment` uses when the money lands — the agreement's
+  // application order where it has one, trust-first otherwise — so the link
+  // asks for exactly the legs the payment will be booked to.
   const outstanding = await outstandingBySide(
     invoice.organizationId,
     invoice.invoiceId,
   );
-  const legs = trustFirstSplit(
+  const legs = await agreedSplit(
+    invoice.organizationId,
+    invoice.invoiceId,
     invoice.amountDueNow,
+    invoice.amountPaid,
     outstanding.operating,
     outstanding.trust,
   );
