@@ -24,3 +24,14 @@ fixtures/wire/
 
 # Confido sandbox spike state — holds a firm API token
 .confido-partial.json
+
+# Form blanks and their extractions live in object storage, never in the repo.
+#
+# A blank in git made adding a form — and every new USCIS edition of a form
+# already catalogued — a deploy, which is the wall this whole tier moved to get
+# past. See src/modules/workflow/form-blank-storage.ts. These entries exist so
+# a local working copy, or the directory a `migrate-form-blanks --from` run is
+# pointed at, cannot quietly be committed back in.
+forms/
+src/db/seeds/data/*.form-fields.json
+src/db/seeds/data/*.field-sources.json
