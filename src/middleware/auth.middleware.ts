@@ -31,6 +31,11 @@ export const requireAuth = async (
 
   const accountType = userRecord[0]?.accountType;
   const isStaff = accountType === "staff" || accountType === "firm_admin";
+  /**
+   * Oravanti's own staff, who operate the platform catalogue rather than a
+   * firm. They get no tenant connection at all — see below.
+   */
+  const isPlatformAdmin = accountType === "platform_admin";
 
   // Only staff users get org-scoped RLS (app.current_organization_id).
   // Clients/contractors get user-scoped RLS only (app.current_user_id).
@@ -50,7 +55,17 @@ export const requireAuth = async (
 
   // Eagerly create the tenant-scoped connection so the db Proxy can delegate
   // to it for all subsequent queries in this request.
-  if (organizationId || userId) {
+  //
+  // A platform admin is deliberately excluded, and the exclusion is
+  // load-bearing in both directions. A user-scoped connection would set
+  // `app.current_user_id` and nothing else, under which every platform
+  // catalogue policy evaluates `organization_id = current_org_id` against a
+  // NULL and denies the row — so the CRM would read an empty catalogue and
+  // fail every write. Without a tenant connection the `db` Proxy falls through
+  // to `systemDb` (see the note in db/client.ts), which is the connection that
+  // can write `organization_id IS NULL`. That is the platform tier's whole
+  // access story, and it is why every service the CRM reuses works unchanged.
+  if (!isPlatformAdmin && (organizationId || userId)) {
     await initializeTenantContext();
   }
 

@@ -199,6 +199,7 @@ const questionnaireQuestionTypeValues = [
   "yes_no",
   "matrix_grid",
   "signature",
+  "repeat_group",
 ] as const;
 
 export const sendQuestionnaireBodySchema = z.object({

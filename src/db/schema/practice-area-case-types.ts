@@ -1,5 +1,6 @@
-import { pgEnum, pgTable, timestamp, unique, uuid, varchar } from "drizzle-orm/pg-core";
+import { pgEnum, pgTable, text, timestamp, unique, uuid, varchar } from "drizzle-orm/pg-core";
 import { practiceAreaSubcategories } from "./practice-area-subcategories";
+import { taxonomyStatusEnum } from "./taxonomy-status";
 
 export const caseTypeJurisdictionEnum = pgEnum("case_type_jurisdiction", [
   "federal",
@@ -21,6 +22,18 @@ export const practiceAreaCaseTypes = pgTable(
     name: varchar("name", { length: 255 }).notNull(),
     caseNumberPrefix: varchar("case_number_prefix", { length: 20 }).notNull(),
     jurisdiction: caseTypeJurisdictionEnum("jurisdiction").notNull(),
+
+    /**
+     * What this kind of matter is, for its own page in the CRM.
+     *
+     * The leaf is where the taxonomy stops being abstract — it is what files
+     * forms and asks a questionnaire — so this is the description that earns
+     * its keep. "I-485 — Adjustment of Status (Family-Based)" is a name; what
+     * an operator needs before wiring a package to it is the paragraph.
+     */
+    description: text("description"),
+
+    status: taxonomyStatusEnum("status").notNull().default("active"),
 
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),

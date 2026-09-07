@@ -1,12 +1,14 @@
-import { db } from "../client";
+import { db, systemDb } from "../client";
 import { workflowTemplates, workflowModules, workflowTemplateSteps } from "../schema/workflow";
 import type { Condition } from "../schema/workflow";
 import type { DateAnchor } from "../schema/document-requirements";
-import { eq, ilike, inArray, isNull, and } from "drizzle-orm";
+import { eq, ilike, inArray, isNull, and, sql } from "drizzle-orm";
+import { formDefinitions } from "../schema/form-fields";
 import { practiceAreas } from "../schema/practice-areas";
 import { practiceAreaSubcategories } from "../schema/practice-area-subcategories";
 import { practiceAreaCaseTypes } from "../schema/practice-area-case-types";
-import { seedFormEditions } from "./form-editions.seed";
+import { editionsWithoutBlanks } from "../../modules/platform/form-blanks.service";
+import { bindToSchemaNodes, seedSchemaNodes } from "./schema-nodes.seed";
 import { seedVisaBulletin } from "./visa-bulletin.seed";
 import { seedFilingFees } from "./filing-fees.seed";
 
@@ -1803,6 +1805,14 @@ export async function seedWorkflowTemplate() {
  * and the one rule allowed to block a filing silently never fires. Same for the
  * fee quotes and the priority-date sweep.
  *
+ * The form catalogue is here for the same reason and is the one people forget.
+ * An edition row says *which* blank a matter is filed on; the catalogue says
+ * what is on that blank and which box each answer prints into. Seed the
+ * editions without it and the Forms tab lists forms that produce a blank PDF —
+ * not an error, just an empty document, which is the failure that costs an
+ * afternoon. It runs immediately after the editions because a mapping is keyed
+ * to an edition and there is nothing to key it to before then.
+ *
  * ─── Ordering, and why the templates go last ────────────────────────────────
  *
  * The three reference seeds upsert, so they are idempotent anywhere.
@@ -1831,7 +1841,45 @@ export async function seedWorkflowTemplate() {
  */
 export async function seedWorkflows() {
   console.log("Seeding the reference data the templates read...\n");
-  await seedFormEditions();
+
+  /*
+    No form is seeded here, and that is the whole shape of the tier.
+
+    Every part of a form — the catalogue entry, its editions, the blank PDF and
+    the fields read off it — is created by an operator in the CRM. None of it
+    ships in the box, for two reasons. The blank arrives by upload rather than
+    by deploy (see `modules/workflow/form-blank-storage.ts` for that argument),
+    and the product is not only immigration: seeding six USCIS forms would make
+    a family-law or personal-injury deployment start with a catalogue it has to
+    delete before it can start.
+
+    So a fresh database has an empty Forms page, and the first thing an operator
+    does at `/platform` is add a form. What that costs is said plainly in
+    `.claude/SETUP.md` §5 rather than left to be discovered.
+  */
+
+  /*
+    The vocabulary, and the bindings into it — after the catalogue, never before.
+
+    `schema_node_id` is what says a field carries a shared datum: it is what the
+    CRM's mapper paints green, what its coverage bar counts, and what population
+    joins on. A field row is inserted without one, so the binding pass has to
+    run once the rows exist — seeding the nodes first would bind nothing and
+    leave every form reading as wired to nothing.
+
+    Chained here for the same reason the catalogue is: on a fresh database
+    nobody knows this order, and the symptom of getting it wrong is not an
+    error. It is six forms showing "0 of 438 boxes carry a datum" in a CRM that
+    looks like it is working.
+  */
+  await seedSchemaNodes();
+  const bindings = await bindToSchemaNodes();
+  for (const [what, side] of Object.entries(bindings)) {
+    console.log(
+      `${what}: ${side.bound} bound, ${side.formLocal} form-local, ${side.unresolved.length} unresolved`,
+    );
+  }
+
   await seedVisaBulletin();
   await seedFilingFees();
 
@@ -1839,4 +1887,36 @@ export async function seedWorkflows() {
   await seedWorkflowTemplate();
 
   console.log("\nWorkflow system seeded.");
+
+  /*
+    And what this run deliberately did not do, said plainly.
+
+    Nothing here fails when there are no forms: the CRM loads, the taxonomy is
+    right, the templates run. What is missing is invisible until somebody opens
+    a matter's Forms tab and finds nothing there. So the run ends by saying so,
+    in the order somebody would fix it.
+
+    Two states are worth naming and they are different. No forms at all is a
+    fresh database that has never been set up. Forms with editions but no PDF is
+    a half-finished setup — normal for an hour, a problem for a week.
+  */
+  const missing = await editionsWithoutBlanks();
+  const [{ count: forms }] = await systemDb
+    .select({ count: sql<number>`count(*)::int` })
+    .from(formDefinitions);
+
+  if (forms === 0) {
+    console.log(
+      "\nNo forms are catalogued yet, so no matter will open with one.",
+      "\nAdd the first at /platform → Forms → Add form. See .claude/SETUP.md §5.",
+    );
+  } else if (missing.length) {
+    console.log(
+      `\n${missing.length} form version(s) have no PDF uploaded, so those forms cannot be filled or printed:`,
+    );
+    for (const row of missing) {
+      console.log(`  ${row.formCode} — ${row.editionDate}`);
+    }
+    console.log("Upload each on its form's page at /platform → Forms.");
+  }
 }

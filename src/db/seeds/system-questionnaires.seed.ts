@@ -4,12 +4,12 @@
  * Safe to re-run — skips case types that already have a questionnaire.
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../client";
 import {
-  caseTypeQuestionnaires,
-  caseTypeQuestionnaireSections,
-  caseTypeQuestionnaireQuestions,
+  questionnaires,
+  questionnaireSections,
+  questionnaireQuestions,
 } from "../schema/questionnaires";
 import { practiceAreaCaseTypes } from "../schema/practice-area-case-types";
 import { practiceAreaSubcategories } from "../schema/practice-area-subcategories";
@@ -456,39 +456,71 @@ export const seedSystemQuestionnaires = async () => {
     .innerJoin(practiceAreas, eq(practiceAreaSubcategories.practiceAreaId, practiceAreas.id));
 
   let created = 0;
+  /** Existing but empty — the shell somebody left behind. See below. */
+  let filled = 0;
   let skipped = 0;
 
   for (const row of rows) {
     // Idempotent — skip if already seeded
     const [existing] = await db
-      .select({ id: caseTypeQuestionnaires.id })
-      .from(caseTypeQuestionnaires)
-      .where(eq(caseTypeQuestionnaires.caseTypeId, row.caseTypeId))
+      .select({ id: questionnaires.id })
+      .from(questionnaires)
+      .where(
+        and(
+          eq(questionnaires.caseTypeId, row.caseTypeId),
+          eq(questionnaires.stage, "intake"),
+        ),
+      )
       .limit(1);
 
+    /*
+      An existing questionnaire with nothing in it is filled, not skipped.
+
+      `(case_type_id, stage)` is what the send wizard resolves, so a row with no
+      sections does not mean "not seeded yet" — it means this case type's intake
+      questionnaire *is* that empty row, and the seed can never replace it. A
+      questionnaire created in the CRM and left empty therefore locked its case
+      type out of intake permanently: the wizard offered a questionnaire with no
+      questions, and sending it delivered a link to nothing.
+
+      The title is left as it is. Filling an empty shell is the seed finishing a
+      job somebody started; renaming their questionnaire is not.
+    */
     if (existing) {
-      skipped++;
-      continue;
+      const [section] = await db
+        .select({ id: questionnaireSections.id })
+        .from(questionnaireSections)
+        .where(eq(questionnaireSections.questionnaireId, existing.id))
+        .limit(1);
+
+      if (section) {
+        skipped++;
+        continue;
+      }
     }
 
     const practiceAreaSections = PRACTICE_AREA_SECTIONS[row.practiceAreaName] ?? [];
     const allSections = [...UNIVERSAL_SECTIONS, ...practiceAreaSections];
 
     await db.transaction(async (tx) => {
-      const [questionnaire] = await tx
-        .insert(caseTypeQuestionnaires)
-        .values({
-          caseTypeId: row.caseTypeId,
-          title: `${row.caseTypeName} — Client Intake`,
-          description: `Standard intake questionnaire for ${row.caseTypeName} matters.`,
-        })
-        .returning();
+      const [questionnaire] = existing
+        ? [existing]
+        : await tx
+            .insert(questionnaires)
+            .values({
+              caseTypeId: row.caseTypeId,
+              stage: "intake",
+              title: `${row.caseTypeName} — Client Intake`,
+              description: `Standard intake questionnaire for ${row.caseTypeName} matters.`,
+            })
+            .returning();
 
       for (const [sIdx, section] of allSections.entries()) {
         const [sec] = await tx
-          .insert(caseTypeQuestionnaireSections)
+          .insert(questionnaireSections)
           .values({
             questionnaireId: questionnaire.id,
+            scope: "system",
             title: section.title,
             description: section.description,
             orderIndex: sIdx,
@@ -496,8 +528,9 @@ export const seedSystemQuestionnaires = async () => {
           .returning();
 
         for (const [qIdx, q] of section.questions.entries()) {
-          await tx.insert(caseTypeQuestionnaireQuestions).values({
+          await tx.insert(questionnaireQuestions).values({
             questionnaireId: questionnaire.id,
+            scope: "system",
             sectionId: sec.id,
             label: q.label,
             type: q.type,
@@ -509,8 +542,11 @@ export const seedSystemQuestionnaires = async () => {
       }
     });
 
-    created++;
+    if (existing) filled++;
+    else created++;
   }
 
-  console.log(`System questionnaires: ${created} created, ${skipped} skipped (already existed).`);
+  console.log(
+    `System questionnaires: ${created} created, ${filled} filled (existed with no sections), ${skipped} skipped (already existed).`,
+  );
 };

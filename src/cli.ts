@@ -77,13 +77,7 @@ import { practiceAreaSubcategories } from "./db/schema/practice-area-subcategori
 import { practiceAreas } from "./db/schema/practice-areas";
 import { profiles } from "./db/schema/profiles";
 import {
-  caseTypeQuestionnaireLogicRules,
-  caseTypeQuestionnaireQuestions,
-  caseTypeQuestionnaires,
-  caseTypeQuestionnaireSections,
-  firmQuestionnaireLogicRules,
-  firmQuestionnaireQuestions,
-  firmQuestionnaireSections,
+  questionnaires,
   questionnaireAnswers,
   questionnaireResponseFiles,
   questionnaireResponses,
@@ -106,12 +100,19 @@ import {
   PRACTICE_AREA_LINE_PRESETS,
   type LinePresetSeed,
 } from "./db/seeds/invoice-line-presets.seed";
+import { seedAosCaseQuestionnaire } from "./db/seeds/aos-case-questionnaire.seed";
 import { seedMasterQuestionnaires } from "./db/seeds/master-questionnaires.seed";
 import { PRACTICE_AREA_TAXONOMY } from "./db/seeds/practice-area-taxonomy.seed";
 import { seedStaffAndTeams } from "./db/seeds/staff-and-teams.seed";
 import { seedSystemQuestionnaires } from "./db/seeds/system-questionnaires.seed";
 import { seedWorkflowTemplate, seedWorkflows } from "./db/seeds/workflow-template.seed";
-import { seedFormEditions } from "./db/seeds/form-editions.seed";
+import { seedPlatformAdmin } from "./db/seeds/platform-admin.seed";
+import { clearGeneratedCatalogue } from "./modules/workflow/form-catalogue-import.service";
+import {
+  editionsWithoutBlanks,
+  importBlankFromFile,
+} from "./modules/platform/form-blanks.service";
+import { bindToSchemaNodes, seedSchemaNodes } from "./db/seeds/schema-nodes.seed";
 import { seedVisaBulletin } from "./db/seeds/visa-bulletin.seed";
 import { seedFilingFees } from "./db/seeds/filing-fees.seed";
 import { backfillDefaultRolePermissions } from "./auth/seed-default-roles";
@@ -120,7 +121,18 @@ import { seedPICases } from "./db/seeds/seed-pi-cases";
 import { StaffAvailabilityService } from "./modules/staff-availability/staff-availability.service";
 
 
-type PracticeAreaRow = typeof practiceAreas.$inferSelect;
+/*
+  What the CLI prints of a practice area, not the whole row.
+
+  Structural rather than `$inferSelect`, because the callers below select four
+  columns and the table now has six. Demanding the full row here made adding a
+  column to the schema a type error in a printer that never wanted it.
+*/
+type PracticeAreaRow = Pick<
+  typeof practiceAreas.$inferSelect,
+  "id" | "name" | "createdAt" | "updatedAt"
+> &
+  Partial<Pick<typeof practiceAreas.$inferSelect, "status">>;
 type PracticeAreaCaseTypeRow = typeof practiceAreaCaseTypes.$inferSelect;
 type CertificationRow = typeof certifications.$inferSelect;
 type StaffRow = typeof staff.$inferSelect;
@@ -320,6 +332,7 @@ const printPracticeAreas = (areas: PracticeAreaRow[]) => {
     areas.map((area) => ({
       id: area.id,
       name: area.name,
+      status: area.status ?? "—",
       createdAt: area.createdAt.toISOString(),
       updatedAt: area.updatedAt.toISOString(),
     })),
@@ -3142,9 +3155,9 @@ const deletePracticeAreas = async (ids: readonly string[]) => {
 
     const ctqRows = caseTypeIds.length
       ? await tx
-          .select({ id: caseTypeQuestionnaires.id })
-          .from(caseTypeQuestionnaires)
-          .where(inArray(caseTypeQuestionnaires.caseTypeId, caseTypeIds))
+          .select({ id: questionnaires.id })
+          .from(questionnaires)
+          .where(inArray(questionnaires.caseTypeId, caseTypeIds))
       : [];
     const ctqIds = ctqRows.map((r) => r.id);
 
@@ -3214,32 +3227,14 @@ const deletePracticeAreas = async (ids: readonly string[]) => {
         .delete(questionnaireSends)
         .where(inArray(questionnaireSends.id, sendIds));
     }
-    if (caseTypeIds.length) {
-      await tx
-        .delete(firmQuestionnaireLogicRules)
-        .where(inArray(firmQuestionnaireLogicRules.caseTypeId, caseTypeIds));
-      await tx
-        .delete(firmQuestionnaireQuestions)
-        .where(inArray(firmQuestionnaireQuestions.caseTypeId, caseTypeIds));
-      await tx
-        .delete(firmQuestionnaireSections)
-        .where(inArray(firmQuestionnaireSections.caseTypeId, caseTypeIds));
-    }
     if (ctqIds.length) {
+      // Sections, questions and logic rules all cascade from the questionnaire,
+      // at every scope — the platform's, the firm's, and any written for a
+      // single matter. That is one delete where consolidating the tables
+      // replaced seven, and it can no longer leave an orphan behind.
       await tx
-        .delete(caseTypeQuestionnaireLogicRules)
-        .where(
-          inArray(caseTypeQuestionnaireLogicRules.questionnaireId, ctqIds),
-        );
-      await tx
-        .delete(caseTypeQuestionnaireQuestions)
-        .where(inArray(caseTypeQuestionnaireQuestions.questionnaireId, ctqIds));
-      await tx
-        .delete(caseTypeQuestionnaireSections)
-        .where(inArray(caseTypeQuestionnaireSections.questionnaireId, ctqIds));
-      await tx
-        .delete(caseTypeQuestionnaires)
-        .where(inArray(caseTypeQuestionnaires.id, ctqIds));
+        .delete(questionnaires)
+        .where(inArray(questionnaires.id, ctqIds));
     }
     const caseStepConditions = [
       ...(caseIds.length ? [inArray(tasks.caseId, caseIds)] : []),
@@ -4156,6 +4151,11 @@ const runInteractive = async () => {
           label:
             "Seed master intake questionnaires (from PDF question library)",
         },
+        {
+          value: "seed-aos-case-questionnaire",
+          label:
+            "Seed the AOS case questionnaire and its shared field vocabulary",
+        },
         { value: "demo-data", label: "Seed demo data for an organization" },
         {
           value: "demo-data-drop",
@@ -4171,15 +4171,16 @@ const runInteractive = async () => {
         },
         {
           value: "seed-workflows",
-          label: "Seed workflows (form editions, Visa Bulletin, fees + 4 templates)",
+          label:
+            "Seed workflows (form editions, PDF catalogues, Visa Bulletin, fees + 4 templates)",
         },
         {
           value: "seed-workflow-templates",
           label: "  ↳ workflow templates only (PI + 3 Immigration; fresh dbs only)",
         },
         {
-          value: "seed-form-editions",
-          label: "  ↳ USCIS form editions only",
+          value: "form-blanks-status",
+          label: "  ↳ which form editions are still missing a blank PDF",
         },
         {
           value: "seed-visa-bulletin",
@@ -4188,6 +4189,10 @@ const runInteractive = async () => {
         {
           value: "seed-filing-fees",
           label: "  ↳ filing fees & I-864 poverty guidelines only",
+        },
+        {
+          value: "seed-platform-admin",
+          label: "Create an Oravanti platform admin (operates the CRM)",
         },
         {
           value: "seed-pi-cases",
@@ -4276,6 +4281,13 @@ const runInteractive = async () => {
         await seedMasterQuestionnaires();
       }
 
+      if (action === "seed-aos-case-questionnaire") {
+        const r = await seedAosCaseQuestionnaire();
+        console.log(
+          `Seeded ${r.questionnaires} case questionnaire(s).`,
+        );
+      }
+
       if (action === "demo-data") {
         await seedDemoData();
       }
@@ -4313,8 +4325,72 @@ const runInteractive = async () => {
         await seedWorkflowTemplate();
       }
 
-      if (action === "seed-form-editions") {
-        await seedFormEditions();
+      if (action === "seed-platform-admin") {
+        const firstName = abortIfCancelled(
+          await text({
+            message: "First name",
+            validate: (v) => (v.trim() ? undefined : "Enter a first name."),
+          }),
+        );
+        const lastName = abortIfCancelled(
+          await text({
+            message: "Last name",
+            validate: (v) => (v.trim() ? undefined : "Enter a last name."),
+          }),
+        );
+        const email = abortIfCancelled(
+          await text({
+            message: "Email",
+            validate: (v) =>
+              /^\S+@\S+\.\S+$/.test(v.trim()) ? undefined : "Enter an email address.",
+          }),
+        );
+        const password = abortIfCancelled(
+          await text({
+            message: "Password (at least 12 characters)",
+            validate: (v) =>
+              v.length >= 12 ? undefined : "Use at least 12 characters.",
+          }),
+        );
+
+        const { operator, created } = await seedPlatformAdmin({
+          firstName: firstName.trim(),
+          lastName: lastName.trim(),
+          email,
+          password,
+        });
+
+        note(
+          [
+            `${operator.firstName} ${operator.lastName} <${operator.email}>`,
+            created
+              ? "New account. Sign in and the app opens the Oravanti CRM."
+              : "Existing account promoted to the platform tier.",
+            "",
+            "This account operates the catalogue every firm reads, and belongs",
+            "to no firm — it can see no client data.",
+          ].join("\n"),
+          created ? "Platform admin created" : "Platform admin updated",
+        );
+      }
+
+      if (action === "form-blanks-status") {
+        const missing = await editionsWithoutBlanks();
+        if (missing.length === 0) {
+          console.log("Every form edition on record has a blank uploaded.");
+        } else {
+          // Named rather than counted. Each of these is a form that cannot be
+          // filled or printed, and the fix is one upload on that form's page.
+          console.log(
+            `${missing.length} edition(s) have no blank, so those forms cannot be filled or printed:`,
+          );
+          for (const row of missing) {
+            console.log(`  ${row.formCode} — ${row.editionDate} edition`);
+          }
+          console.log(
+            "\nUpload each on that form's page at /platform → Forms.",
+          );
+        }
       }
 
       if (action === "seed-visa-bulletin") {
@@ -4402,6 +4478,18 @@ program
   )
   .action(async () => {
     await seedMasterQuestionnaires();
+  });
+
+program
+  .command("seed-aos-case-questionnaire")
+  .description(
+    "Seed the Family-Based AOS case questionnaire (idempotent). Form fields come from seed-form-pdf-catalogue.",
+  )
+  .action(async () => {
+    const r = await seedAosCaseQuestionnaire();
+    console.log(
+      `Seeded ${r.questionnaires} case questionnaire(s).`,
+    );
   });
 
 program
@@ -4513,7 +4601,7 @@ program
 program
   .command("seed-workflows")
   .description(
-    "Seed the whole workflow system: form editions, Visa Bulletin, fee schedule, then the 4 system templates",
+    "Seed the whole workflow system: form editions, the PDF catalogue, the global vocabulary and its bindings, Visa Bulletin, fee schedule, then the 4 system templates",
   )
   .action(async () => { await seedWorkflows(); });
 
@@ -4523,9 +4611,207 @@ program
   .action(seedWorkflowTemplate);
 
 program
-  .command("seed-form-editions")
-  .description("Seed the USCIS form-edition register (global reference data, idempotent)")
-  .action(async () => { await seedFormEditions(); });
+  .command("seed-schema-nodes")
+  .description(
+    "Load the global vocabulary (lib/schema/global-schema.ts) into schema_nodes — one row per datum the system knows (idempotent)",
+  )
+  .option(
+    "--prune",
+    "Also delete nodes the declaration no longer names and nothing is bound to",
+  )
+  .action(async (options: { prune?: boolean }) => {
+    const r = await seedSchemaNodes({ prune: options.prune });
+    console.log(
+      `${r.declared} nodes declared: ${r.added.length} added, ${r.changed.length} changed`,
+    );
+    for (const path of r.added) console.log(`  + ${path}`);
+    for (const line of r.changed) console.log(`  ~ ${line}`);
+
+    if (r.removable.length) {
+      console.log(
+        r.pruned
+          ? `
+removed ${r.removable.length} node(s) nothing was bound to:`
+          : `
+${r.removable.length} node(s) are no longer declared and nothing is bound to them. Re-run with --prune to remove:`,
+      );
+      for (const path of r.removable) console.log(`  - ${path}`);
+    }
+
+    // Each of these is a datum that would stop printing if the node went. The
+    // fix is to put it back in the declaration, or to move what points at it
+    // first — never to force the delete.
+    if (r.wouldOrphan.length) {
+      console.log(
+        `
+${r.wouldOrphan.length} node(s) are no longer declared but something still names them. Left in place:`,
+      );
+      for (const line of r.wouldOrphan) console.log(`  ! ${line}`);
+    }
+
+    /*
+      Bind straight away rather than leaving it to a second command.
+
+      Seeding the vocabulary without resolving the bindings leaves every
+      `schema_node_id` null, and null is what the CRM paints amber — so the
+      catalogue would report six forms wired to nothing, which is alarming and
+      wrong. The two steps are one operation; `bind-schema-nodes` exists on its
+      own for after a form is re-extracted, when the nodes have not changed.
+    */
+    reportBindings(await bindToSchemaNodes());
+  });
+
+/** Shared by seed-schema-nodes and bind-schema-nodes; see bindToSchemaNodes. */
+function reportBindings(r: Awaited<ReturnType<typeof bindToSchemaNodes>>) {
+  for (const [what, side] of Object.entries(r)) {
+    console.log(
+      `
+${what}: ${side.bound} bound, ${side.formLocal} form-local, ${side.unresolved.length} unresolved (of ${side.total}; ${side.written} row(s) rewritten${side.cleared ? `, ${side.cleared} cleared` : ""})`,
+    );
+    // Each of these is a key that looks like a shared datum and names none.
+    // Either global-schema.ts is missing an attribute, or the key is a typo
+    // that has been printing nothing since the day it was written.
+    for (const key of side.unresolved) console.log(`  ? ${key}`);
+    for (const line of side.misuse) console.log(`  ! ${line}`);
+  }
+}
+
+program
+  .command("bind-schema-nodes")
+  .description(
+    "Resolve every form field and question `field_key` into a schema_nodes binding, and report the keys that name no node (idempotent)",
+  )
+  .action(async () => {
+    reportBindings(await bindToSchemaNodes());
+  });
+
+program
+  .command("seed-platform-admin")
+  .description(
+    "Create (or promote) an Oravanti platform admin — the operator tier that maintains the form and questionnaire catalogue. Idempotent.",
+  )
+  .requiredOption("--first-name <name>")
+  .requiredOption("--last-name <name>")
+  .requiredOption("--email <email>")
+  .requiredOption("--password <password>", "At least 12 characters")
+  .action(
+    async (options: {
+      firstName: string;
+      lastName: string;
+      email: string;
+      password: string;
+    }) => {
+      if (options.password.length < 12) {
+        console.error("Password must be at least 12 characters.");
+        process.exitCode = 1;
+        return;
+      }
+      const { operator, created } = await seedPlatformAdmin(options);
+      console.log(
+        `${created ? "Created" : "Updated"} platform admin ${operator.email}`,
+      );
+    },
+  );
+
+program
+  .command("form-blanks-status")
+  .description(
+    "Which form editions have no blank PDF uploaded — those forms cannot be filled or printed",
+  )
+  .action(async () => {
+    const missing = await editionsWithoutBlanks();
+    if (missing.length === 0) {
+      console.log("Every form edition on record has a blank uploaded.");
+      return;
+    }
+    console.log(
+      `${missing.length} edition(s) have no blank, so those forms cannot be filled or printed:`,
+    );
+    for (const row of missing) {
+      console.log(`  ${row.formCode} — ${row.editionDate} edition`);
+    }
+    console.log(
+      "\nUpload each on that form's page at /platform → Forms.",
+    );
+  });
+
+program
+  .command("import-form-blank")
+  .description(
+    "Upload one edition's blank PDF and read its catalogue off it (idempotent). The terminal door onto what the CRM's upload does.",
+  )
+  .requiredOption("--form <code>", "e.g. I-485")
+  .requiredOption(
+    "--edition <date>",
+    "The date printed at the foot of the blank, e.g. 2025-01-20. Required rather than defaulted: a blank filed against the wrong edition maps every box to a document USCIS will reject, and nothing errors at the point that happens.",
+  )
+  .requiredOption("--file <path>", "The blank PDF to upload")
+  .option(
+    "--reset",
+    "Delete this form's generated fields first. The escape hatch for a bad extraction: an import updates and adds rows but never removes one a fixed extractor no longer produces. Curated rows are left alone.",
+  )
+  .action(
+    async (options: {
+      form: string;
+      edition: string;
+      file: string;
+      reset?: boolean;
+    }) => {
+      const formCode = options.form.toUpperCase();
+      if (options.reset) {
+        const removed = await clearGeneratedCatalogue(formCode);
+        console.log(`${formCode}: removed ${removed} generated fields`);
+      }
+      reportImport(
+        await importBlankFromFile(formCode, options.edition, options.file),
+      );
+    },
+  );
+
+/** The shared shape of an import report — used by both doors onto it. */
+function reportImport(result: {
+  formCode: string;
+  editionDate: string;
+  fields: number;
+  boxes: number;
+  added: string[];
+  changed: { fieldKey: string }[];
+  carriedForward: { pdfFieldName: string }[];
+  deferredToMapping: string[];
+  removed: string[];
+  boundFields?: unknown;
+  unmappedCurated: string[];
+}) {
+  console.log(
+    `\n${result.formCode} ${result.editionDate}: ${result.fields} fields over ${result.boxes} boxes`,
+  );
+  console.log(
+    `  ${result.added.length} added, ${result.changed.length} changed, ${result.carriedForward.length} data carried from the previous edition`,
+  );
+  if (result.deferredToMapping.length) {
+    console.log(
+      `  ${result.deferredToMapping.length} boxes left to their existing mapping:`,
+    );
+    for (const line of result.deferredToMapping) console.log(`    ${line}`);
+  }
+  if (result.removed.length) {
+    // A field the catalogue holds that this blank has no box for. Not deleted:
+    // it may be a curated field waiting to be pointed at one, and removing it
+    // silently is how a datum stops printing with no trace.
+    console.log(
+      `  ${result.removed.length} catalogue field(s) this blank has no box for:`,
+    );
+    console.log(`    ${result.removed.join(", ")}`);
+  }
+  if (result.unmappedCurated.length) {
+    // Each is a decision waiting to be made: point it at its box in the CRM's
+    // mapper and it starts printing.
+    console.log(
+      `  ${result.unmappedCurated.length} shared data are not pointed at a box yet:`,
+    );
+    console.log(`    ${result.unmappedCurated.join(", ")}`);
+  }
+}
 
 program
   .command("seed-visa-bulletin")

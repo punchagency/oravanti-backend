@@ -46,6 +46,13 @@ jest.mock("../../../src/modules/workflow/workflow-template.service", () => ({
   resolveWorkflowTemplateId,
 }));
 jest.mock("../../../src/modules/workflow/due-date-resolver", () => ({ resolveDueDate }));
+// Materialization also sets up the matter's filing package, which resolves the
+// template a second time and would need its own query mocks. This suite is
+// about which tasks get withdrawn and restored, so the package is stubbed out
+// the same way every other collaborator here is.
+jest.mock("../../../src/modules/workflow/case-forms.service", () => ({
+  ensurePackageForms: jest.fn(async () => 0),
+}));
 
 const CASE = {
   id: "case-1",

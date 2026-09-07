@@ -26,6 +26,62 @@ const button = (href: string, label: string) => html`
   </p>
 `;
 
+/**
+ * A questionnaire link, and why it was sent.
+ *
+ * `reason` is optional because intake sends do not have one — a lead receiving
+ * their first questionnaire is always the "new" case, and asking that call site
+ * to say so would be ceremony.
+ */
+type QuestionnaireSendContext = {
+  link: string;
+  reason?: "new" | "correction" | "attention";
+  reasonNote?: string | null;
+};
+
+/** The firm's note to the client, set apart from our wording around it. */
+const quote = (note: string) => html`
+  <p style="margin:16px 0;padding:12px 14px;border-left:3px solid #d4d4d4;background:#fafafa;color:#333;font-size:14px;line-height:20px;">
+    ${note}
+  </p>
+`;
+
+/**
+ * How each reason reads to the person receiving it.
+ *
+ * The subject line carries the difference, because for a client who has had
+ * this link before that is often all they see. "Your questionnaire" arriving
+ * for the third time is how a genuine correction request gets ignored.
+ */
+const sendReasonCopy = (
+  reason: QuestionnaireSendContext["reason"],
+  firmName: string,
+) => {
+  switch (reason) {
+    case "correction":
+      return {
+        subject: `Please correct a few answers for ${firmName}`,
+        lead: `${firmName} has reviewed your questionnaire and needs a few answers corrected.`,
+        action: "Review and correct",
+        sms: "Please correct a few answers on your questionnaire",
+      };
+    case "attention":
+      return {
+        subject: `${firmName} needs your attention on your questionnaire`,
+        lead: `${firmName} needs you to look at something on your questionnaire.`,
+        action: "Open questionnaire",
+        sms: "Your questionnaire needs your attention",
+      };
+    default:
+      return {
+        subject: `Your questionnaire from ${firmName}`,
+        lead: `${firmName} has sent you a questionnaire. Completing it helps them prepare for your matter before you speak.`,
+        action: "Complete questionnaire",
+        sms: "Please complete your questionnaire",
+      };
+  }
+};
+
 export const intakeTemplates = {
   /**
    * The executed copy — the PDF is attached to this email, and the link is the
@@ -49,18 +105,27 @@ export const intakeTemplates = {
   },
 
   questionnaire_sent: {
-    email: (ctx: { link: string }, meta) => ({
-      subject: `Your intake questionnaire from ${meta.firmName}`,
-      html: layout(
-        `Hello ${meta.recipientName},`,
-        html`<p>${meta.firmName} has sent you an intake questionnaire. Completing it helps them prepare for your matter before you speak.</p>` +
-          button(ctx.link, "Complete questionnaire") +
-          html`<p style="color:#666;font-size:13px;">If the button does not work, copy this link into your browser:<br />${ctx.link}</p>`,
-        meta,
+    email: (ctx: QuestionnaireSendContext, meta) => {
+      const { subject, lead, action } = sendReasonCopy(ctx.reason, meta.firmName);
+      return {
+        subject,
+        html: layout(
+          `Hello ${meta.recipientName},`,
+          html`<p>${lead}</p>` +
+            // The firm's own words about what to do. Quoted rather than
+            // paraphrased — a correction is only useful if it says what to fix.
+            (ctx.reasonNote ? quote(ctx.reasonNote) : "") +
+            button(ctx.link, action) +
+            html`<p style="color:#666;font-size:13px;">If the button does not work, copy this link into your browser:<br />${ctx.link}</p>`,
+          meta,
+        ),
+      };
+    },
+    sms: (ctx: QuestionnaireSendContext, meta) =>
+      smsBody(
+        meta.firmName,
+        `${sendReasonCopy(ctx.reason, meta.firmName).sms}: ${ctx.link}`,
       ),
-    }),
-    sms: (ctx: { link: string }, meta) =>
-      smsBody(meta.firmName, `Please complete your intake questionnaire: ${ctx.link}`),
   },
 
   questionnaire_reminder: {

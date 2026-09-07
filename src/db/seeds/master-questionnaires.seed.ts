@@ -11,12 +11,12 @@
  * skipped rather than guessed. Safe to re-run.
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../client";
 import {
-  caseTypeQuestionnaires,
-  caseTypeQuestionnaireSections,
-  caseTypeQuestionnaireQuestions,
+  questionnaires,
+  questionnaireSections,
+  questionnaireQuestions,
 } from "../schema/questionnaires";
 import { practiceAreaCaseTypes } from "../schema/practice-area-case-types";
 import {
@@ -117,9 +117,14 @@ export async function seedMasterQuestionnaires() {
         mappedCaseTypeIds.add(match.id);
 
         const [existing] = await db
-          .select({ id: caseTypeQuestionnaires.id })
-          .from(caseTypeQuestionnaires)
-          .where(eq(caseTypeQuestionnaires.caseTypeId, match.id))
+          .select({ id: questionnaires.id })
+          .from(questionnaires)
+          .where(
+            and(
+              eq(questionnaires.caseTypeId, match.id),
+              eq(questionnaires.stage, "intake"),
+            ),
+          )
           .limit(1);
         if (existing) {
           skippedExisting++;
@@ -129,9 +134,10 @@ export async function seedMasterQuestionnaires() {
         const sections = buildSections(subtype);
         await db.transaction(async (tx) => {
           const [questionnaire] = await tx
-            .insert(caseTypeQuestionnaires)
+            .insert(questionnaires)
             .values({
               caseTypeId: match.id,
+              stage: "intake",
               title: `${match.name} Intake Questionnaire`,
               description: `Intake questions for ${subtype.name}.`,
             })
@@ -139,17 +145,19 @@ export async function seedMasterQuestionnaires() {
 
           for (const [i, section] of sections.entries()) {
             const [s] = await tx
-              .insert(caseTypeQuestionnaireSections)
+              .insert(questionnaireSections)
               .values({
                 questionnaireId: questionnaire.id,
+                scope: "system",
                 title: section.title,
                 orderIndex: i,
               })
               .returning();
 
             for (const [j, q] of section.questions.entries()) {
-              await tx.insert(caseTypeQuestionnaireQuestions).values({
+              await tx.insert(questionnaireQuestions).values({
                 questionnaireId: questionnaire.id,
+                scope: "system",
                 sectionId: s.id,
                 label: q.label,
                 type: q.type,

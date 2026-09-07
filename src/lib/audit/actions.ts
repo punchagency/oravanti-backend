@@ -188,9 +188,21 @@ export const AUDIT_ACTIONS = {
   // Per-form tracking. A filing package is several forms, each with its own edition, fee, receipt number and
   // adjudication — `case.filed` is the package, these are the paper it is made of.
   "case.forms_initialized": { category: "business", actionType: "create", entityType: "case", label: "Filing package set up" },
+  "case.form_added": { category: "business", actionType: "create", entityType: "case_form", label: "Form added" },
   "case.form_updated": { category: "business", actionType: "update", entityType: "case_form", label: "Form updated" },
   "case.form_status_changed": { category: "business", actionType: "update", entityType: "case_form", label: "Form status changed" },
   "case.form_removed": { category: "business", actionType: "delete", entityType: "case_form", label: "Form removed" },
+  "case.form_fields_populated": { category: "business", actionType: "update", entityType: "case", label: "Forms filled from questionnaire" },
+
+  // The attorney's review of the package. `changes_requested` has no action of
+  // its own: raising a correction is what puts the package in that state, so
+  // recording both would put two rows in the timeline for one act.
+  "case.filing_review_requested": { category: "business", actionType: "update", entityType: "case", label: "Filing sent for review" },
+  "case.filing_review_approved": { category: "business", actionType: "update", entityType: "case", label: "Filing approved" },
+  "case.form_correction_raised": { category: "business", actionType: "create", entityType: "case_form_correction", label: "Correction raised" },
+  "case.form_correction_resolved": { category: "business", actionType: "update", entityType: "case_form_correction", label: "Correction resolved" },
+  "case.form_correction_reopened": { category: "business", actionType: "update", entityType: "case_form_correction", label: "Correction reopened" },
+  "case.form_correction_commented": { category: "business", actionType: "create", entityType: "case_form_correction", label: "Correction comment added" },
 
   /** The billing bridge — deliberately these two only, so a matter timeline is not a ledger. */
   "case.invoice_created": { category: "business", actionType: "create", entityType: "invoice", label: "Invoice raised" },
@@ -406,6 +418,60 @@ export const AUDIT_ACTIONS = {
    * `audit_events`, and it names who ran it and what was removed.
    */
   "admin.firm_data_reset": { category: "admin", actionType: "delete", entityType: "organization", label: "Firm data reset" },
+
+  // ── The platform catalogue ───────────────────────────────────────────────
+  // Oravanti maintaining what every firm reads: the forms, the fields on them,
+  // and the wiring that fills them. Its own domain rather than more `case.*`
+  // entries, because the reach is what matters here — one of these changes
+  // every firm's copy of a form, and a feed that could not tell that apart
+  // from a firm editing its own matter would be answering the wrong question.
+  //
+  // These rows carry `actor_type: "platform"`, which is the same distinction
+  // made one level down. See `middleware/request-context.ts`.
+  "platform.practice_area_created": { category: "admin", actionType: "create", entityType: "practice_area", label: "Practice area created" },
+  "platform.practice_area_updated": { category: "admin", actionType: "update", entityType: "practice_area", label: "Practice area updated" },
+  "platform.practice_area_archived": { category: "admin", actionType: "update", entityType: "practice_area", label: "Practice area archived" },
+  "platform.practice_area_restored": { category: "admin", actionType: "update", entityType: "practice_area", label: "Practice area restored" },
+  "platform.practice_area_deleted": { category: "admin", actionType: "delete", entityType: "practice_area", label: "Practice area deleted" },
+  "platform.subcategory_created": { category: "admin", actionType: "create", entityType: "practice_area_subcategory", label: "Subcategory created" },
+  "platform.subcategory_updated": { category: "admin", actionType: "update", entityType: "practice_area_subcategory", label: "Subcategory updated" },
+  "platform.subcategory_archived": { category: "admin", actionType: "update", entityType: "practice_area_subcategory", label: "Subcategory archived" },
+  "platform.subcategory_restored": { category: "admin", actionType: "update", entityType: "practice_area_subcategory", label: "Subcategory restored" },
+  "platform.subcategory_deleted": { category: "admin", actionType: "delete", entityType: "practice_area_subcategory", label: "Subcategory deleted" },
+  "platform.case_type_created": { category: "admin", actionType: "create", entityType: "case_type", label: "Case type created" },
+  "platform.case_type_updated": { category: "admin", actionType: "update", entityType: "case_type", label: "Case type updated" },
+  "platform.case_type_archived": { category: "admin", actionType: "update", entityType: "case_type", label: "Case type archived" },
+  "platform.case_type_restored": { category: "admin", actionType: "update", entityType: "case_type", label: "Case type restored" },
+  "platform.case_type_deleted": { category: "admin", actionType: "delete", entityType: "case_type", label: "Case type deleted" },
+  "platform.form_created": { category: "admin", actionType: "create", entityType: "form_definition", label: "Form added to the catalogue" },
+  "platform.form_updated": { category: "admin", actionType: "update", entityType: "form_definition", label: "Form reworded" },
+  "platform.form_deleted": { category: "admin", actionType: "delete", entityType: "form_definition", label: "Form removed from the catalogue" },
+  "platform.form_edition_created": { category: "admin", actionType: "create", entityType: "form_edition", label: "Form edition recorded" },
+  "platform.form_edition_updated": { category: "admin", actionType: "update", entityType: "form_edition", label: "Form edition updated" },
+  "platform.form_blank_uploaded": { category: "admin", actionType: "update", entityType: "form_edition", label: "Blank PDF uploaded" },
+  "platform.form_catalogue_imported": { category: "admin", actionType: "update", entityType: "form_edition", label: "Catalogue read off the blank" },
+  "platform.form_field_created": { category: "admin", actionType: "create", entityType: "form_field_definition", label: "Form field added" },
+  "platform.form_field_updated": { category: "admin", actionType: "update", entityType: "form_field_definition", label: "Form field reworded" },
+  "platform.form_field_deleted": { category: "admin", actionType: "delete", entityType: "form_field_definition", label: "Form field removed" },
+  "platform.form_fields_reordered": { category: "admin", actionType: "update", entityType: "form_definition", label: "Form field order changed" },
+  "platform.form_part_saved": { category: "admin", actionType: "update", entityType: "form_definition", label: "Form part saved" },
+  "platform.form_part_renamed": { category: "admin", actionType: "update", entityType: "form_definition", label: "Form part renamed" },
+  "platform.form_part_deleted": { category: "admin", actionType: "delete", entityType: "form_definition", label: "Form part removed" },
+  "platform.field_mapping_set": { category: "admin", actionType: "update", entityType: "form_field_mapping", label: "Field source set" },
+  "platform.field_mapping_cleared": { category: "admin", actionType: "delete", entityType: "form_field_mapping", label: "Field source cleared" },
+  "platform.pdf_mapping_set": { category: "admin", actionType: "update", entityType: "form_pdf_field_mapping", label: "PDF box mapped" },
+  "platform.pdf_mapping_cleared": { category: "admin", actionType: "delete", entityType: "form_pdf_field_mapping", label: "PDF box unmapped" },
+  "platform.case_type_form_set": { category: "admin", actionType: "update", entityType: "case_type", label: "Form added to filing package" },
+  "platform.case_type_form_removed": { category: "admin", actionType: "delete", entityType: "case_type", label: "Form removed from filing package" },
+  "platform.case_type_forms_reordered": { category: "admin", actionType: "update", entityType: "case_type", label: "Filing order changed" },
+  "platform.questionnaire_created": { category: "admin", actionType: "create", entityType: "questionnaire", label: "System questionnaire created" },
+  "platform.questionnaire_section_created": { category: "admin", actionType: "create", entityType: "questionnaire", label: "System section added" },
+  "platform.questionnaire_question_created": { category: "admin", actionType: "create", entityType: "questionnaire", label: "System question added" },
+  "platform.questionnaire_updated": { category: "admin", actionType: "update", entityType: "questionnaire", label: "System questionnaire reworded" },
+  "platform.questionnaire_section_updated": { category: "admin", actionType: "update", entityType: "questionnaire", label: "System section reworded" },
+  "platform.questionnaire_section_deleted": { category: "admin", actionType: "delete", entityType: "questionnaire", label: "System section removed" },
+  "platform.questionnaire_question_updated": { category: "admin", actionType: "update", entityType: "questionnaire", label: "System question reworded" },
+  "platform.questionnaire_question_deleted": { category: "admin", actionType: "delete", entityType: "questionnaire", label: "System question removed" },
 
   // ── System ───────────────────────────────────────────────────────────────
   // No human actor. Recorded so an automated change is never mistaken for one

@@ -34,9 +34,9 @@ import {
   feeAgreements,
   financialAccessControls,
   firmPracticeAreas,
-  firmQuestionnaireLogicRules,
-  firmQuestionnaireQuestions,
-  firmQuestionnaireSections,
+  questionnaireLogicRules,
+  questionnaireQuestions,
+  questionnaireSections,
   leadDocumentLinks,
   leadNotes,
   leads,
@@ -452,9 +452,12 @@ export class FirmProfileService {
       await del(questionnaireAnswers, eq(questionnaireAnswers.organizationId, organizationId));
       await del(questionnaireResponses, eq(questionnaireResponses.organizationId, organizationId));
       await del(questionnaireSends, eq(questionnaireSends.organizationId, organizationId));
-      await del(firmQuestionnaireLogicRules, eq(firmQuestionnaireLogicRules.organizationId, organizationId));
-      await del(firmQuestionnaireQuestions, eq(firmQuestionnaireQuestions.organizationId, organizationId));
-      await del(firmQuestionnaireSections, eq(firmQuestionnaireSections.organizationId, organizationId));
+      // Matching on a non-null organization_id takes this firm's own additions
+      // — both its standing ones and any written for a single matter — and
+      // leaves the platform's system rows, whose organization_id is null.
+      await del(questionnaireLogicRules, eq(questionnaireLogicRules.organizationId, organizationId));
+      await del(questionnaireQuestions, eq(questionnaireQuestions.organizationId, organizationId));
+      await del(questionnaireSections, eq(questionnaireSections.organizationId, organizationId));
 
 
 

@@ -8,6 +8,7 @@ import { DocumentsModule } from "./documents/documents.module";
 import { EmailAccountModule } from "./email-account/email-account.module";
 import { OnboardingModule } from "./onboarding/onboarding.module";
 import { OrganizationModule } from "./organization/organization.module";
+import { PlatformModule } from "./platform/platform.module";
 import { PracticeAreasModule } from "./practice-areas/practice-areas.module";
 import { AiScanModule } from "./ai-scan/ai-scan.module";
 import { CaseReviewModule } from "./case-review/case-review.module";
@@ -66,6 +67,8 @@ export const modules: Module[] = [
   new TasksModule(),
   new WorkflowModule(),
   new WorkflowTemplateModule(),
+  // Oravanti operating its own catalogue, not a firm operating its matters.
+  new PlatformModule(),
   new CalendarModule(),
   new CasesModule(),
   new PracticeAreasModule(),

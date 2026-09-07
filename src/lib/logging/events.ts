@@ -394,6 +394,14 @@ export const LogEvent = {
   QUESTIONNAIRE_SUBMITTED: "questionnaire.submitted",
   QUESTIONNAIRE_REMINDER_SENT: "questionnaire.reminder_sent",
   QUESTIONNAIRE_SEND_FAILED: "questionnaire.send_failed",
+  /** A submitted case questionnaire failed to reach the matter's forms. The
+   *  answers are saved either way; the on-demand pass picks it up. */
+  QUESTIONNAIRE_FORM_POPULATION_FAILED: "questionnaire.form_population_failed",
+  /** A save landed: answers changed, and a version now records what. */
+  QUESTIONNAIRE_ANSWERS_SAVED: "questionnaire.answers_saved",
+  QUESTIONNAIRE_ANSWERS_RESTORED: "questionnaire.answers_restored",
+  /** A completed questionnaire was reopened so the client could answer again. */
+  QUESTIONNAIRE_REOPENED: "questionnaire.reopened",
   QUESTIONNAIRE_REMINDER_FAILED: "questionnaire.reminder_failed",
   /** A payment chase could not be sent on one of its chosen channels. */
   PAYMENT_FOLLOWUP_SEND_FAILED: "payment.followup_send_failed",
@@ -720,6 +728,18 @@ export const LogEvent = {
   WORKFLOW_TASKS_WITHDRAWN: "workflow.tasks_withdrawn",
   WORKFLOW_TASK_RESTORED: "workflow.task_restored",
   WORKFLOW_CASE_FORMS_INITIALIZED: "workflow.case_forms_initialized",
+  /** A matter's forms were filled from its case questionnaire. */
+  WORKFLOW_FORM_FIELDS_POPULATED: "workflow.form_fields_populated",
+  /** One save against one form, by staff or by a population run. */
+  WORKFLOW_FORM_VALUES_SAVED: "workflow.form_values_saved",
+  /** A form was put back to an earlier version, as a new version on top. */
+  WORKFLOW_FORM_VERSION_RESTORED: "workflow.form_version_restored",
+  /** A form or a form field was added, reworded, or removed by a firm. */
+  WORKFLOW_FORM_CATALOGUE_CHANGED: "workflow.form_catalogue_changed",
+  WORKFLOW_FORM_FIELD_MAPPED: "workflow.form_field_mapped",
+  WORKFLOW_FORM_FIELD_UNMAPPED: "workflow.form_field_unmapped",
+  /** No edition of a form is accepted today — the reference data has fallen behind uscis.gov. */
+  WORKFLOW_FORM_EDITION_STALE: "workflow.form_edition_stale",
   WORKFLOW_RFE_REMINDERS_SCHEDULED: "workflow.rfe_reminders_scheduled",
   /** A practice-area condition field was written, so materialization re-ran. */
   WORKFLOW_REMATERIALIZED_ON_CONDITION_CHANGE: "workflow.rematerialized_on_condition_change",

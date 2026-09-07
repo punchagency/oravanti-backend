@@ -6,6 +6,10 @@ export const accountTypeValues = [
   "staff",
   "contractor",
   "client",
+  // Oravanti's own staff. See db/schema/platform-admins.ts — this is the tier
+  // that operates the form and questionnaire catalogue, and it belongs to no
+  // firm.
+  "platform_admin",
 ] as const;
 export type AccountType = (typeof accountTypeValues)[number];
 export const accountTypeEnum = pgEnum("account_type_enum", accountTypeValues);

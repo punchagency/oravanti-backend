@@ -10,7 +10,6 @@ import { requireAuth } from "../../middleware/auth.middleware";
 import { resolveActorContext } from "../../middleware/resolve-actor-context";
 import { requirePermission } from "../../middleware/permission.middleware";
 
-
 import { validateRequest } from "../../middleware/validate.middleware";
 import { CommonValidation } from "../../validation/common.validation";
 import { WorkflowController } from "./workflow.controller";
@@ -18,7 +17,18 @@ import { linkCaseBody } from "./workflow-template.validation";
 import {
   caseIdParams,
   recordCaseMilestoneBody,
+  addCaseFormBody,
   formCodeParam,
+  formFieldParam,
+  setFormFieldBody,
+  correctionParam,
+  correctionCommentBody,
+  correctionNoteBody,
+  raiseCorrectionBody,
+  setFormFieldsBody,
+  populateFormsBody,
+  formRevisionParam,
+  formVersionParam,
   initializeCaseFormsBody,
   updateCaseFormBody,
   upsertImmigrationDetailsBody,
@@ -736,7 +746,10 @@ export class WorkflowRouter {
     this.router.put(
       "/:caseId/immigration-details",
       requirePermission("cases", "update"),
-      validateRequest({ params: caseIdParams, body: upsertImmigrationDetailsBody }),
+      validateRequest({
+        params: caseIdParams,
+        body: upsertImmigrationDetailsBody,
+      }),
       this.workflowController.upsertImmigrationDetails,
     );
 
@@ -891,6 +904,67 @@ export class WorkflowRouter {
      *       200: { description: Removed }
      *       400: { description: Already filed - withdraw it instead }
      */
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/{formCode}:
+     *   post:
+     *     tags: [Cases]
+     *     summary: Put a published form on this matter
+     *     description: >
+     *       For the form the workflow template did not anticipate — an I-765 on
+     *       a matter that was not going to file one. The form must be one
+     *       Oravanti publishes; a firm does not author forms, so an unknown
+     *       code is a 404 rather than an invitation to name it.
+     *     responses:
+     *       201: { description: Added }
+     *       400: { description: Already on this matter }
+     *       404: { description: Not a form Oravanti publishes }
+     */
+    this.router.post(
+      "/:caseId/forms/:formCode",
+      requirePermission("cases", "update"),
+      validateRequest({ params: formCodeParam, body: addCaseFormBody }),
+      this.workflowController.addCaseForm,
+    );
+
+    /**
+     * @openapi
+     * /cases/published-forms:
+     *   get:
+     *     tags: [Cases]
+     *     summary: Every form Oravanti publishes
+     *     description: >
+     *       What "add a form to this matter" chooses from. Read-only: the
+     *       catalogue is maintained in Oravanti's CRM and no firm writes it.
+     *     responses:
+     *       200: { description: The catalogue }
+     */
+    this.router.get(
+      "/published-forms",
+      requirePermission("cases", "read"),
+      this.workflowController.listPublishedForms,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/field-map:
+     *   get:
+     *     tags: [Cases]
+     *     summary: What fills each field, across this matter's forms
+     *     description: >
+     *       Read-only. The write that used to share this path decided the
+     *       answer for every firm in the deployment and now lives in the CRM,
+     *       under `requirePlatformAdmin`.
+     *     responses:
+     *       200: { description: Each form's fields and the question behind each }
+     */
+    this.router.get(
+      "/:caseId/field-map",
+      requirePermission("cases", "read"),
+      validateRequest({ params: caseIdParams }),
+      this.workflowController.getCaseFieldFeeds,
+    );
+
     this.router.patch(
       "/:caseId/forms/:formCode",
       requirePermission("cases", "update"),
@@ -903,6 +977,522 @@ export class WorkflowRouter {
       requirePermission("cases", "update"),
       validateRequest({ params: formCodeParam }),
       this.workflowController.removeCaseForm,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/{formCode}/fields:
+     *   get:
+     *     tags: [Cases]
+     *     summary: One form's contents
+     *     description: >
+     *       The form's field catalogue in its own order, each field with its
+     *       value and where that value came from. Fields nothing has filled are
+     *       included — an empty box on a form is information. A field a person
+     *       edited by hand carries `isManualOverride`, and `conflictsWith` when
+     *       the questionnaire has since come to say something different.
+     *     responses:
+     *       200: { description: Fields and completion }
+     *       404: { description: Form not on this matter }
+     */
+    this.router.get(
+      "/:caseId/forms/:formCode/fields",
+      requirePermission("cases", "read"),
+      validateRequest({ params: formCodeParam }),
+      this.workflowController.readCaseFormFields,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/{formCode}/fields/{fieldKey}:
+     *   put:
+     *     tags: [Cases]
+     *     summary: Correct one field by hand
+     *     description: >
+     *       Marks the value as a manual override, which protects it from the
+     *       next population run. What the questionnaire said is kept alongside,
+     *       so a client changing their answer afterwards shows as a
+     *       disagreement rather than silently reverting the correction.
+     *     responses:
+     *       200: { description: Saved }
+     *       404: { description: No such field on this form }
+     */
+    this.router.put(
+      "/:caseId/forms/:formCode/fields/:fieldKey",
+      requirePermission("cases", "update"),
+      validateRequest({ params: formFieldParam, body: setFormFieldBody }),
+      this.workflowController.setCaseFormField,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/{formCode}/fields:
+     *   put:
+     *     tags: [Cases]
+     *     summary: Save a whole form's corrections at once
+     *     description: >
+     *       The batch form of the call above, and the one the Forms tab uses:
+     *       staff edit a form and press Save, so the request carries everything
+     *       that changed. Each value is marked as a manual override exactly as
+     *       a single-field save would. An unknown field key fails the whole
+     *       batch rather than half-applying it.
+     *     responses:
+     *       200: { description: How many fields were saved }
+     *       404: { description: Form not on this matter, or no such field }
+     */
+    this.router.put(
+      "/:caseId/forms/:formCode/fields",
+      requirePermission("cases", "update"),
+      validateRequest({ params: formCodeParam, body: setFormFieldsBody }),
+      this.workflowController.setCaseFormFields,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/populate:
+     *   post:
+     *     tags: [Cases]
+     *     summary: Fill the matter's forms from its case questionnaire
+     *     description: >
+     *       Runs automatically when the case questionnaire is submitted; this
+     *       is the same pass on demand, for when answers were edited afterwards.
+     *       Safe to repeat — hand-edited fields are never overwritten unless
+     *       `overrideManual` explicitly asks for it, and the response names the
+     *       ones the questionnaire now disagrees with. `dryRun` reports what the
+     *       pass would do and writes none of it.
+     *     responses:
+     *       200: { description: Counts of fields filled, updated, overridden and in conflict }
+     */
+    this.router.post(
+      "/:caseId/forms/populate",
+      requirePermission("cases", "update"),
+      validateRequest({ params: caseIdParams, body: populateFormsBody }),
+      this.workflowController.populateCaseForms,
+    );
+
+    // ── The attorney's review of the filing package ─────────────────────────
+    //
+    // Registered before `/:caseId/forms/:formCode` would ever see them: these
+    // paths are `/:caseId/filing-review` and `/:caseId/corrections`, so they
+    // cannot collide, but they are kept together here because they are one
+    // feature and reading them apart would hide the state machine.
+    //
+    // Every one is `cases:update` except the read. The attorney-only rules are
+    // *not* expressed as a permission: "attorney" is a professional role, not a
+    // permission grant, and the service is the only place that can answer it
+    // for the batch path too. See `form-review.service.ts`.
+
+    /**
+     * @openapi
+     * /cases/{caseId}/filing-review:
+     *   get:
+     *     tags: [Cases]
+     *     summary: Where the filing package stands with the reviewing attorney
+     *     description: >
+     *       The review's state, who approved it, and every correction on the
+     *       package with its thread. `canReview` says whether the caller may
+     *       mark, approve and reopen — the tab renders from it rather than
+     *       offering controls that would 403.
+     *     responses:
+     *       200: { description: The review }
+     *       404: { description: Case not found }
+     */
+    this.router.get(
+      "/:caseId/filing-review",
+      requirePermission("cases", "read"),
+      validateRequest({ params: caseIdParams }),
+      this.workflowController.getFilingReview,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/filing-review/request:
+     *   post:
+     *     tags: [Cases]
+     *     summary: Send the package up for attorney review
+     *     description: >
+     *       What the team presses when the preparation work is done. Anyone on
+     *       the matter may do it; it is idempotent.
+     *     responses:
+     *       200: { description: In review }
+     */
+    this.router.post(
+      "/:caseId/filing-review/request",
+      requirePermission("cases", "update"),
+      validateRequest({ params: caseIdParams }),
+      this.workflowController.requestFilingReview,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/filing-review/approve:
+     *   post:
+     *     tags: [Cases]
+     *     summary: Approve the filing package
+     *     description: >
+     *       Attorney only, and refused while any correction is open — with the
+     *       count in the message. Approval is what unlocks `ready_to_file` on
+     *       the matter's forms, and the next correction raised spends it.
+     *     responses:
+     *       200: { description: Approved }
+     *       403: { description: Not an attorney }
+     *       409: { description: Corrections are still open }
+     */
+    this.router.post(
+      "/:caseId/filing-review/approve",
+      requirePermission("cases", "update"),
+      validateRequest({ params: caseIdParams }),
+      this.workflowController.approveFilingReview,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/corrections:
+     *   post:
+     *     tags: [Cases]
+     *     summary: Mark a part or a field of a form for correction
+     *     description: >
+     *       Attorney only. Exactly one of `partLabel` and `fieldKey` anchors the
+     *       mark; `note` says what is wrong and is required. Raising one puts
+     *       the package into `changes_requested`.
+     *     responses:
+     *       201: { description: Raised }
+     *       400: { description: Marked nothing, or marked both a part and a field }
+     *       403: { description: Not an attorney }
+     */
+    this.router.post(
+      "/:caseId/corrections",
+      requirePermission("cases", "update"),
+      validateRequest({ params: caseIdParams, body: raiseCorrectionBody }),
+      this.workflowController.raiseFormCorrection,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/corrections/{correctionId}/resolve:
+     *   post:
+     *     tags: [Cases]
+     *     summary: Answer a correction and close it
+     *     description: >
+     *       For whoever did the work — the note saying what they changed is
+     *       required and joins the mark's thread. The attorney reads it on
+     *       their next pass and can reopen.
+     *     responses:
+     *       200: { description: Resolved }
+     *       409: { description: Already resolved }
+     */
+    this.router.post(
+      "/:caseId/corrections/:correctionId/resolve",
+      requirePermission("cases", "update"),
+      validateRequest({ params: correctionParam, body: correctionNoteBody }),
+      this.workflowController.resolveFormCorrection,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/corrections/{correctionId}/reopen:
+     *   post:
+     *     tags: [Cases]
+     *     summary: Reopen a correction the fix did not answer
+     *     description: >
+     *       Attorney only. Puts the package back into `changes_requested` and
+     *       clears any approval — a sign-off cannot survive the thing it signed
+     *       off being wrong again.
+     *     responses:
+     *       200: { description: Reopened }
+     *       409: { description: Already open }
+     */
+    this.router.post(
+      "/:caseId/corrections/:correctionId/reopen",
+      requirePermission("cases", "update"),
+      validateRequest({ params: correctionParam, body: correctionNoteBody }),
+      this.workflowController.reopenFormCorrection,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/corrections/{correctionId}/comments:
+     *   post:
+     *     tags: [Cases]
+     *     summary: Add to a correction's thread without closing it
+     *     responses:
+     *       201: { description: Added }
+     */
+    this.router.post(
+      "/:caseId/corrections/:correctionId/comments",
+      requirePermission("cases", "update"),
+      validateRequest({ params: correctionParam, body: correctionCommentBody }),
+      this.workflowController.commentOnFormCorrection,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/{formCode}/versions:
+     *   get:
+     *     tags: [Cases]
+     *     summary: One form's save history
+     *     description: >
+     *       Every save against this form, newest first, each saying who made it
+     *       and how many fields moved. `actor` separates a person typing on the
+     *       form from a population run carrying answers across — which is the
+     *       first question anyone asks of a form that turns out to be wrong.
+     *     responses:
+     *       200: { description: Versions }
+     *       404: { description: Form not on this matter }
+     */
+    this.router.get(
+      "/:caseId/forms/:formCode/versions",
+      requirePermission("cases", "read"),
+      validateRequest({ params: formCodeParam }),
+      this.workflowController.listFormVersions,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/{formCode}/versions/{versionId}:
+     *   get:
+     *     tags: [Cases]
+     *     summary: One save, and the fields it changed
+     *     responses:
+     *       200: { description: The snapshot and its changes }
+     *       404: { description: No such version }
+     */
+    this.router.get(
+      "/:caseId/forms/:formCode/versions/:versionId",
+      requirePermission("cases", "read"),
+      validateRequest({ params: formVersionParam }),
+      this.workflowController.getFormVersion,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/{formCode}/versions/{versionId}/restore:
+     *   post:
+     *     tags: [Cases]
+     *     summary: Put the form back to an earlier save
+     *     description: >
+     *       A POST because it *writes a new version* rather than rewinding to an
+     *       old one — nothing after the restored version is erased, which is
+     *       what makes restoring safe to try. Fields the catalogue has since
+     *       dropped are left out, and fields added since are cleared.
+     *     responses:
+     *       200: { description: Restored, as a new version }
+     */
+    this.router.post(
+      "/:caseId/forms/:formCode/versions/:versionId/restore",
+      requirePermission("cases", "update"),
+      validateRequest({ params: formVersionParam }),
+      this.workflowController.restoreFormVersion,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/{formCode}/fields/{fieldKey}/history:
+     *   get:
+     *     tags: [Cases]
+     *     summary: One field's timeline
+     *     description: >
+     *       Scoped to this form as well as the key, so a key printed on six
+     *       forms of a package — every name and date is — shows only this
+     *       form's history.
+     *     responses:
+     *       200: { description: Revisions, newest first }
+     */
+    this.router.get(
+      "/:caseId/forms/:formCode/fields/:fieldKey/history",
+      requirePermission("cases", "read"),
+      validateRequest({ params: formFieldParam }),
+      this.workflowController.getFieldHistory,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/form-revisions/{revisionId}/restore:
+     *   post:
+     *     tags: [Cases]
+     *     summary: Put one field back to what a revision recorded
+     *     description: >
+     *       Forward, like a version restore: the field is written again as a
+     *       manual edit, and the save that does it is itself a new version.
+     *     responses:
+     *       200: { description: Restored }
+     */
+    this.router.post(
+      "/:caseId/form-revisions/:revisionId/restore",
+      requirePermission("cases", "update"),
+      validateRequest({ params: formRevisionParam }),
+      this.workflowController.restoreFieldRevision,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/{formCode}/versions:
+     *   get:
+     *     tags: [Cases]
+     *     summary: The saves made against one form
+     *     description: >
+     *       Newest first, each naming who saved it and how many fields moved.
+     *       A save by a population run is attributed to the questionnaire
+     *       rather than to a person, because no one person performed it.
+     *     responses:
+     *       200: { description: Versions, newest first }
+     *       404: { description: Form not on this matter }
+     */
+    this.router.get(
+      "/:caseId/forms/:formCode/versions",
+      requirePermission("cases", "read"),
+      validateRequest({ params: formCodeParam }),
+      this.workflowController.listFormVersions,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/{formCode}/versions/{versionId}:
+     *   get:
+     *     tags: [Cases]
+     *     summary: One version, with what it changed
+     *     responses:
+     *       200: { description: The snapshot and its field changes }
+     *       404: { description: Version not found }
+     */
+    this.router.get(
+      "/:caseId/forms/:formCode/versions/:versionId",
+      requirePermission("cases", "read"),
+      validateRequest({ params: formVersionParam }),
+      this.workflowController.getFormVersion,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/{formCode}/fields/{fieldKey}/history:
+     *   get:
+     *     tags: [Cases]
+     *     summary: One field's timeline
+     *     description: >
+     *       Every value that box has held on this form, newest first, with
+     *       where each came from. Scoped to the form as well as the key, so a
+     *       key that appears on six forms of a package shows only this one.
+     *     responses:
+     *       200: { description: Revisions, newest first }
+     */
+    this.router.get(
+      "/:caseId/forms/:formCode/fields/:fieldKey/history",
+      requirePermission("cases", "read"),
+      validateRequest({ params: formFieldParam }),
+      this.workflowController.getFieldHistory,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/{formCode}/versions/{versionId}/restore:
+     *   post:
+     *     tags: [Cases]
+     *     summary: Put a form back to an earlier version
+     *     description: >
+     *       A POST rather than a PUT because it *writes a new version* — the
+     *       state you are leaving stays as version N and the restore is N+1.
+     *       Nothing after the restored version is erased, which is what makes
+     *       restoring safe to try. Fields the catalogue has since dropped are
+     *       left out.
+     *     responses:
+     *       200: { description: How many fields the restore changed }
+     *       404: { description: Version not found }
+     */
+    this.router.post(
+      "/:caseId/forms/:formCode/versions/:versionId/restore",
+      requirePermission("cases", "update"),
+      validateRequest({ params: formVersionParam }),
+      this.workflowController.restoreFormVersion,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/revisions/{revisionId}/restore:
+     *   post:
+     *     tags: [Cases]
+     *     summary: Put one field back to what a revision recorded
+     *     description: >
+     *       The single-field form of the call above, and a new version in the
+     *       same way. Not keyed by form code: a revision already knows which
+     *       form it belongs to.
+     *     responses:
+     *       200: { description: Restored }
+     *       404: { description: Revision not found }
+     */
+    this.router.post(
+      "/:caseId/forms/revisions/:revisionId/restore",
+      requirePermission("cases", "update"),
+      validateRequest({ params: formRevisionParam }),
+      this.workflowController.restoreFieldRevision,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/package/pdf:
+     *   get:
+     *     tags: [Cases]
+     *     summary: The matter every form, merged into one PDF in package order
+     *     description: >
+     *       Fills each form on the matter and concatenates them in the order
+     *       the case type filing package declares, so the paper comes out in
+     *       the sequence it is filed in. `X-Forms-Included` lists what is in
+     *       it and `X-Forms-Failed` names any form that could not be rendered
+     *       — a package short of a form is a fact the caller has to see.
+     *     responses:
+     *       200:
+     *         description: The merged PDF
+     *         content:
+     *           application/pdf: {}
+     */
+    // Registered before `/:caseId/forms/:formCode/pdf`, which would otherwise
+    // match "package" as a form code and 400 on the pattern.
+    this.router.get(
+      "/:caseId/forms/package/pdf",
+      requirePermission("cases", "read"),
+      validateRequest({ params: caseIdParams }),
+      this.workflowController.getCasePackagePdf,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/{formCode}/pdf:
+     *   get:
+     *     tags: [Cases]
+     *     summary: The matter's copy of a form as a filled PDF
+     *     description: >
+     *       Fills the official blank for the form's current edition with this
+     *       matter's answers and streams it inline. `X-Fields-Written` and
+     *       `X-Fields-Skipped` report how much of the form was populated.
+     *     responses:
+     *       200:
+     *         description: The filled PDF
+     *         content:
+     *           application/pdf: {}
+     */
+    this.router.get(
+      "/:caseId/forms/:formCode/pdf",
+      requirePermission("cases", "read"),
+      validateRequest({ params: formCodeParam }),
+      this.workflowController.getCaseFormPdf,
+    );
+
+    /**
+     * @openapi
+     * /cases/{caseId}/forms/{formCode}/boxes:
+     *   get:
+     *     tags: [Cases]
+     *     summary: Where each of the form's data prints on the page
+     *     description: >
+     *       Rectangles in percentages of the page, so the Forms tab can draw
+     *       the reviewing attorney's marks over the rendered PDF and let one be
+     *       placed by pointing at the box. A datum printing into more than one
+     *       box carries all of them.
+     */
+    this.router.get(
+      "/:caseId/forms/:formCode/boxes",
+      requirePermission("cases", "read"),
+      validateRequest({ params: formCodeParam }),
+      this.workflowController.getCaseFormBoxes,
     );
 
     /**
@@ -971,7 +1561,10 @@ export class WorkflowRouter {
     this.router.put(
       "/:caseId/personal-injury-details",
       requirePermission("cases", "update"),
-      validateRequest({ params: caseIdParams, body: upsertPersonalInjuryDetailsBody }),
+      validateRequest({
+        params: caseIdParams,
+        body: upsertPersonalInjuryDetailsBody,
+      }),
       this.workflowController.upsertPersonalInjuryDetails,
     );
   }

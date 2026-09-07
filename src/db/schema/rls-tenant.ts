@@ -48,7 +48,20 @@ import { assignments } from "./assignments";
 import { calendarEvents } from "./calendar-events";
 import { caseMilestones } from "./case-milestones";
 import { caseForms } from "./case-forms";
-import { caseAssignments, casesToCertifications, certifications } from "./cases";
+import {
+  caseFormCorrectionComments,
+  caseFormCorrections,
+} from "./case-form-corrections";
+import {
+  caseFormFieldRevisions,
+  caseFormFieldValues,
+  caseFormVersions,
+} from "./form-fields";
+import {
+  caseAssignments,
+  casesToCertifications,
+  certifications,
+} from "./cases";
 import { clientCompanies } from "./client-companies";
 import { clientContacts } from "./client-contacts";
 import { clientRequests } from "./client-requests";
@@ -88,12 +101,11 @@ import { profiles } from "./profiles";
 import { roleAppearance } from "./role-appearance";
 import { roleGroup, roleGroupMember } from "./role-groups";
 import {
-  firmQuestionnaireLogicRules,
-  firmQuestionnaireQuestions,
-  firmQuestionnaireSections,
+  questionnaireAnswerRevisions,
   questionnaireAnswers,
   questionnaireResponseFiles,
   questionnaireResponses,
+  questionnaireResponseVersions,
   questionnaireSends,
 } from "./questionnaires";
 import {
@@ -177,77 +189,290 @@ const parentScoped = (
 // Org-scoped tables
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const [rlsAdminSessionsOrg, rlsAdminSessionsStaff] = orgScoped("admin_sessions", adminSessions);
+export const [rlsAdminSessionsOrg, rlsAdminSessionsStaff] = orgScoped(
+  "admin_sessions",
+  adminSessions,
+);
 export const [rlsAdminsOrg, rlsAdminsStaff] = orgScoped("admins", admins);
-export const [rlsAdversePartiesOrg, rlsAdversePartiesStaff] = orgScoped("adverse_parties", adverseParties);
-export const [rlsAiSystemConfigOrg, rlsAiSystemConfigStaff] = orgScoped("ai_system_config", aiSystemConfig);
-export const [rlsAssignmentsOrg, rlsAssignmentsStaff] = orgScoped("assignments", assignments);
-export const [rlsCalendarEventsOrg, rlsCalendarEventsStaff] = orgScoped("calendar_events", calendarEvents);
-export const [rlsCaseMilestonesOrg, rlsCaseMilestonesStaff] = orgScoped("case_milestones", caseMilestones);
-export const [rlsCaseFormsOrg, rlsCaseFormsStaff] = orgScoped("case_forms", caseForms);
-export const [rlsCertificationsOrg, rlsCertificationsStaff] = orgScoped("certifications", certifications);
-export const [rlsClientCompaniesOrg, rlsClientCompaniesStaff] = orgScoped("client_companies", clientCompanies);
-export const [rlsClientContactsOrg, rlsClientContactsStaff] = orgScoped("client_contacts", clientContacts);
-export const [rlsClientRequestsOrg, rlsClientRequestsStaff] = orgScoped("client_requests", clientRequests);
-export const [rlsCompaniesOrg, rlsCompaniesStaff] = orgScoped("companies", companies);
-export const [rlsConflictChecksOrg, rlsConflictChecksStaff] = orgScoped("conflict_checks", conflictChecks);
-export const [rlsConsultationLocationsOrg, rlsConsultationLocationsStaff] = orgScoped("consultation_locations", consultationLocations);
-export const [rlsConsultationSettingsOrg, rlsConsultationSettingsStaff] = orgScoped("consultation_settings", consultationSettings);
-export const [rlsConsultationsOrg, rlsConsultationsStaff] = orgScoped("consultations", consultations);
-export const [rlsConsultationParticipantsOrg, rlsConsultationParticipantsStaff] = orgScoped("consultation_participants", consultationParticipants);
-export const [rlsCaseTypeDocumentRequirementsOrg, rlsCaseTypeDocumentRequirementsStaff] = orgScoped("case_type_document_requirements", caseTypeDocumentRequirements);
-export const [rlsScenarioDocumentRequirementsOrg, rlsScenarioDocumentRequirementsStaff] = orgScoped("scenario_document_requirements", scenarioDocumentRequirements);
-export const [rlsDocumentRequestsOrg, rlsDocumentRequestsStaff] = orgScoped("document_requests", documentRequests);
-export const [rlsConnectedEmailAccountOrg, rlsConnectedEmailAccountStaff] = orgScoped("connected_email_account", connectedEmailAccount);
-export const [rlsFeeAgreementSettingsOrg, rlsFeeAgreementSettingsStaff] = orgScoped("fee_agreement_settings", feeAgreementSettings);
-export const [rlsFeeAgreementsOrg, rlsFeeAgreementsStaff] = orgScoped("fee_agreements", feeAgreements);
-export const [rlsFinancialAccessControlsOrg, rlsFinancialAccessControlsStaff] = orgScoped("financial_access_controls", financialAccessControls);
-export const [rlsFirmPracticeAreasOrg, rlsFirmPracticeAreasStaff] = orgScoped("firm_practice_areas", firmPracticeAreas);
-export const [rlsIntakePipelineTemplatesOrg, rlsIntakePipelineTemplatesStaff] = orgScoped("intake_pipeline_templates", intakePipelineTemplates);
-export const [rlsLeaveRequestsOrg, rlsLeaveRequestsStaff] = orgScoped("leave_requests", leaveRequests);
-export const [rlsImmigrationCaseDetailsOrg, rlsImmigrationCaseDetailsStaff] = orgScoped("immigration_case_details", immigrationCaseDetails);
-export const [rlsPersonalInjuryCaseDetailsOrg, rlsPersonalInjuryCaseDetailsStaff] = orgScoped("personal_injury_case_details", personalInjuryCaseDetails);
-export const [rlsParalegalProfilesOrg, rlsParalegalProfilesStaff] = orgScoped("paralegal_profiles", paralegalProfiles);
-export const [rlsRoleAppearanceOrg, rlsRoleAppearanceStaff] = orgScoped("role_appearance", roleAppearance);
-export const [rlsRoleGroupOrg, rlsRoleGroupStaff] = orgScoped("role_group", roleGroup);
-export const [rlsFirmQuestionnaireSectionsOrg, rlsFirmQuestionnaireSectionsStaff] = orgScoped("firm_questionnaire_sections", firmQuestionnaireSections);
-export const [rlsFirmQuestionnaireQuestionsOrg, rlsFirmQuestionnaireQuestionsStaff] = orgScoped("firm_questionnaire_questions", firmQuestionnaireQuestions);
-export const [rlsFirmQuestionnaireLogicRulesOrg, rlsFirmQuestionnaireLogicRulesStaff] = orgScoped("firm_questionnaire_logic_rules", firmQuestionnaireLogicRules);
-export const [rlsQuestionnaireSendsOrg, rlsQuestionnaireSendsStaff] = orgScoped("questionnaire_sends", questionnaireSends);
-export const [rlsQuestionnaireResponsesOrg, rlsQuestionnaireResponsesStaff] = orgScoped("questionnaire_responses", questionnaireResponses);
-export const [rlsQuestionnaireAnswersOrg, rlsQuestionnaireAnswersStaff] = orgScoped("questionnaire_answers", questionnaireAnswers);
-export const [rlsQuestionnaireResponseFilesOrg, rlsQuestionnaireResponseFilesStaff] = orgScoped("questionnaire_response_files", questionnaireResponseFiles);
-export const [rlsStaffAvailabilityOrg, rlsStaffAvailabilityStaff] = orgScoped("staff_availability", staffAvailability);
-export const [rlsStaffAvailabilityBreaksOrg, rlsStaffAvailabilityBreaksStaff] = orgScoped("staff_availability_breaks", staffAvailabilityBreaks);
-export const [rlsStaffAvailabilityOverridesOrg, rlsStaffAvailabilityOverridesStaff] = orgScoped("staff_availability_overrides", staffAvailabilityOverrides);
+export const [rlsAdversePartiesOrg, rlsAdversePartiesStaff] = orgScoped(
+  "adverse_parties",
+  adverseParties,
+);
+export const [rlsAiSystemConfigOrg, rlsAiSystemConfigStaff] = orgScoped(
+  "ai_system_config",
+  aiSystemConfig,
+);
+export const [rlsAssignmentsOrg, rlsAssignmentsStaff] = orgScoped(
+  "assignments",
+  assignments,
+);
+export const [rlsCalendarEventsOrg, rlsCalendarEventsStaff] = orgScoped(
+  "calendar_events",
+  calendarEvents,
+);
+export const [rlsCaseMilestonesOrg, rlsCaseMilestonesStaff] = orgScoped(
+  "case_milestones",
+  caseMilestones,
+);
+export const [rlsCaseFormsOrg, rlsCaseFormsStaff] = orgScoped(
+  "case_forms",
+  caseForms,
+);
+export const [rlsCaseFormFieldValuesOrg, rlsCaseFormFieldValuesStaff] =
+  orgScoped("case_form_field_values", caseFormFieldValues);
+// Form value history. Firm data like the values themselves — no rows with a
+// NULL organization exist in either table, so plain org scoping fits.
+export const [rlsCaseFormVersionsOrg, rlsCaseFormVersionsStaff] = orgScoped(
+  "case_form_versions",
+  caseFormVersions,
+);
+export const [rlsCaseFormFieldRevisionsOrg, rlsCaseFormFieldRevisionsStaff] =
+  orgScoped("case_form_field_revisions", caseFormFieldRevisions);
+// The attorney's marks on a filing package. Carries its own organization_id
+// for the same reason the values do: the Forms tab reads every mark on the
+// matter in one query, and going through the form to find the firm would make
+// that read a join on every page.
+export const [rlsCaseFormCorrectionsOrg, rlsCaseFormCorrectionsStaff] =
+  orgScoped("case_form_corrections", caseFormCorrections);
+
+export const [rlsCertificationsOrg, rlsCertificationsStaff] = orgScoped(
+  "certifications",
+  certifications,
+);
+export const [rlsClientCompaniesOrg, rlsClientCompaniesStaff] = orgScoped(
+  "client_companies",
+  clientCompanies,
+);
+export const [rlsClientContactsOrg, rlsClientContactsStaff] = orgScoped(
+  "client_contacts",
+  clientContacts,
+);
+export const [rlsClientRequestsOrg, rlsClientRequestsStaff] = orgScoped(
+  "client_requests",
+  clientRequests,
+);
+export const [rlsCompaniesOrg, rlsCompaniesStaff] = orgScoped(
+  "companies",
+  companies,
+);
+export const [rlsConflictChecksOrg, rlsConflictChecksStaff] = orgScoped(
+  "conflict_checks",
+  conflictChecks,
+);
+export const [rlsConsultationLocationsOrg, rlsConsultationLocationsStaff] =
+  orgScoped("consultation_locations", consultationLocations);
+export const [rlsConsultationSettingsOrg, rlsConsultationSettingsStaff] =
+  orgScoped("consultation_settings", consultationSettings);
+export const [rlsConsultationsOrg, rlsConsultationsStaff] = orgScoped(
+  "consultations",
+  consultations,
+);
+export const [
+  rlsConsultationParticipantsOrg,
+  rlsConsultationParticipantsStaff,
+] = orgScoped("consultation_participants", consultationParticipants);
+export const [
+  rlsCaseTypeDocumentRequirementsOrg,
+  rlsCaseTypeDocumentRequirementsStaff,
+] = orgScoped("case_type_document_requirements", caseTypeDocumentRequirements);
+export const [
+  rlsScenarioDocumentRequirementsOrg,
+  rlsScenarioDocumentRequirementsStaff,
+] = orgScoped("scenario_document_requirements", scenarioDocumentRequirements);
+export const [rlsDocumentRequestsOrg, rlsDocumentRequestsStaff] = orgScoped(
+  "document_requests",
+  documentRequests,
+);
+export const [rlsConnectedEmailAccountOrg, rlsConnectedEmailAccountStaff] =
+  orgScoped("connected_email_account", connectedEmailAccount);
+export const [rlsFeeAgreementSettingsOrg, rlsFeeAgreementSettingsStaff] =
+  orgScoped("fee_agreement_settings", feeAgreementSettings);
+export const [rlsFeeAgreementsOrg, rlsFeeAgreementsStaff] = orgScoped(
+  "fee_agreements",
+  feeAgreements,
+);
+export const [rlsFinancialAccessControlsOrg, rlsFinancialAccessControlsStaff] =
+  orgScoped("financial_access_controls", financialAccessControls);
+export const [rlsFirmPracticeAreasOrg, rlsFirmPracticeAreasStaff] = orgScoped(
+  "firm_practice_areas",
+  firmPracticeAreas,
+);
+export const [rlsIntakePipelineTemplatesOrg, rlsIntakePipelineTemplatesStaff] =
+  orgScoped("intake_pipeline_templates", intakePipelineTemplates);
+export const [rlsLeaveRequestsOrg, rlsLeaveRequestsStaff] = orgScoped(
+  "leave_requests",
+  leaveRequests,
+);
+export const [rlsImmigrationCaseDetailsOrg, rlsImmigrationCaseDetailsStaff] =
+  orgScoped("immigration_case_details", immigrationCaseDetails);
+export const [
+  rlsPersonalInjuryCaseDetailsOrg,
+  rlsPersonalInjuryCaseDetailsStaff,
+] = orgScoped("personal_injury_case_details", personalInjuryCaseDetails);
+export const [rlsParalegalProfilesOrg, rlsParalegalProfilesStaff] = orgScoped(
+  "paralegal_profiles",
+  paralegalProfiles,
+);
+export const [rlsRoleAppearanceOrg, rlsRoleAppearanceStaff] = orgScoped(
+  "role_appearance",
+  roleAppearance,
+);
+export const [rlsRoleGroupOrg, rlsRoleGroupStaff] = orgScoped(
+  "role_group",
+  roleGroup,
+);
+// questionnaire_sections / questionnaire_questions / questionnaire_logic_rules
+// are NOT here: their organization_id is nullable (NULL = the platform's own
+// system-scope rows), which `orgScoped`'s strict equality can never match. They
+// take the asymmetric read-NULL/write-owned policy in rls.ts instead — the same
+// one `invoice_line_presets` and `workflow_templates` use.
+export const [rlsQuestionnaireSendsOrg, rlsQuestionnaireSendsStaff] = orgScoped(
+  "questionnaire_sends",
+  questionnaireSends,
+);
+export const [rlsQuestionnaireResponsesOrg, rlsQuestionnaireResponsesStaff] =
+  orgScoped("questionnaire_responses", questionnaireResponses);
+export const [rlsQuestionnaireAnswersOrg, rlsQuestionnaireAnswersStaff] =
+  orgScoped("questionnaire_answers", questionnaireAnswers);
+// Answer history. Firm data like the answers themselves, so the same plain
+// org scoping applies — no NULL-organization rows exist in either table.
+export const [
+  rlsQuestionnaireResponseVersionsOrg,
+  rlsQuestionnaireResponseVersionsStaff,
+] = orgScoped("questionnaire_response_versions", questionnaireResponseVersions);
+export const [
+  rlsQuestionnaireAnswerRevisionsOrg,
+  rlsQuestionnaireAnswerRevisionsStaff,
+] = orgScoped("questionnaire_answer_revisions", questionnaireAnswerRevisions);
+export const [
+  rlsQuestionnaireResponseFilesOrg,
+  rlsQuestionnaireResponseFilesStaff,
+] = orgScoped("questionnaire_response_files", questionnaireResponseFiles);
+export const [rlsStaffAvailabilityOrg, rlsStaffAvailabilityStaff] = orgScoped(
+  "staff_availability",
+  staffAvailability,
+);
+export const [rlsStaffAvailabilityBreaksOrg, rlsStaffAvailabilityBreaksStaff] =
+  orgScoped("staff_availability_breaks", staffAvailabilityBreaks);
+export const [
+  rlsStaffAvailabilityOverridesOrg,
+  rlsStaffAvailabilityOverridesStaff,
+] = orgScoped("staff_availability_overrides", staffAvailabilityOverrides);
 export const [rlsStaffOrg, rlsStaffStaff] = orgScoped("staff", staff);
-export const [rlsSubscriptionsOrg, rlsSubscriptionsStaff] = orgScoped("subscriptions", subscriptions);
+export const [rlsSubscriptionsOrg, rlsSubscriptionsStaff] = orgScoped(
+  "subscriptions",
+  subscriptions,
+);
 export const [rlsTasksOrg, rlsTasksStaff] = orgScoped("tasks", tasks);
-export const [rlsCaseNotesOrg, rlsCaseNotesStaff] = orgScoped("case_notes", caseNotes);
+export const [rlsCaseNotesOrg, rlsCaseNotesStaff] = orgScoped(
+  "case_notes",
+  caseNotes,
+);
 // Unlike the three template tables above, this one is per-matter and carries a
 // NOT NULL organization_id, so the generic factory fits with no caveat.
-export const [rlsWorkflowModuleActivationsOrg, rlsWorkflowModuleActivationsStaff] =
-  orgScoped("workflow_module_activations", workflowModuleActivations);
+export const [
+  rlsWorkflowModuleActivationsOrg,
+  rlsWorkflowModuleActivationsStaff,
+] = orgScoped("workflow_module_activations", workflowModuleActivations);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Parent-scoped tables
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const [rlsCasesToCertificationsOrg, rlsCasesToCertificationsStaff] = parentScoped("cases_to_certifications", casesToCertifications, "case_id", "cases");
-export const [rlsCaseAssignmentsOrg, rlsCaseAssignmentsStaff] = parentScoped("case_assignments", caseAssignments, "case_id", "cases");
-export const [rlsClientNotesOrg, rlsClientNotesStaff] = parentScoped("client_notes", clientNotes, "client_id", "clients");
-export const [rlsClientsToTeamsOrg, rlsClientsToTeamsStaff] = parentScoped("clients_to_teams", clientsToTeams, "client_id", "clients");
-export const [rlsIntakePipelineTemplateStepsOrg, rlsIntakePipelineTemplateStepsStaff] = parentScoped("intake_pipeline_template_steps", intakePipelineTemplateSteps, "template_id", "intake_pipeline_templates");
-export const [rlsLeadDocumentLinksOrg, rlsLeadDocumentLinksStaff] = parentScoped("lead_document_links", leadDocumentLinks, "lead_id", "leads");
-export const [rlsStaffCertificationsOrg, rlsStaffCertificationsStaff] = parentScoped("staff_certifications", staffCertifications, "staff_id", "staff");
-export const [rlsStaffPracticeAreaCaseTypesOrg, rlsStaffPracticeAreaCaseTypesStaff] = parentScoped("staff_practice_area_case_types", staffPracticeAreaCaseTypes, "staff_id", "staff");
-export const [rlsExternalSubmissionsOrg, rlsExternalSubmissionsStaff] = parentScoped("external_submissions", externalSubmissions, "request_id", "document_requests");
-export const [rlsRoleGroupMemberOrg, rlsRoleGroupMemberStaff] = parentScoped("role_group_member", roleGroupMember, "group_id", "role_group");
+// A correction's thread. No organization of its own — a comment belongs to the
+// mark, and a mark that is not the firm's has no comments the firm may read.
+export const [
+  rlsCaseFormCorrectionCommentsOrg,
+  rlsCaseFormCorrectionCommentsStaff,
+] = parentScoped(
+  "case_form_correction_comments",
+  caseFormCorrectionComments,
+  "correction_id",
+  "case_form_corrections",
+);
+export const [rlsCasesToCertificationsOrg, rlsCasesToCertificationsStaff] =
+  parentScoped(
+    "cases_to_certifications",
+    casesToCertifications,
+    "case_id",
+    "cases",
+  );
+export const [rlsCaseAssignmentsOrg, rlsCaseAssignmentsStaff] = parentScoped(
+  "case_assignments",
+  caseAssignments,
+  "case_id",
+  "cases",
+);
+export const [rlsClientNotesOrg, rlsClientNotesStaff] = parentScoped(
+  "client_notes",
+  clientNotes,
+  "client_id",
+  "clients",
+);
+export const [rlsClientsToTeamsOrg, rlsClientsToTeamsStaff] = parentScoped(
+  "clients_to_teams",
+  clientsToTeams,
+  "client_id",
+  "clients",
+);
+export const [
+  rlsIntakePipelineTemplateStepsOrg,
+  rlsIntakePipelineTemplateStepsStaff,
+] = parentScoped(
+  "intake_pipeline_template_steps",
+  intakePipelineTemplateSteps,
+  "template_id",
+  "intake_pipeline_templates",
+);
+export const [rlsLeadDocumentLinksOrg, rlsLeadDocumentLinksStaff] =
+  parentScoped("lead_document_links", leadDocumentLinks, "lead_id", "leads");
+export const [rlsStaffCertificationsOrg, rlsStaffCertificationsStaff] =
+  parentScoped(
+    "staff_certifications",
+    staffCertifications,
+    "staff_id",
+    "staff",
+  );
+export const [
+  rlsStaffPracticeAreaCaseTypesOrg,
+  rlsStaffPracticeAreaCaseTypesStaff,
+] = parentScoped(
+  "staff_practice_area_case_types",
+  staffPracticeAreaCaseTypes,
+  "staff_id",
+  "staff",
+);
+export const [rlsExternalSubmissionsOrg, rlsExternalSubmissionsStaff] =
+  parentScoped(
+    "external_submissions",
+    externalSubmissions,
+    "request_id",
+    "document_requests",
+  );
+export const [rlsRoleGroupMemberOrg, rlsRoleGroupMemberStaff] = parentScoped(
+  "role_group_member",
+  roleGroupMember,
+  "group_id",
+  "role_group",
+);
 
 // `team` and `team_member` are better-auth tables (see the exemptions below),
 // but `team` does carry `organization_id`, so these two join through it.
-export const [rlsTeamMembersOrg, rlsTeamMembersStaff] = parentScoped("team_members", teamMembers, "team_id", "team");
-export const [rlsTeamPracticeAreaCaseTypesOrg, rlsTeamPracticeAreaCaseTypesStaff] = parentScoped("team_practice_area_case_types", teamPracticeAreaCaseTypes, "team_id", "team");
+export const [rlsTeamMembersOrg, rlsTeamMembersStaff] = parentScoped(
+  "team_members",
+  teamMembers,
+  "team_id",
+  "team",
+);
+export const [
+  rlsTeamPracticeAreaCaseTypesOrg,
+  rlsTeamPracticeAreaCaseTypesStaff,
+] = parentScoped(
+  "team_practice_area_case_types",
+  teamPracticeAreaCaseTypes,
+  "team_id",
+  "team",
+);
 
 /**
  * `documents` has no organization column and is shared by leads and matters.
@@ -342,9 +567,14 @@ const throughDocument = (name: string, table: PgTable) => {
   ];
 };
 
-export const [rlsDocumentVersionsOrg, rlsDocumentVersionsStaff] = throughDocument("document_versions", documentVersions);
-export const [rlsDocumentCaseLinksOrg, rlsDocumentCaseLinksStaff] = throughDocument("document_case_links", documentCaseLinks);
-export const [rlsDocumentAccessOrg, rlsDocumentAccessStaff] = throughDocument("document_access", documentAccess);
+export const [rlsDocumentVersionsOrg, rlsDocumentVersionsStaff] =
+  throughDocument("document_versions", documentVersions);
+export const [rlsDocumentCaseLinksOrg, rlsDocumentCaseLinksStaff] =
+  throughDocument("document_case_links", documentCaseLinks);
+export const [rlsDocumentAccessOrg, rlsDocumentAccessStaff] = throughDocument(
+  "document_access",
+  documentAccess,
+);
 
 /**
  * `profiles` is keyed on the user, not the firm — one row per person, and a
@@ -384,28 +614,85 @@ export const RLS_EXEMPTIONS: Record<string, string> = {
   account: "better-auth owns it; holds provider credentials, never tenant data",
   verification: "better-auth owns it; short-lived tokens, no tenant data",
   two_factor: "better-auth owns it; keyed on user, read during authentication",
-  organization: "the tenant list itself; membership is what scopes everything else",
+  organization:
+    "the tenant list itself; membership is what scopes everything else",
   member: "better-auth organization membership; read to resolve the active org",
   invitation: "better-auth invitations; accepted before the invitee has an org",
   team: "better-auth teams; scoped through member, and joined by team_members",
   team_member: "better-auth team membership; the app uses team_members instead",
-  organization_role: "better-auth dynamicAccessControl custom-role storage; scoped by organizationId inside better-auth's own adapter queries, read by role-CRUD endpoints before app-level tenant context is established",
+  organization_role:
+    "better-auth dynamicAccessControl custom-role storage; scoped by organizationId inside better-auth's own adapter queries, read by role-CRUD endpoints before app-level tenant context is established",
+
+  // ── The platform operator tier ───────────────────────────────────────────
+  //
+  // Oravanti's own staff. There is no tenant to scope this by — that is the
+  // point of the table, not an omission — and it is read by
+  // `requirePlatformAdmin` to decide whether a request may touch the platform
+  // catalogue at all, which is before any tenant context could exist. Same
+  // category as `user` and `session` above: identity, not firm data.
+  platform_admins:
+    "the platform operator list itself; has no tenant to be scoped to",
 
   // ── Global reference data, shared by every firm ──────────────────────────
   practice_areas: "global taxonomy, identical for every firm",
   practice_area_case_types: "global taxonomy, identical for every firm",
   practice_area_subcategories: "global taxonomy, identical for every firm",
-  case_type_questionnaires: "platform-authored template, not firm data",
-  case_type_questionnaire_sections: "platform-authored template, not firm data",
-  case_type_questionnaire_questions: "platform-authored template, not firm data",
-  case_type_questionnaire_logic_rules: "platform-authored template, not firm data",
+  // Which forms a case type files. Global for the same reason the form
+  // catalogue it points into is: an adjustment package is a fact about USCIS,
+  // not a preference a firm holds. Written only by platform admins, and a firm
+  // that needs a form this does not list adds it to the one matter instead.
+  case_type_forms:
+    "global reference data: the filing package a case type files; written only by platform admins",
+  questionnaires: "platform-authored template, not firm data",
   // USCIS-published reference data (mandamus candidacy denominator) — global,
   // platform-maintained, identical for every firm. See uscis-processing-time-reference.ts.
-  uscis_processing_time_reference: "global reference data, identical for every firm",
+  uscis_processing_time_reference:
+    "global reference data, identical for every firm",
   // USCIS form-edition register — which edition of a form is acceptable on a
   // given filing date. Global, platform-maintained, identical for every firm,
   // same category as uscis_processing_time_reference above. See form-editions.ts.
   form_editions: "global reference data, identical for every firm",
+  // Which question fills which form field, where the shared `fieldKey`
+  // vocabulary does not already answer it. Moved here from `orgScoped` when
+  // the form catalogue became the platform's: the table no longer has an
+  // `organization_id` to scope by, because a mapping is no longer a firm's to
+  // make. Same guard as the row below.
+  form_field_mappings:
+    "global reference data: which question fills a form field; written only by platform admins",
+  // A form's parts, as far as they are more than a name its fields share: the
+  // description, and the existence of a part that has no fields yet. Same
+  // category as the mappings above and for both halves of the same reason —
+  // there is no tenant to scope a USCIS form's divisions by, and it is
+  // writable only through `/platform`, behind `requirePlatformAdmin`.
+  form_parts:
+    "global reference data: a form's own parts and what they are for; written only by platform admins",
+  // What kind of work a form is *for*, as picked when the form is named. A
+  // classification rather than a filing package: it is read beside
+  // `case_type_forms` on the Forms list so a form shows under its area from the
+  // moment it exists, rather than only once some matter type files it. Same
+  // category as the two rows above — there is no tenant to scope a USCIS blank's
+  // subject matter by, and it is written only through `/platform`, behind
+  // `requirePlatformAdmin`.
+  form_practice_areas:
+    "global reference data: which practice areas a form is for; written only by platform admins",
+  // The global vocabulary: one row per datum the system knows about a matter,
+  // seeded from lib/schema/global-schema.ts. Not tenant-scoped for the same
+  // reason `form_editions` is not — there is nothing firm-specific about what a
+  // date of birth is. A firm extends the *questionnaire*, not the vocabulary: a
+  // firm question that asks something this table does not name simply binds to
+  // no node. Written only by the seed, which runs as a platform admin.
+  schema_nodes:
+    "global reference data: the datum vocabulary every firm shares; written only by the seed",
+  // Which box on a USCIS blank a field key prints into. A property of the
+  // published PDF, so identical for every firm — but note that "no tenant to
+  // scope by" is only half of why this is safe. The other half is that it is
+  // now writable *only* through `/platform`, behind `requirePlatformAdmin`.
+  // Until that guard existed this table was reachable with `cases:update`, so
+  // any firm staffer editing a matter could repoint a box on the I-485 for
+  // every firm in the deployment. An exemption is a statement about who can
+  // write, not only about who can read.
+  form_pdf_field_mappings:
+    "global reference data: which box on a USCIS blank a field key prints into; written only by platform admins",
   // The State Department's monthly Visa Bulletin, snapshotted. Published to the
   // world and identical for every firm — same category as the two above.
   visa_bulletin_cutoffs: "global reference data, identical for every firm",
@@ -438,11 +725,15 @@ export const RLS_EXEMPTIONS: Record<string, string> = {
   // ── Cross-tenant by design ───────────────────────────────────────────────
   payment_webhook_events:
     "provider callbacks land before the tenant is resolved; the handler scopes them",
-  contractors: "a contractor is a platform-level person who works for many firms",
+  contractors:
+    "a contractor is a platform-level person who works for many firms",
   contractor_specialties: "hangs off contractors, which is cross-firm",
-  contractor_payment_details: "hangs off contractors; gated by app-level permission",
-  contractor_certification_documents: "hangs off contractors, which is cross-firm",
-  contractor_identification_documents: "hangs off contractors, which is cross-firm",
+  contractor_payment_details:
+    "hangs off contractors; gated by app-level permission",
+  contractor_certification_documents:
+    "hangs off contractors, which is cross-firm",
+  contractor_identification_documents:
+    "hangs off contractors, which is cross-firm",
   // The platform sends SMS from one number and email from one domain, so a STOP
   // and a hard bounce are facts about the address, not about one firm's
   // relationship with it. Both tables carry a nullable, unlinked

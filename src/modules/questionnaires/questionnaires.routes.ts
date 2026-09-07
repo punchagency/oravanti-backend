@@ -6,6 +6,7 @@ import { preserveRequestContext } from "../../middleware/request-context";
 import { resolveActorContext } from "../../middleware/resolve-actor-context";
 
 import { requirePermission } from "../../middleware/permission.middleware";
+import { requirePlatformAdmin } from "../../middleware/require-platform-admin";
 
 import { validateRequest } from "../../middleware/validate.middleware";
 import { QuestionnairesController } from "./questionnaires.controller";
@@ -139,33 +140,126 @@ export class QuestionnairesRouter {
     this.router.use(requireAuth);
     this.router.use(resolveActorContext);
 
-    // System questionnaire management (platform admin)
-    this.router.get("/system", ctrl.getSystemQuestionnaires);
+    /*
+      What a question can be wired to — the same list for both tiers.
+
+      Two routes rather than one because the guards are what differ: a firm
+      admin names its own questions, an operator names Oravanti's, and both
+      choose from the one form catalogue. Registered before `/system/:id`,
+      which would otherwise match `/system/field-vocabulary` and go looking for
+      a questionnaire by that id.
+    */
+    this.router.get(
+      "/field-vocabulary",
+      requirePermission("workflow", "read"),
+      ctrl.getFieldVocabulary,
+    );
+    this.router.get(
+      "/system/field-vocabulary",
+      requirePlatformAdmin,
+      ctrl.getFieldVocabulary,
+    );
+
+    /*
+      System questionnaire management — the platform's backbone.
+      
+      These five write `scope: "system"` rows with a NULL `organization_id`,
+      which every firm in the deployment reads. They were commented "platform
+      admin" and gated on nothing but `requireAuth`: the service docblock
+      claimed an authority the app could not check. RLS stopped the insert
+      (a tenant connection cannot write a NULL org), so the practical result
+      was a 500 rather than a breach — but the guard is the thing that should
+      have said so.
+      
+      `requirePlatformAdmin` per route rather than mounted, because this router
+      serves firm staff and clients on every other path. It is the one place in
+      the codebase where a per-route guard is the right shape.
+    */
+    this.router.get("/system", requirePlatformAdmin, ctrl.getSystemQuestionnaires);
     this.router.post(
       "/system",
+      requirePlatformAdmin,
       validateRequest({ body: v.createSystemQuestionnaireBodySchema }),
       ctrl.createSystemQuestionnaire,
     );
     this.router.get(
       "/system/:id",
+      requirePlatformAdmin,
       validateRequest({ params: v.systemQuestionnaireIdParamsSchema }),
       ctrl.getSystemQuestionnaireById,
     );
     this.router.post(
       "/system/:id/sections",
+      requirePlatformAdmin,
       validateRequest({ params: v.systemQuestionnaireIdParamsSchema, body: v.addSectionBodySchema }),
       ctrl.addSystemSection,
     );
     this.router.post(
       "/system/:id/sections/:sectionId/questions",
+      requirePlatformAdmin,
       validateRequest({ params: v.systemSectionParamsSchema }),
       ctrl.addSystemQuestion,
     );
 
-    // Firm questionnaire additions (org-scoped merged view + CRUD)
+    /*
+      Editing and removing the backbone.
+
+      The firm-facing `/sections/:sectionId` and `/questions/:questionId` below
+      cannot reach these rows — they match on the caller's `organizationId`,
+      and a platform row carries none — so the two tiers need separate routes
+      even though the tables are shared. That asymmetry is the ownership rule
+      made routable: a firm edits what it wrote, Oravanti edits what it
+      published, and neither pair of routes can be pointed at the other's rows.
+
+      Nested under the questionnaire they belong to rather than addressed by
+      bare id, because a platform admin holds no tenant scope at all — the path
+      is the only thing left saying which questionnaire is being changed, and a
+      reader of the audit trail deserves to see it.
+    */
+    this.router.patch(
+      "/system/:id",
+      requirePlatformAdmin,
+      validateRequest({
+        params: v.systemQuestionnaireIdParamsSchema,
+        body: v.updateSystemQuestionnaireBodySchema,
+      }),
+      ctrl.updateSystemQuestionnaire,
+    );
+    this.router.patch(
+      "/system/:id/sections/:sectionId",
+      requirePlatformAdmin,
+      validateRequest({
+        params: v.systemSectionParamsSchema,
+        body: v.updateSectionBodySchema,
+      }),
+      ctrl.updateSystemSection,
+    );
+    this.router.delete(
+      "/system/:id/sections/:sectionId",
+      requirePlatformAdmin,
+      validateRequest({ params: v.systemSectionParamsSchema }),
+      ctrl.deleteSystemSection,
+    );
+    this.router.patch(
+      "/system/:id/sections/:sectionId/questions/:questionId",
+      requirePlatformAdmin,
+      validateRequest({
+        params: v.systemQuestionParamsSchema,
+        body: v.updateQuestionBodySchema,
+      }),
+      ctrl.updateSystemQuestion,
+    );
+    this.router.delete(
+      "/system/:id/sections/:sectionId/questions/:questionId",
+      requirePlatformAdmin,
+      validateRequest({ params: v.systemQuestionParamsSchema }),
+      ctrl.deleteSystemQuestion,
+    );
+
+    // Firm additions — apply to every matter of this case type.
     this.router.get(
       "/case-type/:caseTypeId",
-      validateRequest({ params: v.caseTypeIdParamsSchema }),
+      validateRequest({ params: v.caseTypeIdParamsSchema, query: v.stageQuerySchema }),
       ctrl.getMergedQuestionnaire,
     );
     this.router.get(
@@ -176,32 +270,123 @@ export class QuestionnairesRouter {
     this.router.post(
       "/case-type/:caseTypeId/sections",
       validateRequest({ params: v.caseTypeIdParamsSchema, body: v.addSectionBodySchema }),
-      ctrl.addFirmSection,
-    );
-    this.router.patch(
-      "/case-type/:caseTypeId/sections/:sectionId",
-      validateRequest({ params: v.firmSectionParamsSchema, body: v.addSectionBodySchema }),
-      ctrl.updateFirmSection,
-    );
-    this.router.delete(
-      "/case-type/:caseTypeId/sections/:sectionId",
-      validateRequest({ params: v.firmSectionParamsSchema }),
-      ctrl.deleteFirmSection,
+      ctrl.addSection,
     );
     this.router.post(
       "/case-type/:caseTypeId/questions",
-      validateRequest({ params: v.caseTypeIdParamsSchema, body: v.addFirmQuestionBodySchema }),
-      ctrl.addFirmQuestion,
+      validateRequest({ params: v.caseTypeIdParamsSchema, body: v.addQuestionBodySchema }),
+      ctrl.addQuestion,
     );
+
+    // Per-matter additions — the same handlers, reached by a route that names a
+    // case instead of a case type. That path, not the body, is what makes the
+    // write case-scoped.
+    this.router.get(
+      "/case/:caseId",
+      validateRequest({ params: v.caseIdParamsSchema }),
+      ctrl.getCaseQuestionnaire,
+    );
+    this.router.post(
+      "/case/:caseId/sections",
+      validateRequest({ params: v.caseIdParamsSchema, body: v.addSectionBodySchema }),
+      ctrl.addSection,
+    );
+    this.router.post(
+      "/case/:caseId/questions",
+      validateRequest({ params: v.caseIdParamsSchema, body: v.addQuestionBodySchema }),
+      ctrl.addQuestion,
+    );
+
+    // Read-only: the intake answers the matter came from. Kept as history, not
+    // reopened for editing — see the service.
+    this.router.get(
+      "/case/:caseId/intake",
+      validateRequest({ params: v.caseIdParamsSchema }),
+      ctrl.getIntakeResponseForCase,
+    );
+
+    // The matter's own answers. One response per matter whichever way it was
+    // filled, so staff typing on a call and a client answering a link write
+    // the same row rather than two half-answered copies.
+    this.router.get(
+      "/case/:caseId/response",
+      validateRequest({ params: v.caseIdParamsSchema }),
+      ctrl.getCaseResponse,
+    );
+    this.router.put(
+      "/case/:caseId/answers",
+      validateRequest({
+        params: v.caseIdParamsSchema,
+        body: v.saveCaseAnswersBodySchema,
+      }),
+      ctrl.saveCaseAnswers,
+    );
+
+    // Sending is delivery, not authorship: the questionnaire is already what
+    // it is, so this only chooses which of its sections the client sees.
+    this.router.post(
+      "/case/:caseId/send",
+      validateRequest({
+        params: v.caseIdParamsSchema,
+        body: v.sendCaseQuestionnaireBodySchema,
+      }),
+      ctrl.sendCaseQuestionnaire,
+    );
+
+    // Answer history. Every one of these hangs off the matter, so opening the
+    // matter is the only permission question — an id alone opens nothing.
+    this.router.get(
+      "/case/:caseId/versions",
+      validateRequest({ params: v.caseIdParamsSchema }),
+      ctrl.getCaseVersions,
+    );
+    this.router.get(
+      "/case/:caseId/versions/:versionId",
+      validateRequest({ params: v.caseVersionParamsSchema }),
+      ctrl.getCaseVersion,
+    );
+    this.router.get(
+      "/case/:caseId/questions/:questionId/history",
+      validateRequest({ params: v.caseQuestionParamsSchema }),
+      ctrl.getAnswerHistory,
+    );
+
+    // Restores are POSTs, not PUTs: each one writes a new version rather than
+    // putting the response back to a previous state, so repeating it is not the
+    // same as doing it once.
+    this.router.post(
+      "/case/:caseId/versions/:versionId/restore",
+      validateRequest({ params: v.caseVersionParamsSchema }),
+      ctrl.restoreVersion,
+    );
+    this.router.post(
+      "/case/:caseId/revisions/:revisionId/restore",
+      validateRequest({ params: v.caseRevisionParamsSchema }),
+      ctrl.restoreAnswer,
+    );
+
+    // Editing and deletion address the row by id and match on the owning org,
+    // so one pair of routes covers both tiers — and neither can reach a
+    // platform-owned row, whose organization_id is null.
     this.router.patch(
-      "/case-type/:caseTypeId/questions/:questionId",
-      validateRequest({ params: v.firmQuestionParamsSchema, body: v.updateFirmQuestionBodySchema }),
-      ctrl.updateFirmQuestion,
+      "/sections/:sectionId",
+      validateRequest({ params: v.sectionParamsSchema, body: v.addSectionBodySchema }),
+      ctrl.updateSection,
     );
     this.router.delete(
-      "/case-type/:caseTypeId/questions/:questionId",
-      validateRequest({ params: v.firmQuestionParamsSchema }),
-      ctrl.deleteFirmQuestion,
+      "/sections/:sectionId",
+      validateRequest({ params: v.sectionParamsSchema }),
+      ctrl.deleteSection,
+    );
+    this.router.patch(
+      "/questions/:questionId",
+      validateRequest({ params: v.questionParamsSchema, body: v.updateQuestionBodySchema }),
+      ctrl.updateQuestion,
+    );
+    this.router.delete(
+      "/questions/:questionId",
+      validateRequest({ params: v.questionParamsSchema }),
+      ctrl.deleteQuestion,
     );
 
     // Case-eligible questionnaire

@@ -1,6 +1,11 @@
 import { z } from "zod";
+import { FIELD_KEY } from "./repeat-group";
 import { caseMilestoneEnum } from "../../db/schema/case-milestones";
-import { caseFormRoleEnum, caseFormStatusEnum } from "../../db/schema/case-forms";
+import {
+  caseFormRoleEnum,
+  caseFormStatusEnum,
+} from "../../db/schema/case-forms";
+import { caseFormCorrectionColorEnum } from "../../db/schema/case-form-corrections";
 import {
   filingTrackEnum,
   petitionerStatusEnum,
@@ -37,12 +42,30 @@ export const upsertImmigrationDetailsBody = z
 
     // § 1.1 eligibility. Setting an input recomputes `filingTrack` and
     // `preferenceCategory` unless `filingTrackIsManual` is on.
-    petitionerStatus: z.enum(petitionerStatusEnum.enumValues).nullable().optional(),
-    relationshipCategory: z.enum(relationshipCategoryEnum.enumValues).nullable().optional(),
-    preferenceCategory: z.enum(preferenceCategoryEnum.enumValues).nullable().optional(),
+    petitionerStatus: z
+      .enum(petitionerStatusEnum.enumValues)
+      .nullable()
+      .optional(),
+    relationshipCategory: z
+      .enum(relationshipCategoryEnum.enumValues)
+      .nullable()
+      .optional(),
+    preferenceCategory: z
+      .enum(preferenceCategoryEnum.enumValues)
+      .nullable()
+      .optional(),
     filingTrackIsManual: z.boolean().optional(),
-    countryOfChargeability: z.string().trim().min(1).max(64).nullable().optional(),
-    naturalizationTrack: z.enum(naturalizationTrackEnum.enumValues).nullable().optional(),
+    countryOfChargeability: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .nullable()
+      .optional(),
+    naturalizationTrack: z
+      .enum(naturalizationTrackEnum.enumValues)
+      .nullable()
+      .optional(),
 
     lprDate: optionalDate,
     eligibilityDate: optionalDate,
@@ -92,10 +115,14 @@ export const upsertImmigrationDetailsBody = z
     closureType: z.string().trim().min(1).nullable().optional(),
   })
   .strict()
-  .refine((body) => Object.keys(body).length > 0, { message: "No fields to update" })
+  .refine((body) => Object.keys(body).length > 0, {
+    message: "No fields to update",
+  })
   .refine(
     (body) =>
-      !body.rfeIssuedDate || !body.rfeDeadline || body.rfeDeadline > body.rfeIssuedDate,
+      !body.rfeIssuedDate ||
+      !body.rfeDeadline ||
+      body.rfeDeadline > body.rfeIssuedDate,
     {
       // A deadline on or before the issue date yields no reminder schedule at
       // all (`rfeReminderSchedule` returns []), which would look like the hook
@@ -130,7 +157,9 @@ export const upsertPersonalInjuryDetailsBody = z
     fundsReceivedDate: optionalDate,
   })
   .strict()
-  .refine((body) => Object.keys(body).length > 0, { message: "No fields to update" });
+  .refine((body) => Object.keys(body).length > 0, {
+    message: "No fields to update",
+  });
 
 /**
  * Recording what the agency did.
@@ -164,8 +193,68 @@ export const formCodeParam = z.object({
   formCode: z
     .string()
     .trim()
-    .regex(/^[A-Z]{1,4}-\d{1,4}[A-Z]?$/, "Expected a form code like I-485 or I-130A"),
+    .regex(
+      /^[A-Z]{1,4}-\d{1,4}[A-Z]?$/,
+      "Expected a form code like I-485 or I-130A",
+    ),
 });
+
+/**
+ * One field on one form.
+ *
+ * `fieldKey` is validated by shape for the same reason `formCode` is: the
+ * catalogue is seeded content that grows, and the endpoint checks the key
+ * against `form_field_definitions` anyway. This only keeps a malformed key out
+ * of the query.
+ */
+export const formFieldParam = formCodeParam.extend({
+  fieldKey: z
+    .string()
+    .trim()
+    .regex(
+      FIELD_KEY,
+      "Expected a field key like beneficiary.date_of_birth",
+    ),
+});
+
+/**
+ * A hand-typed correction to one field.
+ *
+ * `value` is unknown rather than a string: field values share the `jsonb` shape
+ * of questionnaire answers, so a multi-select answers with an array and a yes/no
+ * with a boolean, and narrowing here would make those unrepresentable.
+ */
+export const setFormFieldBody = z
+  .object({
+    value: z.unknown(),
+  })
+  .strict();
+
+/**
+ * A whole form saved at once.
+ *
+ * The Forms tab saves on an explicit press rather than on every blur, so the
+ * request carries everything that changed since the last one. `value` stays
+ * unknown for the same reason it does above: a field is `jsonb`, and an
+ * explicit null clears it.
+ *
+ * The cap is a bound on one request, not a policy about how much of a form a
+ * person may fill — so it has to clear the largest form in the catalogue with
+ * room to spare. It was 500 against an I-485 of 512 fields, which made "fill
+ * the whole thing and press Save" the one case it refused.
+ */
+export const setFormFieldsBody = z
+  .object({
+    fields: z
+      .array(
+        z.object({
+          fieldKey: z.string().trim().regex(FIELD_KEY, "Expected a field key"),
+          value: z.unknown(),
+        }),
+      )
+      .max(2000),
+  })
+  .strict();
 
 /** What may be set on one form of a matter's filing package. */
 export const updateCaseFormBody = z
@@ -195,7 +284,10 @@ export const initializeCaseFormsBody = z
           formCode: z
             .string()
             .trim()
-            .regex(/^[A-Z]{1,4}-\d{1,4}[A-Z]?$/, "Expected a form code like I-485 or I-130A"),
+            .regex(
+              /^[A-Z]{1,4}-\d{1,4}[A-Z]?$/,
+              "Expected a form code like I-485 or I-130A",
+            ),
           role: z.enum(caseFormRoleEnum.enumValues).default("core"),
         }),
       )
@@ -203,4 +295,100 @@ export const initializeCaseFormsBody = z
       .max(20)
       .optional(),
   })
+  .strict();
+
+/**
+ * How to run a population pass.
+ *
+ * Both flags default to false, and that ordering matters: the safe pass is the
+ * one you get by asking for nothing. Replacing somebody's hand edit has to be
+ * spelled out.
+ */
+export const populateFormsBody = z
+  .object({
+    /** Replace hand-edited values the questionnaire now disagrees with. */
+    overrideManual: z.boolean().optional(),
+    /** Report what the pass would do, and write none of it. */
+    dryRun: z.boolean().optional(),
+  })
+  .strict()
+  .optional();
+
+// ─── The form catalogue ─────────────────────────────────────────────────────
+//
+// Adding and rewording forms and their fields, from the Forms tab. The shapes
+// mirror the questionnaire's section and question bodies, because the two are
+// the same actions on two catalogues and a paralegal moves between them.
+
+/**
+ * A form a firm is adding.
+ *
+ * `formCode` is required and immutable afterwards: it is the identity every
+ * value, mapping and filing on the matter is keyed by, and renaming it would
+ * orphan all three. The title is what changes when somebody "renames a form".
+ */
+/**
+ * Putting a form Oravanti publishes onto this matter.
+ *
+ * No `title` or `description`: this used to name the form *and* file it,
+ * because a firm could author its own catalogue entry. It cannot — see
+ * `db/schema/form-fields.ts` — so the only choice left here is which of the
+ * published forms, which the path already carries, and what part it plays in
+ * the filing.
+ */
+export const addCaseFormBody = z
+  .object({
+    /** Whether USCIS receipts it in its own right. Defaults to a core filing. */
+    role: z.enum(caseFormRoleEnum.enumValues).default("core"),
+  })
+  .strict();
+
+// ─── Form history ───────────────────────────────────────────────────────────
+
+export const formVersionParam = formCodeParam.extend({
+  versionId: z.string().uuid(),
+});
+
+export const formRevisionParam = z.object({
+  caseId: z.string().uuid(),
+  revisionId: z.string().uuid(),
+});
+
+// ─── Attorney review of the filing package ──────────────────────────────────
+
+export const correctionParam = z.object({
+  caseId: z.string().uuid(),
+  correctionId: z.string().uuid(),
+});
+
+/**
+ * A mark on the package.
+ *
+ * `partLabel` and `fieldKey` are the two anchors and exactly one is given —
+ * checked in the service, where the sentence a person reads can name both. The
+ * note is required and trimmed: a coloured mark with no words is a message
+ * whoever has to act on it cannot read.
+ */
+export const raiseCorrectionBody = z
+  .object({
+    caseFormId: z.string().uuid(),
+    partLabel: z.string().trim().min(1).max(200).nullable().optional(),
+    fieldKey: z
+      .string()
+      .trim()
+      .regex(FIELD_KEY, "Expected a field key like beneficiary.date_of_birth")
+      .nullable()
+      .optional(),
+    color: z.enum(caseFormCorrectionColorEnum.enumValues).optional(),
+    note: z.string().trim().min(1).max(2000),
+  })
+  .strict();
+
+/** Resolving and reopening both say why, in the same shape. */
+export const correctionNoteBody = z
+  .object({ note: z.string().trim().min(1).max(2000) })
+  .strict();
+
+export const correctionCommentBody = z
+  .object({ body: z.string().trim().min(1).max(2000) })
   .strict();

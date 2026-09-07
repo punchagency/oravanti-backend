@@ -6,7 +6,7 @@
  * the gap widening). One implementation, so the number the report prints and
  * the number the test enforces can never disagree.
  *
- * ─── The four ways a route can be gated ─────────────────────────────────────
+ * ─── The five ways a route can be gated ─────────────────────────────────────
  *
  *   `requireResource("cases")` on the router
  *       Gates everything mounted under it, deriving create/read/update/delete
@@ -18,6 +18,13 @@
  *       (owner/admin) rather than a grantable permission — for pages like
  *       RBAC management where the ability to grant `ac:*` must not be able
  *       to grant itself.
+ *
+ *   `requirePlatformAdmin` on the router
+ *       Gates everything mounted under it on membership of the Oravanti
+ *       operator tier. Not a grantable permission and deliberately not
+ *       expressible as one: no firm role can be configured to reach the
+ *       platform catalogue, because the check is "is this person Oravanti",
+ *       which no firm administers.
  *
  *   `requirePermission({ audit: ["read"] })` on one route
  *       For actions the method does not imply — an export is a GET, but it
@@ -69,6 +76,12 @@ const ROUTE_DECL = /\.(get|post|put|patch|delete)\s*\(/g;
 const MOUNTS_AUTH = /\.use\([^)]*requireAuth/s;
 const MOUNTS_RESOURCE = /\.use\([^)]*requireResource\(/s;
 const MOUNTS_OWNER_OR_ADMIN = /\.use\([^)]*requireOwnerOrAdmin\(/s;
+/*
+  No trailing `\(` — unlike the two above, this guard is mounted as a bare
+  reference (`.use(requirePlatformAdmin)`) rather than called to build one,
+  because it takes no configuration. There is one operator tier to belong to.
+*/
+const MOUNTS_PLATFORM_ADMIN = /\.use\([^)]*requirePlatformAdmin/s;
 
 const modulesDir = (root: string) => join(root, "src", "modules");
 
@@ -94,7 +107,10 @@ export function auditRoutes(repoRoot: string): RouteModuleReport[] {
         file,
         routes: (src.match(ROUTE_DECL) ?? []).length,
         authenticated: MOUNTS_AUTH.test(src),
-        resourceGated: MOUNTS_RESOURCE.test(src) || MOUNTS_OWNER_OR_ADMIN.test(src),
+        resourceGated:
+          MOUNTS_RESOURCE.test(src) ||
+          MOUNTS_OWNER_OR_ADMIN.test(src) ||
+          MOUNTS_PLATFORM_ADMIN.test(src),
         permissionChecks: (src.match(/requirePermission\s*\(/g) ?? []).length,
       };
     })

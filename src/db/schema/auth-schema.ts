@@ -18,6 +18,15 @@ export const accountTypeEnum = pgEnum("user_account_type", [
   "staff",
   "contractor",
   "client",
+  /**
+   * Oravanti itself, not a firm.
+   *
+   * A platform admin belongs to no organization, which is the whole point:
+   * `requireAuth` gives it no tenant connection and `resolveActorContext`
+   * refuses to give it one, so it can never read a firm's matters. See
+   * `db/schema/platform-admins.ts`.
+   */
+  "platform_admin",
 ]);
 
 export const onboardingStatusEnum = pgEnum("onboarding_status", [

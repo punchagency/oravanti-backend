@@ -78,6 +78,7 @@ const ACTOR_NAME_FALLBACK: Record<ActorType, string> = {
   staff: "Unknown staff member",
   client: "Unknown client",
   contractor: "Unknown contractor",
+  platform: "Oravanti",
   system: "System",
   anonymous: "Anonymous",
 };

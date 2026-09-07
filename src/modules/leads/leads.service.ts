@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
+import type { PgColumn } from "drizzle-orm/pg-core";
 import { MINIMUM_CONSULTATION_FEE } from "../../config/constants";
 import {
   aliasedTable,
@@ -73,14 +74,12 @@ import { leads } from "../../db/schema/leads";
 import { labelFor } from "../../lib/audit/actions";
 import { practiceAreaCaseTypes } from "../../db/schema/practice-area-case-types";
 import { practiceAreas } from "../../db/schema/practice-areas";
+import { questionnaireQuestionTypeEnum } from "../../db/schema/enums";
 import {
-  caseTypeQuestionnaireLogicRules,
-  caseTypeQuestionnaireQuestions,
-  caseTypeQuestionnaires,
-  caseTypeQuestionnaireSections,
-  firmQuestionnaireLogicRules,
-  firmQuestionnaireQuestions,
-  firmQuestionnaireSections,
+  questionnaireLogicRules,
+  questionnaireQuestions,
+  questionnaires,
+  questionnaireSections,
   questionnaireResponses,
   questionnaireSends,
 } from "../../db/schema/questionnaires";
@@ -341,167 +340,104 @@ const enrichMatchesWithCaseContext = async (
 
 // ─── Questionnaire Snapshot Builder ──────────────────────────────────────────
 
+/**
+ * Freeze a questionnaire as it stands, so a response can still be read back
+ * years later against the questions that were actually asked.
+ *
+ * The snapshot keeps `scope` on every section and question. It is no longer
+ * load-bearing — an answer's `question_id` is a foreign key now, so nothing has
+ * to consult the snapshot to work out which table a question came from — but it
+ * still records who authored each question at the moment it was put, which is
+ * the part a reader six months later actually wants.
+ */
 const buildSchemaSnapshot = async (
   organizationId: string,
-  caseTypeQuestionnaireId: string,
+  questionnaireId: string,
 ) => {
   const [questionnaire] = await db
     .select()
-    .from(caseTypeQuestionnaires)
-    .where(eq(caseTypeQuestionnaires.id, caseTypeQuestionnaireId))
+    .from(questionnaires)
+    .where(eq(questionnaires.id, questionnaireId))
     .limit(1);
 
   if (!questionnaire) return null;
 
-  const systemSections = await db
-    .select()
-    .from(caseTypeQuestionnaireSections)
-    .where(
-      eq(
-        caseTypeQuestionnaireSections.questionnaireId,
-        caseTypeQuestionnaireId,
-      ),
-    );
+  // Everything this firm can see: the platform's rows and its own. Per-matter
+  // rows are excluded — an intake questionnaire predates any case, and a case
+  // questionnaire snapshots per send, which carries its own caseId.
+  const visible = (col: { organizationId: PgColumn }) =>
+    or(isNull(col.organizationId), eq(col.organizationId, organizationId));
 
-  const systemQuestions = await db
-    .select()
-    .from(caseTypeQuestionnaireQuestions)
-    .where(
-      eq(
-        caseTypeQuestionnaireQuestions.questionnaireId,
-        caseTypeQuestionnaireId,
+  const [sections, questions, logicRules] = await Promise.all([
+    db
+      .select()
+      .from(questionnaireSections)
+      .where(
+        and(
+          eq(questionnaireSections.questionnaireId, questionnaireId),
+          isNull(questionnaireSections.caseId),
+          visible(questionnaireSections),
+        ),
       ),
-    );
-
-  const systemLogicRules = await db
-    .select()
-    .from(caseTypeQuestionnaireLogicRules)
-    .where(
-      eq(
-        caseTypeQuestionnaireLogicRules.questionnaireId,
-        caseTypeQuestionnaireId,
+    db
+      .select()
+      .from(questionnaireQuestions)
+      .where(
+        and(
+          eq(questionnaireQuestions.questionnaireId, questionnaireId),
+          isNull(questionnaireQuestions.caseId),
+          visible(questionnaireQuestions),
+        ),
       ),
-    );
-
-  const firmSections = await db
-    .select()
-    .from(firmQuestionnaireSections)
-    .where(
-      and(
-        eq(firmQuestionnaireSections.organizationId, organizationId),
-        eq(firmQuestionnaireSections.caseTypeId, questionnaire.caseTypeId),
+    db
+      .select()
+      .from(questionnaireLogicRules)
+      .where(
+        and(
+          eq(questionnaireLogicRules.questionnaireId, questionnaireId),
+          isNull(questionnaireLogicRules.caseId),
+          visible(questionnaireLogicRules),
+        ),
       ),
-    );
+  ]);
 
-  const firmQs = await db
-    .select()
-    .from(firmQuestionnaireQuestions)
-    .where(
-      and(
-        eq(firmQuestionnaireQuestions.organizationId, organizationId),
-        eq(firmQuestionnaireQuestions.caseTypeId, questionnaire.caseTypeId),
-      ),
-    );
+  const byScopeThenOrder = (
+    a: { scope: string; orderIndex: number },
+    b: { scope: string; orderIndex: number },
+  ) =>
+    (a.scope === "system" ? 0 : 1) - (b.scope === "system" ? 0 : 1) ||
+    a.orderIndex - b.orderIndex;
 
-  const firmLogicRules = await db
-    .select()
-    .from(firmQuestionnaireLogicRules)
-    .where(
-      and(
-        eq(firmQuestionnaireLogicRules.organizationId, organizationId),
-        eq(firmQuestionnaireLogicRules.caseTypeId, questionnaire.caseTypeId),
-      ),
-    );
-
-  const qBySection = new Map<string, typeof systemQuestions>();
-  for (const q of systemQuestions) {
-    const arr = qBySection.get(q.sectionId) ?? [];
+  const questionsBySection = new Map<string, typeof questions>();
+  for (const q of [...questions].sort(byScopeThenOrder)) {
+    const arr = questionsBySection.get(q.sectionId) ?? [];
     arr.push(q);
-    qBySection.set(q.sectionId, arr);
+    questionsBySection.set(q.sectionId, arr);
   }
-
-  const firmQBySystemSection = new Map<string, typeof firmQs>();
-  const firmQByFirmSection = new Map<string, typeof firmQs>();
-  for (const q of firmQs) {
-    if (q.systemSectionId) {
-      const arr = firmQBySystemSection.get(q.systemSectionId) ?? [];
-      arr.push(q);
-      firmQBySystemSection.set(q.systemSectionId, arr);
-    } else if (q.firmSectionId) {
-      const arr = firmQByFirmSection.get(q.firmSectionId) ?? [];
-      arr.push(q);
-      firmQByFirmSection.set(q.firmSectionId, arr);
-    }
-  }
-
-  const builtSections = [
-    ...systemSections
-      .sort((a, b) => a.orderIndex - b.orderIndex)
-      .map((s) => ({
-        id: s.id,
-        source: "system",
-        title: s.title,
-        description: s.description,
-        questions: [
-          ...(qBySection.get(s.id) ?? [])
-            .sort((a, b) => a.orderIndex - b.orderIndex)
-            .map((q) => ({
-              id: q.id,
-              source: "system",
-              label: q.label,
-              description: q.description,
-              type: q.type,
-              orderIndex: q.orderIndex,
-              isRequired: q.isRequired,
-              config: q.config,
-              isLocked: true,
-            })),
-          ...(firmQBySystemSection.get(s.id) ?? [])
-            .sort((a, b) => a.orderIndex - b.orderIndex)
-            .map((q) => ({
-              id: q.id,
-              source: "firm",
-              label: q.label,
-              description: q.description,
-              type: q.type,
-              orderIndex: q.orderIndex,
-              isRequired: q.isRequired,
-              config: q.config,
-              isLocked: false,
-            })),
-        ],
-      })),
-    ...firmSections
-      .sort((a, b) => a.orderIndex - b.orderIndex)
-      .map((s) => ({
-        id: s.id,
-        source: "firm",
-        title: s.title,
-        description: s.description,
-        questions: (firmQByFirmSection.get(s.id) ?? [])
-          .sort((a, b) => a.orderIndex - b.orderIndex)
-          .map((q) => ({
-            id: q.id,
-            source: "firm",
-            label: q.label,
-            description: q.description,
-            type: q.type,
-            orderIndex: q.orderIndex,
-            isRequired: q.isRequired,
-            config: q.config,
-            isLocked: false,
-          })),
-      })),
-  ];
 
   return {
     title: questionnaire.title,
     description: questionnaire.description,
-    sections: builtSections,
-    logicRules: [
-      ...systemLogicRules.map((r) => ({ ...r, source: "system" })),
-      ...firmLogicRules.map((r) => ({ ...r, source: "firm" })),
-    ],
+    stage: questionnaire.stage,
+    sections: [...sections].sort(byScopeThenOrder).map((s) => ({
+      id: s.id,
+      scope: s.scope,
+      title: s.title,
+      description: s.description,
+      questions: (questionsBySection.get(s.id) ?? []).map((q) => ({
+        id: q.id,
+        scope: q.scope,
+        fieldKey: q.fieldKey,
+        label: q.label,
+        description: q.description,
+        type: q.type,
+        orderIndex: q.orderIndex,
+        isRequired: q.isRequired,
+        config: q.config,
+        isLocked: q.scope === "system",
+      })),
+    })),
+    logicRules,
   };
 };
 
@@ -2135,7 +2071,8 @@ const resolveConflictCheck = async (
 
 type CustomQuestionInput = {
   label: string;
-  type?: string;
+  /** Narrowed to the question-type enum, so persisting one needs no cast. */
+  type?: (typeof questionnaireQuestionTypeEnum.enumValues)[number];
   isRequired?: boolean;
   saveToFirm?: boolean;
 };
@@ -2160,38 +2097,41 @@ export type SendQuestionnaireConfig = {
  */
 const getOrCreateFirmAdditionsSection = async (
   organizationId: string,
-  caseTypeId: string,
+  questionnaireId: string,
 ) => {
   const existing = await db
     .select()
-    .from(firmQuestionnaireSections)
+    .from(questionnaireSections)
     .where(
       and(
-        eq(firmQuestionnaireSections.organizationId, organizationId),
-        eq(firmQuestionnaireSections.caseTypeId, caseTypeId),
-        eq(firmQuestionnaireSections.title, "Additional questions"),
+        eq(questionnaireSections.questionnaireId, questionnaireId),
+        eq(questionnaireSections.organizationId, organizationId),
+        eq(questionnaireSections.scope, "firm"),
+        eq(questionnaireSections.title, "Additional questions"),
       ),
     )
     .limit(1);
   if (existing[0]) return existing[0];
 
-  const [{ value: maxOrder } = { value: 0 }] = await db
+  const [{ value: firmSectionCount } = { value: 0 }] = await db
     .select({ value: count() })
-    .from(firmQuestionnaireSections)
+    .from(questionnaireSections)
     .where(
       and(
-        eq(firmQuestionnaireSections.organizationId, organizationId),
-        eq(firmQuestionnaireSections.caseTypeId, caseTypeId),
+        eq(questionnaireSections.questionnaireId, questionnaireId),
+        eq(questionnaireSections.organizationId, organizationId),
+        eq(questionnaireSections.scope, "firm"),
       ),
     );
 
   const [section] = await db
-    .insert(firmQuestionnaireSections)
+    .insert(questionnaireSections)
     .values({
+      questionnaireId,
+      scope: "firm",
       organizationId,
-      caseTypeId,
       title: "Additional questions",
-      orderIndex: Number(maxOrder) + 100,
+      orderIndex: Number(firmSectionCount) + 100,
     })
     .returning();
   return section;
@@ -2224,15 +2164,23 @@ const sendQuestionnaire = async (
       "Lead must have a case type assigned before sending a questionnaire",
     );
 
+  // A lead is a prospect, so this is always the intake questionnaire — the
+  // short triaging one. The case questionnaire belongs to a matter that does
+  // not exist yet.
   const [systemQ] = await db
     .select()
-    .from(caseTypeQuestionnaires)
-    .where(eq(caseTypeQuestionnaires.caseTypeId, caseTypeId))
+    .from(questionnaires)
+    .where(
+      and(
+        eq(questionnaires.caseTypeId, caseTypeId),
+        eq(questionnaires.stage, "intake"),
+      ),
+    )
     .limit(1);
 
   if (!systemQ) {
     throw new NotFoundError(
-      "No system questionnaire found for this case type. Contact a platform administrator.",
+      "No intake questionnaire found for this case type. Contact a platform administrator.",
     );
   }
 
@@ -2248,27 +2196,29 @@ const sendQuestionnaire = async (
   if (persistQuestions.length || persistDocs.length) {
     const section = await getOrCreateFirmAdditionsSection(
       organizationId,
-      caseTypeId,
+      systemQ.id,
     );
     let order = Date.now() % 100000;
     for (const q of persistQuestions) {
-      await db.insert(firmQuestionnaireQuestions).values({
+      await db.insert(questionnaireQuestions).values({
+        questionnaireId: systemQ.id,
+        sectionId: section.id,
+        scope: "firm",
         organizationId,
-        caseTypeId,
-        firmSectionId: section.id,
         label: q.label,
-        type: (q.type ?? "short_text") as any,
+        type: q.type ?? "short_text",
         orderIndex: order++,
         isRequired: q.isRequired ?? false,
       });
     }
     for (const d of persistDocs) {
-      await db.insert(firmQuestionnaireQuestions).values({
+      await db.insert(questionnaireQuestions).values({
+        questionnaireId: systemQ.id,
+        sectionId: section.id,
+        scope: "firm",
         organizationId,
-        caseTypeId,
-        firmSectionId: section.id,
         label: d.label,
-        type: "file_upload" as any,
+        type: "file_upload",
         orderIndex: order++,
         isRequired: d.isRequired ?? false,
       });
@@ -2346,7 +2296,7 @@ const sendQuestionnaire = async (
     .insert(questionnaireSends)
     .values({
       organizationId,
-      caseTypeQuestionnaireId: systemQ.id,
+      questionnaireId: systemQ.id,
       leadId,
       caseTypeId,
       sentById,

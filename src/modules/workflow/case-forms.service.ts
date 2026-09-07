@@ -1,12 +1,23 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../../db/client";
 import { cases } from "../../db/schema/cases";
 import { caseForms } from "../../db/schema/case-forms";
+import { caseTypeForms } from "../../db/schema/case-type-forms";
 import type { CaseFormRole, CaseFormStatus } from "../../db/schema/case-forms";
-import { BadRequestError, NotFoundError } from "../../utils/error/app-error";
+import { caseFormFieldValues } from "../../db/schema/form-fields";
+import {
+  BadRequestError,
+  ConflictError,
+  NotFoundError,
+} from "../../utils/error/app-error";
 import { recordAuditEvent } from "../shared/audit.service";
-import { createModuleLogger } from "../../lib/logging/log";
-import { caseFilingProfile } from "./case-capabilities.service";
+import { createModuleLogger, LogEvent } from "../../lib/logging/log";
+import {
+  catalogueFieldsByForm,
+  catalogueForm,
+  listCatalogueForms,
+} from "./form-catalogue.service";
+import { readyToFileRefusal } from "./form-review.service";
 
 const log = createModuleLogger("workflow.case-forms");
 
@@ -17,56 +28,51 @@ const log = createModuleLogger("workflow.case-forms");
  * column that used to stand in for it.
  */
 
-/**
- * The forms an adjustment package is made of, and which are filings in their
- * own right.
- *
- * Four core forms plus two supporting documents, which is the distinction that
- * decides whether a receipt number is expected: USCIS issues an I-797C per core
- * form and none for the I-864 or the I-693, so showing those two with a
- * permanently empty receipt field would read as missing data rather than as the
- * normal state.
- *
- * Order is the order the package is assembled and rendered in — the I-130, the
- * filings that ride with it, then the supporting documents. It carries no
- * meaning beyond presentation: each form is adjudicated on its own clock, and
- * nothing reads this list to decide which form "represents" the matter.
- */
-export const ADJUSTMENT_PACKAGE: { formCode: string; role: CaseFormRole }[] = [
-  { formCode: "I-130", role: "core" },
-  { formCode: "I-485", role: "core" },
-  { formCode: "I-765", role: "core" },
-  { formCode: "I-131", role: "core" },
-  { formCode: "I-864", role: "supporting" },
-  { formCode: "I-693", role: "supporting" },
-];
-
-/** A naturalization matter files one form. */
-export const NATURALIZATION_PACKAGE: { formCode: string; role: CaseFormRole }[] = [
-  { formCode: "N-400", role: "core" },
-];
-
 /** Statuses that mean the form has reached USCIS. */
-const FILED_ONWARDS: CaseFormStatus[] = ["filed", "receipted", "rfe", "approved", "denied"];
+const FILED_ONWARDS: CaseFormStatus[] = [
+  "filed",
+  "receipted",
+  "rfe",
+  "approved",
+  "denied",
+];
 
 /**
- * The package this matter's workflow implies.
+ * The package this matter's case type files.
  *
- * Asked of the workflow rather than of the case type, for the same reason the
- * panel's fields are (`case-capabilities.service.ts`): the template already
- * declares what kind of filing this is, and a case-type name list would be a
- * second source of truth. A matter whose workflow runs the adjustment package
- * gets the six forms; anything else gets nothing by default and names its own
- * list, because guessing wrong here puts an I-864 on a matter with no sponsor.
+ * ─── Read, no longer inferred ───────────────────────────────────────────────
+ *
+ * This used to hold two constants — an adjustment package of six forms and a
+ * naturalization package of one — and pick between them from a boolean profile
+ * derived from the matter's *workflow template*. Asking the workflow was the
+ * right call when the alternative was a list of case-type names in code: the
+ * template already declared what kind of filing this was, and a name list
+ * would have been a second source of truth.
+ *
+ * Now there is a first source of truth. `case_type_forms` says which forms a
+ * case type files, Oravanti maintains it from the CRM, and the matter already
+ * carries the `case_type_id` to look it up by. So the inference is gone with
+ * the constants: a third package is a row, not a release.
+ *
+ * A case type with no rows gets `[]`, which is the right answer rather than a
+ * failure — the matter starts with no forms and staff add what it needs.
  */
 export async function defaultPackageFor(
   caseId: string,
   organizationId: string,
 ): Promise<{ formCode: string; role: CaseFormRole }[]> {
-  const profile = await caseFilingProfile(caseId, organizationId);
-  if (profile.adjustment) return ADJUSTMENT_PACKAGE;
-  if (profile.naturalization) return NATURALIZATION_PACKAGE;
-  return [];
+  const [caseRow] = await db
+    .select({ caseTypeId: cases.caseTypeId })
+    .from(cases)
+    .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
+    .limit(1);
+  if (!caseRow) throw new NotFoundError("Case not found");
+
+  return db
+    .select({ formCode: caseTypeForms.formCode, role: caseTypeForms.role })
+    .from(caseTypeForms)
+    .where(eq(caseTypeForms.caseTypeId, caseRow.caseTypeId))
+    .orderBy(caseTypeForms.orderIndex, caseTypeForms.formCode);
 }
 
 export type CaseFormPatch = {
@@ -81,7 +87,11 @@ export type CaseFormPatch = {
 
 async function requireCase(caseId: string, organizationId: string) {
   const [row] = await db
-    .select({ id: cases.id, caseNumber: cases.caseNumber })
+    .select({
+      id: cases.id,
+      caseNumber: cases.caseNumber,
+      caseTypeId: cases.caseTypeId,
+    })
     .from(cases)
     .where(and(eq(cases.id, caseId), eq(cases.organizationId, organizationId)))
     .limit(1);
@@ -91,25 +101,155 @@ async function requireCase(caseId: string, organizationId: string) {
 
 /** Every form on the matter, in filing order. */
 export async function listCaseForms(caseId: string, organizationId: string) {
-  await requireCase(caseId, organizationId);
+  const caseRow = await requireCase(caseId, organizationId);
 
   const rows = await db
     .select()
     .from(caseForms)
-    .where(and(eq(caseForms.caseId, caseId), eq(caseForms.organizationId, organizationId)));
+    .where(
+      and(
+        eq(caseForms.caseId, caseId),
+        eq(caseForms.organizationId, organizationId),
+      ),
+    );
 
   // Sorted by the package's own filing order rather than alphabetically, with
   // anything unrecognised after it. A firm can add a form this list does not
   // know (an I-601 waiver, say) and it lands at the end rather than in the
   // middle of the package it is not part of.
-  const rank = new Map(ADJUSTMENT_PACKAGE.map((f, i) => [f.formCode, i]));
-  return rows.sort(
+  //
+  // The order comes from the case type's own package, which is why this reads
+  // the table rather than a constant: a matter's forms should be ranked by
+  // what *its* case type files, not by what an adjustment files.
+  const rank = new Map(
+    (
+      await db
+        .select({ formCode: caseTypeForms.formCode })
+        .from(caseTypeForms)
+        .where(eq(caseTypeForms.caseTypeId, caseRow.caseTypeId))
+        .orderBy(caseTypeForms.orderIndex, caseTypeForms.formCode)
+    ).map((f, i) => [f.formCode, i] as const),
+  );
+  const sorted = rows.sort(
     (a, b) =>
       (rank.get(a.formCode) ?? Number.MAX_SAFE_INTEGER) -
         (rank.get(b.formCode) ?? Number.MAX_SAFE_INTEGER) ||
       a.formCode.localeCompare(b.formCode),
   );
+
+  const [completion, catalogue] = await Promise.all([
+    completionByForm(sorted),
+    listCatalogueForms(),
+  ]);
+  const named = new Map(catalogue.map((f) => [f.formCode, f]));
+
+  return sorted.map((form) => {
+    const entry = named.get(form.formCode);
+    return {
+      ...form,
+      completion: completion.get(form.id) ?? {
+        populated: 0,
+        total: 0,
+        requiredPopulated: 0,
+        requiredTotal: 0,
+      },
+      /**
+       * The catalogue entry, so the rail can show what an I-864 *is* rather
+       * than only its code. Null when nothing has named this form — a firm may
+       * put a code on a matter before anybody catalogues it, and the tab shows
+       * the bare code until somebody does.
+       */
+      definition: entry
+        ? {
+            id: entry.id,
+            title: entry.title,
+            description: entry.description,
+            // The instruction, where a form is not the firm to fill. It changes
+            // what the tab offers, so it travels with the definition rather
+            // than being looked up again per form.
+            providedBy: entry.providedBy,
+          }
+        : null,
+    };
+  });
 }
+
+/**
+ * How full each form is, in one pass over the package.
+ *
+ * On the list rather than only on the open form, because the question somebody
+ * brings to a filing package is "which of these still needs work?" — and
+ * answering it by opening six forms in turn is the thing a package view exists
+ * to prevent. Two queries for the whole package, not one per form.
+ */
+async function completionByForm(forms: { id: string; formCode: string }[]) {
+  // Required is tracked separately from the total because they answer
+  // different questions. "18 of 24" is progress; "every required field is in"
+  // is whether the form can be filed, and that is the one the rail marks done.
+  const byForm = new Map<
+    string,
+    {
+      populated: number;
+      total: number;
+      requiredPopulated: number;
+      requiredTotal: number;
+    }
+  >();
+  if (forms.length === 0) return byForm;
+
+  const fieldsByForm = await catalogueFieldsByForm(
+    forms.map((f) => f.formCode),
+  );
+
+  const values = await db
+    .select({
+      caseFormId: caseFormFieldValues.caseFormId,
+      fieldKey: caseFormFieldValues.fieldKey,
+      value: caseFormFieldValues.value,
+    })
+    .from(caseFormFieldValues)
+    .where(
+      inArray(
+        caseFormFieldValues.caseFormId,
+        forms.map((f) => f.id),
+      ),
+    );
+
+  // Keys rather than a count, because the required tally below has to ask
+  // *which* fields are filled, not how many.
+  const populated = new Map<string, Set<string>>();
+  for (const row of values) {
+    // An empty value is a row that exists, not a field that is filled — the
+    // same rule `readCaseForm` applies, so the rail and the form agree.
+    if (isEmptyValue(row.value)) continue;
+    const keys = populated.get(row.caseFormId) ?? new Set<string>();
+    keys.add(row.fieldKey);
+    populated.set(row.caseFormId, keys);
+  }
+
+  for (const form of forms) {
+    const fields = fieldsByForm.get(form.formCode) ?? [];
+    const filled = populated.get(form.id) ?? new Set<string>();
+    const required = fields.filter((field) => field.isRequired);
+
+    byForm.set(form.id, {
+      populated: filled.size,
+      total: fields.length,
+      requiredPopulated: required.filter((field) => filled.has(field.fieldKey))
+        .length,
+      requiredTotal: required.length,
+    });
+  }
+
+  return byForm;
+}
+
+const isEmptyValue = (value: unknown) => {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "string") return value.trim() === "";
+  if (Array.isArray(value)) return value.length === 0;
+  return false;
+};
 
 /**
  * Creates the package's rows for a matter, if they are not already there.
@@ -118,9 +258,24 @@ export async function listCaseForms(caseId: string, organizationId: string) {
  * whatever state it has reached, and one a firm added by hand is never removed.
  * Re-running after the package definition grows adds only what is missing.
  *
- * Not called automatically on case creation — the package a matter files is a
- * decision, not a consequence of its case type, and pre-creating six rows on
- * every immigration matter would put an I-864 on a naturalization case.
+ * ─── Now called automatically, and why that changed ────────────────────────
+ *
+ * This used to say it was deliberately never called on case creation: that the
+ * package is a decision rather than a consequence of the case type, and that
+ * pre-creating six rows on every immigration matter would put an I-864 on a
+ * naturalization case.
+ *
+ * The stated risk no longer applies. `defaultPackageFor` reads
+ * `case_type_forms` for the matter's own case type, so a naturalization
+ * matter gets the one form its case type lists and no I-864. A case type with
+ * no rows gets `[]`, which is the right answer rather than a failure.
+ *
+ * What survives of the objection is the weaker claim, that the package is a
+ * decision at the edges — a matter may need an I-601 waiver nobody could
+ * predict at creation. But this function is additive, so initializing the
+ * default costs nothing that adding a form later cannot fix, and saves every
+ * matter from starting blank. It now runs at the end of
+ * `materializeTasksForCase`, which is where the template is already resolved.
  */
 export async function ensurePackageForms(params: {
   caseId: string;
@@ -128,7 +283,8 @@ export async function ensurePackageForms(params: {
   forms?: { formCode: string; role: CaseFormRole }[];
 }): Promise<number> {
   const { caseId, organizationId } = params;
-  const wanted = params.forms ?? (await defaultPackageFor(caseId, organizationId));
+  const wanted =
+    params.forms ?? (await defaultPackageFor(caseId, organizationId));
 
   const caseRow = await requireCase(caseId, organizationId);
 
@@ -137,7 +293,12 @@ export async function ensurePackageForms(params: {
       await db
         .select({ formCode: caseForms.formCode })
         .from(caseForms)
-        .where(and(eq(caseForms.caseId, caseId), eq(caseForms.organizationId, organizationId)))
+        .where(
+          and(
+            eq(caseForms.caseId, caseId),
+            eq(caseForms.organizationId, organizationId),
+          ),
+        )
     ).map((r) => r.formCode),
   );
 
@@ -165,7 +326,10 @@ export async function ensurePackageForms(params: {
     metadata: { formCodes: missing.map((f) => f.formCode) },
   });
 
-  log.action("workflow.case_forms_initialized", { caseId, created: missing.length });
+  log.action("workflow.case_forms_initialized", {
+    caseId,
+    created: missing.length,
+  });
   return missing.length;
 }
 
@@ -214,17 +378,36 @@ export async function updateCaseForm(params: {
     );
   }
 
+  /*
+    Ready to file is the attorney's word, not the preparer's.
+
+    The gate is here rather than in the controller because every door onto this
+    status goes through `updateCaseForm` — the Forms tab's status select, the
+    batch update, and anything added later. See `form-review.service.ts` for
+    what the refusal says and why approval is the only key.
+  */
+  if (patch.status === "ready_to_file" && existing.status !== "ready_to_file") {
+    const refusal = await readyToFileRefusal(caseId);
+    if (refusal) throw new ConflictError(refusal);
+  }
+
   const next: CaseFormPatch = { ...patch };
 
   // A receipt number is evidence the form was receipted. Only promote from a
   // pre-filing state: a form already in `rfe`, `approved` or `denied` has moved
   // past receipt, and dragging it back would lose that.
-  if (patch.receiptNumber && !patch.status && !FILED_ONWARDS.includes(existing.status)) {
+  if (
+    patch.receiptNumber &&
+    !patch.status &&
+    !FILED_ONWARDS.includes(existing.status)
+  ) {
     next.status = "receipted";
   }
 
   const changed = (Object.keys(next) as (keyof CaseFormPatch)[]).filter(
-    (k) => next[k] !== undefined && next[k] !== (existing as Record<string, unknown>)[k],
+    (k) =>
+      next[k] !== undefined &&
+      next[k] !== (existing as Record<string, unknown>)[k],
   );
   if (changed.length === 0) return existing;
 
@@ -234,7 +417,8 @@ export async function updateCaseForm(params: {
     .where(eq(caseForms.id, existing.id))
     .returning();
 
-  const statusChanged = next.status !== undefined && next.status !== existing.status;
+  const statusChanged =
+    next.status !== undefined && next.status !== existing.status;
 
   await recordAuditEvent({
     action: statusChanged ? "case.form_status_changed" : "case.form_updated",
@@ -249,7 +433,9 @@ export async function updateCaseForm(params: {
     metadata: {
       formCode,
       changed,
-      ...(statusChanged ? { previousStatus: existing.status, status: next.status } : {}),
+      ...(statusChanged
+        ? { previousStatus: existing.status, status: next.status }
+        : {}),
     },
   });
 
@@ -290,6 +476,12 @@ export async function removeCaseForm(params: {
 
   await db.delete(caseForms).where(eq(caseForms.id, existing.id));
 
+  // The catalogue is deliberately untouched. It used to be possible for a
+  // matter to *own* a catalogue entry — a form defined for that matter alone —
+  // so removing the form had to take its definition with it. The catalogue is
+  // now the platform's, identical for every firm, and taking a form out of one
+  // matter's package must not remove it from the product.
+
   await recordAuditEvent({
     action: "case.form_removed",
     entityType: "case_form",
@@ -316,7 +508,9 @@ export async function packageProgress(caseId: string, organizationId: string) {
   const total = forms.length;
   const approved = forms.filter((f) => f.status === "approved").length;
   const filed = forms.filter((f) => FILED_ONWARDS.includes(f.status)).length;
-  const outstanding = forms.filter((f) => !FILED_ONWARDS.includes(f.status) && f.status !== "withdrawn");
+  const outstanding = forms.filter(
+    (f) => !FILED_ONWARDS.includes(f.status) && f.status !== "withdrawn",
+  );
 
   return {
     total,
@@ -328,3 +522,79 @@ export async function packageProgress(caseId: string, organizationId: string) {
   };
 }
 
+/**
+ * Puts a catalogued form onto the matter.
+ *
+ * One write, not two. This used to name the form *and* file it in one call,
+ * because a firm could author its own catalogue entry — so the alternative was
+ * letting a firm name a form that appeared nowhere. The catalogue is now the
+ * platform's, so there is nothing to name here: a firm chooses from the forms
+ * Oravanti maintains, and choosing one that does not exist is a 404 rather
+ * than an invitation to invent it.
+ *
+ * The workflow template already puts the standard package on a matter. This is
+ * for the form that package did not anticipate — an I-765 on a matter that was
+ * not going to file one — which is an ordinary thing for a firm to need and
+ * has nothing to do with authoring forms.
+ */
+export async function addCaseForm(params: {
+  caseId: string;
+  organizationId: string;
+  formCode: string;
+  role?: CaseFormRole;
+}) {
+  const { caseId, organizationId, formCode } = params;
+  const caseRow = await requireCase(caseId, organizationId);
+
+  const definition = await catalogueForm(formCode);
+  if (!definition) {
+    throw new NotFoundError(
+      `${formCode} is not a form Oravanti publishes. Ask for it to be added to the catalogue.`,
+    );
+  }
+
+  const [existing] = await db
+    .select({ id: caseForms.id })
+    .from(caseForms)
+    .where(
+      and(
+        eq(caseForms.caseId, caseId),
+        eq(caseForms.formCode, formCode),
+        eq(caseForms.organizationId, organizationId),
+      ),
+    )
+    .limit(1);
+  if (existing) {
+    throw new BadRequestError(`${formCode} is already on this matter`);
+  }
+
+  const [form] = await db
+    .insert(caseForms)
+    .values({
+      organizationId,
+      caseId,
+      formCode,
+      role: params.role ?? "core",
+      status: "not_started",
+    })
+    .returning();
+
+  await recordAuditEvent({
+    action: "case.form_added",
+    entityType: "case_form",
+    entityId: form.id,
+    parentEntityType: "case",
+    parentEntityId: caseId,
+    organizationId,
+    summary: `${formCode} (${definition.title}) added to ${caseRow.caseNumber}`,
+    metadata: { formCode, title: definition.title },
+  });
+
+  log.action(LogEvent.WORKFLOW_FORM_CATALOGUE_CHANGED, {
+    caseId,
+    formCode,
+    change: "form_added",
+  });
+
+  return { ...form, definition };
+}
