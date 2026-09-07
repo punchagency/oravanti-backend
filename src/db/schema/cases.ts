@@ -97,6 +97,24 @@ export const caseRelationTypeEnum = pgEnum("case_relation_type", [
  * Cases/Matters Table: Substantive legal action instances.
  * Tied directly to an accountable legal team profile block rather than a single lawyer.
  */
+/**
+ * The states a filing package passes through on its way to being filed.
+ *
+ * Four, and the order is the process: staff prepare it, somebody sends it up,
+ * the reviewing attorney either marks corrections (`changes_requested`, set by
+ * the act of marking) or approves it. Approval is the only door to
+ * `ready_to_file` — see `filingReviewStatus` below.
+ */
+export const filingReviewStatusEnum = pgEnum("filing_review_status", [
+  "in_preparation",
+  "in_review",
+  "changes_requested",
+  "approved",
+]);
+
+export type FilingReviewStatus =
+  (typeof filingReviewStatusEnum.enumValues)[number];
+
 export const cases = pgTable("cases", {
   id: uuid("id").primaryKey().defaultRandom(),
   organizationId: text("organization_id")
@@ -122,7 +140,9 @@ export const cases = pgTable("cases", {
   // continuation, not an independent record once it exists. `(): AnyPgColumn =>`
   // is Drizzle's required typing form for a self-referential FK — a plain arrow
   // function reference errors on circular type inference.
-  parentCaseId: uuid("parent_case_id").references((): AnyPgColumn => cases.id, { onDelete: "set null" }),
+  parentCaseId: uuid("parent_case_id").references((): AnyPgColumn => cases.id, {
+    onDelete: "set null",
+  }),
   relationType: caseRelationTypeEnum("relation_type"),
 
   practiceAreaId: uuid("practice_area_id")
@@ -154,6 +174,26 @@ export const cases = pgTable("cases", {
   filingDate: date("filing_date"), // Nullable until official clerk processing confirmation
   estimatedCompletionDate: date("estimated_completion_date"),
   nextCourtDate: timestamp("next_court_date"),
+
+  /**
+   * Where the filing package stands with the reviewing attorney.
+   *
+   * On the matter rather than on `case_forms` because a filing is reviewed as a
+   * package — the I-864 being right is not a judgement anybody makes without
+   * the I-485 beside it — and because the gate it drives is one gate: no form
+   * reaches `ready_to_file` until an attorney has approved the package.
+   *
+   * `changes_requested` is set by raising a correction, not chosen from a menu.
+   * A reviewer marking a field *is* the request for changes, and a status a
+   * person has to remember to set afterwards is one that will disagree with the
+   * marks within a week.
+   */
+  filingReviewStatus: filingReviewStatusEnum("filing_review_status")
+    .notNull()
+    .default("in_preparation"),
+  /** Who approved, and when — the sign-off itself, kept beside the status it explains. */
+  filingApprovedById: uuid("filing_approved_by_id").references(() => staff.id),
+  filingApprovedAt: timestamp("filing_approved_at"),
 
   openedById: uuid("opened_by_id")
     .notNull()
@@ -225,7 +265,7 @@ export const casesToCertifications = pgTable(
     dueDate: date("due_date"),
     completedAt: timestamp("completed_at"),
   },
-  (t) => [{ pk:primaryKey({ columns: [t.caseId, t.certificationId] }) }],
+  (t) => [{ pk: primaryKey({ columns: [t.caseId, t.certificationId] }) }],
 );
 
 // =========================================================================
@@ -273,4 +313,5 @@ export type CaseToCertification = typeof casesToCertifications.$inferSelect;
 
 export type CaseAssignment = typeof caseAssignments.$inferSelect;
 export type NewCaseAssignment = typeof caseAssignments.$inferInsert;
-export type CaseAssignmentRole = (typeof caseAssignmentRoleEnum.enumValues)[number];
+export type CaseAssignmentRole =
+  (typeof caseAssignmentRoleEnum.enumValues)[number];

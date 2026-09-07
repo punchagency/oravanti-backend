@@ -75,6 +75,7 @@ export const auditActorTypeEnum = pgEnum("audit_actor_type", [
   "staff",
   "client",
   "contractor",
+  "platform",
   "system",
   "anonymous",
 ]);

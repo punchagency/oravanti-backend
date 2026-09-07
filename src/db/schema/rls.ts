@@ -98,6 +98,7 @@ import {
   caseIssues,
 } from "./case-issues";
 import { billingRates } from "./billing-rates";
+import { formDefinitions, formFieldDefinitions } from "./form-fields";
 import { clients } from "./clients";
 import { invoiceDeliveries } from "./invoice-deliveries";
 import { invoiceFollowups } from "./invoice-followups";
@@ -118,6 +119,11 @@ import { invoicePayments } from "./invoice-payments";
 import { invoices, invoiceLineItems } from "./invoices";
 import { leads, leadNotes } from "./leads";
 import { timeEntries } from "./time-entries";
+import {
+  questionnaireLogicRules,
+  questionnaireQuestions,
+  questionnaireSections,
+} from "./questionnaires";
 import { workflowModules, workflowTemplates, workflowTemplateSteps } from "./workflow";
 
 // =============================================================================
@@ -862,3 +868,84 @@ export const rlsWorkflowTemplateStepsOrg = pgPolicy("rls_workflow_template_steps
   using: moduleVisible,
   withCheck: moduleOwned,
 }).link(workflowTemplateSteps);
+
+// =============================================================================
+// Questionnaire authoring (questionnaire_sections, questionnaire_questions,
+// questionnaire_logic_rules)
+// =============================================================================
+//
+// These three replaced six tables: a platform-owned `case_type_questionnaire_*`
+// trio that was RLS-exempt as global reference data, and an org-owned
+// `firm_questionnaire_*` trio that used the generic `orgScoped` factory. Merging
+// them put both tiers — plus the new per-matter one — in one table with a
+// nullable `organization_id`, which is exactly the shape `invoice_line_presets`
+// and `workflow_templates` above already solve, so they follow that pattern
+// rather than either of the ones they came from.
+//
+//   - **Read** admits NULL, so every firm sees the platform's system-scope
+//     questions. Losing this would empty every questionnaire in the product.
+//   - **Write** does not, so no firm can edit or delete a system question. The
+//     only way to change what a client is asked is to add a `firm`- or
+//     `case`-scoped row, which is a write to a row the firm does own.
+//
+// That asymmetry is the locked-backbone rule from the workflow templates,
+// enforced in the database rather than only in the service layer. The seeds
+// write system rows from the CLI, outside request context, where no
+// `app.current_organization_id` is set at all.
+//
+// `case`-scoped rows need no extra predicate: they carry the owning org in the
+// same column as `firm` rows, and the case itself is already org-scoped, so a
+// firm reaching another firm's per-matter question would have to pass this
+// policy first.
+
+/** See the section note above for why `using`/`withCheck` differ. */
+export const rlsQuestionnaireSectionsOrg = pgPolicy("rls_questionnaire_sections_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id IS NULL OR organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(questionnaireSections);
+
+export const rlsQuestionnaireQuestionsOrg = pgPolicy("rls_questionnaire_questions_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id IS NULL OR organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(questionnaireQuestions);
+
+export const rlsQuestionnaireLogicRulesOrg = pgPolicy("rls_questionnaire_logic_rules_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id IS NULL OR organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(questionnaireLogicRules);
+
+// =============================================================================
+// The form catalogue (form_definitions, form_field_definitions)
+// =============================================================================
+//
+// The same asymmetry as the questionnaire authoring tables above, and for the
+// same reason. `organization_id IS NULL` is the platform's catalogue: every
+// firm reads it, no firm may write to it. A firm changing what an I-485 asks
+// for writes a row it owns — either a new field or a superseding copy — and
+// that row carries its own `organization_id`, so it is visible to that firm
+// alone.
+//
+// Without this, `form_field_definitions` had no policy at all: it was global
+// reference data with no `organization_id` to filter on. Giving it a tenant
+// column without giving it a policy would have been the worst of both.
+
+/** See the section note above for why `using`/`withCheck` differ. */
+export const rlsFormDefinitionsOrg = pgPolicy("rls_form_definitions_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id IS NULL OR organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(formDefinitions);
+
+export const rlsFormFieldDefinitionsOrg = pgPolicy("rls_form_field_definitions_org", {
+  as: "permissive",
+  for: "all",
+  using: sql`organization_id IS NULL OR organization_id = ${currentOrgId}`,
+  withCheck: sql`organization_id = ${currentOrgId}`,
+}).link(formFieldDefinitions);
