@@ -391,7 +391,7 @@ export class InvoicesRouter {
      * /finance/invoices/{id}/payments:
      *   post:
      *     tags: [Finance — Invoicing]
-     *     summary: Record a payment; splits operating/trust, pro-rata by default
+     *     summary: Record a payment; splits operating/trust, trust-first by default
      *     responses:
      *       201: { description: Payment recorded }
      */

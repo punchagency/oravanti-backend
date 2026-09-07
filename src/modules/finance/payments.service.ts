@@ -32,7 +32,8 @@ import { invoiceUrl } from "../../lib/app-links";
 
 export type RecordPaymentInput = {
   amount: number;
-  /** Optional explicit split; pro-rated from the outstanding balance if absent. */
+  /** Optional explicit split. Absent means `trustFirstSplit` against the
+   * outstanding balance — trust to its cap, remainder to operating. */
   amountOperating?: number;
   amountTrust?: number;
   paymentDate: string;
@@ -110,7 +111,7 @@ export const recordPayment = async (
     throw new BadRequestError("Send the invoice before recording a payment");
   }
 
-  // What is still owed on each side, so the pro-rata default apportions against
+  // What is still owed on each side, so the trust-first default fills against
   // the remaining balance rather than the original totals.
   const paid = await sumPaidBySide(organizationId, invoiceId);
 
@@ -379,7 +380,7 @@ const notifyPaymentRecorded = async (args: {
   });
 };
 
-/** Paid-to-date per side, so the pro-rata default uses live outstandings. */
+/** Paid-to-date per side, so the trust-first default uses live outstandings. */
 const sumPaidBySide = async (
   organizationId: string,
   invoiceId: string,
